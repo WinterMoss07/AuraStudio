@@ -20,11 +20,8 @@ pub struct Canvas {
     pub texture:     Texture,
     pub view:        TextureView,
     pub sampler:     Sampler,
-    /// Composite of all layers, uploaded to the GPU texture (dirty rect).
-    pub pixels:      Vec<u8>,
     pub width:       u32,
     pub height:      u32,
-    pub dirty_rect:  Option<Rect>,
 }
 
 impl Canvas {
@@ -44,6 +41,7 @@ impl Canvas {
             view_formats:    &[],
         });
 
+        // Starts white; the app uploads the real composite right after.
         let pixels = vec![255u8; (width * height * 4) as usize];
 
         queue.write_texture(
@@ -72,17 +70,7 @@ impl Canvas {
             ..Default::default()
         });
 
-        Self { texture, view, sampler, pixels, width, height, dirty_rect: None }
-    }
-
-    pub fn mark_dirty(&mut self, rect: Rect) {
-        self.dirty_rect = Some(match self.dirty_rect {
-            None    => rect,
-            Some(d) => (
-                d.0.min(rect.0), d.1.min(rect.1),
-                d.2.max(rect.2), d.3.max(rect.3),
-            ),
-        });
+        Self { texture, view, sampler, width, height }
     }
 }
 

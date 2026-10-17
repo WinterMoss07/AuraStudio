@@ -1,5 +1,6 @@
 mod app;
 mod paint_thread;
+mod projection;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 

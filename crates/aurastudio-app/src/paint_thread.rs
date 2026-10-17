@@ -15,13 +15,19 @@
 //! after the samples sent before them: Ctrl+Z right after lifting the pen
 //! undoes that stroke, even if it is still being painted.
 //!
-//! The document is shared under a mutex. The worker holds it for at most
-//! BATCH_TIME at once, so the main thread can always grab it to composite
-//! the changed area and show progress, even mid-stroke.
+//! Display pipeline, modeled on Krita (FreehandStrokeStrategy +
+//! KisCanvas2): after painting, this thread also merges the layers of the
+//! changed areas into the projection (Krita does that merge on worker
+//! threads too, never on the GUI thread). The UI thread only uploads the
+//! finished rectangles to the GPU. Changed areas travel as a list of
+//! rectangles, never one ever-growing bounding box.
+//!
+//! When painting keeps up with the pen, the projection is updated after
+//! every batch (lowest latency). When it falls behind (huge brush), it is
+//! updated at most every UPDATE_PERIOD, so the time goes to painting.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -29,8 +35,11 @@ use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, PressureSmoother};
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
 
-/// Longest time the worker keeps the layers locked in one go.
-const BATCH_TIME: Duration = Duration::from_millis(6);
+use crate::projection::{add_rect, SharedProjection};
+
+/// Shortest time between two projection updates while painting is behind
+/// the pen (~120 fps; Krita's default limit is 100).
+const UPDATE_PERIOD: Duration = Duration::from_millis(8);
 
 pub enum Cmd {
     /// Start a stroke on the active layer of `doc` with these settings.
@@ -46,7 +55,7 @@ pub enum Cmd {
 
 /// What the worker reports to the main thread (through `notify`).
 pub enum Event {
-    /// Some canvas area changed: take it with `take_dirty`.
+    /// The projection has new changed areas to upload.
     Painted,
     /// A layer's pixels changed for good (stroke done, undo...): refresh
     /// its thumbnail.
@@ -57,31 +66,25 @@ pub enum Event {
 
 pub struct PaintThread {
     tx:     Option<Sender<Cmd>>,
-    dirty:  Arc<Mutex<Option<Rect>>>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl PaintThread {
-    pub fn spawn(notify: impl Fn(Event) + Send + 'static) -> Self {
+    /// `projection` receives the merged result of everything painted.
+    pub fn spawn(projection: SharedProjection, notify: impl Fn(Event) + Send + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
-        let dirty = Arc::new(Mutex::new(None));
-        let worker = Worker::new(Arc::clone(&dirty), Box::new(notify));
+        let worker = Worker::new(projection, Box::new(notify));
         let handle = std::thread::Builder::new()
             .name("paint".into())
             .spawn(move || worker.run(rx))
             .expect("spawn paint thread");
-        Self { tx: Some(tx), dirty, handle: Some(handle) }
+        Self { tx: Some(tx), handle: Some(handle) }
     }
 
     pub fn send(&self, cmd: Cmd) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(cmd);
         }
-    }
-
-    /// Area painted since the last call.
-    pub fn take_dirty(&self) -> Option<Rect> {
-        self.dirty.lock().unwrap().take()
     }
 }
 
@@ -96,9 +99,12 @@ impl Drop for PaintThread {
 }
 
 struct Worker {
-    /// Document of the current stroke.
+    /// Document being worked on (last stroke / undo / clear).
     doc:      Option<SharedDoc>,
-    dirty:    Arc<Mutex<Option<Rect>>>,
+    projection: SharedProjection,
+    /// Changed areas not merged into the projection yet.
+    pending:  Vec<Rect>,
+    last_update: Instant,
     notify:   Box<dyn Fn(Event) + Send>,
 
     brush:    Brush,
@@ -115,9 +121,9 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(dirty: Arc<Mutex<Option<Rect>>>, notify: Box<dyn Fn(Event) + Send>) -> Self {
+    fn new(projection: SharedProjection, notify: Box<dyn Fn(Event) + Send>) -> Self {
         Self {
-            doc: None, dirty, notify,
+            doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
             brush: Brush::new(),
             hokusai: HokusaiEngine::new(),
             use_hokusai: false,
@@ -142,8 +148,8 @@ impl Worker {
             queue.extend(rx.try_iter());
             self.stats.max_queue = self.stats.max_queue.max(queue.len());
 
-            let mut changed: Option<Rect> = None;
             let mut events = Vec::new();
+            let mut flush = false;
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
                 match cmd {
@@ -153,52 +159,80 @@ impl Worker {
                     }
                     Cmd::Sample { x, y, pressure } => {
                         let r = self.with_doc(|w, d| w.sample(d, x, y, pressure)).flatten();
-                        merge(&mut changed, r);
-                        merge(&mut self.stroke_rect, r);
+                        if let Some(r) = r {
+                            add_rect(&mut self.pending, r);
+                            merge(&mut self.stroke_rect, Some(r));
+                        }
                     }
                     Cmd::End => {
                         if let Some((rect, id)) = self.with_doc(|w, d| w.end(d)).flatten() {
-                            merge(&mut changed, rect);
+                            if let Some(r) = rect { add_rect(&mut self.pending, r); }
                             events.push(Event::LayerChanged { layer_id: id });
                         }
-                        // Report the end right away, with its pixels.
-                        break;
+                        // Show the end of the stroke right away.
+                        flush = true;
                     }
-                    Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) if self.active => {
+                    Cmd::Undo(_) | Cmd::Redo(_) | Cmd::Clear(_) if self.active => {
                         // Never while a stroke is open (the main thread
                         // doesn't send them then; this is a safety net).
-                        let _ = doc;
                         events.push(Event::Notice("Finish the stroke first"));
                     }
                     Cmd::Undo(doc) => {
                         let c = doc.lock().unwrap().undo();
-                        Self::report_change(c, "Nothing to undo", &mut changed, &mut events);
+                        self.doc = Some(doc);
+                        self.report_change(c, "Nothing to undo", &mut events);
+                        flush = true;
                     }
                     Cmd::Redo(doc) => {
                         let c = doc.lock().unwrap().redo();
-                        Self::report_change(c, "Nothing to redo", &mut changed, &mut events);
+                        self.doc = Some(doc);
+                        self.report_change(c, "Nothing to redo", &mut events);
+                        flush = true;
                     }
                     Cmd::Clear(doc) => {
-                        let mut d = doc.lock().unwrap();
-                        match d.clear_active() {
-                            Some(id) => {
-                                merge(&mut changed, Some((0, 0, d.layers.width, d.layers.height)));
+                        let cleared = {
+                            let mut d = doc.lock().unwrap();
+                            d.clear_active().map(|id| (id, (0, 0, d.layers.width, d.layers.height)))
+                        };
+                        match cleared {
+                            Some((id, full)) => {
+                                add_rect(&mut self.pending, full);
                                 events.push(Event::LayerChanged { layer_id: id });
                             }
                             None => events.push(Event::Notice("Layer is locked or is a folder")),
                         }
+                        self.doc = Some(doc);
+                        flush = true;
                     }
                 }
-                if t0.elapsed() >= BATCH_TIME { break; }
+                if flush || t0.elapsed() >= UPDATE_PERIOD { break; }
             }
 
-            if let Some(r) = changed {
-                merge(&mut self.dirty.lock().unwrap(), Some(r));
+            // Update the projection when caught up with the pen (lowest
+            // latency), when asked to, or at least every UPDATE_PERIOD.
+            queue.extend(rx.try_iter());
+            let due = flush || queue.is_empty() || self.last_update.elapsed() >= UPDATE_PERIOD;
+            if due && !self.pending.is_empty() {
+                self.update_projection();
                 (self.notify)(Event::Painted);
             }
             for e in events {
                 (self.notify)(e);
             }
+        }
+    }
+
+    /// Merge the layers of the changed areas into the projection.
+    fn update_projection(&mut self) {
+        self.last_update = Instant::now();
+        let rects = std::mem::take(&mut self.pending);
+        let Some(doc) = self.doc.clone() else { return };
+        let d = doc.lock().unwrap();
+        let mut p = self.projection.lock().unwrap();
+        if (p.width, p.height) != (d.layers.width, d.layers.height) { return; }
+        for r in rects {
+            d.layers.composite_rect_into(&mut p.pixels, r);
+            p.add_dirty(r);
         }
     }
 
@@ -211,15 +245,10 @@ impl Worker {
         Some(f(self, &mut d))
     }
 
-    fn report_change(
-        c: Option<aurastudio_document::Change>,
-        none_msg: &'static str,
-        changed: &mut Option<Rect>,
-        events: &mut Vec<Event>,
-    ) {
+    fn report_change(&mut self, c: Option<aurastudio_document::Change>, none_msg: &'static str, events: &mut Vec<Event>) {
         match c {
             Some(c) => {
-                merge(changed, Some(c.rect));
+                add_rect(&mut self.pending, c.rect);
                 events.push(Event::LayerChanged { layer_id: c.layer_id });
             }
             None => events.push(Event::Notice(none_msg)),
@@ -332,6 +361,12 @@ mod tests {
     use aurastudio_document::{DocId, Document};
     use aurastudio_layers::Node;
     use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
+    use crate::projection::Projection;
+
+    fn proj(w: u32, h: u32) -> SharedProjection {
+        Arc::new(Mutex::new(Projection::new(w, h)))
+    }
 
     fn doc_with_layer() -> (SharedDoc, u64) {
         let mut d = Document::new(DocId(1), "t", 64, 64);
@@ -361,13 +396,19 @@ mod tests {
     fn paints_on_its_own_thread() {
         let (doc, id) = doc_with_layer();
         let (ev_tx, ev_rx) = channel();
-        let pt = PaintThread::spawn(move |e| {
+        let projection = proj(64, 64);
+        let pt = PaintThread::spawn(Arc::clone(&projection), move |e| {
             if let Event::LayerChanged { layer_id } = e { let _ = ev_tx.send(layer_id); }
         });
         stroke(&pt, &doc, 32.0);
         assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok(id));
-        assert!(pt.take_dirty().is_some());
         assert_eq!(pixel(&doc, id, 30, 32), [0, 0, 0, 255]);
+        // The projection got the merged result and its changed areas.
+        drop(pt);
+        let mut p = projection.lock().unwrap();
+        assert!(!p.take_dirty().is_empty());
+        let i = ((32 * 64 + 30) * 4) as usize;
+        assert_eq!(&p.pixels[i..i + 4], &[0, 0, 0, 255]);
     }
 
     /// Undo sent right after End undoes that stroke (same queue), then redo
@@ -375,7 +416,7 @@ mod tests {
     #[test]
     fn undo_follows_the_stroke_it_undoes() {
         let (doc, id) = doc_with_layer();
-        let pt = PaintThread::spawn(|_| {});
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
         stroke(&pt, &doc, 20.0);
         stroke(&pt, &doc, 40.0);
         pt.send(Cmd::Undo(Arc::clone(&doc)));
@@ -383,7 +424,7 @@ mod tests {
         assert_eq!(pixel(&doc, id, 30, 20), [0, 0, 0, 255]);
         assert_eq!(pixel(&doc, id, 30, 40)[3], 0);
 
-        let pt = PaintThread::spawn(|_| {});
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
         pt.send(Cmd::Redo(Arc::clone(&doc)));
         drop(pt);
         assert_eq!(pixel(&doc, id, 30, 40), [0, 0, 0, 255]);
@@ -394,12 +435,139 @@ mod tests {
     fn locked_layer_stays_untouched() {
         let (doc, id) = doc_with_layer();
         *doc.lock().unwrap().layers.node_mut(id).unwrap().locked_mut() = true;
-        let pt = PaintThread::spawn(|_| {});
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
         stroke(&pt, &doc, 16.0);
         drop(pt);
         let d = doc.lock().unwrap();
         let Some(Node::Layer(l)) = d.layers.node(id) else { panic!() };
         assert!(l.pixels.chunks(4).all(|p| p[3] == 0));
         assert_eq!(d.history().undo_len(), 0);
+    }
+
+    /// Headless model of the app while painting: pen samples at 200 Hz,
+    /// a "GUI" thread at 250 fps that shows the painted area and holds the
+    /// document ~1.5 ms per frame to build the UI. Prints how far the
+    /// painting lags behind the pen and how long GUI frames take.
+    /// cargo test --release -p aurastudio -- --ignored pipeline --nocapture
+    #[test]
+    #[ignore]
+    fn pipeline_benchmark() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for radius in [50u32, 250, 500] {
+            let mut d = Document::new(DocId(1), "b", 2048, 2048);
+            d.layers.add_layer("ink");
+            let doc: SharedDoc = Arc::new(Mutex::new(d));
+            let projection = proj(2048, 2048);
+            let pt = Arc::new(PaintThread::spawn(Arc::clone(&projection), |_| {}));
+            let stop = Arc::new(AtomicBool::new(false));
+
+            let gui = {
+                let (doc, projection, stop) = (Arc::clone(&doc), Arc::clone(&projection), Arc::clone(&stop));
+                std::thread::spawn(move || {
+                    let mut screen = vec![0u8; 2048 * 2048 * 4];
+                    let mut frames = Timing::default();
+                    while !stop.load(Ordering::Relaxed) {
+                        let t = Instant::now();
+                        gui_show_painted(&projection, &mut screen);
+                        // UI build: only when the document is free (the app
+                        // reuses the last UI otherwise).
+                        if let Ok(_ui) = doc.try_lock() {
+                            let u = Instant::now();
+                            while u.elapsed() < Duration::from_micros(1500) {}
+                        }
+                        frames.add(t.elapsed());
+                        std::thread::sleep(Duration::from_millis(4));
+                    }
+                    frames
+                })
+            };
+
+            let mut brush = Brush::new();
+            brush.radius = radius;
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, hokusai: false, smoothing: 0.0 });
+            let t0 = Instant::now();
+            let n = 200;
+            for i in 0..n {
+                let t = i as f32 / n as f32;
+                let x = 300.0 + i as f32 * 7.0;
+                let y = 1000.0 + (t * 12.0).sin() * 400.0;
+                pt.send(Cmd::Sample { x, y, pressure: 0.3 + 0.7 * (t * 9.0).sin().abs() });
+                let due = t0 + Duration::from_millis(5 * (i as u64 + 1));
+                while Instant::now() < due { std::thread::sleep(Duration::from_micros(200)); }
+            }
+            let pen_up = Instant::now();
+            pt.send(Cmd::End);
+            while doc.lock().unwrap().history().undo_len() == 0 {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            let lag = pen_up.elapsed();
+            stop.store(true, Ordering::Relaxed);
+            let frames = gui.join().unwrap();
+            println!("radius {radius:>3}: stroke done {:>6.1} ms after pen up | gui frames {}",
+                lag.as_secs_f64() * 1000.0, frames);
+        }
+    }
+
+    /// Same workload, done the way the app worked before the paint thread
+    /// (everything on the UI thread: paint each sample, recomposite the
+    /// accumulated rect every 4 ms, build the UI). Reference for the above.
+    #[test]
+    #[ignore]
+    fn pipeline_benchmark_single_thread_reference() {
+        for radius in [50u32, 250, 500] {
+            let mut d = Document::new(DocId(1), "b", 2048, 2048);
+            d.layers.add_layer("ink");
+            let mut screen = vec![0u8; 2048 * 2048 * 4];
+            let mut brush = Brush::new();
+            brush.radius = radius;
+            d.layers.begin_stroke();
+            let mut pending: Option<Rect> = None;
+            let mut last_frame = Instant::now();
+            let mut frames = Timing::default();
+            let mut last: Option<(f32, f32, f32)> = None;
+            let t0 = Instant::now();
+            let n = 200;
+            for i in 0..n {
+                let t = i as f32 / n as f32;
+                let x = 300.0 + i as f32 * 7.0;
+                let y = 1000.0 + (t * 12.0).sin() * 400.0;
+                let p = 0.3 + 0.7 * (t * 9.0).sin().abs();
+                let (fx, fy, fp) = last.unwrap_or((x, y, p));
+                let mut surface = d.layers.active_surface().unwrap();
+                merge(&mut pending, stroke_line((fx, fy), (x, y), &brush, &mut surface, fp, p));
+                last = Some((x, y, p));
+                if last_frame.elapsed() >= Duration::from_millis(4) {
+                    let f = Instant::now();
+                    if let Some(r) = pending.take() { d.layers.composite_rect_into(&mut screen, r); }
+                    let u = Instant::now();
+                    while u.elapsed() < Duration::from_micros(1500) {}
+                    frames.add(f.elapsed());
+                    last_frame = Instant::now();
+                }
+                let due = t0 + Duration::from_millis(5 * (i as u64 + 1));
+                while Instant::now() < due { std::thread::sleep(Duration::from_micros(200)); }
+            }
+            // Behind schedule = how long after the last pen sample the
+            // painting actually finished.
+            let lag = t0.elapsed().saturating_sub(Duration::from_millis(5 * n as u64));
+            println!("radius {radius:>3}: single-thread reference, lag {:>6.1} ms | ui frames {}",
+                lag.as_secs_f64() * 1000.0, frames);
+        }
+    }
+}
+
+/// GUI side of the benchmark: copy the finished rectangles (stands for the
+/// GPU upload, which copies them into wgpu's staging memory).
+#[cfg(test)]
+#[allow(dead_code)]
+fn gui_show_painted(projection: &SharedProjection, screen: &mut [u8]) {
+    let mut p = projection.lock().unwrap();
+    let w = p.width as usize;
+    for (x0, y0, x1, y1) in p.take_dirty() {
+        for y in y0 as usize..y1 as usize {
+            let a = (y * w + x0 as usize) * 4;
+            let b = (y * w + x1 as usize) * 4;
+            screen[a..b].copy_from_slice(&p.pixels[a..b]);
+        }
     }
 }

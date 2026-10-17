@@ -18,6 +18,8 @@ struct ViewUniform {
     m1:          [f32; 4],
     canvas_size: [f32; 2],
     _pad:        [f32; 2],
+    /// x: display color management on (1) / off (0), y: LUT size.
+    cm:          [f32; 4],
 }
 
 pub struct GpuState {
@@ -37,6 +39,12 @@ pub struct GpuState {
     nearest_bind_group: BindGroup,
     /// Zoom / rotation / pan of the canvas.
     pub view:        CanvasView,
+    /// sRGB -> monitor lookup table, applied to the canvas when
+    /// color_managed is on.
+    lut:             DisplayLut,
+    color_managed:   bool,
+    /// Last UI primitives, redrawn as-is by render_cached_ui.
+    last_ui:         Option<(Vec<egui::ClippedPrimitive>, f32)>,
     view_bind_group: BindGroup,
     canvas_bgl:      BindGroupLayout,
     pub canvas:      Canvas,
@@ -171,7 +179,7 @@ impl GpuState {
                 },
                 BindGroupLayoutEntry {
                     binding:    2,
-                    visibility: ShaderStages::VERTEX,
+                    visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                     ty: BindingType::Buffer {
                         ty:                 BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -179,14 +187,35 @@ impl GpuState {
                     },
                     count: None,
                 },
+                BindGroupLayoutEntry {
+                    binding:    3,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        multisampled:   false,
+                        view_dimension: TextureViewDimension::D3,
+                        sample_type:    TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding:    4,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
+
+        // Display LUT: identity (2^3 corners) until the app sets the real
+        // one, and switched off anyway.
+        let lut = DisplayLut::new(&device, &queue, &IDENTITY_LUT, 2);
 
         let view_uniform = ViewUniform {
             m0: [0.0; 4],
             m1: [0.0; 4],
             canvas_size: [canvas_size.0 as f32, canvas_size.1 as f32],
             _pad: [0.0; 2],
+            cm: [0.0; 4],
         };
 
         let view_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
@@ -241,8 +270,8 @@ impl GpuState {
             min_filter:     FilterMode::Linear,
             ..Default::default()
         });
-        let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &canvas.sampler, &view_buffer);
-        let nearest_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &nearest_sampler, &view_buffer);
+        let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &canvas.sampler, &view_buffer, &lut);
+        let nearest_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &nearest_sampler, &view_buffer, &lut);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -260,6 +289,9 @@ impl GpuState {
             canvas_pipeline, view_buffer, view_bind_group, canvas_bgl,
             nearest_sampler, nearest_bind_group,
             view: CanvasView::default(),
+            last_ui: None,
+            lut,
+            color_managed: false,
             canvas, window,
             egui_ctx, egui_state, egui_renderer,
             viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
@@ -275,14 +307,31 @@ impl GpuState {
         self.device.limits().max_texture_dimension_2d
     }
 
-    /// Replace the canvas texture with a new size. The caller then fills
-    /// `canvas.pixels` (layer composite) and marks it dirty.
+    /// Replace the canvas texture with a new size. The caller then uploads
+    /// the new composite with upload_rect.
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
         self.canvas = Canvas::new(&self.device, &self.queue, width, height);
-        self.view_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.canvas.sampler, &self.view_buffer);
-        self.nearest_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.nearest_sampler, &self.view_buffer);
+        self.rebuild_bind_groups();
         // New canvas: show it whole.
         self.view.fit_to_area();
+    }
+
+    fn rebuild_bind_groups(&mut self) {
+        self.view_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.canvas.sampler, &self.view_buffer, &self.lut);
+        self.nearest_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.nearest_sampler, &self.view_buffer, &self.lut);
+    }
+
+    /// Display color management of the canvas: `lut` is a size^3 RGBA
+    /// table (red fastest) from aurastudio-color, None switches it off.
+    pub fn set_display_lut(&mut self, lut: Option<(&[[f32; 4]], usize)>) {
+        match lut {
+            Some((data, size)) if size >= 2 && data.len() == size * size * size => {
+                self.lut = DisplayLut::new(&self.device, &self.queue, data, size as u32);
+                self.rebuild_bind_groups();
+                self.color_managed = true;
+            }
+            _ => self.color_managed = false,
+        }
     }
 
     fn canvas_size(&self) -> (u32, u32) {
@@ -398,24 +447,18 @@ impl GpuState {
         let (c, a) = (self.canvas_size(), self.viewport);
         self.view.update_fit(c, a);
         let [m0, m1] = self.view.ndc_matrix(c, a);
-        let uniform = ViewUniform { m0, m1, canvas_size: [c.0 as f32, c.1 as f32], _pad: [0.0; 2] };
+        let cm = [if self.color_managed { 1.0 } else { 0.0 }, self.lut.size as f32, 0.0, 0.0];
+        let uniform = ViewUniform { m0, m1, canvas_size: [c.0 as f32, c.1 as f32], _pad: [0.0; 2], cm };
         self.queue.write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
-    pub fn upload_canvas(&mut self) {
-        let Some((x0, y0, x1, y1)) = self.canvas.dirty_rect else { return; };
+    /// Copy `rect` of the composite image `pixels` (canvas-sized RGBA) to
+    /// the canvas texture. wgpu copies the rows straight from `pixels` into
+    /// its staging memory: no intermediate buffer.
+    pub fn upload_rect(&mut self, pixels: &[u8], rect: aurastudio_canvas::Rect) {
+        let (x0, y0, x1, y1) = rect;
         let w = self.canvas.width;
-        let rw = x1 - x0;
-        let rh = y1 - y0;
-
-        // Contiguous upload buffer: only the rows of the dirty rect.
-        let mut buf = Vec::with_capacity((rw * rh * 4) as usize);
-        for y in y0..y1 {
-            let row_start = ((y * w + x0) * 4) as usize;
-            let row_end   = row_start + (rw * 4) as usize;
-            buf.extend_from_slice(&self.canvas.pixels[row_start..row_end]);
-        }
-
+        if x1 <= x0 || y1 <= y0 || x1 > w || y1 > self.canvas.height { return; }
         self.queue.write_texture(
             ImageCopyTexture {
                 texture:   &self.canvas.texture,
@@ -423,63 +466,92 @@ impl GpuState {
                 origin:    Origin3d { x: x0, y: y0, z: 0 },
                 aspect:    TextureAspect::All,
             },
-            &buf,
+            pixels,
             ImageDataLayout {
-                offset:         0,
-                bytes_per_row:  Some(rw * 4),
-                rows_per_image: Some(rh),
+                offset:         ((y0 * w + x0) * 4) as u64,
+                bytes_per_row:  Some(w * 4),
+                rows_per_image: Some(y1 - y0),
             },
-            Extent3d { width: rw, height: rh, depth_or_array_layers: 1 },
+            Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
         );
     }
 
     /// Draw a frame. egui runs first to know how much room the docks take;
     /// the canvas is then drawn only in the remaining area, and the UI on
     /// top of it.
+    /// Draw a frame: canvas, then the UI built by `ui_fn`.
     pub fn render(&mut self, ui_fn: impl FnOnce(&egui::Context)) {
-        let raw_input = self.egui_state.take_egui_input(&self.window);
-        let mut ui_fn = Some(ui_fn);
-        let mut free_rect = None;
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            if let Some(f) = ui_fn.take() { f(ctx); }
-            free_rect = Some(ctx.available_rect());
-        });
-        // When egui wants its next frame: right away (layout not settled,
-        // a click changed something) or later (tooltip, fading notice).
-        // The app schedules it; requesting a redraw from inside a redraw
-        // is dropped by winit, so it can't be done here.
-        self.repaint_delay = full_output.viewport_output.get(&egui::ViewportId::ROOT)
-            .map(|v| v.repaint_delay);
+        self.render_impl(Some(ui_fn));
+    }
 
-        // egui asks for IME (text input) only while a text field is focused.
-        self.text_input_active = full_output.platform_output.ime.is_some();
-        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+    /// Draw a frame reusing the last UI as it was, without running it.
+    /// Used mid-stroke when the document is busy being painted: the canvas
+    /// still updates, and the UI thread never waits for the brush.
+    pub fn render_cached_ui(&mut self) {
+        self.render_impl(None::<fn(&egui::Context)>);
+    }
 
-        let ppp = full_output.pixels_per_point;
-        // The canvas area goes right up to the docks (a zoomed-in canvas
-        // fills it); the fit margin is applied by the view itself.
-        if let Some(r) = free_rect {
-            let (ww, wh) = (self.config.width as f32, self.config.height as f32);
-            let x0 = (r.min.x * ppp).round().clamp(0.0, ww);
-            let y0 = (r.min.y * ppp).round().clamp(0.0, wh);
-            let x1 = (r.max.x * ppp).round().clamp(x0, ww);
-            let y1 = (r.max.y * ppp).round().clamp(y0, wh);
-            self.set_viewport([x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)]);
-        }
+    fn render_impl(&mut self, ui_fn: Option<impl FnOnce(&egui::Context)>) {
+        let mut textures_free = Vec::new();
+        let (tris, ppp) = match ui_fn {
+            Some(f) => {
+                let raw_input = self.egui_state.take_egui_input(&self.window);
+                let mut ui_fn = Some(f);
+                let mut free_rect = None;
+                let full_output = self.egui_ctx.run(raw_input, |ctx| {
+                    if let Some(f) = ui_fn.take() { f(ctx); }
+                    free_rect = Some(ctx.available_rect());
+                });
+                // When egui wants its next frame: right away (layout not
+                // settled, a click changed something) or later (tooltip,
+                // fading notice). The app schedules it; requesting a redraw
+                // from inside a redraw is dropped by winit.
+                self.repaint_delay = full_output.viewport_output.get(&egui::ViewportId::ROOT)
+                    .map(|v| v.repaint_delay);
 
-        if self.canvas.dirty_rect.is_some() {
-            self.upload_canvas();
-            self.canvas.dirty_rect = None;
-        }
+                // egui asks for IME (text input) only while a text field is focused.
+                self.text_input_active = full_output.platform_output.ime.is_some();
+                self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+
+                let ppp = full_output.pixels_per_point;
+                // The canvas area goes right up to the docks (a zoomed-in
+                // canvas fills it); the fit margin is applied by the view.
+                if let Some(r) = free_rect {
+                    let (ww, wh) = (self.config.width as f32, self.config.height as f32);
+                    let x0 = (r.min.x * ppp).round().clamp(0.0, ww);
+                    let y0 = (r.min.y * ppp).round().clamp(0.0, wh);
+                    let x1 = (r.max.x * ppp).round().clamp(x0, ww);
+                    let y1 = (r.max.y * ppp).round().clamp(y0, wh);
+                    self.set_viewport([x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)]);
+                }
+
+                let tris = self.egui_ctx.tessellate(full_output.shapes, ppp);
+                for (id, delta) in &full_output.textures_delta.set {
+                    self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
+                }
+                textures_free = full_output.textures_delta.free;
+                (tris, ppp)
+            }
+            None => match self.last_ui.take() {
+                Some(ui) => ui,
+                None => return,
+            },
+        };
+
         self.write_view_uniform();
 
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(SurfaceError::Lost | SurfaceError::Outdated) => {
                 self.surface.configure(&self.device, &self.config);
+                self.last_ui = Some((tris, ppp));
                 return;
             }
-            Err(e) => { log::error!("Surface error: {e:?}"); return; }
+            Err(e) => {
+                log::error!("Surface error: {e:?}");
+                self.last_ui = Some((tris, ppp));
+                return;
+            }
         };
 
         let view = output.texture.create_view(&TextureViewDescriptor::default());
@@ -514,12 +586,7 @@ impl GpuState {
             pass.draw(0..6, 0..1);
         }
 
-        // --- Passe egui (docks) par-dessus le canvas ---
-        let tris = self.egui_ctx.tessellate(full_output.shapes, ppp);
-        for (id, delta) in &full_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
-        }
-
+        // UI (docks) over the canvas.
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels:    [self.config.width, self.config.height],
             pixels_per_point:  ppp,
@@ -541,9 +608,10 @@ impl GpuState {
             self.egui_renderer.render(&mut pass.forget_lifetime(), &tris, &screen_descriptor);
         }
 
-        for id in &full_output.textures_delta.free {
+        for id in &textures_free {
             self.egui_renderer.free_texture(id);
         }
+        self.last_ui = Some((tris, ppp));
 
         self.queue.submit(std::iter::once(enc.finish()));
         let suboptimal = output.suboptimal;
@@ -568,7 +636,54 @@ impl GpuState {
     }
 }
 
-fn canvas_bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas, sampler: &Sampler, view_buffer: &Buffer) -> BindGroup {
+/// 2x2x2 identity table: each corner maps to itself.
+const IDENTITY_LUT: [[f32; 4]; 8] = [
+    [0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [1.0, 1.0, 0.0, 1.0],
+    [0.0, 0.0, 1.0, 1.0], [1.0, 0.0, 1.0, 1.0], [0.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0],
+];
+
+/// 3D lookup texture (half floats, filterable everywhere) + its sampler.
+struct DisplayLut {
+    _texture: Texture,
+    view:     TextureView,
+    sampler:  Sampler,
+    size:     u32,
+}
+
+impl DisplayLut {
+    fn new(device: &Device, queue: &Queue, data: &[[f32; 4]], size: u32) -> Self {
+        let texture = device.create_texture(&TextureDescriptor {
+            label:           Some("display_lut"),
+            size:            Extent3d { width: size, height: size, depth_or_array_layers: size },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       TextureDimension::D3,
+            format:          TextureFormat::Rgba16Float,
+            usage:           TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        let halfs: Vec<u16> = data.iter().flatten().map(|v| half::f16::from_f32(*v).to_bits()).collect();
+        queue.write_texture(
+            ImageCopyTexture { texture: &texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            bytemuck::cast_slice(&halfs),
+            ImageDataLayout { offset: 0, bytes_per_row: Some(size * 8), rows_per_image: Some(size) },
+            Extent3d { width: size, height: size, depth_or_array_layers: size },
+        );
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&SamplerDescriptor {
+            label:          Some("display_lut_sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter:     FilterMode::Linear,
+            min_filter:     FilterMode::Linear,
+            ..Default::default()
+        });
+        Self { _texture: texture, view, sampler, size }
+    }
+}
+
+fn canvas_bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas, sampler: &Sampler, view_buffer: &Buffer, lut: &DisplayLut) -> BindGroup {
     device.create_bind_group(&BindGroupDescriptor {
         label:   Some("view_bind_group"),
         layout,
@@ -576,6 +691,8 @@ fn canvas_bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas,
             BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&canvas.view) },
             BindGroupEntry { binding: 1, resource: BindingResource::Sampler(sampler) },
             BindGroupEntry { binding: 2, resource: view_buffer.as_entire_binding() },
+            BindGroupEntry { binding: 3, resource: BindingResource::TextureView(&lut.view) },
+            BindGroupEntry { binding: 4, resource: BindingResource::Sampler(&lut.sampler) },
         ],
     })
 }
