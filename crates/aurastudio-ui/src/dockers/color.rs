@@ -1,7 +1,7 @@
 //! Color docker: RGB / HSV gradient sliders behind CSP-like vertical tabs,
 //! a preview swatch and a hex field.
 
-use egui::{vec2, Align, Color32, Sense, Stroke, Ui};
+use egui::{pos2, vec2, Align, Color32, Rect, Sense, Stroke, Ui};
 
 use crate::widgets::*;
 use crate::{theme, Model};
@@ -75,16 +75,17 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
     });
 
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+    {
+        // Swatch + hex field, split by hand so the field never overflows.
         let [r, g, b] = m.brush.color;
         let hex_w = 74.0;
-        let w = (ui.available_width() - hex_w - 4.0).max(40.0);
-        let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
-        ui.painter().rect_filled(rect, 6.0, Color32::from_rgb(r, g, b));
-        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0_f32, theme::BORDER));
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
+        let swatch = Rect::from_min_max(row.min, pos2(row.right() - hex_w - 4.0, row.bottom()));
+        let field = Rect::from_min_max(pos2(row.right() - hex_w, row.top() + 1.0), pos2(row.right(), row.bottom() - 1.0));
+        ui.painter().rect_filled(swatch, 6.0, Color32::from_rgb(r, g, b));
+        ui.painter().rect_stroke(swatch, 6.0, Stroke::new(1.0_f32, theme::BORDER));
 
-        let edit = ui.add_sized(vec2(hex_w, 24.0), egui::TextEdit::singleline(&mut st.hex).horizontal_align(Align::Center));
+        let edit = ui.put(field, egui::TextEdit::singleline(&mut st.hex).horizontal_align(Align::Center));
         if edit.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && edit.has_focus() {
             if let Some(c) = parse_hex(&st.hex) {
                 m.brush.color = c;
@@ -93,7 +94,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         if !edit.has_focus() {
             st.hex = format!("#{r:02X}{g:02X}{b:02X}");
         }
-    });
+    }
 }
 
 fn parse_hex(s: &str) -> Option<[u8; 3]> {

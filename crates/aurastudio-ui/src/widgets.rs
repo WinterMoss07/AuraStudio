@@ -112,48 +112,51 @@ pub fn channel_row(
     display_max: f32,
     color_at: &dyn Fn(f32) -> Color32,
 ) -> bool {
+    // The whole row is allocated at once and split by hand: letting egui
+    // size the number box made each row overflow a little more than the
+    // previous one, so the three bars ended at different x.
+    let gap = 4.0;
+    let (label_w, box_w, h) = (10.0, 36.0, 22.0);
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let label_rect = Rect::from_min_size(row.min, vec2(label_w, 18.0));
+    let box_rect = Rect::from_min_size(pos2(row.right() - box_w, row.top()), vec2(box_w, 20.0));
+    let rect = Rect::from_min_max(pos2(label_rect.right() + gap, row.top()), pos2(box_rect.left() - gap, row.bottom()));
+    let bar = Rect::from_min_size(rect.min, vec2(rect.width(), 14.0));
+
+    ui.put(label_rect, egui::Label::new(egui::RichText::new(label).color(theme::TEXT_WEAK)));
+
     let mut changed = false;
-    ui.horizontal(|ui| {
-        // Tight label and number box: the gradient bar gets the length.
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.add_sized(vec2(10.0, 18.0), egui::Label::new(egui::RichText::new(label).color(theme::TEXT_WEAK)));
-
-        let box_w = 36.0;
-        let bar_w = (ui.available_width() - box_w - ui.spacing().item_spacing.x).max(40.0);
-        let (rect, resp) = ui.allocate_exact_size(vec2(bar_w, 22.0), Sense::click_and_drag());
-        let bar = Rect::from_min_size(rect.min, vec2(rect.width(), 14.0));
-
-        if let Some(p) = resp.interact_pointer_pos() {
-            let t = snap(((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0), display_max);
-            if (t - *value).abs() > f32::EPSILON {
-                *value = t;
-                changed = true;
-            }
-        }
-
-        let painter = ui.painter_at(rect.expand(2.0));
-        paint_gradient(&painter, bar, color_at);
-        painter.rect_stroke(bar, 3.0, Stroke::new(1.0_f32, theme::BORDER));
-
-        // Marker: a thin line on the bar plus a small triangle under it.
-        let x = bar.left() + *value * bar.width();
-        painter.line_segment([pos2(x, bar.top()), pos2(x, bar.bottom())], Stroke::new(2.0_f32, Color32::WHITE));
-        painter.line_segment([pos2(x, bar.top()), pos2(x, bar.bottom())], Stroke::new(0.8_f32, Color32::BLACK));
-        let tip = pos2(x, bar.bottom() + 1.0);
-        let col = if resp.hovered() || resp.dragged() { theme::TEXT } else { theme::TEXT_WEAK };
-        painter.add(Shape::convex_polygon(
-            vec![tip, pos2(x + 4.5, tip.y + 6.0), pos2(x - 4.5, tip.y + 6.0)],
-            col,
-            Stroke::NONE,
-        ));
-
-        let mut shown = (*value * display_max).round() as i32;
-        let dv = egui::DragValue::new(&mut shown).range(0..=display_max as i32).speed(1.0);
-        if ui.add_sized(vec2(box_w, 20.0), dv).changed() {
-            *value = shown as f32 / display_max;
+    let resp = ui.interact(rect, ui.id().with(("channel", label)), Sense::click_and_drag());
+    if let Some(p) = resp.interact_pointer_pos() {
+        let t = snap(((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0), display_max);
+        if (t - *value).abs() > f32::EPSILON {
+            *value = t;
             changed = true;
         }
-    });
+    }
+
+    let painter = ui.painter_at(rect.expand(2.0));
+    paint_gradient(&painter, bar, color_at);
+    painter.rect_stroke(bar, 3.0, Stroke::new(1.0_f32, theme::BORDER));
+
+    // Marker: a thin line on the bar plus a small triangle under it.
+    let x = bar.left() + *value * bar.width();
+    painter.line_segment([pos2(x, bar.top()), pos2(x, bar.bottom())], Stroke::new(2.0_f32, Color32::WHITE));
+    painter.line_segment([pos2(x, bar.top()), pos2(x, bar.bottom())], Stroke::new(0.8_f32, Color32::BLACK));
+    let tip = pos2(x, bar.bottom() + 1.0);
+    let col = if resp.hovered() || resp.dragged() { theme::TEXT } else { theme::TEXT_WEAK };
+    painter.add(Shape::convex_polygon(
+        vec![tip, pos2(x + 4.5, tip.y + 6.0), pos2(x - 4.5, tip.y + 6.0)],
+        col,
+        Stroke::NONE,
+    ));
+
+    let mut shown = (*value * display_max).round() as i32;
+    let dv = egui::DragValue::new(&mut shown).range(0..=display_max as i32).speed(1.0);
+    if ui.put(box_rect, dv).changed() {
+        *value = shown as f32 / display_max;
+        changed = true;
+    }
     changed
 }
 
