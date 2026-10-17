@@ -5,11 +5,16 @@ struct View {
     m1:          vec4<f32>,
     canvas_size: vec2<f32>,
     pad:         vec2<f32>,
+    // Display color management: x = on (1) / off (0), y = LUT size.
+    cm:          vec4<f32>,
 }
 
 @group(0) @binding(0) var t_canvas: texture_2d<f32>;
 @group(0) @binding(1) var s_canvas: sampler;
 @group(0) @binding(2) var<uniform> view: View;
+// sRGB -> monitor lookup table (3D: r, g, b), see aurastudio-color.
+@group(0) @binding(3) var t_lut: texture_3d<f32>;
+@group(0) @binding(4) var s_lut: sampler;
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -33,5 +38,11 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(t_canvas, s_canvas, in.uv);
+    let c = textureSample(t_canvas, s_canvas, in.uv);
+    // Always sampled (WGSL wants samples in uniform control flow); used
+    // only when color management is on. Texel centers: n points span 0..1.
+    let n = max(view.cm.y, 2.0);
+    let uvw = c.rgb * ((n - 1.0) / n) + vec3(0.5 / n);
+    let managed = textureSample(t_lut, s_lut, uvw).rgb;
+    return vec4(select(c.rgb, managed, view.cm.x > 0.5), c.a);
 }

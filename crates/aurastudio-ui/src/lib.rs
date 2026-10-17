@@ -24,6 +24,7 @@ use egui_dock::{DockArea, DockState};
 
 pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
+pub use widgets::set_display_transform;
 
 /// Brush size range, as a diameter in pixels.
 pub const MAX_BRUSH_SIZE: u32 = 1000;
@@ -44,6 +45,11 @@ pub struct Model<'a> {
     /// Current view, for display: zoom (1.0 = 100 %) and angle in degrees.
     pub view_zoom:          f32,
     pub view_angle:         f32,
+    /// Display color management (View menu): on / off, intent, and the
+    /// monitor profile name (None: no profile found, shown as sRGB).
+    pub color_managed:      &'a mut bool,
+    pub perceptual:         &'a mut bool,
+    pub display_profile:    Option<&'a str>,
 }
 
 /// View commands from the View menu (the app also binds them to keys).

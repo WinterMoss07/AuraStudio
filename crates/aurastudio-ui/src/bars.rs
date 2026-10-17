@@ -68,6 +68,17 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate")
                         .small().color(theme::TEXT_WEAK));
                     ui.separator();
+                    // Display color management of the canvas (and color docker).
+                    let profile = m.display_profile.unwrap_or("none found (sRGB)");
+                    ui.label(RichText::new(format!("Monitor profile: {profile}")).small().color(theme::TEXT_WEAK));
+                    ui.add_enabled_ui(m.display_profile.is_some(), |ui| {
+                        ui.checkbox(m.color_managed, "Color-manage canvas");
+                        ui.add_enabled_ui(*m.color_managed, |ui| {
+                            ui.radio_value(m.perceptual, true, "Perceptual");
+                            ui.radio_value(m.perceptual, false, "Relative colorimetric");
+                        });
+                    });
+                    ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();
                         ui.close_menu();

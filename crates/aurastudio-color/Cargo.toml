@@ -1,0 +1,15 @@
+[package]
+name = "aurastudio-color"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+moxcms = "0.9"
+log    = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_ColorSystem",
+] }

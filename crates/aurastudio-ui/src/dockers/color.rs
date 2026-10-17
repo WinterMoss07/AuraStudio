@@ -1,7 +1,7 @@
 //! Color docker: RGB / HSV gradient sliders behind CSP-like vertical tabs,
 //! a preview swatch and a hex field.
 
-use egui::{pos2, vec2, Align, Color32, Rect, Sense, Stroke, Ui};
+use egui::{pos2, vec2, Align, Rect, Sense, Stroke, Ui};
 
 use crate::widgets::*;
 use crate::{theme, Model};
@@ -83,7 +83,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
         let swatch = Rect::from_min_max(row.min, pos2(row.right() - hex_w - 4.0, row.bottom()));
         let field = Rect::from_min_max(pos2(row.right() - hex_w, row.top() + 1.0), pos2(row.right(), row.bottom() - 1.0));
-        ui.painter().rect_filled(swatch, 6.0, Color32::from_rgb(r, g, b));
+        ui.painter().rect_filled(swatch, 6.0, display_color([r, g, b]));
         ui.painter().rect_stroke(swatch, 6.0, Stroke::new(1.0_f32, theme::BORDER));
 
         let edit = ui.put(field, egui::TextEdit::singleline(&mut st.hex).horizontal_align(Align::Center));

@@ -5,6 +5,7 @@ members = [
     "crates/aurastudio-brush",
     "crates/aurastudio-layers",
     "crates/aurastudio-document",
+    "crates/aurastudio-color",
     "crates/aurastudio-input",
     "crates/aurastudio-gpu",
     "crates/aurastudio-ui",

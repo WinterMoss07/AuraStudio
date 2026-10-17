@@ -4,6 +4,8 @@
 
 use egui::{epaint, pos2, vec2, Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui};
 
+use std::sync::{Arc, RwLock};
+
 use crate::theme;
 
 // --- Color math ----------------------------------------------------------
@@ -44,9 +46,30 @@ pub fn hsv_to_rgb([h, s, v]: [f32; 3]) -> [f32; 3] {
     [r + m, g + m, b + m]
 }
 
+/// Color shown on screen for an sRGB color of the image: goes through the
+/// display transform (monitor profile) when color management is on, so
+/// the color docker shows exactly what the canvas will show.
 pub fn rgb_to_color32([r, g, b]: [f32; 3]) -> Color32 {
-    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    Color32::from_rgb(q(r), q(g), q(b))
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    display_color([q(r), q(g), q(b)])
+}
+
+/// sRGB -> monitor conversion for image colors (None = no conversion).
+type DisplayFn = Arc<dyn Fn([u8; 3]) -> [u8; 3] + Send + Sync>;
+static DISPLAY: RwLock<Option<DisplayFn>> = RwLock::new(None);
+
+/// Set by the app from the monitor profile (aurastudio-color).
+pub fn set_display_transform(f: Option<DisplayFn>) {
+    *DISPLAY.write().unwrap() = f;
+}
+
+/// An image color (sRGB) as it must be drawn on this monitor.
+pub fn display_color(rgb: [u8; 3]) -> Color32 {
+    let [r, g, b] = match DISPLAY.read().unwrap().as_ref() {
+        Some(f) => f(rgb),
+        None => rgb,
+    };
+    Color32::from_rgb(r, g, b)
 }
 
 pub fn hsv_to_color32(hsv: [f32; 3]) -> Color32 {

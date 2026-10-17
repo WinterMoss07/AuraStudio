@@ -11,13 +11,14 @@ use winit::{
 };
 
 use aurastudio_brush::Brush;
-use aurastudio_canvas::Rect;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
+use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
 use aurastudio_document::{SharedDoc, Workspace};
 use aurastudio_ui::{Actions, Model, UiState, ViewCmd};
 
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
+use crate::projection::{Projection, SharedProjection};
 
 /// Canvas size at startup; changed afterwards from the Canvas docker.
 const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
@@ -58,6 +59,8 @@ pub struct App {
     /// The document shown, shared with the paint thread.
     doc:    SharedDoc,
     paint:  PaintThread,
+    /// Merged image shown on screen, filled by the paint thread.
+    projection: SharedProjection,
     /// Width / height typed in the Canvas dock, applied by "Resize".
     canvas_edit: (u32, u32),
     ui:          UiState,
@@ -65,6 +68,11 @@ pub struct App {
     is_drawing: bool,
     pressure:   f32,
     modifiers:  ModifiersState,
+    /// Monitor ICC profile (None: not found, treated as sRGB).
+    display_profile: Option<DisplayProfile>,
+    /// Display color management of the canvas (View menu).
+    color_managed: bool,
+    perceptual:    bool,
     /// Space held: a left drag moves the view instead of painting.
     space_down: bool,
     /// View drag in progress, with the last cursor position.
@@ -77,8 +85,8 @@ pub struct App {
     /// Last known cursor position, physical window pixels.
     cursor:     (f32, f32),
 
-    /// Canvas area painted since the last frame, recomposited at render.
-    pending:      Option<Rect>,
+    /// The paint thread updated the projection: upload it next frame.
+    painted:      bool,
     /// A change outside strokes (visibility, opacity, add/remove/clear
     /// layer, resize) needs a full-canvas recomposite.
     layers_dirty: bool,
@@ -96,8 +104,9 @@ impl App {
     pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
         let mut workspace = Workspace::new();
         let doc = workspace.new_document("Untitled", DEFAULT_CANVAS.0, DEFAULT_CANVAS.1);
+        let projection = Arc::new(std::sync::Mutex::new(Projection::new(DEFAULT_CANVAS.0, DEFAULT_CANVAS.1)));
         let worker_proxy = proxy.clone();
-        let paint = PaintThread::spawn(move |e| {
+        let paint = PaintThread::spawn(Arc::clone(&projection), move |e| {
             let _ = worker_proxy.send_event(match e {
                 paint_thread::Event::Painted => AppEvent::Painted,
                 paint_thread::Event::LayerChanged { layer_id } => AppEvent::LayerChanged(layer_id),
@@ -117,19 +126,24 @@ impl App {
             workspace,
             doc,
             paint,
+            projection,
             canvas_edit: DEFAULT_CANVAS,
             ui:          UiState::new(),
 
             is_drawing: false,
             pressure:   1.0,
             modifiers:  ModifiersState::empty(),
+            display_profile: None,
+            color_managed: true,
+            perceptual:    true,
             space_down: false,
             nav:        None,
             pen_active: false,
             cursor:     (0.0, 0.0),
 
-            pending:      None,
-            layers_dirty: false,
+            painted:      false,
+            // Upload the first composite.
+            layers_dirty: true,
             last_frame:   None,
             redraw_wanted: false,
             repaint_at:   None,
@@ -182,6 +196,60 @@ impl App {
             _ => CursorIcon::Default,
         };
         w.set_cursor(icon);
+    }
+
+    /// Win32 window handle, for the monitor profile lookup.
+    fn hwnd(&self) -> Option<isize> {
+        let handle = self.window.as_ref()?.window_handle().ok()?;
+        match handle.as_raw() {
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+            _ => None,
+        }
+    }
+
+    /// Read the profile of the monitor the window is on; rebuild the
+    /// display transform if it changed (startup, window moved to another
+    /// monitor, profile changed in Windows settings).
+    fn refresh_display_profile(&mut self) {
+        let profile = monitor_profile(self.hwnd());
+        if profile == self.display_profile { return; }
+        match &profile {
+            Some(p) => log::info!("monitor profile: {} ({} bytes)", p.name, p.icc.len()),
+            None => log::info!("monitor profile: none found, canvas shown as sRGB"),
+        }
+        self.display_profile = profile;
+        self.apply_color_management();
+    }
+
+    /// Push the sRGB -> monitor transform to the canvas shader and the
+    /// color docker, or switch it off.
+    fn apply_color_management(&mut self) {
+        let intent = if self.perceptual { Intent::Perceptual } else { Intent::RelativeColorimetric };
+        let transform = match (&self.display_profile, self.color_managed) {
+            (Some(p), true) => match DisplayTransform::new(&p.icc, intent) {
+                Ok(t) if t.is_identity() => {
+                    log::info!("color management: monitor profile is sRGB-like, nothing to convert");
+                    None
+                }
+                Ok(t) => {
+                    log::info!("color management: on, {} intent ({} profile)", intent.name(),
+                        if t.matrix_shaper { "matrix/curves" } else { "LUT" });
+                    Some(Arc::new(t))
+                }
+                Err(e) => {
+                    log::warn!("color management off: {e}");
+                    None
+                }
+            },
+            _ => None,
+        };
+        if let Some(gpu) = &mut self.gpu {
+            gpu.set_display_lut(transform.as_ref().map(|t| (t.lut(), LUT_SIZE)));
+        }
+        aurastudio_ui::set_display_transform(transform.map(|t| {
+            Arc::new(move |c: [u8; 3]| t.apply(c)) as Arc<dyn Fn([u8; 3]) -> [u8; 3] + Send + Sync>
+        }));
+        self.request_redraw();
     }
 
     /// Keyboard / menu view commands.
@@ -275,16 +343,9 @@ impl App {
         }
     }
 
-    /// The paint thread changed some area: show it. The layers are only
-    /// recomposited once per displayed frame (in render_frame), not once
-    /// per pen sample: at 200 px that recomposite was most of the cost.
+    /// The paint thread updated the projection: show it.
     fn on_painted(&mut self) {
-        if let Some(r) = self.paint.take_dirty() {
-            self.pending = Some(match self.pending {
-                None    => r,
-                Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
-            });
-        }
+        self.painted = true;
         self.request_redraw();
         self.render_if_due();
     }
@@ -299,7 +360,7 @@ impl App {
     /// own timer rather than waiting for the window system.
     fn render_if_due(&mut self) {
         const MIN_FRAME: Duration = Duration::from_millis(4);
-        if self.pending.is_none() { return; }
+        if !self.painted { return; }
         if self.last_frame.is_some_and(|t| t.elapsed() < MIN_FRAME) { return; }
         self.render_frame();
     }
@@ -308,13 +369,21 @@ impl App {
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
-        if let Some(rect) = self.pending.take() {
-            self.doc.lock().unwrap().layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
-            gpu.canvas.mark_dirty(rect);
+        // Upload what the paint thread merged. Only a copy into wgpu's
+        // staging memory, under the projection's own lock.
+        if std::mem::take(&mut self.painted) {
+            let mut p = self.projection.lock().unwrap();
+            for r in p.take_dirty() {
+                gpu.upload_rect(&p.pixels, r);
+            }
         }
 
         let max_canvas = gpu.max_canvas_size();
         let (view_zoom, view_angle) = (gpu.view.zoom, gpu.view.angle.to_degrees());
+        let (cm_before, perceptual_before) = (self.color_managed, self.perceptual);
+        let color_managed = &mut self.color_managed;
+        let perceptual = &mut self.perceptual;
+        let display_profile = self.display_profile.as_ref().map(|p| p.name.as_str());
         let ui_state   = &mut self.ui;
         let doc        = &self.doc;
         let brush      = &mut self.brush;
@@ -322,10 +391,12 @@ impl App {
         let smoothing  = &mut self.smoothing;
         let canvas_edit = &mut self.canvas_edit;
         let mut actions = Actions::default();
-        gpu.render(|ctx| {
-            // Locked only while the UI is built, not during the GPU submit,
-            // so the paint thread is held up as little as possible.
-            let mut doc = doc.lock().unwrap();
+        // Never wait for the brush: if the paint thread holds the document
+        // (mid-stroke), redraw the canvas with the last UI as it was, and
+        // try the UI again a moment later.
+        let mut doc_busy = false;
+        match doc.try_lock() {
+            Ok(mut doc) => gpu.render(|ctx| {
             let (can_undo, can_redo) = (doc.history().undo_len() > 0, doc.history().redo_len() > 0);
             let mut model = Model {
                 brush,
@@ -336,12 +407,24 @@ impl App {
                 can_redo,
                 view_zoom,
                 view_angle,
+                color_managed,
+                perceptual,
+                display_profile,
                 canvas_edit,
                 max_canvas,
             };
             aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions);
-        });
+            }),
+            Err(_) => {
+                doc_busy = true;
+                gpu.render_cached_ui();
+            }
+        }
         let mut want_frame = false;
+        if doc_busy {
+            let at = Instant::now() + Duration::from_millis(4);
+            self.repaint_at = Some(self.repaint_at.map_or(at, |t| t.min(at)));
+        }
         match gpu.take_repaint_delay() {
             Some(d) if d.is_zero() => want_frame = true,
             // egui says "never" with a huge delay.
@@ -356,23 +439,31 @@ impl App {
         }
         self.last_frame = Some(Instant::now());
 
+        if (self.color_managed, self.perceptual) != (cm_before, perceptual_before) {
+            self.apply_color_management();
+        }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         if actions.undo { self.undo(); }
         if actions.redo { self.redo(); }
         if actions.clear_layer { self.clear_active_layer(); }
         let Some(gpu) = &mut self.gpu else { return };
         if actions.resize_to.is_some() || actions.recomposite || self.layers_dirty {
+            // Layer visibility / opacity / order changed, or new size: merge
+            // everything again (rare, never during a stroke).
             let mut doc = self.doc.lock().unwrap();
+            let mut p = self.projection.lock().unwrap();
             if let Some((w, h)) = actions.resize_to {
                 log::info!("canvas resize: {}x{} -> {w}x{h} (undo history cleared)", doc.layers.width, doc.layers.height);
                 doc.resize(w, h);
+                p.resize(w, h);
                 gpu.resize_canvas(w, h);
                 self.ui.invalidate_all_thumbnails();
             }
             let (w, h) = (doc.layers.width, doc.layers.height);
-            doc.layers.composite_into(&mut gpu.canvas.pixels);
-            gpu.canvas.mark_dirty((0, 0, w, h));
+            doc.layers.composite_into(&mut p.pixels);
+            p.add_dirty((0, 0, w, h));
             self.layers_dirty = false;
+            self.painted = true;
             // Uploaded with the next frame.
             want_frame = true;
         }
@@ -464,6 +555,7 @@ impl ApplicationHandler<AppEvent> for App {
         window.request_redraw();
         self.window = Some(window);
         self.gpu    = Some(gpu);
+        self.refresh_display_profile();
     }
 
     fn window_event(
@@ -504,6 +596,9 @@ impl ApplicationHandler<AppEvent> for App {
             }
 
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+
+            // The window may now be on another monitor (other profile).
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => self.refresh_display_profile(),
 
             WindowEvent::KeyboardInput { event: key, .. } => {
                 // Space is tracked on release too (and even while a field
