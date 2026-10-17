@@ -2,7 +2,7 @@ use std::sync::Arc;
 use wgpu::*;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
-use crate::canvas::Canvas;
+use aurastudio_canvas::Canvas;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]

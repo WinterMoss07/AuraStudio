@@ -1,8 +1,4 @@
 mod app;
-mod brush;
-mod canvas;
-mod gpu;
-mod stylus;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 

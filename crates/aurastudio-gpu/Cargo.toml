@@ -1,0 +1,11 @@
+[package]
+name = "aurastudio-gpu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aurastudio-canvas = { path = "../aurastudio-canvas" }
+wgpu              = "0.20"
+winit             = "0.30"
+bytemuck          = { version = "1", features = ["derive"] }
+log               = "0.4"

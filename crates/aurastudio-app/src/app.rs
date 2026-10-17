@@ -6,11 +6,9 @@ use winit::{
     event_loop::ActiveEventLoop,
     window::{Window, WindowId},
 };
-use crate::{
-    brush::{stroke_line, Brush},
-    gpu::GpuState,
-    stylus::Stylus,
-};
+use aurastudio_brush::{stroke_line, Brush};
+use aurastudio_gpu::GpuState;
+use aurastudio_input::Stylus;
 
 pub struct App {
     window:     Option<Arc<Window>>,

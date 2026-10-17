@@ -1,4 +1,4 @@
-use crate::canvas::{Canvas, Rect};
+use aurastudio_canvas::{Canvas, Rect};
 
 pub struct Brush {
     pub color:   [u8; 3],

@@ -1,6 +1,6 @@
 # Third-party code
 
-## src/stylus.rs — Windows Ink / WinTab input handling
+## crates/aurastudio-input/src/lib.rs — Windows Ink / WinTab input handling
 
 Adapted from `efude-input` (https://github.com/852wa/Efude), © 2026 Hakoniwa.
 Licensed under MIT OR Apache-2.0.
