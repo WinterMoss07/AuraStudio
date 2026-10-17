@@ -160,6 +160,8 @@ impl HokusaiEngine {
         self.blend  = b.blend;
         self.brush.set(BrushSetting::Radius, SettingValue::constant(self.radius.ln()));
         self.brush.set(BrushSetting::Opaque, SettingValue::constant(b.opacity.clamp(0.0, 1.0)));
+        // libmypaint aliases the edge at 1.0; 0.95 keeps it smooth.
+        self.brush.set(BrushSetting::Hardness, SettingValue::constant(b.hardness.clamp(0.02, 0.95)));
     }
 
     /// Dab density along the stroke (libmypaint's dabs_per_actual_radius).

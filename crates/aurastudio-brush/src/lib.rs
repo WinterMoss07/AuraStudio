@@ -9,11 +9,14 @@ pub struct Brush {
     pub radius:  u32,
     /// How the brush color combines with what is already on the layer.
     pub blend:   BlendMode,
+    /// Edge softness, 0..1. 1 = crisp edge (1 px anti-aliasing); lower
+    /// values fade the coverage out from `radius * hardness` to `radius`.
+    pub hardness: f32,
 }
 
 impl Brush {
     pub fn new() -> Self {
-        Self { color: [0, 0, 0], opacity: 1.0, radius: 25, blend: BlendMode::Normal }
+        Self { color: [0, 0, 0], opacity: 1.0, radius: 25, blend: BlendMode::Normal, hardness: 1.0 }
     }
 }
 
@@ -97,6 +100,10 @@ pub fn stroke_line<S: PaintSurface>(
     // compare, before any math, is what keeps 200+ px strokes cheap.
     let seg_max_u8 = (cap_a.max(cap_b) * 255.0).round() as u8;
     let reach2 = (r + 0.5) * (r + 0.5);
+    // Width of the fading edge: at least 1 px (anti-aliasing), up to the
+    // whole radius at hardness 0.
+    let soft = (r * (1.0 - brush.hardness.clamp(0.0, 1.0))).max(1.0);
+    let inv_soft = 1.0 / soft;
 
     for py in y0..y1 {
         let cy = py as f32 + 0.5;
@@ -114,9 +121,10 @@ pub fn stroke_line<S: PaintSurface>(
             let ey = cy - (from.1 + dy * t);
             let d2 = ex * ex + ey * ey;
             if d2 >= reach2 { continue; }
-            // 1 px anti-aliased edge.
-            let edge = (r + 0.5 - d2.sqrt()).clamp(0.0, 1.0);
-            if edge <= 0.0 { continue; }
+            // Fading edge (smoothstep), 1 px wide on a hard brush.
+            let t_edge = ((r + 0.5 - d2.sqrt()) * inv_soft).clamp(0.0, 1.0);
+            if t_edge <= 0.0 { continue; }
+            let edge = if soft > 1.0 { t_edge * t_edge * (3.0 - 2.0 * t_edge) } else { t_edge };
 
             let cov = (cap_a + (cap_b - cap_a) * t) * edge;
             let cov_u8 = (cov * 255.0).round() as u8;
@@ -189,6 +197,19 @@ mod tests {
         stroke_line((64.0, 64.0), (64.0, 64.0), &b, &mut s, 1.0, 1.0);
         let i = ((64 * N + 64) * 4) as usize;
         assert_eq!(&s.px[i..i + 4], &[128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn soft_brush_fades_toward_the_edge() {
+        let mut s = surface([255; 4]);
+        let mut b = Brush::new();
+        b.radius = 40;
+        b.hardness = 0.0;
+        stroke_line((64.0, 64.0), (64.0, 64.0), &b, &mut s, 1.0, 1.0);
+        let (c, mid, out) = (red_at(&s, 64, 64), red_at(&s, 84, 64), red_at(&s, 103, 64));
+        assert!(c < 10, "center {c}");
+        assert!(mid > 90 && mid < 170, "half radius {mid}");
+        assert!(out > 245, "edge {out}");
     }
 
     #[test]
