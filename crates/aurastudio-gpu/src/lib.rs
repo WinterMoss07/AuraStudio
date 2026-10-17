@@ -57,6 +57,7 @@ impl GpuState {
                     label:             None,
                     required_features: Features::empty(),
                     required_limits:   Limits::default(),
+                    memory_hints:      MemoryHints::default(),
                 },
                 None,
             )
@@ -139,13 +140,13 @@ impl GpuState {
             layout: Some(&pipeline_layout),
             vertex: VertexState {
                 module:              &shader,
-                entry_point:         "vs_main",
+                entry_point:         Some("vs_main"),
                 buffers:             &[],
                 compilation_options: PipelineCompilationOptions::default(),
             },
             fragment: Some(FragmentState {
                 module:              &shader,
-                entry_point:         "fs_main",
+                entry_point:         Some("fs_main"),
                 targets:             &[Some(ColorTargetState {
                     format,
                     blend:      Some(BlendState::REPLACE),
@@ -157,6 +158,7 @@ impl GpuState {
             depth_stencil: None,
             multisample:   MultisampleState::default(),
             multiview:     None,
+            cache:         None,
         });
 
         let canvas = Canvas::new(&device, &queue, 2048, 2048);

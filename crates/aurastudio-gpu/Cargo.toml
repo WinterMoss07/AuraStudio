@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 aurastudio-canvas = { path = "../aurastudio-canvas" }
-wgpu              = "0.20"
+wgpu              = "23"
 winit             = "0.30"
 bytemuck          = { version = "1", features = ["derive"] }
 log               = "0.4"
