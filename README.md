@@ -1,81 +1,176 @@
 # AuraStudio
 
-Logiciel de dessin / peinture / animation / BD en Rust, construit from scratch avec une approche "inspired rewrite" (lire la logique de Krita, OpenToonz et PhotoCraft, la réimplémenter proprement en Rust idiomatique — pas de traduction de code).
+An all-in-one drawing, painting, animation and comics application written in
+Rust — from the first line to the final render. Inspired by Krita, OpenToonz
+and Clip Studio Paint, rebuilt from scratch ("inspired rewrite": we study how
+those apps work, then write our own idiomatic Rust instead of translating
+their code).
 
-Objectif : un brush engine simple et intuitif à la CSP/Procreate, sans la complexité inutile du brush engine de Krita.
+The guiding rule is the opposite of bloated paint software: every brick is
+measured before the next one starts — memory, latency, CPU at idle — and the
+UI stays quiet so the painting gets the room.
 
-## Stack technique
+> Status: early but usable for painting tests. Windows is the main target
+> (pen input via WinTab / Windows Ink); Linux and macOS build and run with
+> mouse / touch input.
 
-| Composant | Choix |
+---
+
+## What works today
+
+### Painting
+- **Round pen** — a continuous swept stroke (no dabs, so no rings), with
+  pressure-driven opacity, hardness (crisp to fully soft edge), per-brush blend
+  mode and distance-based pressure smoothing. No build-up within one stroke
+  (crossing a 20 % stroke at 30 % gives 30 %, like Krita / CSP).
+- **MyPaint brushes** — 196 brushes bundled (David Revoy, Ramón Miranda,
+  Tanda, the classic MyPaint set…, all CC0), painted natively through
+  [hokusai](https://crates.io/crates/hokusai) (a Rust port of libmypaint):
+  the stroke works on tiles loaded from the layer, so smudge, blender, eraser
+  and textured brushes behave as in MyPaint.
+- **Import** — `.myb` files or whole folders of them (Brushes docker →
+  Import…); they are copied into the user's data folder and come back at the
+  next launch.
+- **Per-brush settings** — each brush keeps its own size, opacity, hardness,
+  blend mode and smoothing (CSP style). The color is global.
+- **13 blend modes** (W3C formulas, sRGB space like Photoshop / Krita / CSP)
+  for brushes and layers.
+- **Brush outline cursor** — the OS arrow is replaced by an outline the size
+  of the brush at the current zoom (crosshair when tiny), drawn on the GPU so
+  it follows the pen even while the UI is busy.
+
+### Layers & document
+- Layer tree with **folders** (Pass Through or isolated with a blend mode),
+  visibility, opacity, **lock** (inherited by folder content), duplicate,
+  reorder in / out of folders, rename (double-click).
+- **Undo / redo** (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z) for strokes and layer
+  clear. A step only stores the rectangle a stroke touched, LZ4-compressed,
+  with a memory budget (512 MB per document by default).
+- **Documents** — `aurastudio-document` holds several open documents, each
+  with its own layers and history (the UI shows one for now).
+- Canvas size presets / custom size, content kept centered.
+
+### Viewing
+- **Zoom, pan, rotation** on the GPU; the pen goes through the exact inverse
+  transform, so strokes land under the pen at any zoom or angle. Sharp pixels
+  from 200 %.
+- **Display color management** — the monitor's ICC profile (the one Windows
+  assigns to it) is read and applied to the canvas and the color docker with a
+  3D lookup table on the GPU (moxcms; perceptual or relative colorimetric).
+  The UI itself is not converted.
+
+### Interface (egui + egui_dock)
+- Neutral dark theme (strictly R = G = B grays), Photoshop-like tool options
+  bar, CSP-like dock column: Color (RGB / HSV gradient sliders, hex field),
+  Tool options, Brushes, Layers, Canvas. Docks can be rearranged, resized and
+  detached.
+
+### Performance architecture
+- **Paint thread** — brushes paint on their own thread (one thread per
+  stroke, never split: see `paint_thread.rs`); the UI thread only reads the
+  pen and shows results. Undo / redo / clear go through the same queue, so
+  Ctrl+Z right after lifting the pen undoes that very stroke.
+- **Projection off the UI thread** (Krita's model): the paint thread merges
+  the changed areas into the projection; the UI thread only copies the
+  changed rectangles to the GPU. Changed areas travel as a list of rectangles,
+  never one growing bounding box. The UI never waits for the brush (it
+  redraws the canvas with the last UI when the document is busy).
+- **Round pen at 1000 px**: ~0.7 ms per pen sample at steady pressure, ~1.7 ms
+  with constantly varying pressure (benchmark below).
+- **Idle = 0 % CPU**: frames are only drawn when something changes.
+- Low-latency presentation (Mailbox / Immediate, one frame in flight).
+
+---
+
+## Controls
+
+| Action | Input |
 |---|---|
-| Fenêtre + events | `winit` 0.30 |
-| Rendu GPU | `wgpu` 0.20, backend **Vulkan** sur Windows/Linux, **Metal** sur macOS |
-| Input stylet (Windows) | Hook natif `WM_POINTER` via `windows-rs` (bypass de l'API Touch de winit) |
-| Build / CI | GitHub Actions, 100% en ligne, rien installé en local |
-
-## Discipline de travail
-
-Chaque brique doit être solide et mesurée avant de passer à la suivante. Checklist de validation :
-- Mémoire GPU stable, pas de fuite
-- 60 fps constant
-- Pas d'allocation par frame
-- Latence stroke la plus faible possible
-
-Contre-exemple à ne pas reproduire : PhotoCraft qui pèse 1,5 Go en mémoire pour un canvas vide.
+| Paint | pen / left mouse |
+| Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
+| Clear layer | Delete |
+| Zoom | mouse wheel (toward the cursor), `+` / `-` |
+| 100 % / fit | `1` / `2` |
+| Pan | Space + drag, or middle-button drag |
+| Rotate | Shift + Space + drag, or Shift + middle drag; `4` / `6` = ±15°, `5` = reset |
 
 ---
 
-## Ce qui a été fait
+## Building and running
 
-### Brique 1 — Fenêtre + GPU ✓
-- Fenêtre winit qui s'ouvre, resize propre, 60fps
-- `ControlFlow::Wait` + redraw uniquement sur event → **0% CPU au repos**
-- Backend Vulkan explicite → **~150 Mo RAM** à vide (vs ~400 Mo en DX12)
-- Build release ~8,5 Mo, aucune dépendance externe (tout statiquement lié)
+```
+cargo run --release
+```
 
-### Brique 2 — Canvas GPU ✓
-- Texture 2048×2048 RGBA8, centrée et proportionnée via un uniform buffer (`canvas_size` / `window_size`) dans le shader WGSL
-- S'adapte proprement au resize de la fenêtre
+The CI (`.github/workflows/build.yml`) builds Windows, Linux and macOS
+binaries on every push.
 
-### Brique 3 — Brush engine basique (en cours)
-- Brush rond, rayon fixe 25px, opacité réglable (pas encore de hardness ni de taille dynamique)
-- `stroke_line` interpole entre deux positions pour éviter les trous pendant un mouvement rapide
-- **Dirty rect** : on n'upload vers le GPU que la zone réellement modifiée par le trait, pas tout le canvas (passage de 16 Mo/event à quelques Ko/event) → latence divisée par ~25%
+Environment variables (for testing and comparisons):
 
-### Brique 4 — Input stylet natif WM_POINTER (vient d'être codée, pas encore testée)
-- Constat : l'API `Touch`/`Force` standard de winit n'est pas conçue pour du stylet haute fréquence → pression saccadée, latence visible (~3-4 cm sur écran 14")
-- Même limitation documentée côté PhotoCraft (pression Windows uniquement, macOS/Linux bloqués par winit) et historiquement chez Blender
-- Solution : hook direct de la `wndproc` Windows (`SetWindowLongPtrW`) + lecture brute de `WM_POINTERDOWN/UPDATE/UP` via `GetPointerPenInfo`, en bypassant complètement winit pour cette partie
-- **Module `stylus.rs` totalement indépendant** : il ne connaît ni le brush, ni le canvas, ni wgpu — il expose juste des `StylusEvent { x, y, pressure, phase }`. `app.rs` fait la colle. Objectif : pouvoir retoucher n'importe quelle brique dans 6 mois sans casser les autres.
-- Sur macOS/Linux : stub vide, fallback sur le `Touch` winit standard (même limite que PhotoCraft)
+| Variable | Effect |
+|---|---|
+| `RUST_LOG=info` (default) | log: GPU, pen backend, monitor profile, per-stroke timings |
+| `AURASTUDIO_BACKEND=dx12\|vulkan\|metal\|gl` | force a GPU backend |
+| `AURASTUDIO_PRESENT=mailbox\|immediate\|fifo` | force a present mode |
+| `AURASTUDIO_DISPLAY_ICC=<file.icc>` | use this monitor profile instead of the system's |
+| `AURASTUDIO_BRUSH_DIR=<folder>` | where imported brushes are kept |
 
----
+Benchmarks:
 
-## Prochaines étapes
-
-### 1. Valider et stabiliser la brique stylet (priorité immédiate)
-- Builder, tester sous Windows, corriger les erreurs de compilation `windows-rs` probables (API bas niveau jamais compilée localement)
-- Mesurer : latence visuelle, fluidité de la pression, comportement avec Windows Ink activé ou désactivé côté pilote Wacom
-- Objectif de validation : latence quasi imperceptible, pression fluide sans saccade
-
-### 2. Brush engine v2
-- Hardness (dureté du bord du brush)
-- Taille dynamique (liée à la pression ou réglable)
-- Pool de dabs pré-alloué pour éviter toute allocation pendant le trait
-
-### 3. Système de calques
-- Composite GPU uniquement (pas de copie CPU)
-- Dirty flag par calque (ne recomposer que ce qui a changé)
-- Undo/redo en delta, pas en snapshot complet
-
-### Plus tard
-- Color picker RGB/HSV (via egui une fois intégré)
-- Arc/curve tool, caméra d'animation, fill gap avancé (inspirés du cahier des charges Krita/OpenToonz initial)
+```
+cargo run --release -p aurastudio-brush  --example bench_stroke      # brush cost per sample
+BENCH_PRESSURE=steady BENCH_RADIUS=500 ...                            # filters
+cargo run --release -p aurastudio-layers --example bench_composite   # layer merge cost
+cargo test  --release -p aurastudio -- --ignored pipeline --nocapture # paint thread + UI model
+cargo run --release -p aurastudio-brush  --example myb_sheet -- out.png a.myb b.myb  # MyPaint sample sheet
+```
 
 ---
 
-## Notes de workflow
+## Code layout
 
-- Tout le code est édité et commité directement sur GitHub.com (`Create new file` / éditeur web), aucun outil installé en local
-- Chaque modification déclenche un build GitHub Actions sur Ubuntu, Windows et macOS en parallèle (`fail-fast: false`)
-- Chaque commit a un nom court (< 50 caractères) décrivant précisément le changement
+| Crate | Role |
+|---|---|
+| `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
+| `aurastudio-brush` | brush engines: round pen, dab round (hokusai "wash"), native MyPaint |
+| `aurastudio-brushes` | brush library: built-in presets, bundled MyPaint collection, import |
+| `aurastudio-layers` | layer tree, folders, lock, compositing |
+| `aurastudio-document` | documents, workspace, undo history |
+| `aurastudio-color` | monitor ICC profile, sRGB → display transform (3D LUT) |
+| `aurastudio-gpu` | wgpu renderer: canvas, view transform, color LUT, brush outline, egui |
+| `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
+| `aurastudio-ui` | egui interface: bars, one file per docker, theme, widgets |
+| `aurastudio-app` | the application: event loop, paint thread, projection |
+
+Data crates (layers, brushes, document…) know nothing about the UI.
+See `NOTICE.md` for third-party code and assets.
+
+---
+
+## To check / next steps
+
+**To verify on a real machine (Windows + pen)**
+- [ ] Display color management with the real monitor profile: are grays now
+      neutral? (log line `monitor profile: …`; toggle in the View menu)
+- [ ] Round pen at 1000 px on an A4 300 dpi canvas: per-stroke log lines
+      (`stroke: … paint avg …`, `max queued`).
+- [ ] Rotation with the pen (Shift + Space + drag).
+- [ ] MyPaint brushes: smudge / blender behavior, speed-dependent brushes
+      (they now get the pen's own timestamps).
+- [ ] Brush import dialog (files and folder) and that imports come back at
+      the next launch.
+
+**Missing / planned**
+- [ ] Save / open documents (own format, PNG / PSD / ORA export).
+- [ ] Undo for structural layer changes (add, delete, move, opacity…) and
+      canvas resize (history is cleared today).
+- [ ] Persist per-brush settings and UI layout between sessions.
+- [ ] Brush editor (MyPaint settings and curves); brush tilt / rotation input
+      (WinTab orientation is already read).
+- [ ] Document tabs (the workspace already handles several documents).
+- [ ] Faster MyPaint compositing for very large brushes; mipmaps for zoomed
+      out views.
+- [ ] Selection tools, transform, fill, eraser tool mode, color picker.
+- [ ] Rooms / workspaces (painting, animation…) with lazy loading.
+- [ ] Animation timeline (OpenToonz-inspired), comics panels.
+- [ ] Native pen input on macOS / Linux (today: winit touch events).
