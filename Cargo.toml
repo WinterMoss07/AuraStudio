@@ -1,0 +1,29 @@
+[package]
+name = "aurastudio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit             = "0.30"
+wgpu              = "0.20"
+pollster          = "0.3"
+bytemuck          = { version = "1", features = ["derive"] }
+env_logger        = "0.11"
+log               = "0.4"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+crossbeam-queue = "0.3"
+
+[profile.release]
+opt-level      = 3
+lto            = true
+codegen-units  = 1
