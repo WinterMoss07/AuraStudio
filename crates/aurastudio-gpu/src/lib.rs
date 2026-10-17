@@ -1,18 +1,23 @@
+mod view;
+pub use view::{wrap_angle, CanvasView, FIT_MARGIN};
+
 use std::sync::Arc;
 use wgpu::*;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use aurastudio_canvas::Canvas;
 
-/// Free space kept around the canvas inside the area left by the docks
-/// (logical points), so the canvas floats on the backdrop like in Procreate.
-const CANVAS_MARGIN: f32 = 24.0;
+/// From this zoom up, canvas pixels are shown as sharp squares (nearest
+/// sampling) instead of being blurred, like Krita / CSP close up.
+const NEAREST_FROM_ZOOM: f32 = 2.0;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ViewUniform {
+    m0:          [f32; 4],
+    m1:          [f32; 4],
     canvas_size: [f32; 2],
-    window_size: [f32; 2],
+    _pad:        [f32; 2],
 }
 
 pub struct GpuState {
@@ -27,6 +32,11 @@ pub struct GpuState {
     repaint_delay:   Option<std::time::Duration>,
     canvas_pipeline: RenderPipeline,
     view_buffer:     Buffer,
+    nearest_sampler: Sampler,
+    /// Same as view_bind_group with nearest sampling, for strong zoom.
+    nearest_bind_group: BindGroup,
+    /// Zoom / rotation / pan of the canvas.
+    pub view:        CanvasView,
     view_bind_group: BindGroup,
     canvas_bgl:      BindGroupLayout,
     pub canvas:      Canvas,
@@ -173,8 +183,10 @@ impl GpuState {
         });
 
         let view_uniform = ViewUniform {
+            m0: [0.0; 4],
+            m1: [0.0; 4],
             canvas_size: [canvas_size.0 as f32, canvas_size.1 as f32],
-            window_size: [size.width as f32, size.height as f32],
+            _pad: [0.0; 2],
         };
 
         let view_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
@@ -221,7 +233,16 @@ impl GpuState {
         });
 
         let canvas = Canvas::new(&device, &queue, canvas_size.0, canvas_size.1);
-        let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &view_buffer);
+        let nearest_sampler = device.create_sampler(&SamplerDescriptor {
+            label:          Some("canvas_sampler_nearest"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            mag_filter:     FilterMode::Nearest,
+            min_filter:     FilterMode::Linear,
+            ..Default::default()
+        });
+        let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &canvas.sampler, &view_buffer);
+        let nearest_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &nearest_sampler, &view_buffer);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -237,6 +258,8 @@ impl GpuState {
         Self {
             surface, device, queue, config,
             canvas_pipeline, view_buffer, view_bind_group, canvas_bgl,
+            nearest_sampler, nearest_bind_group,
+            view: CanvasView::default(),
             canvas, window,
             egui_ctx, egui_state, egui_renderer,
             viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
@@ -256,11 +279,47 @@ impl GpuState {
     /// `canvas.pixels` (layer composite) and marks it dirty.
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
         self.canvas = Canvas::new(&self.device, &self.queue, width, height);
-        self.view_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.view_buffer);
-        // Force the view uniform (canvas size) to be rewritten.
-        let vp = self.viewport;
-        self.viewport = [-1.0; 4];
-        self.set_viewport(vp);
+        self.view_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.canvas.sampler, &self.view_buffer);
+        self.nearest_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.nearest_sampler, &self.view_buffer);
+        // New canvas: show it whole.
+        self.view.fit_to_area();
+    }
+
+    fn canvas_size(&self) -> (u32, u32) {
+        (self.canvas.width, self.canvas.height)
+    }
+
+    /// Window position (physical pixels) -> canvas pixel, through the
+    /// current zoom / rotation / pan. Not clamped: off-canvas is fine.
+    pub fn screen_to_canvas(&self, pos: (f32, f32)) -> (f32, f32) {
+        self.view.screen_to_canvas(pos, self.canvas_size(), self.viewport)
+    }
+
+    /// Center of the canvas area (pivot for keyboard zoom / rotation).
+    pub fn view_center(&self) -> (f32, f32) {
+        let [x, y, w, h] = self.viewport;
+        (x + w / 2.0, y + h / 2.0)
+    }
+
+    pub fn view_zoom_at(&mut self, factor: f32, pivot: (f32, f32)) {
+        let (c, a) = (self.canvas_size(), self.viewport);
+        self.view.zoom_at(factor, pivot, c, a);
+    }
+
+    pub fn view_set_zoom(&mut self, zoom: f32, pivot: (f32, f32)) {
+        let (c, a) = (self.canvas_size(), self.viewport);
+        self.view.set_zoom(zoom, pivot, c, a);
+    }
+
+    pub fn view_rotate_at(&mut self, delta: f32, pivot: (f32, f32)) {
+        let (c, a) = (self.canvas_size(), self.viewport);
+        self.view.rotate_at(delta, pivot, c, a);
+    }
+
+    pub fn view_reset_rotation(&mut self) {
+        let (c, a, pivot) = (self.canvas_size(), self.viewport, self.view_center());
+        let back = -self.view.angle;
+        self.view.rotate_at(back, pivot, c, a);
     }
 
     /// True while egui holds the pointer (dragging a dock tab, a slider,
@@ -331,12 +390,15 @@ impl GpuState {
     }
 
     fn set_viewport(&mut self, vp: [f32; 4]) {
-        if vp == self.viewport { return; }
         self.viewport = vp;
-        let uniform = ViewUniform {
-            canvas_size: [self.canvas.width as f32, self.canvas.height as f32],
-            window_size: [vp[2], vp[3]],
-        };
+    }
+
+    /// Upload the view transform for this frame (48 bytes).
+    fn write_view_uniform(&mut self) {
+        let (c, a) = (self.canvas_size(), self.viewport);
+        self.view.update_fit(c, a);
+        let [m0, m1] = self.view.ndc_matrix(c, a);
+        let uniform = ViewUniform { m0, m1, canvas_size: [c.0 as f32, c.1 as f32], _pad: [0.0; 2] };
         self.queue.write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
@@ -394,7 +456,9 @@ impl GpuState {
         self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
 
         let ppp = full_output.pixels_per_point;
-        if let Some(r) = free_rect.map(|r| r.shrink(CANVAS_MARGIN)) {
+        // The canvas area goes right up to the docks (a zoomed-in canvas
+        // fills it); the fit margin is applied by the view itself.
+        if let Some(r) = free_rect {
             let (ww, wh) = (self.config.width as f32, self.config.height as f32);
             let x0 = (r.min.x * ppp).round().clamp(0.0, ww);
             let y0 = (r.min.y * ppp).round().clamp(0.0, wh);
@@ -407,6 +471,7 @@ impl GpuState {
             self.upload_canvas();
             self.canvas.dirty_rect = None;
         }
+        self.write_view_uniform();
 
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
@@ -444,7 +509,8 @@ impl GpuState {
             let [vx, vy, vw, vh] = self.viewport;
             pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
             pass.set_pipeline(&self.canvas_pipeline);
-            pass.set_bind_group(0, &self.view_bind_group, &[]);
+            let bind = if self.view.zoom >= NEAREST_FROM_ZOOM { &self.nearest_bind_group } else { &self.view_bind_group };
+            pass.set_bind_group(0, bind, &[]);
             pass.draw(0..6, 0..1);
         }
 
@@ -502,13 +568,13 @@ impl GpuState {
     }
 }
 
-fn canvas_bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas, view_buffer: &Buffer) -> BindGroup {
+fn canvas_bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas, sampler: &Sampler, view_buffer: &Buffer) -> BindGroup {
     device.create_bind_group(&BindGroupDescriptor {
         label:   Some("view_bind_group"),
         layout,
         entries: &[
             BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&canvas.view) },
-            BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&canvas.sampler) },
+            BindGroupEntry { binding: 1, resource: BindingResource::Sampler(sampler) },
             BindGroupEntry { binding: 2, resource: view_buffer.as_entire_binding() },
         ],
     })

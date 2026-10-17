@@ -1,6 +1,10 @@
+// Canvas quad, placed by the view transform (zoom, rotation, pan).
 struct View {
+    // Rows of the canvas-pixel -> NDC affine matrix (xyz used).
+    m0:          vec4<f32>,
+    m1:          vec4<f32>,
     canvas_size: vec2<f32>,
-    window_size: vec2<f32>,
+    pad:         vec2<f32>,
 }
 
 @group(0) @binding(0) var t_canvas: texture_2d<f32>;
@@ -14,26 +18,15 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
-    let cw = view.canvas_size.x;
-    let ch = view.canvas_size.y;
-    let ww = view.window_size.x;
-    let wh = view.window_size.y;
-
-    let scale = min(ww / cw, wh / ch);
-    let nx = (cw * scale) / ww;
-    let ny = (ch * scale) / wh;
-
-    var pos = array<vec2<f32>, 6>(
-        vec2(-nx, -ny), vec2( nx, -ny), vec2(-nx,  ny),
-        vec2(-nx,  ny), vec2( nx, -ny), vec2( nx,  ny),
-    );
+    // Two triangles covering the canvas, in canvas pixels.
     var uv = array<vec2<f32>, 6>(
-        vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(0.0, 0.0),
-        vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0),
+        vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),
+        vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0),
     );
+    let p = vec3(uv[vi] * view.canvas_size, 1.0);
 
     var out: VertexOutput;
-    out.pos = vec4(pos[vi], 0.0, 1.0);
+    out.pos = vec4(dot(view.m0.xyz, p), dot(view.m1.xyz, p), 0.0, 1.0);
     out.uv  = uv[vi];
     return out;
 }
