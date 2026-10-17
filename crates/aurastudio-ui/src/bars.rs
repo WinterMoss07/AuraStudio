@@ -5,7 +5,7 @@ use egui::{Align, Frame, Layout, Margin, RichText};
 
 use crate::dockers::{self, layers, Tab};
 use crate::widgets::{opacity_slider, size_slider};
-use crate::{theme, Actions, Model, Notice, UiState};
+use crate::{theme, Actions, Model, Notice, UiState, ViewCmd};
 
 pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut Actions) {
     egui::TopBottomPanel::top("menu_bar")
@@ -16,6 +16,16 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                 ui.label(RichText::new("AuraStudio").strong().color(theme::TEXT));
                 ui.add_space(8.0);
 
+                ui.menu_button("Edit", |ui| {
+                    if ui.add_enabled(m.can_undo, egui::Button::new("Undo").shortcut_text("Ctrl+Z")).clicked() {
+                        a.undo = true;
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(m.can_redo, egui::Button::new("Redo").shortcut_text("Ctrl+Y")).clicked() {
+                        a.redo = true;
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("Layer", |ui| {
                     if ui.button("New layer").clicked() { layers::new_layer(m, a); ui.close_menu(); }
                     if ui.button("New folder").clicked() { layers::new_folder(m, a); ui.close_menu(); }
@@ -25,7 +35,8 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         ui.close_menu();
                     }
                     if ui.add(egui::Button::new("Clear").shortcut_text("Del")).clicked() {
-                        layers::clear_layer(&mut state.layers, &mut state.notice, m, a);
+                        // Done by the app (undoable, after any stroke in progress).
+                        a.clear_layer = true;
                         ui.close_menu();
                     }
                     if ui.button("Delete").clicked() {
@@ -40,6 +51,23 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     }
                 });
                 ui.menu_button("View", |ui| {
+                    for (label, key, cmd) in [
+                        ("Zoom in", "+", ViewCmd::ZoomIn),
+                        ("Zoom out", "-", ViewCmd::ZoomOut),
+                        ("Actual size (100 %)", "1", ViewCmd::ActualSize),
+                        ("Fit to window", "2", ViewCmd::Fit),
+                        ("Rotate left 15°", "4", ViewCmd::RotateLeft),
+                        ("Rotate right 15°", "6", ViewCmd::RotateRight),
+                        ("Reset rotation", "5", ViewCmd::ResetRotation),
+                    ] {
+                        if ui.add(egui::Button::new(label).shortcut_text(key)).clicked() {
+                            a.view = Some(cmd);
+                            ui.close_menu();
+                        }
+                    }
+                    ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate")
+                        .small().color(theme::TEXT_WEAK));
+                    ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();
                         ui.close_menu();
@@ -48,9 +76,12 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let n = m.layers.layer_count();
+                    // Angle shown only when the canvas is turned.
+                    let angle = if m.view_angle.abs() >= 0.05 { format!("  ·  {:.0}°", m.view_angle) } else { String::new() };
                     ui.label(RichText::new(format!(
-                        "{} × {} px  ·  {} layer{}",
-                        m.layers.width, m.layers.height, n, if n > 1 { "s" } else { "" }
+                        "{} × {} px  ·  {} layer{}  ·  {:.0} %{}",
+                        m.layers.width, m.layers.height, n, if n > 1 { "s" } else { "" },
+                        m.view_zoom * 100.0, angle,
                     )).small().color(theme::TEXT_WEAK));
                 });
             });

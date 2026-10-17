@@ -22,4 +22,5 @@ egui-wgpu = "0.30"
 egui = "0.30"
 egui-winit = "0.30"
 aurastudio-layers = { version = "0.1.0", path = "../aurastudio-layers" }
+aurastudio-document = { path = "../aurastudio-document" }
 aurastudio-ui = { version = "0.1.0", path = "../aurastudio-ui" }

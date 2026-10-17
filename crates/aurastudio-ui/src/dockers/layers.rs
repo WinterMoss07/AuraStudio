@@ -80,15 +80,6 @@ pub fn new_folder(m: &mut Model, a: &mut Actions) {
     a.recomposite = true;
 }
 
-pub fn clear_layer(st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
-    if m.layers.clear_active() {
-        st.invalidate(m.layers.active_id());
-        a.recomposite = true;
-    } else {
-        notice.set("Layer is locked or is a folder");
-    }
-}
-
 pub fn delete_layer(notice: &mut Notice, m: &mut Model, a: &mut Actions) {
     if m.layers.remove_active() {
         a.recomposite = true;

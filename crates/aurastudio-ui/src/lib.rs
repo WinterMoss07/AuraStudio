@@ -38,7 +38,17 @@ pub struct Model<'a> {
     /// Width / height typed in the Canvas dock, applied by "Resize".
     pub canvas_edit:        &'a mut (u32, u32),
     pub max_canvas:         u32,
+    /// The document's history has something to undo / redo.
+    pub can_undo:           bool,
+    pub can_redo:           bool,
+    /// Current view, for display: zoom (1.0 = 100 %) and angle in degrees.
+    pub view_zoom:          f32,
+    pub view_angle:         f32,
 }
+
+/// View commands from the View menu (the app also binds them to keys).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewCmd { ZoomIn, ZoomOut, ActualSize, Fit, RotateLeft, RotateRight, ResetRotation }
 
 /// What the app must do after the UI ran.
 #[derive(Default)]
@@ -47,6 +57,11 @@ pub struct Actions {
     /// a stroke: recomposite the whole canvas.
     pub recomposite: bool,
     pub resize_to:   Option<(u32, u32)>,
+    pub undo:        bool,
+    pub redo:        bool,
+    /// Clear the active layer (the app does it, undoable).
+    pub clear_layer: bool,
+    pub view:        Option<ViewCmd>,
 }
 
 /// Short message shown in the options bar for a few seconds
