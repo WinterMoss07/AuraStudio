@@ -5,13 +5,18 @@
 //! sRGB-encoded values, not linearized), so we composite directly in
 //! sRGB with no gamma conversion.
 //!
-//! Opacity model (same as Krita / CSP with build-up off, and as our
-//! simple brush): within ONE stroke, each pixel keeps the MAXIMUM coverage
-//! any dab gave it, never the sum. Pressing at 20% with pure black gives
-//! 20% gray; crossing the same stroke at 30% gives 30%, not 20+30.
-//! A new stroke is painted over the previous ones as usual. libmypaint's
-//! default (dabs alpha-blended over each other, airbrush-like build-up)
-//! is not what we want here, so `MaxStrokeSurface` replaces the blend.
+//! Opacity model: Krita's "wash" mode (alpha darken composite op).
+//! Within ONE stroke, the dab's opacity (brush opacity × pressure) is a
+//! CEILING: a pixel never gets more opaque than the strongest dab that
+//! covered it, so pressing at 20% with pure black gives 20% gray and
+//! crossing the same stroke at 30% gives 30%, not 20+30. The dab's shape
+//! (hardness, anti-aliased edge) only sets how far a pixel moves toward
+//! that ceiling. A new stroke is painted over the previous ones as usual.
+//!
+//! A plain per-pixel max was tried first: it showed every dab's circular
+//! edge as rings / darker blotches whenever pressure varied along the
+//! stroke. libmypaint's own default (normal blend of dab over dab) builds
+//! up like an airbrush, which is not wanted either.
 //!
 //! Each sample, only the tiles touched are recomposited:
 //! layer pixels = stroke_base (the layer before the stroke) + stroke tiles.
@@ -29,21 +34,23 @@ use hokusai::tile::{TilePixels, TILE_SIZE};
 use hokusai::tile_mem::MemSurface;
 use hokusai::{BrushInput, BrushSetting, BrushState, TiledSurface};
 
-use crate::Brush;
+use crate::{Brush, PressureSmoother};
 
-/// Stroke coverage surface with "max" accumulation.
+/// Stroke coverage surface with alpha-darken ("wash") accumulation.
 ///
 /// Every dab is first rendered alone by hokusai's own `draw_dab_default`
-/// into an empty scratch tile (so hardness, anti-aliasing, aspect ratio
-/// all match libmypaint exactly), then merged into `stroke` keeping, per
-/// pixel, whichever of the two has the higher alpha.
-struct MaxStrokeSurface {
+/// into an empty scratch tile, so hardness, anti-aliasing and aspect ratio
+/// match libmypaint exactly. That scratch alpha is `mask × opaque`; we
+/// split it back into the dab mask (0..1) and its opacity ceiling, then
+/// merge into `stroke` with Krita's alpha darken:
+///   if dst_alpha < ceiling: dst_alpha += (ceiling - dst_alpha) × mask
+struct WashStrokeSurface {
     stroke:  MemSurface,
     scratch: MemSurface,
     dirty:   HashSet<(i32, i32)>,
 }
 
-impl MaxStrokeSurface {
+impl WashStrokeSurface {
     fn new() -> Self {
         Self { stroke: MemSurface::new(), scratch: MemSurface::new(), dirty: HashSet::new() }
     }
@@ -53,7 +60,7 @@ impl MaxStrokeSurface {
     }
 }
 
-impl TiledSurface for MaxStrokeSurface {
+impl TiledSurface for WashStrokeSurface {
     fn tile_request_start(&mut self, tx: i32, ty: i32) -> &mut TilePixels {
         self.dirty.insert((tx, ty));
         self.stroke.tile_request_start(tx, ty)
@@ -78,13 +85,31 @@ impl TiledSurface for MaxStrokeSurface {
         let painted = draw_dab_default(&mut self.scratch, dab);
         let touched = self.scratch.end_atomic();
 
+        let ceiling = dab.opaque.clamp(0.0, 1.0);
+        if ceiling <= 0.0 {
+            return painted;
+        }
+        let one = fix15::from_f32(1.0) as f32;
+        let cap = ceiling * one;
+
         for (tx, ty) in touched {
             let src = self.scratch.tile_request_start(tx, ty);
             let dst = self.stroke.tile_request_start(tx, ty);
             for (src_row, dst_row) in src.iter_mut().zip(dst.iter_mut()) {
                 for (s, d) in src_row.iter_mut().zip(dst_row.iter_mut()) {
-                    if s[3] > d[3] {
-                        *d = *s;
+                    let sa = s[3] as f32;
+                    if sa > 0.0 {
+                        let da = d[3] as f32;
+                        if da < cap {
+                            let mask  = (sa / cap).min(1.0);
+                            let new_a = da + (cap - da) * mask;
+                            // Straight dab color, re-premultiplied by the
+                            // new alpha (the color is constant per stroke).
+                            for c in 0..3 {
+                                d[c] = (s[c] as f32 / sa * new_a).round() as u16;
+                            }
+                            d[3] = new_a.round() as u16;
+                        }
                     }
                     // Leave the scratch tile empty for the next dab.
                     *s = [0; 4];
@@ -99,8 +124,10 @@ impl TiledSurface for MaxStrokeSurface {
 pub struct HokusaiEngine {
     brush:     hokusai::Brush,
     state:     BrushState,
-    stroke:    MaxStrokeSurface,
+    stroke:    WashStrokeSurface,
     last_time: Option<Instant>,
+    radius:    f32,
+    pub smoother: PressureSmoother,
 }
 
 impl HokusaiEngine {
@@ -108,8 +135,10 @@ impl HokusaiEngine {
         Self {
             brush: base_brush(),
             state: BrushState::default(),
-            stroke: MaxStrokeSurface::new(),
+            stroke: WashStrokeSurface::new(),
             last_time: None,
+            radius: 25.0,
+            smoother: PressureSmoother::new(0.5),
         }
     }
 
@@ -125,15 +154,23 @@ impl HokusaiEngine {
         self.brush.set(BrushSetting::ColorS, SettingValue::constant(hsv.s));
         self.brush.set(BrushSetting::ColorV, SettingValue::constant(hsv.v));
         // libmypaint stores the radius as a natural log.
-        self.brush.set(BrushSetting::Radius, SettingValue::constant((b.radius.max(1) as f32).ln()));
+        self.radius = b.radius.max(1) as f32;
+        self.brush.set(BrushSetting::Radius, SettingValue::constant(self.radius.ln()));
         self.brush.set(BrushSetting::Opaque, SettingValue::constant(b.opacity.clamp(0.0, 1.0)));
     }
 
+    /// Dab density along the stroke (libmypaint's dabs_per_actual_radius).
+    pub fn set_dabs_per_radius(&mut self, dabs: f32) {
+        self.brush.set(BrushSetting::DabsPerActualRadius, SettingValue::constant(dabs.max(1.0)));
+    }
+
     pub fn begin_stroke(&mut self) {
-        self.stroke    = MaxStrokeSurface::new();
+        self.stroke    = WashStrokeSurface::new();
         self.state     = BrushState::default();
         self.last_time = None;
+        self.smoother.reset();
     }
+
 
     /// One pointer sample, in canvas coordinates. hokusai interpolates the
     /// dabs between two samples itself.
@@ -141,6 +178,7 @@ impl HokusaiEngine {
         let now   = Instant::now();
         let dtime = self.last_time.map(|t| (now - t).as_secs_f64()).unwrap_or(0.0);
         self.last_time = Some(now);
+        let pressure = self.smoother.apply(x, y, pressure, self.radius);
 
         self.stroke.begin_atomic();
         self.brush.stroke_to(&mut self.state, &mut self.stroke, x, y, pressure, 0.0, 0.0, dtime);
@@ -213,12 +251,11 @@ fn base_brush() -> hokusai::Brush {
     let mut b = hokusai::Brush::new();
     b.set(BrushSetting::Hardness, SettingValue::constant(0.9));
     b.set(BrushSetting::AntiAliasing, SettingValue::constant(1.0));
-    // Dab spacing. With max accumulation, sparse dabs only show as a
-    // slightly scalloped edge on big sizes; 6 per radius keeps it smooth.
+    // Dab spacing: 6 per radius keeps big strokes' edges smooth.
     b.set(BrushSetting::DabsPerActualRadius, SettingValue::constant(6.0));
     // No opaque_linearize: it lowers each dab's alpha to compensate for
-    // dabs piling up, but with max accumulation they don't pile up, so it
-    // would only make the stroke lighter than the requested opacity.
+    // dabs piling up, but the wash ceiling already prevents piling up, so
+    // it would only make the stroke lighter than the requested opacity.
     b.set(BrushSetting::OpaqueLinearize, SettingValue::constant(0.0));
     // Opacity = brush opacity × pen pressure (linear).
     b.set(
