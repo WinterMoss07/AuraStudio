@@ -31,6 +31,9 @@ pub struct App {
     /// plutôt que le composite_rect_into local fait pendant un trait.
     layers_dirty: bool,
     stats:        StrokeStats,
+    /// Canvas area painted since the last frame, recomposited at render.
+    pending:      Option<aurastudio_canvas::Rect>,
+    last_frame:   Option<std::time::Instant>,
     hokusai:      HokusaiEngine,
     /// true = moteur hokusai (libmypaint), false = brush rond simple.
     use_hokusai:  bool,
@@ -57,6 +60,8 @@ impl Default for App {
             stylus:       None,
             layers_dirty: false,
             stats:        StrokeStats::default(),
+            pending:      None,
+            last_frame:   None,
             hokusai:      HokusaiEngine::new(),
             use_hokusai:  false,
             pen_active:   false,
@@ -95,7 +100,7 @@ impl App {
 
     fn end_stroke(&mut self) {
         if self.stats.paint.count > 0 {
-            log::info!("stroke: {} samples | paint+composite {} | frame {}",
+            log::info!("stroke: {} samples | paint {} | frame (composite+render) {}",
                 self.stats.paint.count, self.stats.paint, self.stats.frame);
         }
         self.stats = StrokeStats::default();
@@ -109,12 +114,64 @@ impl App {
 
     /// Recompose uniquement le rectangle touché (pas tout le canvas)
     /// dans le buffer GPU, puis marque la zone dirty pour upload.
+    /// Record that `rect` of the active layer changed. The layers are only
+    /// recomposited once per displayed frame (in render_frame), not once
+    /// per pen sample: at 200 px that recomposite was most of the cost.
     fn present_rect(&mut self, rect: Option<aurastudio_canvas::Rect>) {
-        let (Some(rect), Some(gpu)) = (rect, self.gpu.as_mut()) else { return };
-        self.layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
-        gpu.canvas.mark_dirty(rect);
+        let Some(r) = rect else { return };
+        self.pending = Some(match self.pending {
+            None    => r,
+            Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
+        });
         if let Some(w) = &self.window {
             w.request_redraw();
+        }
+        self.render_if_due();
+    }
+
+    /// Render now if a frame is pending and the last one is old enough.
+    ///
+    /// We can't rely on RedrawRequested alone while drawing: on Windows it
+    /// comes from WM_PAINT, which the OS only sends once the message queue
+    /// is empty. With big brushes each pen packet takes a few ms, packets
+    /// keep arriving, the queue never empties and nothing was displayed
+    /// until the pen was lifted. Krita likewise refreshes the canvas on its
+    /// own timer rather than waiting for the window system.
+    fn render_if_due(&mut self) {
+        const MIN_FRAME: std::time::Duration = std::time::Duration::from_millis(4);
+        if self.pending.is_none() { return; }
+        if self.last_frame.is_some_and(|t| t.elapsed() < MIN_FRAME) { return; }
+        self.render_frame();
+    }
+
+    fn render_frame(&mut self) {
+        let Some(gpu) = &mut self.gpu else { return };
+        let t0 = std::time::Instant::now();
+
+        if let Some(rect) = self.pending.take() {
+            self.layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
+            gpu.canvas.mark_dirty(rect);
+        }
+
+        let brush       = &mut self.brush;
+        let layers      = &mut self.layers;
+        let use_hokusai = &mut self.use_hokusai;
+        let mut changed = false;
+        gpu.render(|ctx| {
+            color_picker_panel(ctx, brush, use_hokusai);
+            changed = layers_panel(ctx, layers);
+        });
+        if self.is_drawing {
+            self.stats.frame.add(t0.elapsed());
+        }
+        self.last_frame = Some(std::time::Instant::now());
+
+        if changed || self.layers_dirty {
+            self.layers.composite_into(&mut gpu.canvas.pixels);
+            gpu.canvas.mark_dirty((0, 0, CANVAS_SIZE, CANVAS_SIZE));
+            self.layers_dirty = false;
+            // Uploaded with the next frame.
+            if let Some(w) = &self.window { w.request_redraw(); }
         }
     }
 
@@ -274,30 +331,7 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::RedrawRequested => {
-                if let Some(gpu) = &mut self.gpu {
-                    let brush       = &mut self.brush;
-                    let layers      = &mut self.layers;
-                    let use_hokusai = &mut self.use_hokusai;
-                    let mut changed = false;
-                    let t0 = std::time::Instant::now();
-                    gpu.render(|ctx| {
-                        color_picker_panel(ctx, brush, use_hokusai);
-                        changed = layers_panel(ctx, layers);
-                    });
-                    if self.is_drawing {
-                        self.stats.frame.add(t0.elapsed());
-                    }
-
-                    if changed || self.layers_dirty {
-                        self.layers.composite_into(&mut gpu.canvas.pixels);
-                        gpu.canvas.mark_dirty((0, 0, CANVAS_SIZE, CANVAS_SIZE));
-                        self.layers_dirty = false;
-                        // Le composite sera uploadé à la frame suivante.
-                        if let Some(w) = &self.window { w.request_redraw(); }
-                    }
-                }
-            }
+            WindowEvent::RedrawRequested => self.render_frame(),
 
             _ => {}
         }
