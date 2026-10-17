@@ -89,9 +89,20 @@ pub fn stroke_line<S: PaintSurface>(
     let sw = surface.width() as usize;
     let (pixels, stroke_base, stroke_mask) = surface.surfaces_mut();
 
+    // Big brushes: consecutive segments overlap almost entirely, so most
+    // pixels of this segment were already painted at (or above) its
+    // highest opacity by the previous ones. Skipping them with one byte
+    // compare, before any math, is what keeps 200+ px strokes cheap.
+    let seg_max_u8 = (cap_a.max(cap_b) * 255.0).round() as u8;
+    let reach2 = (r + 0.5) * (r + 0.5);
+
     for py in y0..y1 {
         let cy = py as f32 + 0.5;
+        let row = py as usize * sw;
         for px in x0..x1 {
+            let pidx = row + px as usize;
+            if stroke_mask[pidx] >= seg_max_u8 { continue; }
+
             let cx = px as f32 + 0.5;
             // Closest point on the segment, and where along it (0..1).
             let t = if len2 > 0.0 {
@@ -99,14 +110,14 @@ pub fn stroke_line<S: PaintSurface>(
             } else { 0.0 };
             let ex = cx - (from.0 + dx * t);
             let ey = cy - (from.1 + dy * t);
-            let dist = (ex * ex + ey * ey).sqrt();
+            let d2 = ex * ex + ey * ey;
+            if d2 >= reach2 { continue; }
             // 1 px anti-aliased edge.
-            let edge = (r + 0.5 - dist).clamp(0.0, 1.0);
+            let edge = (r + 0.5 - d2.sqrt()).clamp(0.0, 1.0);
             if edge <= 0.0 { continue; }
 
             let cov = (cap_a + (cap_b - cap_a) * t) * edge;
             let cov_u8 = (cov * 255.0).round() as u8;
-            let pidx = py as usize * sw + px as usize;
             if cov_u8 <= stroke_mask[pidx] { continue; }
             stroke_mask[pidx] = cov_u8;
 
