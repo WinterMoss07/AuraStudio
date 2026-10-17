@@ -1,10 +1,10 @@
 //! The two bars at the top: the menu bar, and the Photoshop-like tool
-//! options bar under it (size, opacity, blend mode of the current tool).
+//! options bar under it (size and opacity of the current tool).
 
 use egui::{Align, Frame, Layout, Margin, RichText};
 
 use crate::dockers::{self, layers, Tab};
-use crate::widgets::{blend_combo, opacity_slider, size_slider};
+use crate::widgets::{opacity_slider, size_slider};
 use crate::{theme, Actions, Model, Notice, UiState};
 
 pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut Actions) {
@@ -73,10 +73,6 @@ pub fn options_bar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model) {
 
                 ui.label(RichText::new("Opacity").color(theme::TEXT_WEAK));
                 opacity_slider(ui, m.brush);
-                ui.add_space(6.0);
-
-                ui.label(RichText::new("Mode").color(theme::TEXT_WEAK));
-                blend_combo(ui, "brush_blend_bar", &mut m.brush.blend, 110.0);
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if let Some((text, left)) = notice.current() {

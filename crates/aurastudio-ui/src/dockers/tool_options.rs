@@ -22,6 +22,17 @@ pub fn show(ui: &mut Ui, m: &mut Model) {
     full(ui);
     opacity_slider(ui, m.brush);
 
+    label(ui, "Hardness");
+    full(ui);
+    let mut hard = (m.brush.hardness * 100.0).round() as u32;
+    if ui.add(egui::Slider::new(&mut hard, 0..=100).suffix(" %"))
+        .on_hover_text("100 % = crisp edge. Lower values fade the edge out toward the center.")
+        .changed()
+    {
+        m.brush.hardness = hard as f32 / 100.0;
+    }
+
+    // Per-brush setting (CSP): it will be saved with each brush preset.
     label(ui, "Blend mode");
     let w = ui.available_width();
     blend_combo(ui, "brush_blend_dock", &mut m.brush.blend, w);

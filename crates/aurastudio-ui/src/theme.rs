@@ -13,9 +13,10 @@ pub const SURFACE:      Color32 = Color32::from_rgb(0x25, 0x25, 0x27);
 pub const WIDGET:       Color32 = Color32::from_rgb(0x39, 0x39, 0x3c);
 pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x44, 0x44, 0x48);
 pub const BORDER:       Color32 = Color32::from_rgb(0x3b, 0x3b, 0x3e);
-/// Selection accent: a gray-leaning cyan blue.
-pub const ACCENT:       Color32 = Color32::from_rgb(0x6c, 0xa4, 0xb6);
-pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x3c, 0x56, 0x60);
+/// Selection accent: a soft, slightly grayed blue (halfway between the
+/// first blue and a cyan).
+pub const ACCENT:       Color32 = Color32::from_rgb(0x6d, 0x99, 0xda);
+pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x33, 0x45, 0x5e);
 pub const TEXT:         Color32 = Color32::from_rgb(0xe2, 0xe2, 0xe3);
 pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0x98, 0x98, 0x9c);
 

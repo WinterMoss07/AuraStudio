@@ -37,7 +37,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
     }
 
     ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().item_spacing.x = 6.0;
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             if vertical_tab(ui, "RGB", st.mode == Mode::Rgb).clicked() { st.mode = Mode::Rgb; }
@@ -45,7 +45,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         });
 
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.spacing_mut().item_spacing.y = 5.0;
             match st.mode {
                 Mode::Hsv => {
                     let [h, s, v] = st.hsv;

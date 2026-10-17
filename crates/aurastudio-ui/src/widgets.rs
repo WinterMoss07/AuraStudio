@@ -115,15 +115,19 @@ pub fn channel_row(
     // The whole row is allocated at once and split by hand: letting egui
     // size the number box made each row overflow a little more than the
     // previous one, so the three bars ended at different x.
-    let gap = 4.0;
-    let (label_w, box_w, h) = (10.0, 36.0, 22.0);
+    let gap = 7.0;
+    let (label_w, box_w, h, bar_h) = (12.0, 38.0, 24.0, 14.0);
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    let label_rect = Rect::from_min_size(row.min, vec2(label_w, 18.0));
-    let box_rect = Rect::from_min_size(pos2(row.right() - box_w, row.top()), vec2(box_w, 20.0));
+    // Label and number box are centered on the bar, not on the row (the
+    // marker triangle hangs under the bar).
+    let bar_cy = row.top() + bar_h / 2.0;
+    let label_rect = Rect::from_center_size(pos2(row.left() + label_w / 2.0, bar_cy), vec2(label_w, 16.0));
+    let box_rect = Rect::from_center_size(pos2(row.right() - box_w / 2.0, bar_cy), vec2(box_w, 20.0));
     let rect = Rect::from_min_max(pos2(label_rect.right() + gap, row.top()), pos2(box_rect.left() - gap, row.bottom()));
-    let bar = Rect::from_min_size(rect.min, vec2(rect.width(), 14.0));
+    let bar = Rect::from_min_size(rect.min, vec2(rect.width(), bar_h));
 
-    ui.put(label_rect, egui::Label::new(egui::RichText::new(label).color(theme::TEXT_WEAK)));
+    ui.painter().text(label_rect.center(), egui::Align2::CENTER_CENTER, label,
+        egui::FontId::proportional(12.0), theme::TEXT_WEAK);
 
     let mut changed = false;
     let resp = ui.interact(rect, ui.id().with(("channel", label)), Sense::click_and_drag());
