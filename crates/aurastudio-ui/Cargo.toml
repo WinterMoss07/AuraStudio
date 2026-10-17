@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 aurastudio-brush  = { path = "../aurastudio-brush" }
+aurastudio-brushes = { path = "../aurastudio-brushes" }
 aurastudio-canvas = { version = "0.1.0", path = "../aurastudio-canvas" }
 aurastudio-layers = { path = "../aurastudio-layers" }
 egui      = "0.30"

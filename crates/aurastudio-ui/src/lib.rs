@@ -18,6 +18,7 @@ mod widgets;
 use std::time::{Duration, Instant};
 
 use aurastudio_brush::Brush;
+use aurastudio_brushes::Preset;
 use aurastudio_layers::LayerStack;
 use egui::Frame;
 use egui_dock::{DockArea, DockState};
@@ -31,8 +32,11 @@ pub const MAX_BRUSH_SIZE: u32 = 1000;
 
 /// Everything the UI may edit this frame.
 pub struct Model<'a> {
+    /// Settings of the selected brush (the color is global).
     pub brush:              &'a mut Brush,
-    pub use_hokusai:        &'a mut bool,
+    /// Brush presets (Brushes docker) and the selected one.
+    pub presets:            &'a [Preset],
+    pub preset:             &'a mut usize,
     /// Pressure smoothing distance, as a fraction of the brush radius.
     pub pressure_smoothing: &'a mut f32,
     pub layers:             &'a mut LayerStack,
@@ -68,7 +72,12 @@ pub struct Actions {
     /// Clear the active layer (the app does it, undoable).
     pub clear_layer: bool,
     pub view:        Option<ViewCmd>,
+    /// Open a file dialog to import MyPaint brushes.
+    pub import_brushes: Option<ImportBrushes>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportBrushes { Files, Folder }
 
 /// Short message shown in the options bar for a few seconds
 /// ("Layer is locked"...).
@@ -101,6 +110,7 @@ pub struct UiState {
     notice:        Notice,
     color:         dockers::color::ColorState,
     layers:        dockers::layers::LayersState,
+    brushes:       dockers::brushes::BrushesState,
 }
 
 impl Default for UiState {
@@ -116,6 +126,7 @@ impl UiState {
             notice:        Notice::default(),
             color:         Default::default(),
             layers:        Default::default(),
+            brushes:       Default::default(),
         }
     }
 
@@ -162,6 +173,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
             let mut viewer = dockers::Viewer {
                 color:  &mut state.color,
                 layers: &mut state.layers,
+                brushes: &mut state.brushes,
                 notice: &mut state.notice,
                 m:      model,
                 a:      actions,

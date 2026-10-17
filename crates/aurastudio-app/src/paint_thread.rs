@@ -31,7 +31,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, PressureSmoother};
+use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, MyPaintEngine, PressureSmoother};
+use aurastudio_brushes::Engine;
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
 
@@ -42,8 +43,9 @@ use crate::projection::{add_rect, SharedProjection};
 const UPDATE_PERIOD: Duration = Duration::from_millis(8);
 
 pub enum Cmd {
-    /// Start a stroke on the active layer of `doc` with these settings.
-    Begin { doc: SharedDoc, brush: Brush, hokusai: bool, smoothing: f32 },
+    /// Start a stroke on the active layer of `doc` with these settings and
+    /// this engine (from the selected brush preset).
+    Begin { doc: SharedDoc, brush: Brush, engine: Engine, smoothing: f32 },
     /// One pen sample: canvas coordinates, pressure, pen time in seconds.
     Sample { x: f32, y: f32, pressure: f32, time: f64 },
     End,
@@ -108,8 +110,10 @@ struct Worker {
     notify:   Box<dyn Fn(Event) + Send>,
 
     brush:    Brush,
+    engine:   Engine,
     hokusai:  HokusaiEngine,
-    use_hokusai: bool,
+    /// Engine of the current MyPaint stroke (built from its preset).
+    mypaint:  Option<MyPaintEngine>,
     smoother: PressureSmoother,
     /// The stroke started on a paintable layer.
     active:   bool,
@@ -131,8 +135,9 @@ impl Worker {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
             brush: Brush::new(),
+            engine: Engine::RoundPen,
             hokusai: HokusaiEngine::new(),
-            use_hokusai: false,
+            mypaint: None,
             smoother: PressureSmoother::new(0.5),
             active: false,
             layer: 0,
@@ -161,7 +166,7 @@ impl Worker {
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
                 match cmd {
-                    Cmd::Begin { doc, brush, hokusai, smoothing } => {
+                    Cmd::Begin { doc, brush, engine, smoothing } => {
                         // A stroke still open (its End never came, e.g. the
                         // window lost focus): finish it first, so it is
                         // recorded for undo like any other.
@@ -172,7 +177,7 @@ impl Worker {
                             }
                         }
                         self.doc = Some(doc);
-                        if self.with_doc(|w, d| w.begin(d, brush, hokusai, smoothing)) == Some(false) {
+                        if self.with_doc(|w, d| w.begin(d, brush, engine, smoothing)) == Some(false) {
                             events.push(Event::Notice("Layer is locked or is a folder"));
                         }
                     }
@@ -276,7 +281,7 @@ impl Worker {
 
     /// Start a stroke on the active layer. False if it can't be painted
     /// (locked, or a folder is selected).
-    fn begin(&mut self, doc: &mut Document, brush: Brush, hokusai: bool, smoothing: f32) -> bool {
+    fn begin(&mut self, doc: &mut Document, brush: Brush, engine: Engine, smoothing: f32) -> bool {
         self.last = None;
         self.stroke_rect = None;
         self.stats = Stats::default();
@@ -286,14 +291,24 @@ impl Worker {
         if !self.active { return false; }
 
         self.brush = brush;
-        self.use_hokusai = hokusai;
         self.smoother.span = smoothing;
         self.smoother.reset();
-        if hokusai {
-            self.hokusai.smoother.span = smoothing;
-            self.hokusai.sync_from(&self.brush);
-            self.hokusai.begin_stroke();
+        self.mypaint = None;
+        match &engine {
+            Engine::RoundPen => {}
+            Engine::DabRound => {
+                self.hokusai.smoother.span = smoothing;
+                self.hokusai.sync_from(&self.brush);
+                self.hokusai.begin_stroke();
+            }
+            Engine::MyPaint(preset) => {
+                let mut e = MyPaintEngine::new((**preset).clone());
+                e.sync_from(&self.brush);
+                e.begin_stroke();
+                self.mypaint = Some(e);
+            }
         }
+        self.engine = engine;
         true
     }
 
@@ -311,14 +326,21 @@ impl Worker {
             self.active = false;
             return None;
         };
-        let rect = if self.use_hokusai {
-            self.last = Some((x, y, pressure));
-            self.hokusai.stroke_to(&mut surface, x, y, pressure, time)
-        } else {
-            let p = self.smoother.apply(x, y, pressure, self.brush.radius as f32);
-            let (fx, fy, fp) = self.last.unwrap_or((x, y, p));
-            self.last = Some((x, y, p));
-            stroke_line((fx, fy), (x, y), &self.brush, &mut surface, fp, p)
+        let rect = match (&self.engine, &mut self.mypaint) {
+            (Engine::MyPaint(_), Some(e)) => {
+                self.last = Some((x, y, pressure));
+                e.stroke_to(&mut surface, x, y, pressure, time)
+            }
+            (Engine::DabRound, _) => {
+                self.last = Some((x, y, pressure));
+                self.hokusai.stroke_to(&mut surface, x, y, pressure, time)
+            }
+            _ => {
+                let p = self.smoother.apply(x, y, pressure, self.brush.radius as f32);
+                let (fx, fy, fp) = self.last.unwrap_or((x, y, p));
+                self.last = Some((x, y, p));
+                stroke_line((fx, fy), (x, y), &self.brush, &mut surface, fp, p)
+            }
         };
         self.stats.paint.add(t0.elapsed());
         rect
@@ -334,11 +356,16 @@ impl Worker {
         let id = self.layer;
         let same_size = (doc.layers.width, doc.layers.height) == self.size;
         let mut rect = None;
-        if self.use_hokusai && was_active {
+        if was_active {
             if let Some(mut surface) = doc.layers.layer_surface(id) {
-                rect = self.hokusai.end_stroke(&mut surface);
+                rect = match (&self.engine, &mut self.mypaint) {
+                    (Engine::MyPaint(_), Some(e)) => e.end_stroke(&mut surface),
+                    (Engine::DabRound, _) => self.hokusai.end_stroke(&mut surface),
+                    _ => None,
+                };
             }
         }
+        self.mypaint = None;
         merge(&mut self.stroke_rect, rect);
         // After a resize the snapshot no longer matches: nothing to record.
         if !same_size { self.stroke_rect = None; }
@@ -420,7 +447,7 @@ mod tests {
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, hokusai: false, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y, pressure: 1.0, time: 0.0 });
         pt.send(Cmd::Sample { x: 50.0, y, pressure: 1.0, time: 0.01 });
         pt.send(Cmd::End);
@@ -476,7 +503,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, hokusai: false, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y: 30.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
         // The user selects another layer while the stroke goes on.
@@ -496,7 +523,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), hokusai: false, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::RoundPen, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         stroke(&pt, &doc, 40.0);
         drop(pt);
@@ -511,7 +538,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, hokusai: false, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
         {
@@ -582,7 +609,7 @@ mod tests {
 
             let mut brush = Brush::new();
             brush.radius = radius;
-            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, hokusai: false, smoothing: 0.0 });
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
             let t0 = Instant::now();
             let n = 200;
             for i in 0..n {

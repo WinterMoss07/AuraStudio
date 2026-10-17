@@ -105,7 +105,8 @@ pub fn options_bar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model) {
         .frame(Frame::none().fill(theme::PANEL).inner_margin(Margin::symmetric(10.0, 0.0)))
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.label(RichText::new(if *m.use_hokusai { "hokusai brush" } else { "Round pen" }).strong());
+                let name = m.presets.get(*m.preset).map(|p| p.name.as_str()).unwrap_or("Brush");
+                ui.label(RichText::new(name).strong());
                 ui.separator();
 
                 ui.label(RichText::new("Size").color(theme::TEXT_WEAK));
