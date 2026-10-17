@@ -5,7 +5,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, WindowEvent},
-    event_loop::ActiveEventLoop,
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
@@ -20,7 +20,16 @@ use aurastudio_ui::{Actions, Model, UiState};
 /// Canvas size at startup; changed afterwards from the Canvas docker.
 const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
 
+/// Message the app posts to its own event loop.
+#[derive(Debug, Clone, Copy)]
+pub enum AppEvent {
+    /// Wake the loop so about_to_wait runs and requests the wanted frame.
+    Wake,
+}
+
 pub struct App {
+    /// Posts AppEvent::Wake (set by main before running the loop).
+    pub proxy:    Option<EventLoopProxy<AppEvent>>,
     window: Option<Arc<Window>>,
     gpu:    Option<GpuState>,
     stylus: Option<Stylus>,
@@ -55,12 +64,18 @@ pub struct App {
     /// layer, resize) needs a full-canvas recomposite.
     layers_dirty: bool,
     last_frame:   Option<Instant>,
+    /// A frame is needed. The actual window redraw request is made in
+    /// about_to_wait: winit drops requests made while handling a redraw.
+    redraw_wanted: bool,
+    /// Delayed frame asked by egui (tooltip, notice fade-out).
+    repaint_at:   Option<Instant>,
     stats:        StrokeStats,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
+            proxy:  None,
             window: None,
             gpu:    None,
             stylus: None,
@@ -83,6 +98,8 @@ impl Default for App {
             pending:      None,
             layers_dirty: false,
             last_frame:   None,
+            redraw_wanted: false,
+            repaint_at:   None,
             stats:        StrokeStats::default(),
         }
     }
@@ -105,8 +122,23 @@ impl App {
         Some(((wx - offset_x) / scale, (wy - offset_y) / scale))
     }
 
-    fn request_redraw(&self) {
-        if let Some(w) = &self.window { w.request_redraw(); }
+    /// Ask for a frame. The window redraw request itself is made in
+    /// about_to_wait: one made while handling a redraw is dropped (Windows
+    /// validates the window after WM_PAINT; X11 has already chosen how long
+    /// to sleep). Posting Wake makes sure the loop gets there right away.
+    fn request_redraw(&mut self) {
+        if !self.redraw_wanted {
+            self.redraw_wanted = true;
+            if let Some(p) = &self.proxy { let _ = p.send_event(AppEvent::Wake); }
+        }
+    }
+
+    /// Sleep until the next OS event, or until egui's delayed repaint.
+    fn schedule(&self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(match self.repaint_at {
+            Some(t) => ControlFlow::WaitUntil(t),
+            None    => ControlFlow::Wait,
+        });
     }
 
     /// Start a stroke on the active layer. Refused (with a notice in the
@@ -237,6 +269,16 @@ impl App {
         };
         let mut actions = Actions::default();
         gpu.render(|ctx| aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions));
+        let mut want_frame = false;
+        match gpu.take_repaint_delay() {
+            Some(d) if d.is_zero() => want_frame = true,
+            // egui says "never" with a huge delay.
+            Some(d) if d < Duration::from_secs(3600) => {
+                let at = Instant::now() + d;
+                self.repaint_at = Some(self.repaint_at.map_or(at, |t| t.min(at)));
+            }
+            _ => {}
+        }
         if self.is_drawing {
             self.stats.frame.add(t0.elapsed());
         }
@@ -255,6 +297,9 @@ impl App {
             gpu.canvas.mark_dirty((0, 0, w, h));
             self.layers_dirty = false;
             // Uploaded with the next frame.
+            want_frame = true;
+        }
+        if want_frame {
             self.request_redraw();
         }
     }
@@ -273,13 +318,25 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
+    /// Only there to wake the loop; about_to_wait does the work.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: AppEvent) {}
+
     /// Called once winit has dispatched every pending OS message, right
     /// before it waits for new ones. WinTab packets arrive as their own
     /// window messages, which produce no winit event: draining here paints
     /// them immediately instead of waiting for the next mouse event.
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.drain_stylus();
+
+        if self.repaint_at.is_some_and(|t| Instant::now() >= t) {
+            self.repaint_at = None;
+            self.redraw_wanted = true;
+        }
+        if std::mem::take(&mut self.redraw_wanted) {
+            if let Some(w) = &self.window { w.request_redraw(); }
+        }
+        self.schedule(event_loop);
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -312,18 +369,22 @@ impl ApplicationHandler for App {
         _id:        WindowId,
         event:      WindowEvent,
     ) {
-        // egui sees every event. Its "consumed" flag is only used to know
-        // when the UI needs a new frame (hover, slider drag...); whether a
-        // press starts a stroke is decided by GpuState::is_canvas_at, see
-        // there for why egui's flag can't be trusted for that.
-        let consumed_by_ui = self.gpu.as_mut()
+        // egui sees every event and says when it needs a new frame (hover,
+        // slider drag...). Whether a press starts a stroke is decided by
+        // GpuState::is_canvas_at, see there for why egui can't decide it.
+        //
+        // RedrawRequested itself must never ask for another redraw here:
+        // that made an endless loop (1.6 CPU cores while idle with the
+        // cursor over a docker).
+        let ui_needs_frame = self.gpu.as_mut()
             .map(|gpu| gpu.egui_handle_event(&event))
             .unwrap_or(false);
         let over_canvas = self.gpu.as_ref()
             .map(|gpu| gpu.is_canvas_at(self.cursor))
             .unwrap_or(false);
         let ui_dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
-        if consumed_by_ui || ui_dragging || (!self.is_drawing && !over_canvas) {
+        let is_redraw = matches!(event, WindowEvent::RedrawRequested);
+        if !is_redraw && (ui_needs_frame || ui_dragging) {
             self.request_redraw();
         }
 

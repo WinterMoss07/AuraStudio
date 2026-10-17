@@ -11,9 +11,10 @@ fn main() {
         env_logger::Env::default().default_filter_or("info,wgpu_hal=error"),
     ).init();
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::<app::AppEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = app::App::default();
+    app.proxy = Some(event_loop.create_proxy());
     event_loop.run_app(&mut app).unwrap();
 }

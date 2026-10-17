@@ -20,6 +20,11 @@ pub struct GpuState {
     device:          Device,
     queue:           Queue,
     config:          SurfaceConfiguration,
+    /// Set after rebuilding a suboptimal swapchain, cleared once presents
+    /// are optimal again.
+    swapchain_rebuilt: bool,
+    /// egui's wish for the next frame, from the last render().
+    repaint_delay:   Option<std::time::Duration>,
     canvas_pipeline: RenderPipeline,
     view_buffer:     Buffer,
     view_bind_group: BindGroup,
@@ -236,6 +241,8 @@ impl GpuState {
             egui_ctx, egui_state, egui_renderer,
             viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
             text_input_active: false,
+            swapchain_rebuilt: false,
+            repaint_delay: None,
             clear_color: [0.4, 0.4, 0.4],
         }
     }
@@ -276,8 +283,15 @@ impl GpuState {
     /// Forward a WindowEvent to egui. Returns egui's "consumed" flag (the
     /// event hit a widget); the app only uses it to request a new frame,
     /// see is_canvas_at for deciding whether a press starts a stroke.
+    /// When egui wants the next frame (zero = right away), consumed once.
+    pub fn take_repaint_delay(&mut self) -> Option<std::time::Duration> {
+        self.repaint_delay.take()
+    }
+
+    /// Feed a window event to egui. Returns true when egui needs a new
+    /// frame for it (hover change, click, typing...).
     pub fn egui_handle_event(&mut self, event: &winit::event::WindowEvent) -> bool {
-        self.egui_state.on_window_event(&self.window, event).consumed
+        self.egui_state.on_window_event(&self.window, event).repaint
     }
 
     /// Window area (physical pixels) where the canvas is drawn: all the
@@ -368,15 +382,12 @@ impl GpuState {
             if let Some(f) = ui_fn.take() { f(ctx); }
             free_rect = Some(ctx.available_rect());
         });
-        // egui asks for another frame right away when its layout isn't done
-        // (e.g. windows sizing themselves on the first frames). With
-        // ControlFlow::Wait nothing else would trigger it: panels stayed
-        // invisible at startup until the mouse moved.
-        if full_output.viewport_output.get(&egui::ViewportId::ROOT)
-            .is_some_and(|v| v.repaint_delay.is_zero())
-        {
-            self.window.request_redraw();
-        }
+        // When egui wants its next frame: right away (layout not settled,
+        // a click changed something) or later (tooltip, fading notice).
+        // The app schedules it; requesting a redraw from inside a redraw
+        // is dropped by winit, so it can't be done here.
+        self.repaint_delay = full_output.viewport_output.get(&egui::ViewportId::ROOT)
+            .map(|v| v.repaint_delay);
 
         // egui asks for IME (text input) only while a text field is focused.
         self.text_input_active = full_output.platform_output.ime.is_some();
@@ -476,7 +487,10 @@ impl GpuState {
         // (resize in progress, maximize, DPI or monitor change): rebuild
         // it at the window's real size, otherwise Vulkan reports it on
         // every single frame.
-        if suboptimal {
+        // Only once per suboptimal episode: while Windows shows the taskbar
+        // thumbnail, presents can stay suboptimal whatever we do, and
+        // rebuilding on every frame would only cost time.
+        if suboptimal && !self.swapchain_rebuilt {
             let size = self.window.inner_size();
             if size.width > 0 && size.height > 0 {
                 self.config.width  = size.width;
@@ -484,6 +498,7 @@ impl GpuState {
                 self.surface.configure(&self.device, &self.config);
             }
         }
+        self.swapchain_rebuilt = suboptimal;
     }
 }
 
