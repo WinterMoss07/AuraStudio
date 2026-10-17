@@ -8,7 +8,7 @@ name = "aurastudio"
 path = "src/main.rs"
 
 [dependencies]
-aurastudio-canvas = { path = "../aurastudio-canvas" }
+aurastudio-canvas = { version = "0.1.0", path = "../aurastudio-canvas" }
 aurastudio-brush  = { path = "../aurastudio-brush" }
 aurastudio-input  = { path = "../aurastudio-input" }
 aurastudio-gpu    = { path = "../aurastudio-gpu" }

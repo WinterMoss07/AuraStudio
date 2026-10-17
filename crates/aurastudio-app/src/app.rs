@@ -6,7 +6,7 @@ use winit::{
     event_loop::ActiveEventLoop,
     window::{Window, WindowId},
 };
-use aurastudio_brush::{stroke_line, Brush};
+use aurastudio_brush::{stroke_line, Brush, HokusaiEngine};
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_layers::LayerStack;
@@ -28,6 +28,14 @@ pub struct App {
     /// suppression de calque) demande une recomposition pleine image,
     /// plutôt que le composite_rect_into local fait pendant un trait.
     layers_dirty: bool,
+    hokusai:      HokusaiEngine,
+    /// true = moteur hokusai (libmypaint), false = brush rond simple.
+    use_hokusai:  bool,
+    /// true dès que le stylet natif a envoyé des samples pendant le trait
+    /// en cours : on ignore alors les CursorMoved que Windows synthétise
+    /// pour le même stylet, sinon le trait reçoit deux flux de positions
+    /// légèrement décalées (bords ondulés / zigzag).
+    pen_active:   bool,
 }
 
 impl Default for App {
@@ -42,6 +50,9 @@ impl Default for App {
             pressure:     1.0,
             stylus:       None,
             layers_dirty: false,
+            hokusai:      HokusaiEngine::new(),
+            use_hokusai:  true,
+            pen_active:   false,
         }
     }
 }
@@ -62,30 +73,47 @@ impl App {
 
     fn begin_stroke(&mut self) {
         self.layers.active_layer_mut().begin_stroke();
-        self.last_pos = None;
+        if self.use_hokusai {
+            self.hokusai.sync_from(&self.brush);
+            self.hokusai.begin_stroke();
+        }
+        self.last_pos   = None;
+        self.pen_active = false;
     }
 
-    /// Peint sur le calque actif, puis recompose uniquement le
-    /// rectangle touché (pas tout le canvas) dans le buffer GPU avant
-    /// de marquer la zone dirty pour upload — garde le même coût que
-    /// l'ancien chemin direct-sur-Canvas malgré l'ajout des calques.
-    fn draw_at(&mut self, wx: f32, wy: f32) {
-        if let Some(canvas_pos) = self.window_to_canvas(wx, wy) {
-            let pressure = self.pressure;
-            let from     = self.last_pos.unwrap_or(canvas_pos);
-            let layer    = self.layers.active_layer_mut();
-
-            if let Some(rect) = stroke_line(from, canvas_pos, &self.brush, layer, pressure) {
-                let gpu = self.gpu.as_mut().unwrap();
-                self.layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
-                gpu.canvas.mark_dirty(rect);
-            }
-            self.last_pos = Some(canvas_pos);
-
-            if let Some(w) = &self.window {
-                w.request_redraw();
-            }
+    fn end_stroke(&mut self) {
+        if self.use_hokusai && self.last_pos.is_some() {
+            let rect = self.hokusai.end_stroke(self.layers.active_layer_mut());
+            self.present_rect(rect);
         }
+        self.last_pos   = None;
+        self.pen_active = false;
+    }
+
+    /// Recompose uniquement le rectangle touché (pas tout le canvas)
+    /// dans le buffer GPU, puis marque la zone dirty pour upload.
+    fn present_rect(&mut self, rect: Option<aurastudio_canvas::Rect>) {
+        let (Some(rect), Some(gpu)) = (rect, self.gpu.as_mut()) else { return };
+        self.layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
+        gpu.canvas.mark_dirty(rect);
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    fn draw_at(&mut self, wx: f32, wy: f32) {
+        let Some(pos) = self.window_to_canvas(wx, wy) else { return };
+        let pressure = self.pressure;
+        let layer    = self.layers.active_layer_mut();
+
+        let rect = if self.use_hokusai {
+            self.hokusai.stroke_to(layer, pos.0, pos.1, pressure)
+        } else {
+            let from = self.last_pos.unwrap_or(pos);
+            stroke_line(from, pos, &self.brush, layer, pressure)
+        };
+        self.last_pos = Some(pos);
+        self.present_rect(rect);
     }
 
     /// Draine les échantillons stylet natifs (WinTab ou Windows Ink via
@@ -97,7 +125,8 @@ impl App {
         let samples = stylus.drain();
         for s in samples {
             if self.is_drawing {
-                self.pressure = s.pressure;
+                self.pen_active = true;
+                self.pressure   = s.pressure;
                 self.draw_at(s.x, s.y);
             }
         }
@@ -163,12 +192,12 @@ impl ApplicationHandler for App {
                 if self.is_drawing {
                     self.begin_stroke();
                 } else {
-                    self.last_pos = None;
+                    self.end_stroke();
                 }
             }
 
             WindowEvent::CursorMoved { position, .. } if !consumed_by_ui => {
-                if self.is_drawing {
+                if self.is_drawing && !self.pen_active {
                     self.draw_at(position.x as f32, position.y as f32);
                 }
             }
@@ -198,18 +227,19 @@ impl ApplicationHandler for App {
                     }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
                         self.is_drawing = false;
-                        self.last_pos   = None;
+                        self.end_stroke();
                     }
                 }
             }
 
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = &mut self.gpu {
-                    let brush  = &mut self.brush;
-                    let layers = &mut self.layers;
+                    let brush       = &mut self.brush;
+                    let layers      = &mut self.layers;
+                    let use_hokusai = &mut self.use_hokusai;
                     let mut changed = false;
                     gpu.render(|ctx| {
-                        color_picker_panel(ctx, brush);
+                        color_picker_panel(ctx, brush, use_hokusai);
                         changed = layers_panel(ctx, layers);
                     });
 
@@ -217,6 +247,8 @@ impl ApplicationHandler for App {
                         self.layers.composite_into(&mut gpu.canvas.pixels);
                         gpu.canvas.mark_dirty((0, 0, CANVAS_SIZE, CANVAS_SIZE));
                         self.layers_dirty = false;
+                        // Le composite sera uploadé à la frame suivante.
+                        if let Some(w) = &self.window { w.request_redraw(); }
                     }
                 }
             }
@@ -229,7 +261,7 @@ impl ApplicationHandler for App {
 /// Panneau egui : carré de preview + sliders RGB et HSV, synchronisés
 /// avec la couleur active du brush. Volontairement minimal (pas encore
 /// de calques/palette) — brique color picker v1.
-fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush) {
+fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush, use_hokusai: &mut bool) {
     egui::Window::new("Couleur")
         .resizable(false)
         .default_pos([16.0, 16.0])
@@ -260,7 +292,10 @@ fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush) {
             }
 
             ui.separator();
+            ui.label("Pinceau");
+            ui.add(egui::Slider::new(&mut brush.radius, 1..=200).text("Taille"));
             ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacité"));
+            ui.checkbox(use_hokusai, "Moteur hokusai (libmypaint)");
         });
 }
 
