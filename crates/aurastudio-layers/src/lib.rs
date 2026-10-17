@@ -1,16 +1,100 @@
-use aurastudio_canvas::{PaintSurface, Rect};
+//! Layer tree: paint layers and folders (groups), like Krita / CSP.
+//!
+//! Stored bottom to top. Each node has a stable `id`; the active node is
+//! tracked by id, so reordering or moving in and out of folders never
+//! changes which layer you paint on.
 
-/// One layer: RGBA8, straight alpha, `width * height * 4` bytes.
+use aurastudio_canvas::blend::{blend_over, to_straight_u8, Premul};
+use aurastudio_canvas::{BlendMode, PaintSurface, Rect};
+
+/// One paint layer: RGBA8, straight alpha, `width * height * 4` bytes.
 pub struct Layer {
-    /// Stable identity (thumbnails, UI state) that survives reordering.
     pub id:      u64,
     pub name:    String,
     pub visible: bool,
     pub opacity: f32,
+    pub blend:   BlendMode,
+    /// A locked layer can't be painted on or cleared.
+    pub locked:  bool,
     pub pixels:  Vec<u8>,
     /// The background layer is opaque white; clearing it resets it to
     /// white instead of transparent.
     pub background: bool,
+}
+
+/// How a folder combines its content with what is below it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FolderBlend {
+    /// Default (Krita / CSP): children blend straight onto the layers
+    /// below, as if the folder weren't there; the folder opacity scales
+    /// its children.
+    #[default]
+    PassThrough,
+    /// Children are first merged together on their own, then the result
+    /// is blended onto the layers below with this mode.
+    Isolated(BlendMode),
+}
+
+pub struct Folder {
+    pub id:        u64,
+    pub name:      String,
+    pub visible:   bool,
+    pub opacity:   f32,
+    pub blend:     FolderBlend,
+    /// Locks every layer inside.
+    pub locked:    bool,
+    /// Children hidden in the layer list (UI only).
+    pub collapsed: bool,
+    /// Bottom to top.
+    pub children:  Vec<Node>,
+}
+
+pub enum Node {
+    Layer(Layer),
+    Folder(Folder),
+}
+
+impl Node {
+    pub fn id(&self) -> u64 {
+        match self { Node::Layer(l) => l.id, Node::Folder(f) => f.id }
+    }
+    pub fn name(&self) -> &str {
+        match self { Node::Layer(l) => &l.name, Node::Folder(f) => &f.name }
+    }
+    pub fn name_mut(&mut self) -> &mut String {
+        match self { Node::Layer(l) => &mut l.name, Node::Folder(f) => &mut f.name }
+    }
+    pub fn visible(&self) -> bool {
+        match self { Node::Layer(l) => l.visible, Node::Folder(f) => f.visible }
+    }
+    pub fn visible_mut(&mut self) -> &mut bool {
+        match self { Node::Layer(l) => &mut l.visible, Node::Folder(f) => &mut f.visible }
+    }
+    pub fn opacity(&self) -> f32 {
+        match self { Node::Layer(l) => l.opacity, Node::Folder(f) => f.opacity }
+    }
+    pub fn opacity_mut(&mut self) -> &mut f32 {
+        match self { Node::Layer(l) => &mut l.opacity, Node::Folder(f) => &mut f.opacity }
+    }
+    pub fn locked(&self) -> bool {
+        match self { Node::Layer(l) => l.locked, Node::Folder(f) => f.locked }
+    }
+    pub fn locked_mut(&mut self) -> &mut bool {
+        match self { Node::Layer(l) => &mut l.locked, Node::Folder(f) => &mut f.locked }
+    }
+    pub fn is_folder(&self) -> bool {
+        matches!(self, Node::Folder(_))
+    }
+    /// Short blend label for the UI ("Normal", "Pass Through"...).
+    pub fn blend_name(&self) -> &'static str {
+        match self {
+            Node::Layer(l) => l.blend.name(),
+            Node::Folder(f) => match f.blend {
+                FolderBlend::PassThrough => "Pass Through",
+                FolderBlend::Isolated(m) => m.name(),
+            },
+        }
+    }
 }
 
 /// Pixel a layer is cleared to: opaque white for the background,
@@ -23,7 +107,16 @@ fn clear_pixel(background: bool) -> [u8; 4] {
 impl Layer {
     pub fn new(width: u32, height: u32, background: bool) -> Self {
         let pixels = clear_pixel(background).repeat((width * height) as usize);
-        Self { id: 0, name: "Layer".into(), visible: true, opacity: 1.0, pixels, background }
+        Self {
+            id: 0,
+            name: "Layer".into(),
+            visible: true,
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            locked: false,
+            pixels,
+            background,
+        }
     }
 
     pub fn clear(&mut self) {
@@ -32,22 +125,14 @@ impl Layer {
     }
 }
 
-/// Layer stack + active layer. Composite is on the CPU for now (straight
-/// alpha "over", bottom to top, weighted by layer opacity): no blend
-/// modes or GPU composite yet.
-///
-/// Memory: the per-stroke buffers (snapshot of the layer before the
-/// stroke + stroke coverage) are only needed by the layer being painted,
-/// so they live here once instead of in every layer. A layer costs 4
-/// bytes per pixel instead of 9.
-pub struct LayerStack {
-    pub layers: Vec<Layer>,
-    pub active: usize,
-    pub width:  u32,
-    pub height: u32,
-    stroke_base: Vec<u8>,
-    stroke_mask: Vec<u8>,
-    next_id:     u64,
+/// One row of the layer list, top to bottom, as the UI shows it.
+pub struct Row {
+    pub id:        u64,
+    pub depth:     usize,
+    pub is_folder: bool,
+    pub collapsed: bool,
+    /// Locked itself or through a parent folder.
+    pub locked_by_parent: bool,
 }
 
 /// The active layer seen as a paintable surface for the brush engines.
@@ -67,6 +152,75 @@ impl PaintSurface for ActiveSurface<'_> {
     }
 }
 
+/// Layer tree + active node. Composite is on the CPU for now.
+///
+/// Memory: the per-stroke buffers (snapshot of the layer before the
+/// stroke + stroke coverage) are only needed by the layer being painted,
+/// so they live here once instead of in every layer.
+pub struct LayerStack {
+    /// Bottom to top.
+    pub root:   Vec<Node>,
+    active:     u64,
+    pub width:  u32,
+    pub height: u32,
+    stroke_base: Vec<u8>,
+    stroke_mask: Vec<u8>,
+    next_id:     u64,
+}
+
+/// Where a node sits: the path of indices from the root.
+type Path = Vec<usize>;
+
+fn find_path(nodes: &[Node], id: u64, path: &mut Path) -> bool {
+    for (i, n) in nodes.iter().enumerate() {
+        path.push(i);
+        if n.id() == id { return true; }
+        if let Node::Folder(f) = n {
+            if find_path(&f.children, id, path) { return true; }
+        }
+        path.pop();
+    }
+    false
+}
+
+fn node_in(nodes: &[Node], id: u64) -> Option<&Node> {
+    for n in nodes {
+        if n.id() == id { return Some(n); }
+        if let Node::Folder(f) = n {
+            if let Some(found) = node_in(&f.children, id) { return Some(found); }
+        }
+    }
+    None
+}
+
+fn siblings_mut<'a>(root: &'a mut Vec<Node>, parent: &[usize]) -> &'a mut Vec<Node> {
+    let mut v = root;
+    for &i in parent {
+        v = match &mut v[i] {
+            Node::Folder(f) => &mut f.children,
+            Node::Layer(_) => unreachable!("path goes through a layer"),
+        };
+    }
+    v
+}
+
+fn count_layers(nodes: &[Node]) -> usize {
+    nodes.iter().map(|n| match n {
+        Node::Layer(_) => 1,
+        Node::Folder(f) => count_layers(&f.children),
+    }).sum()
+}
+
+fn first_layer_id(nodes: &[Node]) -> Option<u64> {
+    for n in nodes.iter().rev() {
+        match n {
+            Node::Layer(l) => return Some(l.id),
+            Node::Folder(f) => if let Some(id) = first_layer_id(&f.children) { return Some(id); },
+        }
+    }
+    None
+}
+
 impl LayerStack {
     pub fn new(width: u32, height: u32) -> Self {
         let mut base = Layer::new(width, height, true);
@@ -74,8 +228,8 @@ impl LayerStack {
         base.id = 1;
         let n = (width * height) as usize;
         Self {
-            layers: vec![base],
-            active: 0,
+            root: vec![Node::Layer(base)],
+            active: 1,
             width,
             height,
             stroke_base: vec![0; n * 4],
@@ -84,105 +238,309 @@ impl LayerStack {
         }
     }
 
-    fn insert_above_active(&mut self, mut layer: Layer) -> usize {
-        layer.id = self.next_id;
+    fn new_id(&mut self) -> u64 {
+        let id = self.next_id;
         self.next_id += 1;
-        // New layers go right above the active one, like Krita / CSP.
-        let index = self.active + 1;
-        self.layers.insert(index, layer);
-        self.active = index;
-        index
+        id
     }
 
-    pub fn add_layer(&mut self, name: &str) -> usize {
+    fn path(&self, id: u64) -> Option<Path> {
+        let mut p = Vec::new();
+        find_path(&self.root, id, &mut p).then_some(p)
+    }
+
+    pub fn active_id(&self) -> u64 { self.active }
+
+    pub fn set_active(&mut self, id: u64) {
+        if self.path(id).is_some() { self.active = id; }
+    }
+
+    pub fn node(&self, id: u64) -> Option<&Node> {
+        node_in(&self.root, id)
+    }
+
+    pub fn node_mut(&mut self, id: u64) -> Option<&mut Node> {
+        let path = self.path(id)?;
+        let (last, parent) = path.split_last()?;
+        siblings_mut(&mut self.root, parent).get_mut(*last)
+    }
+
+    pub fn active_node(&self) -> &Node {
+        self.node(self.active).expect("active node exists")
+    }
+
+    pub fn active_node_mut(&mut self) -> &mut Node {
+        let id = self.active;
+        self.node_mut(id).expect("active node exists")
+    }
+
+    /// True if the active node or one of its parent folders is locked.
+    pub fn is_locked(&self, id: u64) -> bool {
+        let Some(path) = self.path(id) else { return false };
+        let mut nodes = &self.root;
+        for &i in &path {
+            let n = &nodes[i];
+            if n.locked() { return true; }
+            if let Node::Folder(f) = n { nodes = &f.children; }
+        }
+        false
+    }
+
+    /// The active node is a paint layer that can be painted on.
+    pub fn can_paint(&self) -> bool {
+        matches!(self.active_node(), Node::Layer(_)) && !self.is_locked(self.active)
+    }
+
+    pub fn layer_count(&self) -> usize { count_layers(&self.root) }
+
+    /// Where a new node goes: right above the active node in the same
+    /// folder, or at the top inside the active folder.
+    fn insert_point(&mut self) -> (Path, usize) {
+        let path = self.path(self.active).expect("active node exists");
+        if let Node::Folder(f) = self.active_node_mut() {
+            f.collapsed = false;
+            let len = f.children.len();
+            return (path, len);
+        }
+        let (last, parent) = path.split_last().unwrap();
+        (parent.to_vec(), last + 1)
+    }
+
+    fn insert(&mut self, node: Node) -> u64 {
+        let id = node.id();
+        let (parent, index) = self.insert_point();
+        siblings_mut(&mut self.root, &parent).insert(index, node);
+        self.active = id;
+        id
+    }
+
+    pub fn add_layer(&mut self, name: &str) -> u64 {
         let mut layer = Layer::new(self.width, self.height, false);
+        layer.id = self.new_id();
         layer.name = name.into();
-        self.insert_above_active(layer)
+        self.insert(Node::Layer(layer))
     }
 
-    /// Copy of the active layer, placed above it and made active.
-    pub fn duplicate_active(&mut self) -> usize {
-        let src = &self.layers[self.active];
-        let copy = Layer {
-            id:         0,
-            name:       format!("{} copy", src.name),
-            visible:    src.visible,
-            opacity:    src.opacity,
-            pixels:     src.pixels.clone(),
-            background: false,
+    pub fn add_folder(&mut self, name: &str) -> u64 {
+        let folder = Folder {
+            id: self.new_id(),
+            name: name.into(),
+            visible: true,
+            opacity: 1.0,
+            blend: FolderBlend::PassThrough,
+            locked: false,
+            collapsed: false,
+            children: Vec::new(),
         };
-        self.insert_above_active(copy)
+        self.insert(Node::Folder(folder))
     }
 
-    /// Move the active layer one step up (+1) or down (-1) in the stack.
+    fn clone_node(&mut self, n: &Node) -> Node {
+        match n {
+            Node::Layer(l) => Node::Layer(Layer {
+                id: self.new_id(),
+                name: l.name.clone(),
+                visible: l.visible,
+                opacity: l.opacity,
+                blend: l.blend,
+                locked: l.locked,
+                pixels: l.pixels.clone(),
+                background: false,
+            }),
+            Node::Folder(f) => {
+                let children = f.children.iter().map(|c| self.clone_node(c)).collect();
+                Node::Folder(Folder {
+                    id: self.new_id(),
+                    name: f.name.clone(),
+                    visible: f.visible,
+                    opacity: f.opacity,
+                    blend: f.blend,
+                    locked: f.locked,
+                    collapsed: f.collapsed,
+                    children,
+                })
+            }
+        }
+    }
+
+    /// Copy of the active node (a folder is copied with its content),
+    /// placed right above it and made active.
+    pub fn duplicate_active(&mut self) -> u64 {
+        let path = self.path(self.active).unwrap();
+        let (last, parent) = path.split_last().unwrap();
+        // Temporarily take the node out to clone it while borrowing self.
+        let original = siblings_mut(&mut self.root, parent).remove(*last);
+        let mut copy = self.clone_node(&original);
+        *copy.name_mut() = format!("{} copy", original.name());
+        let siblings = siblings_mut(&mut self.root, parent);
+        siblings.insert(*last, original);
+        let id = copy.id();
+        siblings.insert(last + 1, copy);
+        self.active = id;
+        id
+    }
+
+    /// Remove the active node (a folder with its content). Refused if it
+    /// would leave the document without any paint layer.
+    pub fn remove_active(&mut self) -> bool {
+        let path = self.path(self.active).unwrap();
+        let (last, parent) = path.split_last().unwrap();
+        let removed_layers = match &siblings_mut(&mut self.root, parent)[*last] {
+            Node::Layer(_) => 1,
+            Node::Folder(f) => count_layers(&f.children),
+        };
+        if self.layer_count() - removed_layers == 0 { return false; }
+
+        let siblings = siblings_mut(&mut self.root, parent);
+        siblings.remove(*last);
+        // Next active: the node that was below, else above, else the parent.
+        self.active = if *last > 0 {
+            siblings[last - 1].id()
+        } else if let Some(n) = siblings.first() {
+            n.id()
+        } else if !parent.is_empty() {
+            let mut nodes = &self.root;
+            let mut id = 0;
+            for &i in parent {
+                id = nodes[i].id();
+                if let Node::Folder(f) = &nodes[i] { nodes = &f.children; }
+            }
+            id
+        } else {
+            first_layer_id(&self.root).unwrap()
+        };
+        true
+    }
+
+    /// Move the active node one step up or down. Moving onto a folder goes
+    /// inside it; moving past the top / bottom of a folder goes out of it.
     pub fn move_active(&mut self, up: bool) {
-        let a = self.active;
-        let b = if up { a + 1 } else { a.wrapping_sub(1) };
-        if b < self.layers.len() {
-            self.layers.swap(a, b);
-            self.active = b;
+        let path = self.path(self.active).unwrap();
+        let (last, parent) = path.split_last().unwrap();
+        let last = *last;
+        let len = siblings_mut(&mut self.root, parent).len();
+
+        let neighbor = if up { (last + 1 < len).then_some(last + 1) } else { last.checked_sub(1) };
+        match neighbor {
+            Some(n) => {
+                let siblings = siblings_mut(&mut self.root, parent);
+                if siblings[n].is_folder() {
+                    // Enter the folder: at its bottom when going up, at its
+                    // top when going down.
+                    let node = siblings.remove(last);
+                    let n = if n > last { n - 1 } else { n };
+                    if let Node::Folder(f) = &mut siblings[n] {
+                        f.collapsed = false;
+                        if up { f.children.insert(0, node) } else { f.children.push(node) }
+                    }
+                } else {
+                    siblings.swap(last, n);
+                }
+            }
+            None if !parent.is_empty() => {
+                // Leave the folder, landing right above / below it.
+                let node = siblings_mut(&mut self.root, parent).remove(last);
+                let (folder_index, grand) = parent.split_last().unwrap();
+                let outer = siblings_mut(&mut self.root, grand);
+                outer.insert(if up { folder_index + 1 } else { *folder_index }, node);
+            }
+            None => {}
         }
     }
 
-    pub fn remove_layer(&mut self, index: usize) {
-        if self.layers.len() <= 1 || index >= self.layers.len() { return; }
-        self.layers.remove(index);
-        // Removing a layer below the active one shifts every index above
-        // it: keep following the same layer, not the same number.
-        if index < self.active {
-            self.active -= 1;
-        }
-        self.active = self.active.min(self.layers.len() - 1);
-    }
-
-    pub fn set_active(&mut self, index: usize) {
-        if index < self.layers.len() { self.active = index; }
-    }
-
-    pub fn active_layer_mut(&mut self) -> &mut Layer {
-        &mut self.layers[self.active]
-    }
-
-    /// Erase the active layer's content (Delete key).
-    pub fn clear_active(&mut self) {
-        let a = self.active;
-        self.layers[a].clear();
+    /// Erase the active layer's content (Delete key). No-op on folders and
+    /// locked layers. Returns true if something was cleared.
+    pub fn clear_active(&mut self) -> bool {
+        if !self.can_paint() { return false; }
+        if let Node::Layer(l) = self.active_node_mut() { l.clear(); }
+        true
     }
 
     /// Call when a stroke starts: snapshot the active layer and reset the
     /// stroke coverage, so the new stroke never blends with itself but
     /// still paints over earlier strokes.
     pub fn begin_stroke(&mut self) {
-        self.stroke_base.copy_from_slice(&self.layers[self.active].pixels);
+        // Borrow `root` and `stroke_base` as separate fields.
+        let Some(Node::Layer(l)) = node_in(&self.root, self.active) else { return };
+        self.stroke_base.copy_from_slice(&l.pixels);
         self.stroke_mask.fill(0);
     }
 
-    pub fn active_surface(&mut self) -> ActiveSurface<'_> {
-        ActiveSurface {
-            pixels: &mut self.layers[self.active].pixels,
+    /// The active paint layer as a brush surface; None for a folder.
+    pub fn active_surface(&mut self) -> Option<ActiveSurface<'_>> {
+        let (w, h) = (self.width, self.height);
+        let id = self.active;
+        let path = self.path(id)?;
+        let (last, parent) = path.split_last()?;
+        let Node::Layer(l) = &mut siblings_mut(&mut self.root, parent)[*last] else { return None };
+        Some(ActiveSurface {
+            pixels: &mut l.pixels,
             base:   &self.stroke_base,
             mask:   &mut self.stroke_mask,
-            width:  self.width,
-            height: self.height,
+            width:  w,
+            height: h,
+        })
+    }
+
+    /// Ids of every paint layer (thumbnails).
+    pub fn layer_ids(&self) -> Vec<u64> {
+        fn walk(nodes: &[Node], out: &mut Vec<u64>) {
+            for n in nodes {
+                match n {
+                    Node::Layer(l) => out.push(l.id),
+                    Node::Folder(f) => walk(&f.children, out),
+                }
+            }
         }
+        let mut v = Vec::new();
+        walk(&self.root, &mut v);
+        v
+    }
+
+    /// Rows of the layer list, top to bottom, skipping collapsed content.
+    pub fn rows(&self) -> Vec<Row> {
+        fn walk(nodes: &[Node], depth: usize, locked: bool, out: &mut Vec<Row>) {
+            for n in nodes.iter().rev() {
+                let (is_folder, collapsed) = match n {
+                    Node::Folder(f) => (true, f.collapsed),
+                    Node::Layer(_) => (false, false),
+                };
+                out.push(Row { id: n.id(), depth, is_folder, collapsed, locked_by_parent: locked });
+                if let Node::Folder(f) = n {
+                    if !f.collapsed {
+                        walk(&f.children, depth + 1, locked || f.locked, out);
+                    }
+                }
+            }
+        }
+        let mut v = Vec::new();
+        walk(&self.root, 0, false, &mut v);
+        v
     }
 
     /// Change the canvas size, keeping the content centered (Krita /
     /// Photoshop "canvas size" with the default center anchor): growing
     /// adds empty margins, shrinking crops the borders. Nothing is scaled.
     pub fn resize(&mut self, width: u32, height: u32) {
+        fn walk(nodes: &mut [Node], f: &mut dyn FnMut(&mut Layer)) {
+            for n in nodes {
+                match n {
+                    Node::Layer(l) => f(l),
+                    Node::Folder(fo) => walk(&mut fo.children, f),
+                }
+            }
+        }
         let (ow, oh) = (self.width as i64, self.height as i64);
         let (nw, nh) = (width as i64, height as i64);
         // Position of the old canvas's top-left corner in the new one.
         let (dx, dy) = ((nw - ow) / 2, (nh - oh) / 2);
-
         // Overlap, in old-canvas coordinates.
         let sx0 = (-dx).max(0);
         let sy0 = (-dy).max(0);
         let sx1 = (nw - dx).min(ow);
         let sy1 = (nh - dy).min(oh);
 
-        for layer in &mut self.layers {
+        walk(&mut self.root, &mut |layer: &mut Layer| {
             let mut out = clear_pixel(layer.background).repeat((width * height) as usize);
             if sx0 < sx1 {
                 for sy in sy0..sy1 {
@@ -193,7 +551,7 @@ impl LayerStack {
                 }
             }
             layer.pixels = out;
-        }
+        });
 
         self.width  = width;
         self.height = height;
@@ -202,45 +560,67 @@ impl LayerStack {
         self.stroke_mask = vec![0; n];
     }
 
-    /// Composite every visible layer (bottom to top) into `out`, which must
-    /// be `width * height * 4` bytes.
+    /// Composite every visible layer into `out` (`width * height * 4`).
     pub fn composite_into(&self, out: &mut [u8]) {
         self.composite_rect_into(out, (0, 0, self.width, self.height));
     }
 
-    /// Same as composite_into, limited to `rect`: avoids recompositing the
-    /// whole canvas every frame while a stroke only touches a small area.
-    /// `out` is still indexed as the full canvas; only `rect` is written.
+    /// Composite limited to `rect`, row by row (no big temporary buffer
+    /// even for folders). `out` is indexed as the full canvas.
     pub fn composite_rect_into(&self, out: &mut [u8], rect: Rect) {
         debug_assert_eq!(out.len(), (self.width * self.height * 4) as usize);
         let (x0, y0) = (rect.0, rect.1);
         let x1 = rect.2.min(self.width);
         let y1 = rect.3.min(self.height);
         if x0 >= x1 || y0 >= y1 { return; }
-        let w = self.width;
+        let n = (x1 - x0) as usize;
+        let mut row: Vec<Premul> = vec![[1.0; 4]; n];
 
-        // White behind everything, in case every layer is hidden.
         for y in y0..y1 {
-            let row = ((y * w + x0) * 4) as usize..((y * w + x1) * 4) as usize;
-            out[row].fill(255);
+            // White behind everything.
+            row.fill([1.0; 4]);
+            composite_row(&self.root, self.width, y, x0, &mut row, 1.0);
+            let start = ((y * self.width + x0) * 4) as usize;
+            for (k, p) in row.iter().enumerate() {
+                out[start + k * 4..start + k * 4 + 4].copy_from_slice(&to_straight_u8(*p));
+            }
         }
+    }
+}
 
-        for layer in &self.layers {
-            if !layer.visible || layer.opacity <= 0.0 { continue; }
-            for y in y0..y1 {
-                let row = ((y * w + x0) * 4) as usize..((y * w + x1) * 4) as usize;
-                let dst_row = &mut out[row.clone()];
-                let src_row = &layer.pixels[row];
-                for (dst, src) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
-                    let src_a = (src[3] as f32 / 255.0) * layer.opacity;
-                    if src_a <= 0.0 { continue; }
-                    let ia = 1.0 - src_a;
-                    dst[0] = (src[0] as f32 * src_a + dst[0] as f32 * ia) as u8;
-                    dst[1] = (src[1] as f32 * src_a + dst[1] as f32 * ia) as u8;
-                    dst[2] = (src[2] as f32 * src_a + dst[2] as f32 * ia) as u8;
-                    dst[3] = ((src_a + (dst[3] as f32 / 255.0) * ia) * 255.0) as u8;
+/// Composite `nodes` (bottom to top) onto `row` (premultiplied), for canvas
+/// row `y` starting at column `x0`. `opacity_scale` carries pass-through
+/// folder opacity down to the children.
+fn composite_row(nodes: &[Node], width: u32, y: u32, x0: u32, row: &mut [Premul], opacity_scale: f32) {
+    for node in nodes {
+        if !node.visible() || node.opacity() <= 0.0 { continue; }
+        match node {
+            Node::Layer(l) => {
+                let op = l.opacity * opacity_scale;
+                let start = ((y * width + x0) * 4) as usize;
+                let src = &l.pixels[start..start + row.len() * 4];
+                for (dst, s) in row.iter_mut().zip(src.chunks_exact(4)) {
+                    if s[3] == 0 { continue; }
+                    let a = s[3] as f32 / 255.0 * op;
+                    let cs = [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0];
+                    blend_over(dst, cs, a, l.blend);
                 }
             }
+            Node::Folder(f) => match f.blend {
+                FolderBlend::PassThrough => {
+                    composite_row(&f.children, width, y, x0, row, opacity_scale * f.opacity);
+                }
+                FolderBlend::Isolated(mode) => {
+                    let mut group: Vec<Premul> = vec![[0.0; 4]; row.len()];
+                    composite_row(&f.children, width, y, x0, &mut group, 1.0);
+                    let op = f.opacity * opacity_scale;
+                    for (dst, g) in row.iter_mut().zip(&group) {
+                        if g[3] <= 0.0 { continue; }
+                        let cs = [g[0] / g[3], g[1] / g[3], g[2] / g[3]];
+                        blend_over(dst, cs, g[3] * op, mode);
+                    }
+                }
+            },
         }
     }
 }
@@ -249,116 +629,186 @@ impl LayerStack {
 mod tests {
     use super::*;
 
-    fn px(stack: &LayerStack, layer: usize, x: u32, y: u32) -> [u8; 4] {
+    fn layer_px(stack: &LayerStack, id: u64, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * stack.width + x) * 4) as usize;
-        stack.layers[layer].pixels[i..i + 4].try_into().unwrap()
+        match stack.node(id).unwrap() {
+            Node::Layer(l) => l.pixels[i..i + 4].try_into().unwrap(),
+            _ => panic!("not a layer"),
+        }
+    }
+
+    fn set_px(stack: &mut LayerStack, id: u64, rgba: [u8; 4]) {
+        if let Some(Node::Layer(l)) = stack.node_mut(id) {
+            for p in l.pixels.chunks_exact_mut(4) { p.copy_from_slice(&rgba); }
+        }
+    }
+
+    fn composite(stack: &LayerStack) -> [u8; 4] {
+        let mut out = vec![0u8; (stack.width * stack.height * 4) as usize];
+        stack.composite_into(&mut out);
+        out[0..4].try_into().unwrap()
+    }
+
+    fn names_top_down(stack: &LayerStack) -> Vec<String> {
+        stack.rows().iter().map(|r| format!("{}{}", "  ".repeat(r.depth), stack.node(r.id).unwrap().name())).collect()
     }
 
     #[test]
     fn composite_flattens_opaque_base() {
-        let stack = LayerStack::new(2, 2);
-        let mut out = vec![0u8; 2 * 2 * 4];
-        stack.composite_into(&mut out);
-        assert_eq!(&out[0..4], &[255, 255, 255, 255]);
+        assert_eq!(composite(&LayerStack::new(2, 2)), [255, 255, 255, 255]);
     }
 
     #[test]
     fn transparent_layer_does_not_hide_base() {
-        let mut stack = LayerStack::new(2, 2);
-        stack.add_layer("Layer 2");
-        let mut out = vec![0u8; 2 * 2 * 4];
-        stack.composite_into(&mut out);
-        assert_eq!(&out[0..4], &[255, 255, 255, 255]);
-    }
-
-    #[test]
-    fn removing_layer_below_keeps_same_active_layer() {
-        let mut stack = LayerStack::new(2, 2);
-        stack.add_layer("A");
-        stack.add_layer("B"); // active = B (index 2)
-        stack.remove_layer(1); // remove A, below it
-        assert_eq!(stack.layers[stack.active].name, "B");
-    }
-
-    #[test]
-    fn removing_the_top_active_layer() {
-        let mut stack = LayerStack::new(2, 2);
-        stack.add_layer("A");
-        stack.remove_layer(1);
-        assert_eq!(stack.layers.len(), 1);
-        assert_eq!(stack.active, 0);
-        stack.begin_stroke(); // must not panic with the new active index
-    }
-
-    #[test]
-    fn duplicate_and_move() {
-        let mut stack = LayerStack::new(2, 2);
-        stack.add_layer("A");
-        stack.layers[1].pixels[0..4].copy_from_slice(&[1, 2, 3, 255]);
-        stack.duplicate_active();
-        assert_eq!(stack.layers.len(), 3);
-        assert_eq!(stack.active, 2);
-        assert_eq!(stack.layers[2].name, "A copy");
-        assert_eq!(&stack.layers[2].pixels[0..4], &[1, 2, 3, 255]);
-        assert!(!stack.layers[2].background);
-        // Ids stay unique.
-        let ids: std::collections::HashSet<_> = stack.layers.iter().map(|l| l.id).collect();
-        assert_eq!(ids.len(), 3);
-
-        stack.move_active(false); // "A copy" goes below "A"
-        assert_eq!(stack.active, 1);
-        assert_eq!(stack.layers[1].name, "A copy");
-        stack.move_active(true);
-        stack.move_active(true); // already on top: no-op
-        assert_eq!(stack.active, 2);
-        stack.set_active(0);
-        stack.move_active(false); // already at the bottom: no-op
-        assert_eq!(stack.active, 0);
+        let mut s = LayerStack::new(2, 2);
+        s.add_layer("L");
+        assert_eq!(composite(&s), [255, 255, 255, 255]);
     }
 
     #[test]
     fn hidden_layer_is_skipped() {
-        let mut stack = LayerStack::new(2, 2);
-        stack.add_layer("Layer 2");
-        stack.active_layer_mut().pixels[0..4].copy_from_slice(&[0, 0, 0, 255]);
-        stack.active_layer_mut().visible = false;
-        let mut out = vec![0u8; 2 * 2 * 4];
-        stack.composite_into(&mut out);
-        assert_eq!(&out[0..4], &[255, 255, 255, 255]);
+        let mut s = LayerStack::new(2, 2);
+        let l = s.add_layer("L");
+        set_px(&mut s, l, [0, 0, 0, 255]);
+        *s.node_mut(l).unwrap().visible_mut() = false;
+        assert_eq!(composite(&s), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn layer_blend_mode_is_used() {
+        let mut s = LayerStack::new(2, 2);
+        set_px(&mut s, 1, [128, 128, 128, 255]);
+        let l = s.add_layer("L");
+        set_px(&mut s, l, [255, 0, 0, 255]);
+        if let Some(Node::Layer(layer)) = s.node_mut(l) { layer.blend = BlendMode::Multiply; }
+        assert_eq!(composite(&s), [128, 0, 0, 255]);
+    }
+
+    #[test]
+    fn isolated_folder_blends_its_merged_content() {
+        // Folder in Multiply holding an opaque red layer over mid gray.
+        let mut s = LayerStack::new(2, 2);
+        set_px(&mut s, 1, [128, 128, 128, 255]);
+        let f = s.add_folder("F");
+        let l = s.add_layer("L"); // goes inside the active folder
+        set_px(&mut s, l, [255, 0, 0, 255]);
+        if let Some(Node::Folder(folder)) = s.node_mut(f) { folder.blend = FolderBlend::Isolated(BlendMode::Multiply); }
+        assert_eq!(composite(&s), [128, 0, 0, 255]);
+        // Pass-through with 50% folder opacity scales the child.
+        if let Some(Node::Folder(folder)) = s.node_mut(f) {
+            folder.blend = FolderBlend::PassThrough;
+            folder.opacity = 0.5;
+        }
+        assert_eq!(composite(&s), [192, 64, 64, 255]);
+    }
+
+    #[test]
+    fn new_layer_goes_inside_active_folder_then_above_active() {
+        let mut s = LayerStack::new(2, 2);
+        s.add_folder("F");
+        s.add_layer("A");
+        s.add_layer("B");
+        assert_eq!(names_top_down(&s), ["F", "  B", "  A", "Background"]);
+    }
+
+    #[test]
+    fn move_enters_and_leaves_folders() {
+        let mut s = LayerStack::new(2, 2);
+        s.add_folder("F");
+        s.set_active(1);
+        let a = s.add_layer("A"); // root, above Background, below F
+        assert_eq!(names_top_down(&s), ["F", "A", "Background"]);
+        s.move_active(true); // onto F: enters it
+        assert_eq!(names_top_down(&s), ["F", "  A", "Background"]);
+        s.move_active(true); // top of F: leaves it, lands above F
+        assert_eq!(names_top_down(&s), ["A", "F", "Background"]);
+        s.move_active(false); // onto F from above: enters at its top
+        assert_eq!(names_top_down(&s), ["F", "  A", "Background"]);
+        s.move_active(false); // bottom of F: leaves it, lands below F
+        assert_eq!(names_top_down(&s), ["F", "A", "Background"]);
+        assert_eq!(s.active_id(), a);
+    }
+
+    #[test]
+    fn lock_blocks_painting_and_clearing_also_through_folder() {
+        let mut s = LayerStack::new(2, 2);
+        let f = s.add_folder("F");
+        let l = s.add_layer("L");
+        set_px(&mut s, l, [0, 0, 0, 255]);
+        assert!(s.can_paint());
+        *s.node_mut(f).unwrap().locked_mut() = true;
+        assert!(!s.can_paint());
+        assert!(!s.clear_active());
+        assert_eq!(layer_px(&s, l, 0, 0), [0, 0, 0, 255]);
+        *s.node_mut(f).unwrap().locked_mut() = false;
+        *s.node_mut(l).unwrap().locked_mut() = true;
+        assert!(!s.can_paint());
+        assert!(s.rows().iter().all(|r| !r.locked_by_parent));
+    }
+
+    #[test]
+    fn folders_cannot_be_painted_on() {
+        let mut s = LayerStack::new(2, 2);
+        s.add_folder("F");
+        assert!(!s.can_paint());
+        assert!(s.active_surface().is_none());
+    }
+
+    #[test]
+    fn duplicate_folder_copies_content_with_new_ids() {
+        let mut s = LayerStack::new(2, 2);
+        let f = s.add_folder("F");
+        let l = s.add_layer("L");
+        set_px(&mut s, l, [1, 2, 3, 255]);
+        s.set_active(f);
+        s.duplicate_active();
+        assert_eq!(names_top_down(&s), ["F copy", "  L", "F", "  L", "Background"]);
+        let ids = s.layer_ids();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len());
+        let copy_l = s.rows()[1].id;
+        assert_eq!(layer_px(&s, copy_l, 0, 0), [1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn remove_keeps_a_valid_active_and_at_least_one_layer() {
+        let mut s = LayerStack::new(2, 2);
+        assert!(!s.remove_active()); // last paint layer: refused
+        let f = s.add_folder("F");
+        s.add_layer("L");
+        s.set_active(f);
+        assert!(s.remove_active()); // folder with its content
+        assert_eq!(names_top_down(&s), ["Background"]);
+        assert_eq!(s.active_id(), 1);
+        s.begin_stroke();
     }
 
     #[test]
     fn clear_resets_to_white_or_transparent() {
-        let mut stack = LayerStack::new(2, 2);
-        stack.active_layer_mut().pixels[0..4].copy_from_slice(&[0, 0, 0, 255]);
-        stack.clear_active();
-        assert_eq!(px(&stack, 0, 0, 0), [255, 255, 255, 255]);
-
-        stack.add_layer("L");
-        stack.active_layer_mut().pixels[0..4].copy_from_slice(&[0, 0, 0, 255]);
-        stack.clear_active();
-        assert_eq!(px(&stack, 1, 0, 0), [255, 255, 255, 0]);
+        let mut s = LayerStack::new(2, 2);
+        set_px(&mut s, 1, [0, 0, 0, 255]);
+        s.clear_active();
+        assert_eq!(layer_px(&s, 1, 0, 0), [255, 255, 255, 255]);
+        let l = s.add_layer("L");
+        set_px(&mut s, l, [0, 0, 0, 255]);
+        s.clear_active();
+        assert_eq!(layer_px(&s, l, 0, 0), [255, 255, 255, 0]);
     }
 
     #[test]
-    fn resize_keeps_content_centered() {
-        let mut stack = LayerStack::new(4, 4);
-        stack.add_layer("L");
-        // Mark pixel (1, 1) on the paint layer.
-        let i = ((1 * 4 + 1) * 4) as usize;
-        stack.layers[1].pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
-
-        stack.resize(8, 8); // grows by 2 on each side
-        assert_eq!((stack.width, stack.height), (8, 8));
-        assert_eq!(px(&stack, 1, 3, 3), [0, 0, 0, 255]);
-        assert_eq!(px(&stack, 1, 0, 0), [255, 255, 255, 0]); // new margin, transparent
-        assert_eq!(px(&stack, 0, 0, 0), [255, 255, 255, 255]); // background margin, white
-
-        stack.resize(4, 4); // back: crops the margins
-        assert_eq!(px(&stack, 1, 1, 1), [0, 0, 0, 255]);
-
-        stack.begin_stroke(); // stroke buffers follow the new size
-        let s = stack.active_surface();
-        assert_eq!(s.width() * s.height(), 16);
+    fn resize_keeps_content_centered_inside_folders_too() {
+        let mut s = LayerStack::new(4, 4);
+        s.add_folder("F");
+        let l = s.add_layer("L");
+        if let Some(Node::Layer(layer)) = s.node_mut(l) {
+            let i = ((1 * 4 + 1) * 4) as usize;
+            layer.pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+        }
+        s.resize(8, 8);
+        assert_eq!(layer_px(&s, l, 3, 3), [0, 0, 0, 255]);
+        assert_eq!(layer_px(&s, l, 0, 0), [255, 255, 255, 0]);
+        assert_eq!(layer_px(&s, 1, 0, 0), [255, 255, 255, 255]);
+        s.begin_stroke();
+        assert_eq!(s.active_surface().unwrap().width(), 8);
     }
 }
