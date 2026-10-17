@@ -466,6 +466,34 @@ impl LayerStack {
         self.stroke_mask.fill(0);
     }
 
+    /// Pixels of `rect` in the active layer as it was when the current
+    /// stroke began (the undo data of the stroke). RGBA rows, tightly packed.
+    pub fn stroke_base_rect(&self, rect: Rect) -> Vec<u8> {
+        copy_rect(&self.stroke_base, self.width, rect)
+    }
+
+    /// Pixels of `rect` in paint layer `id`, RGBA rows, tightly packed.
+    pub fn layer_rect(&self, id: u64, rect: Rect) -> Option<Vec<u8>> {
+        match self.node(id)? {
+            Node::Layer(l) => Some(copy_rect(&l.pixels, self.width, rect)),
+            Node::Folder(_) => None,
+        }
+    }
+
+    /// Write `data` (from layer_rect / stroke_base_rect) back into `rect`
+    /// of paint layer `id`. False if the layer is gone or the size is off.
+    pub fn set_layer_rect(&mut self, id: u64, rect: Rect, data: &[u8]) -> bool {
+        let w = self.width;
+        let (rw, rh) = ((rect.2 - rect.0) as usize, (rect.3 - rect.1) as usize);
+        if rect.2 > self.width || rect.3 > self.height || data.len() != rw * rh * 4 { return false; }
+        let Some(Node::Layer(l)) = self.node_mut(id) else { return false };
+        for (row, src) in data.chunks_exact(rw * 4).enumerate() {
+            let start = ((rect.1 as usize + row) * w as usize + rect.0 as usize) * 4;
+            l.pixels[start..start + rw * 4].copy_from_slice(src);
+        }
+        true
+    }
+
     /// The active paint layer as a brush surface; None for a folder.
     pub fn active_surface(&mut self) -> Option<ActiveSurface<'_>> {
         let (w, h) = (self.width, self.height);
@@ -623,6 +651,17 @@ fn composite_row(nodes: &[Node], width: u32, y: u32, x0: u32, row: &mut [Premul]
             },
         }
     }
+}
+
+/// Copy `rect` out of a `width`-wide RGBA buffer, rows tightly packed.
+fn copy_rect(src: &[u8], width: u32, rect: Rect) -> Vec<u8> {
+    let rw = (rect.2 - rect.0) as usize * 4;
+    let mut out = Vec::with_capacity(rw * (rect.3 - rect.1) as usize);
+    for y in rect.1..rect.3 {
+        let start = (y as usize * width as usize + rect.0 as usize) * 4;
+        out.extend_from_slice(&src[start..start + rw]);
+    }
+    out
 }
 
 #[cfg(test)]
