@@ -1,4 +1,5 @@
 mod app;
+mod paint_thread;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 
@@ -14,7 +15,6 @@ fn main() {
     let event_loop = EventLoop::<app::AppEvent>::with_user_event().build().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = app::App::default();
-    app.proxy = Some(event_loop.create_proxy());
+    let mut app = app::App::new(event_loop.create_proxy());
     event_loop.run_app(&mut app).unwrap();
 }

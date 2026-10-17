@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -10,45 +10,50 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, PressureSmoother};
+use aurastudio_brush::Brush;
 use aurastudio_canvas::Rect;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_layers::LayerStack;
 use aurastudio_ui::{Actions, Model, UiState};
 
+use crate::paint_thread::{self, Cmd, PaintThread, Timing};
+
 /// Canvas size at startup; changed afterwards from the Canvas docker.
 const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
 
-/// Message the app posts to its own event loop.
+/// Message posted to the event loop (by the app itself or the paint thread).
 #[derive(Debug, Clone, Copy)]
 pub enum AppEvent {
     /// Wake the loop so about_to_wait runs and requests the wanted frame.
     Wake,
+    /// The paint thread changed some canvas area.
+    Painted,
+    /// The paint thread finished a stroke on this layer.
+    StrokeDone(u64),
 }
 
 pub struct App {
-    /// Posts AppEvent::Wake (set by main before running the loop).
-    pub proxy:    Option<EventLoopProxy<AppEvent>>,
+    proxy:  EventLoopProxy<AppEvent>,
     window: Option<Arc<Window>>,
     gpu:    Option<GpuState>,
     stylus: Option<Stylus>,
 
     brush:        Brush,
-    hokusai:      HokusaiEngine,
     /// true = hokusai engine (libmypaint, for textured brushes later),
     /// false = swept round pen (default).
     use_hokusai:  bool,
-    pen_smoother: PressureSmoother,
+    /// Pressure smoothing distance, fraction of the brush radius.
+    smoothing:    f32,
 
-    layers: LayerStack,
+    /// Shared with the paint thread, which paints strokes into it.
+    layers: Arc<Mutex<LayerStack>>,
+    paint:  PaintThread,
     /// Width / height typed in the Canvas dock, applied by "Resize".
     canvas_edit: (u32, u32),
     ui:          UiState,
 
     is_drawing: bool,
-    /// Last sample of the current stroke: canvas x, y and smoothed pressure.
-    last_pos:   Option<(f32, f32, f32)>,
     pressure:   f32,
     /// Set once the native pen sent samples during the current stroke:
     /// the CursorMoved events Windows synthesizes for the same pen are then
@@ -69,28 +74,36 @@ pub struct App {
     redraw_wanted: bool,
     /// Delayed frame asked by egui (tooltip, notice fade-out).
     repaint_at:   Option<Instant>,
-    stats:        StrokeStats,
+    /// Main-thread frame cost during the current stroke (logged at its end).
+    frame_stats:  Timing,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
+        let layers = Arc::new(Mutex::new(LayerStack::new(DEFAULT_CANVAS.0, DEFAULT_CANVAS.1)));
+        let worker_proxy = proxy.clone();
+        let paint = PaintThread::spawn(Arc::clone(&layers), move |e| {
+            let _ = worker_proxy.send_event(match e {
+                paint_thread::Event::Painted => AppEvent::Painted,
+                paint_thread::Event::StrokeDone { layer_id } => AppEvent::StrokeDone(layer_id),
+            });
+        });
         Self {
-            proxy:  None,
+            proxy,
             window: None,
             gpu:    None,
             stylus: None,
 
-            brush:        Brush::new(),
-            hokusai:      HokusaiEngine::new(),
-            use_hokusai:  false,
-            pen_smoother: PressureSmoother::new(0.5),
+            brush:       Brush::new(),
+            use_hokusai: false,
+            smoothing:   0.5,
 
-            layers:      LayerStack::new(DEFAULT_CANVAS.0, DEFAULT_CANVAS.1),
+            layers,
+            paint,
             canvas_edit: DEFAULT_CANVAS,
             ui:          UiState::new(),
 
             is_drawing: false,
-            last_pos:   None,
             pressure:   1.0,
             pen_active: false,
             cursor:     (0.0, 0.0),
@@ -100,12 +113,10 @@ impl Default for App {
             last_frame:   None,
             redraw_wanted: false,
             repaint_at:   None,
-            stats:        StrokeStats::default(),
+            frame_stats:  Timing::default(),
         }
     }
-}
 
-impl App {
     /// Window pixels -> canvas pixels. The canvas is letterboxed inside the
     /// free area left by the docks (the GPU viewport), not the whole window,
     /// so both the viewport origin and its size matter here.
@@ -129,7 +140,7 @@ impl App {
     fn request_redraw(&mut self) {
         if !self.redraw_wanted {
             self.redraw_wanted = true;
-            if let Some(p) = &self.proxy { let _ = p.send_event(AppEvent::Wake); }
+            let _ = self.proxy.send_event(AppEvent::Wake);
         }
     }
 
@@ -144,66 +155,41 @@ impl App {
     /// Start a stroke on the active layer. Refused (with a notice in the
     /// options bar) when it is locked or a folder is selected.
     fn begin_stroke(&mut self) {
-        if !self.layers.can_paint() {
-            let msg = if self.layers.active_node().is_folder() {
-                "Select a layer to paint (a folder is selected)"
+        let refusal = {
+            let layers = self.layers.lock().unwrap();
+            if layers.can_paint() {
+                None
+            } else if layers.active_node().is_folder() {
+                Some("Select a layer to paint (a folder is selected)")
             } else {
-                "Layer is locked"
-            };
+                Some("Layer is locked")
+            }
+        };
+        if let Some(msg) = refusal {
             self.ui.notify(msg);
             self.is_drawing = false;
             self.request_redraw();
             return;
         }
         self.is_drawing = true;
-        self.layers.begin_stroke();
-        if self.use_hokusai {
-            self.hokusai.smoother.span = self.pen_smoother.span;
-            self.hokusai.sync_from(&self.brush);
-            self.hokusai.begin_stroke();
-        }
-        self.last_pos   = None;
         self.pen_active = false;
-        self.pen_smoother.reset();
+        self.frame_stats = Timing::default();
+        self.paint.send(Cmd::Begin {
+            brush:     self.brush.clone(),
+            hokusai:   self.use_hokusai,
+            smoothing: self.smoothing,
+        });
     }
 
     fn end_stroke(&mut self) {
-        if self.stats.paint.count > 0 {
-            log::info!("stroke: {} samples | paint {} | frame (composite+render) {}",
-                self.stats.paint.count, self.stats.paint, self.stats.frame);
-        }
-        self.stats = StrokeStats::default();
-        if self.use_hokusai && self.last_pos.is_some() {
-            if let Some(mut surface) = self.layers.active_surface() {
-                let rect = self.hokusai.end_stroke(&mut surface);
-                self.present_rect(rect);
-            }
-        }
-        if self.last_pos.is_some() {
-            self.ui.invalidate_thumbnail(self.layers.active_id());
-            self.request_redraw();
-        }
-        self.last_pos   = None;
+        self.paint.send(Cmd::End);
         self.pen_active = false;
     }
 
+    /// Forward one pen sample to the paint thread (never paints here).
     fn draw_at(&mut self, wx: f32, wy: f32) {
-        let Some(pos) = self.window_to_canvas(wx, wy) else { return };
-        let t0 = Instant::now();
-        let pressure = self.pressure;
-        let Some(mut surface) = self.layers.active_surface() else { return };
-
-        let rect = if self.use_hokusai {
-            self.last_pos = Some((pos.0, pos.1, pressure));
-            self.hokusai.stroke_to(&mut surface, pos.0, pos.1, pressure)
-        } else {
-            let p = self.pen_smoother.apply(pos.0, pos.1, pressure, self.brush.radius as f32);
-            let (fx, fy, fp) = self.last_pos.unwrap_or((pos.0, pos.1, p));
-            self.last_pos = Some((pos.0, pos.1, p));
-            stroke_line((fx, fy), pos, &self.brush, &mut surface, fp, p)
-        };
-        self.stats.paint.add(t0.elapsed());
-        self.present_rect(rect);
+        let Some((x, y)) = self.window_to_canvas(wx, wy) else { return };
+        self.paint.send(Cmd::Sample { x, y, pressure: self.pressure });
     }
 
     /// Native pen samples (WinTab or Windows Ink). Press / release still
@@ -220,15 +206,16 @@ impl App {
         }
     }
 
-    /// Record that `rect` of the active layer changed. The layers are only
+    /// The paint thread changed some area: show it. The layers are only
     /// recomposited once per displayed frame (in render_frame), not once
     /// per pen sample: at 200 px that recomposite was most of the cost.
-    fn present_rect(&mut self, rect: Option<Rect>) {
-        let Some(r) = rect else { return };
-        self.pending = Some(match self.pending {
-            None    => r,
-            Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
-        });
+    fn on_painted(&mut self) {
+        if let Some(r) = self.paint.take_dirty() {
+            self.pending = Some(match self.pending {
+                None    => r,
+                Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
+            });
+        }
         self.request_redraw();
         self.render_if_due();
     }
@@ -253,22 +240,32 @@ impl App {
         let t0 = Instant::now();
 
         if let Some(rect) = self.pending.take() {
-            self.layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
+            self.layers.lock().unwrap().composite_rect_into(&mut gpu.canvas.pixels, rect);
             gpu.canvas.mark_dirty(rect);
         }
 
         let max_canvas = gpu.max_canvas_size();
         let ui_state   = &mut self.ui;
-        let mut model = Model {
-            brush:              &mut self.brush,
-            use_hokusai:        &mut self.use_hokusai,
-            pressure_smoothing: &mut self.pen_smoother.span,
-            layers:             &mut self.layers,
-            canvas_edit:        &mut self.canvas_edit,
-            max_canvas,
-        };
+        let layers     = &self.layers;
+        let brush      = &mut self.brush;
+        let use_hokusai = &mut self.use_hokusai;
+        let smoothing  = &mut self.smoothing;
+        let canvas_edit = &mut self.canvas_edit;
         let mut actions = Actions::default();
-        gpu.render(|ctx| aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions));
+        gpu.render(|ctx| {
+            // Locked only while the UI is built, not during the GPU submit,
+            // so the paint thread is held up as little as possible.
+            let mut layers = layers.lock().unwrap();
+            let mut model = Model {
+                brush,
+                use_hokusai,
+                pressure_smoothing: smoothing,
+                layers: &mut layers,
+                canvas_edit,
+                max_canvas,
+            };
+            aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions);
+        });
         let mut want_frame = false;
         match gpu.take_repaint_delay() {
             Some(d) if d.is_zero() => want_frame = true,
@@ -280,20 +277,20 @@ impl App {
             _ => {}
         }
         if self.is_drawing {
-            self.stats.frame.add(t0.elapsed());
+            self.frame_stats.add(t0.elapsed());
         }
         self.last_frame = Some(Instant::now());
 
-        if let Some((w, h)) = actions.resize_to {
-            log::info!("canvas resize: {}x{} -> {w}x{h}", self.layers.width, self.layers.height);
-            self.layers.resize(w, h);
-            gpu.resize_canvas(w, h);
-            self.ui.invalidate_all_thumbnails();
-            self.layers_dirty = true;
-        }
-        if actions.recomposite || self.layers_dirty {
-            let (w, h) = (self.layers.width, self.layers.height);
-            self.layers.composite_into(&mut gpu.canvas.pixels);
+        if actions.resize_to.is_some() || actions.recomposite || self.layers_dirty {
+            let mut layers = self.layers.lock().unwrap();
+            if let Some((w, h)) = actions.resize_to {
+                log::info!("canvas resize: {}x{} -> {w}x{h}", layers.width, layers.height);
+                layers.resize(w, h);
+                gpu.resize_canvas(w, h);
+                self.ui.invalidate_all_thumbnails();
+            }
+            let (w, h) = (layers.width, layers.height);
+            layers.composite_into(&mut gpu.canvas.pixels);
             gpu.canvas.mark_dirty((0, 0, w, h));
             self.layers_dirty = false;
             // Uploaded with the next frame.
@@ -308,8 +305,12 @@ impl App {
     /// transparent for the others), like Krita / CSP.
     fn clear_active_layer(&mut self) {
         if self.is_drawing { return; }
-        if self.layers.clear_active() {
-            self.ui.invalidate_thumbnail(self.layers.active_id());
+        let cleared = {
+            let mut layers = self.layers.lock().unwrap();
+            layers.clear_active().then(|| layers.active_id())
+        };
+        if let Some(id) = cleared {
+            self.ui.invalidate_thumbnail(id);
             self.layers_dirty = true;
         } else {
             self.ui.notify("Layer is locked or is a folder");
@@ -319,8 +320,21 @@ impl App {
 }
 
 impl ApplicationHandler<AppEvent> for App {
-    /// Only there to wake the loop; about_to_wait does the work.
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: AppEvent) {}
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            // Only there to wake the loop; about_to_wait does the work.
+            AppEvent::Wake => {}
+            AppEvent::Painted => self.on_painted(),
+            AppEvent::StrokeDone(layer_id) => {
+                if self.frame_stats.count > 0 {
+                    log::info!("stroke frames (composite+render, main thread): {}", self.frame_stats);
+                }
+                self.on_painted();
+                self.ui.invalidate_thumbnail(layer_id);
+                self.request_redraw();
+            }
+        }
+    }
 
     /// Called once winit has dispatched every pending OS message, right
     /// before it waits for new ones. WinTab packets arrive as their own
@@ -345,7 +359,10 @@ impl ApplicationHandler<AppEvent> for App {
             .with_inner_size(winit::dpi::LogicalSize::new(1440u32, 900u32));
 
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
-        let size   = (self.layers.width, self.layers.height);
+        let size   = {
+            let l = self.layers.lock().unwrap();
+            (l.width, l.height)
+        };
         let mut gpu = pollster::block_on(GpuState::new(Arc::clone(&window), size));
         gpu.clear_color = aurastudio_ui::theme::backdrop_rgb();
         log::info!("max canvas size: {} px", gpu.max_canvas_size());
@@ -472,36 +489,5 @@ impl ApplicationHandler<AppEvent> for App {
 
             _ => {}
         }
-    }
-}
-
-/// CPU time spent per stroke, logged when the stroke ends so latency can be
-/// measured on the real machine instead of guessed.
-#[derive(Default)]
-struct StrokeStats {
-    paint: Timing,
-    frame: Timing,
-}
-
-#[derive(Default)]
-struct Timing {
-    count: u32,
-    total: Duration,
-    max:   Duration,
-}
-
-impl Timing {
-    fn add(&mut self, d: Duration) {
-        self.count += 1;
-        self.total += d;
-        self.max = self.max.max(d);
-    }
-}
-
-impl std::fmt::Display for Timing {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if self.count == 0 { return write!(f, "-"); }
-        let avg = self.total.as_secs_f64() * 1000.0 / self.count as f64;
-        write!(f, "avg {avg:.2} ms, max {:.2} ms", self.max.as_secs_f64() * 1000.0)
     }
 }
