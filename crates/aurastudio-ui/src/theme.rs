@@ -1,24 +1,25 @@
-//! AuraStudio dark theme: neutral graphite grays (no blue cast), one soft
+//! AuraStudio dark theme: strictly neutral grays (R = G = B, so no gray is
+//! warmer or cooler than another), one soft
 //! gray-cyan accent, rounded corners, compact spacing. Minimal on purpose:
 //! the UI stays quiet and leaves the room to the painting.
 
 use egui::{Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Visuals};
 
 /// Behind the canvas (also used as the GPU clear color).
-pub const BACKDROP:     Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1f);
+pub const BACKDROP:     Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
 /// Docks, toolbar, menu bar.
-pub const PANEL:        Color32 = Color32::from_rgb(0x2c, 0x2c, 0x2e);
+pub const PANEL:        Color32 = Color32::from_rgb(0x2d, 0x2d, 0x2d);
 /// Inset areas inside a dock (layer list, tab bars).
-pub const SURFACE:      Color32 = Color32::from_rgb(0x25, 0x25, 0x27);
-pub const WIDGET:       Color32 = Color32::from_rgb(0x39, 0x39, 0x3c);
-pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x44, 0x44, 0x48);
-pub const BORDER:       Color32 = Color32::from_rgb(0x3b, 0x3b, 0x3e);
+pub const SURFACE:      Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
+pub const WIDGET:       Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x46, 0x46, 0x46);
+pub const BORDER:       Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
 /// Selection accent: a soft, slightly grayed blue (halfway between the
 /// first blue and a cyan).
 pub const ACCENT:       Color32 = Color32::from_rgb(0x6d, 0x99, 0xda);
 pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x33, 0x45, 0x5e);
-pub const TEXT:         Color32 = Color32::from_rgb(0xe2, 0xe2, 0xe3);
-pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0x98, 0x98, 0x9c);
+pub const TEXT:         Color32 = Color32::from_rgb(0xe2, 0xe2, 0xe2);
+pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
 
 /// BACKDROP as a 0..1 float color, for the GPU clear.
 pub fn backdrop_rgb() -> [f64; 3] {

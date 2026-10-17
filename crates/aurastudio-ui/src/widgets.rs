@@ -107,6 +107,7 @@ pub fn snap(t: f32, display_max: f32) -> f32 {
 /// Returns true when the user changed the value.
 pub fn channel_row(
     ui: &mut Ui,
+    width: f32,
     label: &str,
     value: &mut f32,
     display_max: f32,
@@ -117,7 +118,10 @@ pub fn channel_row(
     // previous one, so the three bars ended at different x.
     let gap = 7.0;
     let (label_w, box_w, h, bar_h) = (12.0, 38.0, 24.0, 14.0);
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    // `width` is measured once by the caller for all rows: if anything
+    // overflowed, egui would widen the column and the next row would get a
+    // longer bar (staircase).
+    let (row, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     // Label and number box are centered on the bar, not on the row (the
     // marker triangle hangs under the bar).
     let bar_cy = row.top() + bar_h / 2.0;
@@ -157,7 +161,11 @@ pub fn channel_row(
 
     let mut shown = (*value * display_max).round() as i32;
     let dv = egui::DragValue::new(&mut shown).range(0..=display_max as i32).speed(1.0);
-    if ui.put(box_rect, dv).changed() {
+    // egui's default minimum widget width (40) is wider than the box.
+    let min_w = std::mem::replace(&mut ui.spacing_mut().interact_size.x, box_w);
+    let changed_box = ui.put(box_rect, dv).changed();
+    ui.spacing_mut().interact_size.x = min_w;
+    if changed_box {
         *value = shown as f32 / display_max;
         changed = true;
     }

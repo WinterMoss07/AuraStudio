@@ -46,15 +46,16 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
 
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 5.0;
+            let w = ui.available_width();
             match st.mode {
                 Mode::Hsv => {
                     let [h, s, v] = st.hsv;
                     let mut new = st.hsv;
                     // Hue bar at full saturation / value, like most apps;
                     // S and V bars show the real color along the range.
-                    channel_row(ui, "H", &mut new[0], 360.0, &|t| hsv_to_color32([t, 1.0, 1.0]));
-                    channel_row(ui, "S", &mut new[1], 100.0, &|t| hsv_to_color32([h, t, v]));
-                    channel_row(ui, "V", &mut new[2], 100.0, &|t| hsv_to_color32([h, s, t]));
+                    channel_row(ui, w, "H", &mut new[0], 360.0, &|t| hsv_to_color32([t, 1.0, 1.0]));
+                    channel_row(ui, w, "S", &mut new[1], 100.0, &|t| hsv_to_color32([h, t, v]));
+                    channel_row(ui, w, "V", &mut new[2], 100.0, &|t| hsv_to_color32([h, s, t]));
                     if new != st.hsv {
                         st.hsv = new;
                         m.brush.color = to_u8(hsv_to_rgb(new));
@@ -63,9 +64,9 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
                 Mode::Rgb => {
                     let [r, g, b] = to_f(m.brush.color);
                     let mut new = [r, g, b];
-                    channel_row(ui, "R", &mut new[0], 255.0, &|t| rgb_to_color32([t, g, b]));
-                    channel_row(ui, "G", &mut new[1], 255.0, &|t| rgb_to_color32([r, t, b]));
-                    channel_row(ui, "B", &mut new[2], 255.0, &|t| rgb_to_color32([r, g, t]));
+                    channel_row(ui, w, "R", &mut new[0], 255.0, &|t| rgb_to_color32([t, g, b]));
+                    channel_row(ui, w, "G", &mut new[1], 255.0, &|t| rgb_to_color32([r, t, b]));
+                    channel_row(ui, w, "B", &mut new[2], 255.0, &|t| rgb_to_color32([r, g, t]));
                     if new != [r, g, b] {
                         m.brush.color = to_u8(new);
                     }
