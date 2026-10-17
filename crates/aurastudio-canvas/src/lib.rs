@@ -1,5 +1,8 @@
 use wgpu::*;
 
+pub mod blend;
+pub use blend::BlendMode;
+
 pub type Rect = (u32, u32, u32, u32); // x0, y0, x1, y1 (exclusive)
 
 /// Anything the brush engines can paint on (today: the active layer).

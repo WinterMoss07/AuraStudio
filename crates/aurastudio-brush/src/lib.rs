@@ -1,4 +1,4 @@
-use aurastudio_canvas::{PaintSurface, Rect};
+use aurastudio_canvas::{blend::blend_pixel_u8, BlendMode, PaintSurface, Rect};
 
 mod hokusai_engine;
 pub use hokusai_engine::HokusaiEngine;
@@ -7,11 +7,13 @@ pub struct Brush {
     pub color:   [u8; 3],
     pub opacity: f32,
     pub radius:  u32,
+    /// How the brush color combines with what is already on the layer.
+    pub blend:   BlendMode,
 }
 
 impl Brush {
     pub fn new() -> Self {
-        Self { color: [0, 0, 0], opacity: 1.0, radius: 25 }
+        Self { color: [0, 0, 0], opacity: 1.0, radius: 25, blend: BlendMode::Normal }
     }
 }
 
@@ -121,18 +123,12 @@ pub fn stroke_line<S: PaintSurface>(
             if cov_u8 <= stroke_mask[pidx] { continue; }
             stroke_mask[pidx] = cov_u8;
 
-            // Straight-alpha "over" of the brush color on stroke_base:
-            // needed on transparent layers (base alpha 0).
-            let base  = pidx * 4;
-            let sa    = cov_u8 as f32 / 255.0;
-            let ba    = stroke_base[base + 3] as f32 / 255.0;
-            let k     = ba * (1.0 - sa);
-            let out_a = sa + k;
-            for c in 0..3 {
-                let v = (brush.color[c] as f32 * sa + stroke_base[base + c] as f32 * k) / out_a;
-                pixels[base + c] = v.round() as u8;
-            }
-            pixels[base + 3] = (out_a * 255.0).round() as u8;
+            // Brush color blended (brush blend mode) onto the layer as it was
+            // before the stroke, at this pixel's coverage.
+            let base = pidx * 4;
+            let backdrop = [stroke_base[base], stroke_base[base + 1], stroke_base[base + 2], stroke_base[base + 3]];
+            let out = blend_pixel_u8(backdrop, brush.color, cov_u8 as f32 / 255.0, brush.blend);
+            pixels[base..base + 4].copy_from_slice(&out);
         }
     }
 
@@ -179,6 +175,20 @@ mod tests {
         // Same stroke comes back over itself at 30%: 30%, not 50%.
         stroke_line((110.0, 64.0), (10.0, 64.0), &b, &mut s, 0.3, 0.3);
         assert_eq!(red_at(&s, 60, 64), 178);
+    }
+
+    #[test]
+    fn multiply_brush_darkens_instead_of_covering() {
+        // Mid-gray background, red multiply brush: result is darker red,
+        // not plain red.
+        let mut s = surface([128, 128, 128, 255]);
+        let mut b = Brush::new();
+        b.radius = 6;
+        b.color = [255, 0, 0];
+        b.blend = BlendMode::Multiply;
+        stroke_line((64.0, 64.0), (64.0, 64.0), &b, &mut s, 1.0, 1.0);
+        let i = ((64 * N + 64) * 4) as usize;
+        assert_eq!(&s.px[i..i + 4], &[128, 0, 0, 255]);
     }
 
     #[test]

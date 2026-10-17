@@ -24,7 +24,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use aurastudio_canvas::{PaintSurface, Rect};
+use aurastudio_canvas::{blend::{blend_over, to_straight_u8}, BlendMode, PaintSurface, Rect};
 use hokusai::brushmodes::draw_dab_default;
 use hokusai::color::rgb_to_hsv;
 use hokusai::fix15;
@@ -127,6 +127,7 @@ pub struct HokusaiEngine {
     stroke:    WashStrokeSurface,
     last_time: Option<Instant>,
     radius:    f32,
+    blend:     BlendMode,
     pub smoother: PressureSmoother,
 }
 
@@ -138,6 +139,7 @@ impl HokusaiEngine {
             stroke: WashStrokeSurface::new(),
             last_time: None,
             radius: 25.0,
+            blend: BlendMode::Normal,
             smoother: PressureSmoother::new(0.5),
         }
     }
@@ -155,6 +157,7 @@ impl HokusaiEngine {
         self.brush.set(BrushSetting::ColorV, SettingValue::constant(hsv.v));
         // libmypaint stores the radius as a natural log.
         self.radius = b.radius.max(1) as f32;
+        self.blend  = b.blend;
         self.brush.set(BrushSetting::Radius, SettingValue::constant(self.radius.ln()));
         self.brush.set(BrushSetting::Opaque, SettingValue::constant(b.opacity.clamp(0.0, 1.0)));
     }
@@ -219,15 +222,18 @@ impl HokusaiEngine {
                         pixels[idx..idx + 4].copy_from_slice(&base[idx..idx + 4]);
                         continue;
                     }
-                    // Straight-alpha "over": stroke (premultiplied) over base.
-                    let ba    = base[idx + 3] as f32 / 255.0;
-                    let k     = ba * (1.0 - sa);
-                    let out_a = sa + k;
-                    for c in 0..3 {
-                        let v = (fix15::to_f32(p[c]) + base[idx + c] as f32 / 255.0 * k) / out_a;
-                        pixels[idx + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                    }
-                    pixels[idx + 3] = (out_a * 255.0).round() as u8;
+                    // Stroke (premultiplied tile) blended onto the layer as it
+                    // was before the stroke, with the brush blend mode.
+                    let ba = base[idx + 3] as f32 / 255.0;
+                    let mut dst = [
+                        base[idx] as f32 / 255.0 * ba,
+                        base[idx + 1] as f32 / 255.0 * ba,
+                        base[idx + 2] as f32 / 255.0 * ba,
+                        ba,
+                    ];
+                    let cs = [0, 1, 2].map(|c| (fix15::to_f32(p[c]) / sa).clamp(0.0, 1.0));
+                    blend_over(&mut dst, cs, sa, self.blend);
+                    pixels[idx..idx + 4].copy_from_slice(&to_straight_u8(dst));
                 }
             }
 
