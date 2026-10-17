@@ -1,0 +1,9 @@
+[package]
+name = "aurastudio-document"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aurastudio-canvas = { path = "../aurastudio-canvas" }
+aurastudio-layers = { path = "../aurastudio-layers" }
+lz4_flex          = "0.14"
