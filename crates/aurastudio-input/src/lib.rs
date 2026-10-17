@@ -17,6 +17,48 @@ pub struct StylusSample {
 #[cfg(target_os = "windows")]
 pub struct Stylus { inner: imp::Inner }
 
+// ---------------------------------------------------------------
+// Variante A/B : build avec `--features efude-upstream` pour utiliser
+// les hooks WindowsInkHook/WintabHook du crate efude-input brut, au
+// lieu de notre version vendored au-dessus. Sert uniquement à isoler
+// si une latence vient du hook natif lui-même ou de notre pipeline
+// gpu/brush — jamais utilisée en build normal.
+#[cfg(all(target_os = "windows", feature = "efude-upstream"))]
+mod imp {
+    use super::StylusSample;
+    use efude_input::{PenInputQueue, WindowsInkHook, WintabHook};
+
+    pub struct Inner {
+        queue: PenInputQueue,
+        _hook: Hook,
+    }
+
+    enum Hook { Wintab(WintabHook), Ink(WindowsInkHook), None }
+
+    pub fn install(hwnd_raw: isize) -> Inner {
+        let hwnd = hwnd_raw as *mut std::ffi::c_void;
+        let queue = PenInputQueue::default();
+
+        let hook = match WintabHook::install(hwnd, queue.shared()) {
+            Ok(h) => Hook::Wintab(h),
+            Err(_) => match WindowsInkHook::install(hwnd, queue.shared()) {
+                Ok(h) => Hook::Ink(h),
+                Err(_) => Hook::None,
+            },
+        };
+
+        Inner { queue, _hook: hook }
+    }
+
+    pub fn drain(inner: &Inner) -> Vec<StylusSample> {
+        let mut buf = Vec::new();
+        inner.queue.drain_into(&mut buf, 256);
+        buf.into_iter()
+            .map(|p| StylusSample { x: p.x, y: p.y, pressure: p.pressure })
+            .collect()
+    }
+}
+
 #[cfg(target_os = "windows")]
 impl Stylus {
     pub fn install(hwnd: isize) -> Self {
@@ -27,7 +69,7 @@ impl Stylus {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "efude-upstream")))]
 mod imp {
     use super::StylusSample;
     use crossbeam_queue::ArrayQueue;
