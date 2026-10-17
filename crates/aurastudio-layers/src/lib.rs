@@ -4,7 +4,7 @@
 //! tracked by id, so reordering or moving in and out of folders never
 //! changes which layer you paint on.
 
-use aurastudio_canvas::blend::{blend_over, to_straight_u8, Premul};
+use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, PaintSurface, Rect};
 
 /// One paint layer: RGBA8, straight alpha, `width * height * 4` bytes.
@@ -593,8 +593,15 @@ impl LayerStack {
         self.composite_rect_into(out, (0, 0, self.width, self.height));
     }
 
-    /// Composite limited to `rect`, row by row (no big temporary buffer
-    /// even for folders). `out` is indexed as the full canvas.
+    /// Composite limited to `rect`, row by row, straight into `out`
+    /// (indexed as the full canvas).
+    ///
+    /// The result is always opaque (white under everything), so the main
+    /// path blends straight into the output bytes: Normal layers in integer
+    /// math, other modes simplified for an opaque backdrop. No temporary
+    /// row, no un-premultiply per pixel. Only isolated folders go through
+    /// the general premultiplied path. (Was ~27 ns/px, see
+    /// examples/bench_composite.rs.)
     pub fn composite_rect_into(&self, out: &mut [u8], rect: Rect) {
         debug_assert_eq!(out.len(), (self.width * self.height * 4) as usize);
         let (x0, y0) = (rect.0, rect.1);
@@ -602,17 +609,94 @@ impl LayerStack {
         let y1 = rect.3.min(self.height);
         if x0 >= x1 || y0 >= y1 { return; }
         let n = (x1 - x0) as usize;
-        let mut row: Vec<Premul> = vec![[1.0; 4]; n];
+        let mut group: Vec<Premul> = Vec::new();
 
         for y in y0..y1 {
-            // White behind everything.
-            row.fill([1.0; 4]);
-            composite_row(&self.root, self.width, y, x0, &mut row, 1.0);
             let start = ((y * self.width + x0) * 4) as usize;
-            for (k, p) in row.iter().enumerate() {
-                out[start + k * 4..start + k * 4 + 4].copy_from_slice(&to_straight_u8(*p));
+            let dst = &mut out[start..start + n * 4];
+            // White behind everything.
+            dst.fill(255);
+            composite_row_opaque(&self.root, self.width, y, x0, dst, 1.0, &mut group);
+        }
+    }
+}
+
+/// Blend `nodes` (bottom to top) onto an opaque RGBA row `dst`, for canvas
+/// row `y` from column `x0`. `opacity_scale` carries pass-through folder
+/// opacity down to the children.
+fn composite_row_opaque(
+    nodes: &[Node], width: u32, y: u32, x0: u32, dst: &mut [u8], opacity_scale: f32, group: &mut Vec<Premul>,
+) {
+    let n = dst.len() / 4;
+    for node in nodes {
+        if !node.visible() || node.opacity() <= 0.0 { continue; }
+        match node {
+            Node::Layer(l) => {
+                let start = ((y * width + x0) * 4) as usize;
+                let src = &l.pixels[start..start + n * 4];
+                blend_layer_opaque(dst, src, l.opacity * opacity_scale, l.blend);
+            }
+            Node::Folder(f) => match f.blend {
+                FolderBlend::PassThrough => {
+                    composite_row_opaque(&f.children, width, y, x0, dst, opacity_scale * f.opacity, group);
+                }
+                FolderBlend::Isolated(mode) => {
+                    // Children merged on their own (transparent start, so
+                    // the general premultiplied path), then blended down.
+                    group.clear();
+                    group.resize(n, [0.0; 4]);
+                    composite_row(&f.children, width, y, x0, group, 1.0);
+                    let op = f.opacity * opacity_scale;
+                    for (d, g) in dst.chunks_exact_mut(4).zip(group.iter()) {
+                        if g[3] <= 0.0 { continue; }
+                        let inv = 1.0 / g[3];
+                        blend_px_opaque(d, [g[0] * inv, g[1] * inv, g[2] * inv], g[3] * op, mode);
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Blend one straight-alpha RGBA layer row onto an opaque row.
+#[inline]
+fn blend_layer_opaque(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode) {
+    let op8 = (opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+    if op8 == 0 { return; }
+    if mode == BlendMode::Normal {
+        // dst += (src - dst) * a, with a = alpha * opacity in 0..=255*255.
+        const FULL: u32 = 255 * 255;
+        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            let a = s[3] as u32 * op8;
+            if a == 0 { continue; }
+            if a == FULL {
+                d[..3].copy_from_slice(&s[..3]);
+                continue;
+            }
+            let ia = FULL - a;
+            for c in 0..3 {
+                d[c] = ((d[c] as u32 * ia + s[c] as u32 * a + FULL / 2) / FULL) as u8;
             }
         }
+    } else {
+        let op = op8 as f32 / 255.0;
+        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            if s[3] == 0 { continue; }
+            let cs = [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0];
+            blend_px_opaque(d, cs, s[3] as f32 / 255.0 * op, mode);
+        }
+    }
+}
+
+/// Blend straight color `cs` at alpha `a` onto one opaque pixel: with an
+/// opaque backdrop, W3C compositing reduces to cb + a * (B(cb, cs) - cb).
+#[inline]
+fn blend_px_opaque(d: &mut [u8], cs: [f32; 3], a: f32, mode: BlendMode) {
+    let a = a.clamp(0.0, 1.0);
+    for c in 0..3 {
+        let cb = d[c] as f32 / 255.0;
+        let b = mode.channel(cb, cs[c]).clamp(0.0, 1.0);
+        d[c] = unit_to_u8(cb + a * (b - cb));
     }
 }
 
