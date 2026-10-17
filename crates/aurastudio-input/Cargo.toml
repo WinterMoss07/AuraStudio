@@ -16,8 +16,8 @@ crossbeam-queue = "0.3"
 efude-input      = { version = "0.1.0", optional = true }
 
 [features]
-# A/B comparaison : build avec `--features aurastudio-input/efude-upstream`
-# pour utiliser les hooks WindowsInkHook/WintabHook du crate efude-input tel
-# quel, au lieu de notre version vendored/optimisée. Sert à isoler si une
-# latence observée vient du hook natif lui-même ou de notre pipeline.
+# A/B comparison: build with `--features aurastudio-input/efude-upstream`
+# to use the efude-input crate's WindowsInkHook / WintabHook as-is instead
+# of our vendored, optimized copy. Tells whether some latency comes from
+# the native hook itself or from our pipeline.
 efude-upstream = ["dep:efude-input"]

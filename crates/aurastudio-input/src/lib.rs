@@ -10,19 +10,19 @@ pub struct StylusSample {
 }
 
 // ---------------------------------------------------------------
-// Implémentation Windows : WinTab natif en priorité (ressenti plus
-// direct côté pilote Wacom), repli automatique sur Windows Ink
-// (WM_POINTER avec historique haute fréquence) si WinTab indisponible.
+// Windows: native WinTab first (feels more direct with Wacom drivers),
+// automatic fallback to Windows Ink (WM_POINTER with high-frequency
+// history) when WinTab isn't available.
 // ---------------------------------------------------------------
 #[cfg(target_os = "windows")]
 pub struct Stylus { inner: imp::Inner }
 
 // ---------------------------------------------------------------
-// Variante A/B : build avec `--features efude-upstream` pour utiliser
-// les hooks WindowsInkHook/WintabHook du crate efude-input brut, au
-// lieu de notre version vendored au-dessus. Sert uniquement à isoler
-// si une latence vient du hook natif lui-même ou de notre pipeline
-// gpu/brush — jamais utilisée en build normal.
+// A/B variant: build with `--features efude-upstream` to use the raw
+// efude-input crate's WindowsInkHook / WintabHook instead of our vendored
+// copy below. Only meant to tell whether some latency comes from the
+// native hook itself or from our gpu / brush pipeline; never used in
+// normal builds.
 #[cfg(all(target_os = "windows", feature = "efude-upstream"))]
 mod imp {
     use super::StylusSample;
@@ -221,7 +221,7 @@ mod imp {
         }
     }
 
-    // --- WinTab (wintab32.dll, chargé dynamiquement) -------------
+    // --- WinTab (wintab32.dll, loaded at runtime) -------------------
 
     mod wintab {
         use super::{c_void, Arc, ArrayQueue, DefSubclassProc, HWND, LPARAM,
