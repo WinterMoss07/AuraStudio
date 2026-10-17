@@ -1,5 +1,6 @@
 //! Custom widgets: gradient channel sliders (Krita / CSP color sliders),
-//! vertical tabs (CSP), vertical sliders (Procreate side bar).
+//! vertical tabs (CSP), and toolbar icons drawn with shapes (crisp at any
+//! scale, no dependency on font glyphs).
 
 use egui::{epaint, pos2, vec2, Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui};
 
@@ -113,9 +114,11 @@ pub fn channel_row(
 ) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(14.0, 18.0), egui::Label::new(egui::RichText::new(label).color(theme::TEXT_WEAK)));
+        // Tight label and number box: the gradient bar gets the length.
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.add_sized(vec2(10.0, 18.0), egui::Label::new(egui::RichText::new(label).color(theme::TEXT_WEAK)));
 
-        let box_w = 46.0;
+        let box_w = 36.0;
         let bar_w = (ui.available_width() - box_w - ui.spacing().item_spacing.x).max(40.0);
         let (rect, resp) = ui.allocate_exact_size(vec2(bar_w, 22.0), Sense::click_and_drag());
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), 14.0));
@@ -157,7 +160,7 @@ pub fn channel_row(
 // --- Vertical tab (CSP color slider) ---------------------------------------
 
 pub fn vertical_tab(ui: &mut Ui, text: &str, selected: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 44.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 42.0), Sense::click());
     let painter = ui.painter_at(rect);
     let bg = if selected {
         theme::WIDGET
@@ -187,57 +190,93 @@ pub fn vertical_tab(ui: &mut Ui, text: &str, selected: bool) -> Response {
     resp
 }
 
-// --- Vertical slider (Procreate side bar) -----------------------------------
+// --- Icons ---------------------------------------------------------------------
 
-/// Tall rounded slider; `t` is 0 (bottom) .. 1 (top). Returns true if
-/// changed. `label` is drawn under it (current value).
-pub fn vertical_slider(ui: &mut Ui, t: &mut f32, height: f32, label: &str, tooltip: &str) -> bool {
-    let width = 26.0;
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Icon { NewLayer, NewFolder, Duplicate, Up, Down, Delete }
+
+/// Frameless toolbar button with a shape-drawn icon.
+pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
     let resp = resp.on_hover_text(tooltip);
-    let mut changed = false;
+    let p = ui.painter_at(rect);
+    if enabled && resp.hovered() {
+        p.rect_filled(rect, 5.0, theme::WIDGET_HOVER);
+    }
+    let col = if enabled { theme::TEXT } else { theme::TEXT_WEAK.gamma_multiply(0.45) };
+    draw_icon(&p, rect.center(), icon, col);
+    enabled && resp.clicked()
+}
 
-    if let Some(p) = resp.interact_pointer_pos() {
-        let v = (1.0 - (p.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
-        if (v - *t).abs() > f32::EPSILON {
-            *t = v;
-            changed = true;
+fn draw_icon(p: &egui::Painter, c: Pos2, icon: Icon, col: Color32) {
+    let st = Stroke::new(1.3_f32, col);
+    let plus = |p: &egui::Painter, at: Pos2| {
+        p.line_segment([pos2(at.x - 3.0, at.y), pos2(at.x + 3.0, at.y)], st);
+        p.line_segment([pos2(at.x, at.y - 3.0), pos2(at.x, at.y + 3.0)], st);
+    };
+    match icon {
+        Icon::NewLayer => {
+            p.rect_stroke(Rect::from_center_size(c + vec2(-2.0, 0.0), vec2(10.0, 12.0)), 1.5, st);
+            plus(p, c + vec2(5.0, 4.0));
+        }
+        Icon::NewFolder => {
+            folder_shape(p, c + vec2(-2.0, 0.5), 12.0, st);
+            plus(p, c + vec2(5.0, 4.0));
+        }
+        Icon::Duplicate => {
+            p.rect_stroke(Rect::from_center_size(c + vec2(-2.0, -2.0), vec2(9.0, 9.0)), 1.5, st);
+            p.rect_stroke(Rect::from_center_size(c + vec2(2.0, 2.0), vec2(9.0, 9.0)), 1.5, st);
+        }
+        Icon::Up | Icon::Down => {
+            let d = if icon == Icon::Up { -1.0 } else { 1.0 };
+            p.add(Shape::convex_polygon(
+                vec![c + vec2(0.0, 4.0 * d), c + vec2(-5.0, -3.0 * d), c + vec2(5.0, -3.0 * d)],
+                col,
+                Stroke::NONE,
+            ));
+        }
+        Icon::Delete => {
+            p.line_segment([c + vec2(-6.0, -4.0), c + vec2(6.0, -4.0)], st);
+            p.line_segment([c + vec2(-2.0, -6.0), c + vec2(2.0, -6.0)], st);
+            p.rect_stroke(Rect::from_min_max(c + vec2(-4.5, -3.5), c + vec2(4.5, 6.0)), 1.0, st);
+            p.line_segment([c + vec2(-1.5, -1.0), c + vec2(-1.5, 4.0)], st);
+            p.line_segment([c + vec2(1.5, -1.0), c + vec2(1.5, 4.0)], st);
         }
     }
-
-    let painter = ui.painter_at(rect.expand(4.0));
-    let track = Rect::from_center_size(rect.center(), vec2(8.0, rect.height()));
-    painter.rect_filled(track, 4.0, theme::SURFACE);
-    let fill = Rect::from_min_max(pos2(track.left(), track.bottom() - *t * track.height()), track.max);
-    painter.rect_filled(fill, 4.0, theme::ACCENT_DIM);
-
-    let knob_y = track.bottom() - *t * track.height();
-    let knob = Rect::from_center_size(pos2(rect.center().x, knob_y.clamp(rect.top() + 5.0, rect.bottom() - 5.0)), vec2(width, 10.0));
-    let knob_col = if resp.hovered() || resp.dragged() { theme::TEXT } else { Color32::from_gray(0xb8) };
-    painter.rect_filled(knob, 5.0, knob_col);
-
-    ui.add_sized(
-        vec2(width + 8.0, 14.0),
-        egui::Label::new(egui::RichText::new(label).size(10.5).color(theme::TEXT_WEAK)),
-    );
-    changed
 }
 
-/// Small frameless icon button for toolbars.
-pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str, enabled: bool) -> bool {
-    let btn = egui::Button::new(egui::RichText::new(icon).size(15.0)).frame(false).min_size(vec2(26.0, 24.0));
-    ui.add_enabled(enabled, btn).on_hover_text(tooltip).clicked()
+/// Folder outline (tab + body), `w` wide, centered on `c`.
+pub fn folder_shape(p: &egui::Painter, c: Pos2, w: f32, st: Stroke) {
+    let h = w * 0.75;
+    let body = Rect::from_center_size(c + vec2(0.0, 1.0), vec2(w, h));
+    let tab = Rect::from_min_size(body.left_top() + vec2(0.0, -2.5), vec2(w * 0.45, 3.0));
+    p.rect_stroke(tab, 1.0, st);
+    p.rect_stroke(body, 1.5, st);
 }
 
-/// Circle filled with `color`, ringed like Procreate's color button.
-pub fn color_dot(ui: &mut Ui, color: Color32, size: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
-    let c: Pos2 = rect.center();
-    let p = ui.painter();
-    p.circle_filled(c, size / 2.0, theme::BORDER);
-    p.circle_filled(c, size / 2.0 - 2.0, color);
-    p.circle_stroke(c, size / 2.0 - 2.0, Stroke::new(1.0_f32, Color32::from_white_alpha(40)));
-    resp
+/// Padlock, closed or open. `strong` = full contrast (locked).
+pub fn paint_lock(p: &egui::Painter, c: Pos2, locked: bool, col: Color32) {
+    let st = Stroke::new(1.3_f32, col);
+    let body = Rect::from_center_size(c + vec2(0.0, 2.5), vec2(10.0, 7.5));
+    if locked {
+        p.rect_filled(body, 1.5, col);
+    } else {
+        p.rect_stroke(body, 1.5, st);
+    }
+    // Shackle: closed sits on the body, open is lifted and shifted.
+    let (dx, lift) = if locked { (0.0, 0.0) } else { (2.5, 2.0) };
+    let top = body.top() - 1.0 - lift;
+    let pts: Vec<Pos2> = (0..=12)
+        .map(|k| {
+            let a = std::f32::consts::PI * (1.0 + k as f32 / 12.0);
+            pos2(c.x + dx + 3.2 * a.cos(), top - 1.0 + 3.2 * a.sin())
+        })
+        .collect();
+    p.add(Shape::line(pts, st));
+    p.line_segment([pos2(c.x + dx - 3.2, top - 1.0), pos2(c.x + dx - 3.2, body.top() - lift * 0.0)], st);
+    if locked {
+        p.line_segment([pos2(c.x + 3.2, top - 1.0), pos2(c.x + 3.2, body.top())], st);
+    }
 }
 
 #[cfg(test)]
@@ -268,4 +307,35 @@ mod tests {
         // Mid gray is V = 50% here (sRGB values), as in Krita / CSP.
         assert!((rgb_to_hsv([0.5, 0.5, 0.5])[2] - 0.5).abs() < 1e-6);
     }
+}
+
+// --- Brush controls (options bar + Tool options dock) ---------------------
+
+/// Brush size as a diameter, logarithmic so 1..1000 px stays precise.
+pub fn size_slider(ui: &mut Ui, brush: &mut aurastudio_brush::Brush) {
+    let max = crate::MAX_BRUSH_SIZE;
+    let mut d = (brush.radius * 2).clamp(1, max);
+    if ui.add(egui::Slider::new(&mut d, 1..=max).logarithmic(true).suffix(" px")).changed() {
+        brush.radius = (d / 2).max(1);
+    }
+}
+
+pub fn opacity_slider(ui: &mut Ui, brush: &mut aurastudio_brush::Brush) {
+    let mut o = (brush.opacity * 100.0).round() as u32;
+    if ui.add(egui::Slider::new(&mut o, 0..=100).suffix(" %")).changed() {
+        brush.opacity = o as f32 / 100.0;
+    }
+}
+
+pub fn blend_combo(ui: &mut Ui, id: &str, mode: &mut crate::BlendMode, width: f32) -> bool {
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(mode.name())
+        .width(width)
+        .show_ui(ui, |ui| {
+            for m in crate::BlendMode::ALL {
+                changed |= ui.selectable_value(mode, m, m.name()).changed();
+            }
+        });
+    changed
 }

@@ -1,0 +1,117 @@
+//! Color docker: RGB / HSV gradient sliders behind CSP-like vertical tabs,
+//! a preview swatch and a hex field.
+
+use egui::{vec2, Align, Color32, Sense, Stroke, Ui};
+
+use crate::widgets::*;
+use crate::{theme, Model};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode { Rgb, Hsv }
+
+pub struct ColorState {
+    mode: Mode,
+    /// Master color in HSV, so hue survives when saturation or value hit 0
+    /// (converting back from RGB would lose it).
+    hsv:  [f32; 3],
+    hex:  String,
+}
+
+impl Default for ColorState {
+    fn default() -> Self {
+        Self { mode: Mode::Hsv, hsv: [0.0, 0.0, 0.0], hex: String::new() }
+    }
+}
+
+pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
+    let to_u8 = |rgb: [f32; 3]| rgb.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let to_f  = |c: [u8; 3]| c.map(|v| v as f32 / 255.0);
+
+    // The brush color may have changed elsewhere: resync the HSV master,
+    // keeping the hue (and saturation) when they become undefined.
+    if to_u8(hsv_to_rgb(st.hsv)) != m.brush.color {
+        let [h, s, v] = rgb_to_hsv(to_f(m.brush.color));
+        let h = if s > 0.0 && v > 0.0 { h } else { st.hsv[0] };
+        let s = if v > 0.0 { s } else { st.hsv[1] };
+        st.hsv = [h, s, v];
+    }
+
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if vertical_tab(ui, "RGB", st.mode == Mode::Rgb).clicked() { st.mode = Mode::Rgb; }
+            if vertical_tab(ui, "HSV", st.mode == Mode::Hsv).clicked() { st.mode = Mode::Hsv; }
+        });
+
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 3.0;
+            match st.mode {
+                Mode::Hsv => {
+                    let [h, s, v] = st.hsv;
+                    let mut new = st.hsv;
+                    // Hue bar at full saturation / value, like most apps;
+                    // S and V bars show the real color along the range.
+                    channel_row(ui, "H", &mut new[0], 360.0, &|t| hsv_to_color32([t, 1.0, 1.0]));
+                    channel_row(ui, "S", &mut new[1], 100.0, &|t| hsv_to_color32([h, t, v]));
+                    channel_row(ui, "V", &mut new[2], 100.0, &|t| hsv_to_color32([h, s, t]));
+                    if new != st.hsv {
+                        st.hsv = new;
+                        m.brush.color = to_u8(hsv_to_rgb(new));
+                    }
+                }
+                Mode::Rgb => {
+                    let [r, g, b] = to_f(m.brush.color);
+                    let mut new = [r, g, b];
+                    channel_row(ui, "R", &mut new[0], 255.0, &|t| rgb_to_color32([t, g, b]));
+                    channel_row(ui, "G", &mut new[1], 255.0, &|t| rgb_to_color32([r, t, b]));
+                    channel_row(ui, "B", &mut new[2], 255.0, &|t| rgb_to_color32([r, g, t]));
+                    if new != [r, g, b] {
+                        m.brush.color = to_u8(new);
+                    }
+                }
+            }
+        });
+    });
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let [r, g, b] = m.brush.color;
+        let hex_w = 74.0;
+        let w = (ui.available_width() - hex_w - 4.0).max(40.0);
+        let (rect, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
+        ui.painter().rect_filled(rect, 6.0, Color32::from_rgb(r, g, b));
+        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0_f32, theme::BORDER));
+
+        let edit = ui.add_sized(vec2(hex_w, 24.0), egui::TextEdit::singleline(&mut st.hex).horizontal_align(Align::Center));
+        if edit.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && edit.has_focus() {
+            if let Some(c) = parse_hex(&st.hex) {
+                m.brush.color = c;
+            }
+        }
+        if !edit.has_focus() {
+            st.hex = format!("#{r:02X}{g:02X}{b:02X}");
+        }
+    });
+}
+
+fn parse_hex(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 { return None; }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_parsing() {
+        assert_eq!(parse_hex("#FF8000"), Some([255, 128, 0]));
+        assert_eq!(parse_hex("0a0B0c"), Some([10, 11, 12]));
+        assert_eq!(parse_hex("#FFF"), None);
+        assert_eq!(parse_hex("zzzzzz"), None);
+    }
+}
