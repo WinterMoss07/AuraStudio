@@ -182,6 +182,7 @@ dependencies = [
  "aurastudio-canvas",
  "aurastudio-gpu",
  "aurastudio-input",
+ "aurastudio-layers",
  "egui",
  "egui-wgpu",
  "egui-winit",
@@ -228,6 +229,13 @@ dependencies = [
  "crossbeam-queue",
  "efude-input",
  "windows",
+]
+
+[[package]]
+name = "aurastudio-layers"
+version = "0.1.0"
+dependencies = [
+ "aurastudio-canvas",
 ]
 
 [[package]]

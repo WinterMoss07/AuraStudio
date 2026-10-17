@@ -2,6 +2,18 @@ use wgpu::*;
 
 pub type Rect = (u32, u32, u32, u32); // x0, y0, x1, y1 (exclusive)
 
+/// Toute surface peignable par aurastudio-brush : le canvas final (GPU)
+/// ou un calque individuel (aurastudio-layers). pixels/stroke_base/
+/// stroke_mask doivent faire width*height*4 / width*height*4 / width*height
+/// octets. surfaces_mut() renvoie les trois en une fois pour éviter des
+/// emprunts mutables/immuables qui se chevauchent dans le brush engine.
+pub trait PaintSurface {
+    fn width(&self)  -> u32;
+    fn height(&self) -> u32;
+    /// (pixels, stroke_base, stroke_mask)
+    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]);
+}
+
 pub struct Canvas {
     pub texture:     Texture,
     pub view:        TextureView,
@@ -85,5 +97,13 @@ impl Canvas {
     pub fn begin_stroke(&mut self) {
         self.stroke_base.copy_from_slice(&self.pixels);
         self.stroke_mask.iter_mut().for_each(|m| *m = 0);
+    }
+}
+
+impl PaintSurface for Canvas {
+    fn width(&self)  -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) {
+        (&mut self.pixels, &self.stroke_base, &mut self.stroke_mask)
     }
 }

@@ -9,27 +9,39 @@ use winit::{
 use aurastudio_brush::{stroke_line, Brush};
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
+use aurastudio_layers::LayerStack;
+
+/// Taille fixe du canvas pour l'instant (doit matcher Canvas::new dans
+/// aurastudio-gpu, 2048x2048) — passera en paramètre config plus tard.
+const CANVAS_SIZE: u32 = 2048;
 
 pub struct App {
     window:     Option<Arc<Window>>,
     gpu:        Option<GpuState>,
     brush:      Brush,
-    is_drawing: bool,
-    last_pos:   Option<(f32, f32)>,
-    pressure:   f32,
-    stylus:     Option<Stylus>,
+    layers:     LayerStack,
+    is_drawing:   bool,
+    last_pos:     Option<(f32, f32)>,
+    pressure:     f32,
+    stylus:       Option<Stylus>,
+    /// true quand un changement hors-trait (visibilité, opacité, ajout/
+    /// suppression de calque) demande une recomposition pleine image,
+    /// plutôt que le composite_rect_into local fait pendant un trait.
+    layers_dirty: bool,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
-            window:     None,
-            gpu:        None,
-            brush:      Brush::new(),
-            is_drawing: false,
-            last_pos:   None,
-            pressure:   1.0,
-            stylus:     None,
+            window:       None,
+            gpu:          None,
+            brush:        Brush::new(),
+            layers:       LayerStack::new(CANVAS_SIZE, CANVAS_SIZE),
+            is_drawing:   false,
+            last_pos:     None,
+            pressure:     1.0,
+            stylus:       None,
+            layers_dirty: false,
         }
     }
 }
@@ -49,19 +61,23 @@ impl App {
     }
 
     fn begin_stroke(&mut self) {
-        if let Some(gpu) = &mut self.gpu {
-            gpu.canvas.begin_stroke();
-        }
+        self.layers.active_layer_mut().begin_stroke();
         self.last_pos = None;
     }
 
+    /// Peint sur le calque actif, puis recompose uniquement le
+    /// rectangle touché (pas tout le canvas) dans le buffer GPU avant
+    /// de marquer la zone dirty pour upload — garde le même coût que
+    /// l'ancien chemin direct-sur-Canvas malgré l'ajout des calques.
     fn draw_at(&mut self, wx: f32, wy: f32) {
         if let Some(canvas_pos) = self.window_to_canvas(wx, wy) {
-            let gpu      = self.gpu.as_mut().unwrap();
             let pressure = self.pressure;
             let from     = self.last_pos.unwrap_or(canvas_pos);
+            let layer    = self.layers.active_layer_mut();
 
-            if let Some(rect) = stroke_line(from, canvas_pos, &self.brush, &mut gpu.canvas, pressure) {
+            if let Some(rect) = stroke_line(from, canvas_pos, &self.brush, layer, pressure) {
+                let gpu = self.gpu.as_mut().unwrap();
+                self.layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
                 gpu.canvas.mark_dirty(rect);
             }
             self.last_pos = Some(canvas_pos);
@@ -119,6 +135,13 @@ impl ApplicationHandler for App {
         let consumed_by_ui = self.gpu.as_mut()
             .map(|gpu| gpu.egui_handle_event(&event))
             .unwrap_or(false);
+
+        // egui a besoin d'un redraw à chaque interaction avec un widget
+        // (hover, drag de slider...) — sans ça l'UI resterait figée sous
+        // ControlFlow::Wait tant qu'aucun autre event ne force une frame.
+        if consumed_by_ui {
+            if let Some(w) = &self.window { w.request_redraw(); }
+        }
 
         self.drain_stylus();
 
@@ -182,8 +205,19 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = &mut self.gpu {
-                    let brush = &mut self.brush;
-                    gpu.render(|ctx| color_picker_panel(ctx, brush));
+                    let brush  = &mut self.brush;
+                    let layers = &mut self.layers;
+                    let mut changed = false;
+                    gpu.render(|ctx| {
+                        color_picker_panel(ctx, brush);
+                        changed = layers_panel(ctx, layers);
+                    });
+
+                    if changed || self.layers_dirty {
+                        self.layers.composite_into(&mut gpu.canvas.pixels);
+                        gpu.canvas.mark_dirty((0, 0, CANVAS_SIZE, CANVAS_SIZE));
+                        self.layers_dirty = false;
+                    }
                 }
             }
 
@@ -228,4 +262,48 @@ fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush) {
             ui.separator();
             ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacité"));
         });
+}
+
+/// Panneau egui : liste des calques (du haut vers le bas, comme Krita/
+/// CSP), visibilité, opacité, sélection du calque actif, ajout/suppr.
+/// Retourne true si un changement nécessite une recomposition pleine
+/// image (visibilité/opacité/ajout/suppression — pas un trait de pinceau,
+/// déjà géré en local par composite_rect_into).
+fn layers_panel(ctx: &egui::Context, layers: &mut LayerStack) -> bool {
+    let mut changed = false;
+
+    egui::Window::new("Calques")
+        .resizable(false)
+        .default_pos([16.0, 320.0])
+        .show(ctx, |ui| {
+            if ui.button("+ Nouveau calque").clicked() {
+                let n = layers.layers.len() + 1;
+                layers.add_layer(&format!("Calque {n}"));
+                changed = true;
+            }
+
+            ui.separator();
+
+            // Du haut vers le bas dans l'UI = de la fin vers le début du Vec.
+            for i in (0..layers.layers.len()).rev() {
+                ui.horizontal(|ui| {
+                    let active = layers.active == i;
+                    if ui.selectable_label(active, &layers.layers[i].name).clicked() {
+                        layers.set_active(i);
+                    }
+                    if ui.checkbox(&mut layers.layers[i].visible, "").changed() {
+                        changed = true;
+                    }
+                    if layers.layers.len() > 1 && ui.small_button("🗑").clicked() {
+                        layers.remove_layer(i);
+                        changed = true;
+                    }
+                });
+                if ui.add(egui::Slider::new(&mut layers.layers[i].opacity, 0.0..=1.0).text("opacité")).changed() {
+                    changed = true;
+                }
+            }
+        });
+
+    changed
 }

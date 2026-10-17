@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/aurastudio-canvas",
     "crates/aurastudio-brush",
+    "crates/aurastudio-layers",
     "crates/aurastudio-input",
     "crates/aurastudio-gpu",
     "crates/aurastudio-app",

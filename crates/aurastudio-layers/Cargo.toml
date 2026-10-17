@@ -1,0 +1,7 @@
+[package]
+name = "aurastudio-layers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aurastudio-canvas = { path = "../aurastudio-canvas" }
