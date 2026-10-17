@@ -1,31 +1,105 @@
-//! Moteur de brush basé sur hokusai (port Rust de libmypaint).
+//! Brush engine backed by hokusai (a Rust port of libmypaint).
 //!
-//! hokusai peint dans sa propre surface à tuiles 64×64 (RGBA fix15
-//! prémultiplié). Malgré la doc, comme libmypaint, la couleur du dab
-//! est écrite telle quelle (HSV→RGB, valeurs encodées sRGB, pas
-//! linéarisées) : on composite donc directement en sRGB, sans
-//! conversion de gamma. On garde une surface de tuiles *par
-//! trait* : à chaque échantillon, on recompose uniquement les tuiles
-//! modifiées = stroke_base (calque avant le trait) + tuiles du trait.
-//! Même principe anti double-blend que le brush simple : on ne mélange
-//! jamais un trait avec lui-même.
+//! hokusai paints into 64×64 tiles of premultiplied RGBA fix15. Despite
+//! its docs, like libmypaint it writes the dab color as-is (HSV→RGB,
+//! sRGB-encoded values, not linearized), so we composite directly in
+//! sRGB with no gamma conversion.
+//!
+//! Opacity model (same as Krita / CSP with build-up off, and as our
+//! simple brush): within ONE stroke, each pixel keeps the MAXIMUM coverage
+//! any dab gave it, never the sum. Pressing at 20% with pure black gives
+//! 20% gray; crossing the same stroke at 30% gives 30%, not 20+30.
+//! A new stroke is painted over the previous ones as usual. libmypaint's
+//! default (dabs alpha-blended over each other, airbrush-like build-up)
+//! is not what we want here, so `MaxStrokeSurface` replaces the blend.
+//!
+//! Each sample, only the tiles touched are recomposited:
+//! layer pixels = stroke_base (the layer before the stroke) + stroke tiles.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use aurastudio_canvas::{PaintSurface, Rect};
+use hokusai::brushmodes::draw_dab_default;
 use hokusai::color::rgb_to_hsv;
 use hokusai::fix15;
 use hokusai::mapping::{InputMapping, SettingValue};
-use hokusai::tile::TILE_SIZE;
+use hokusai::surface::Dab;
+use hokusai::tile::{TilePixels, TILE_SIZE};
 use hokusai::tile_mem::MemSurface;
 use hokusai::{BrushInput, BrushSetting, BrushState, TiledSurface};
 
 use crate::Brush;
 
+/// Stroke coverage surface with "max" accumulation.
+///
+/// Every dab is first rendered alone by hokusai's own `draw_dab_default`
+/// into an empty scratch tile (so hardness, anti-aliasing, aspect ratio
+/// all match libmypaint exactly), then merged into `stroke` keeping, per
+/// pixel, whichever of the two has the higher alpha.
+struct MaxStrokeSurface {
+    stroke:  MemSurface,
+    scratch: MemSurface,
+    dirty:   HashSet<(i32, i32)>,
+}
+
+impl MaxStrokeSurface {
+    fn new() -> Self {
+        Self { stroke: MemSurface::new(), scratch: MemSurface::new(), dirty: HashSet::new() }
+    }
+
+    fn tile(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
+        self.stroke.tile(tx, ty)
+    }
+}
+
+impl TiledSurface for MaxStrokeSurface {
+    fn tile_request_start(&mut self, tx: i32, ty: i32) -> &mut TilePixels {
+        self.dirty.insert((tx, ty));
+        self.stroke.tile_request_start(tx, ty)
+    }
+
+    fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+
+    fn tile_lookup(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
+        self.stroke.tile_lookup(tx, ty)
+    }
+
+    fn begin_atomic(&mut self) {
+        self.dirty.clear();
+    }
+
+    fn end_atomic(&mut self) -> Vec<(i32, i32)> {
+        self.dirty.drain().collect()
+    }
+
+    fn draw_dab(&mut self, dab: &Dab) -> bool {
+        self.scratch.begin_atomic();
+        let painted = draw_dab_default(&mut self.scratch, dab);
+        let touched = self.scratch.end_atomic();
+
+        for (tx, ty) in touched {
+            let src = self.scratch.tile_request_start(tx, ty);
+            let dst = self.stroke.tile_request_start(tx, ty);
+            for (src_row, dst_row) in src.iter_mut().zip(dst.iter_mut()) {
+                for (s, d) in src_row.iter_mut().zip(dst_row.iter_mut()) {
+                    if s[3] > d[3] {
+                        *d = *s;
+                    }
+                    // Leave the scratch tile empty for the next dab.
+                    *s = [0; 4];
+                }
+            }
+            self.dirty.insert((tx, ty));
+        }
+        painted
+    }
+}
+
 pub struct HokusaiEngine {
     brush:     hokusai::Brush,
     state:     BrushState,
-    stroke:    MemSurface,
+    stroke:    MaxStrokeSurface,
     last_time: Option<Instant>,
 }
 
@@ -34,13 +108,13 @@ impl HokusaiEngine {
         Self {
             brush: base_brush(),
             state: BrushState::default(),
-            stroke: MemSurface::new(),
+            stroke: MaxStrokeSurface::new(),
             last_time: None,
         }
     }
 
-    /// Recopie couleur / taille / opacité du Brush partagé (celui que
-    /// règle le color picker) dans les settings libmypaint.
+    /// Copy color / size / opacity from the shared Brush (the one the
+    /// color docker edits) into the libmypaint settings.
     pub fn sync_from(&mut self, b: &Brush) {
         let hsv = rgb_to_hsv(
             b.color[0] as f32 / 255.0,
@@ -50,19 +124,19 @@ impl HokusaiEngine {
         self.brush.set(BrushSetting::ColorH, SettingValue::constant(hsv.h));
         self.brush.set(BrushSetting::ColorS, SettingValue::constant(hsv.s));
         self.brush.set(BrushSetting::ColorV, SettingValue::constant(hsv.v));
-        // libmypaint stocke le rayon en log naturel.
+        // libmypaint stores the radius as a natural log.
         self.brush.set(BrushSetting::Radius, SettingValue::constant((b.radius.max(1) as f32).ln()));
         self.brush.set(BrushSetting::Opaque, SettingValue::constant(b.opacity.clamp(0.0, 1.0)));
     }
 
     pub fn begin_stroke(&mut self) {
-        self.stroke    = MemSurface::new();
+        self.stroke    = MaxStrokeSurface::new();
         self.state     = BrushState::default();
         self.last_time = None;
     }
 
-    /// Un échantillon pointeur (coordonnées canvas). hokusai interpole
-    /// lui-même les dabs entre deux échantillons.
+    /// One pointer sample, in canvas coordinates. hokusai interpolates the
+    /// dabs between two samples itself.
     pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, x: f32, y: f32, pressure: f32) -> Option<Rect> {
         let now   = Instant::now();
         let dtime = self.last_time.map(|t| (now - t).as_secs_f64()).unwrap_or(0.0);
@@ -74,7 +148,7 @@ impl HokusaiEngine {
         self.composite_tiles(surface, &tiles)
     }
 
-    /// Fin de trait : laisse hokusai rattraper la position lissée.
+    /// End of stroke: let hokusai catch up with its smoothed position.
     pub fn end_stroke<S: PaintSurface>(&mut self, surface: &mut S) -> Option<Rect> {
         self.stroke.begin_atomic();
         self.brush.finish_stroke(&mut self.state, &mut self.stroke);
@@ -107,6 +181,7 @@ impl HokusaiEngine {
                         pixels[idx..idx + 4].copy_from_slice(&base[idx..idx + 4]);
                         continue;
                     }
+                    // Straight-alpha "over": stroke (premultiplied) over base.
                     let ba    = base[idx + 3] as f32 / 255.0;
                     let k     = ba * (1.0 - sa);
                     let out_a = sa + k;
@@ -132,19 +207,20 @@ impl Default for HokusaiEngine {
     fn default() -> Self { Self::new() }
 }
 
-/// Brush rond "à la CSP" : bord net, opacité pilotée par la pression,
-/// espacement serré pour un trait lisse. Couleur/taille/opacité de base
-/// sont ensuite écrasées par sync_from().
+/// CSP-style round brush: crisp edge, opacity driven by pressure.
+/// Color / size / base opacity are overwritten by sync_from().
 fn base_brush() -> hokusai::Brush {
     let mut b = hokusai::Brush::new();
     b.set(BrushSetting::Hardness, SettingValue::constant(0.9));
     b.set(BrushSetting::AntiAliasing, SettingValue::constant(1.0));
-    // 8 dabs par rayon : en dessous, anneaux visibles sur les gros diamètres.
-    b.set(BrushSetting::DabsPerActualRadius, SettingValue::constant(8.0));
-    // Valeur du pinceau rond stock de MyPaint : rampe de pression douce
-    // sans que les dabs superposés saturent trop vite. 0 = extrémités
-    // trop sombres à faible pression ; 0.9 = trait délavé.
-    b.set(BrushSetting::OpaqueLinearize, SettingValue::constant(0.44));
+    // Dab spacing. With max accumulation, sparse dabs only show as a
+    // slightly scalloped edge on big sizes; 6 per radius keeps it smooth.
+    b.set(BrushSetting::DabsPerActualRadius, SettingValue::constant(6.0));
+    // No opaque_linearize: it lowers each dab's alpha to compensate for
+    // dabs piling up, but with max accumulation they don't pile up, so it
+    // would only make the stroke lighter than the requested opacity.
+    b.set(BrushSetting::OpaqueLinearize, SettingValue::constant(0.0));
+    // Opacity = brush opacity × pen pressure (linear).
     b.set(
         BrushSetting::OpaqueMultiply,
         SettingValue {
@@ -163,35 +239,95 @@ fn base_brush() -> hokusai::Brush {
 mod tests {
     use super::*;
 
-    struct TestSurface { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8>, w: u32, h: u32 }
+    const W: u32 = 256;
+    const H: u32 = 256;
+
+    struct TestSurface { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8> }
     impl PaintSurface for TestSurface {
-        fn width(&self) -> u32 { self.w }
-        fn height(&self) -> u32 { self.h }
+        fn width(&self) -> u32 { W }
+        fn height(&self) -> u32 { H }
         fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) { (&mut self.px, &self.base, &mut self.mask) }
+    }
+
+    fn white() -> TestSurface {
+        let white = vec![255u8; (W * H * 4) as usize];
+        TestSurface { px: white.clone(), base: white, mask: vec![0; (W * H) as usize] }
+    }
+
+    fn engine(radius: u32) -> HokusaiEngine {
+        let mut e = HokusaiEngine::new();
+        let mut b = Brush::new();
+        b.radius = radius;
+        e.sync_from(&b);
+        e.begin_stroke();
+        e
+    }
+
+    fn red_at(s: &TestSurface, x: u32, y: u32) -> u8 {
+        s.px[((y * W + x) * 4) as usize]
     }
 
     #[test]
     fn paints_black_on_white() {
-        let (w, h) = (256u32, 256u32);
-        let white = vec![255u8; (w * h * 4) as usize];
-        let mut s = TestSurface { px: white.clone(), base: white, mask: vec![0; (w * h) as usize], w, h };
-
-        let mut e = HokusaiEngine::new();
-        let mut b = Brush::new();
-        b.radius = 10;
-        e.sync_from(&b);
-        e.begin_stroke();
+        let mut s = white();
+        let mut e = engine(10);
         let mut dirty = None;
         for i in 0..=50 {
-            let x = 40.0 + i as f32 * 3.0;
-            dirty = dirty.or(e.stroke_to(&mut s, x, 128.0, 1.0));
+            dirty = dirty.or(e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 1.0));
         }
         e.end_stroke(&mut s);
 
-        assert!(dirty.is_some(), "aucune tuile modifiée");
-        let center = ((128 * w + 100) * 4) as usize;
-        assert!(s.px[center] < 40, "centre du trait pas assez sombre: {}", s.px[center]);
-        let far = ((10 * w + 10) * 4) as usize;
-        assert_eq!(&s.px[far..far + 4], &[255, 255, 255, 255]);
+        assert!(dirty.is_some(), "no tile touched");
+        assert!(red_at(&s, 100, 128) < 5, "stroke center not black: {}", red_at(&s, 100, 128));
+        assert_eq!(red_at(&s, 10, 10), 255);
+    }
+
+    #[test]
+    fn pressure_gives_matching_gray() {
+        // 20% pressure, black, opacity 100% -> 20% gray = 255 * 0.8 = 204.
+        let mut s = white();
+        let mut e = engine(10);
+        for i in 0..=50 {
+            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.2);
+        }
+        e.end_stroke(&mut s);
+        let v = red_at(&s, 100, 128) as i32;
+        assert!((v - 204).abs() <= 2, "expected ~204, got {v}");
+    }
+
+    #[test]
+    fn crossing_the_same_stroke_does_not_build_up() {
+        // Go right at 20%, come back over the same line at 30%: the
+        // result must be 30% gray (~178), not 20+30 = 50% (~128).
+        let mut s = white();
+        let mut e = engine(10);
+        for i in 0..=50 {
+            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.2);
+        }
+        let after_first = red_at(&s, 100, 128) as i32;
+        for i in (0..=50).rev() {
+            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.3);
+        }
+        e.end_stroke(&mut s);
+        let v = red_at(&s, 100, 128) as i32;
+        assert!((after_first - 204).abs() <= 2, "first pass: expected ~204, got {after_first}");
+        assert!((v - 178).abs() <= 2, "expected ~178 (30%), got {v}");
+    }
+
+    #[test]
+    fn new_stroke_paints_over_previous_one() {
+        // Two separate strokes at 50% do stack (that's normal painting):
+        // 1 - 0.5*0.5 = 75% -> ~64.
+        let mut s = white();
+        for _ in 0..2 {
+            s.base.copy_from_slice(&s.px);
+            let mut e = engine(10);
+            for i in 0..=50 {
+                e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.5);
+            }
+            e.end_stroke(&mut s);
+        }
+        let v = red_at(&s, 100, 128) as i32;
+        assert!((v - 64).abs() <= 3, "expected ~64, got {v}");
     }
 }
