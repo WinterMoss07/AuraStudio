@@ -4,6 +4,10 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 use aurastudio_canvas::Canvas;
 
+/// Free space kept around the canvas inside the area left by the docks
+/// (logical points), so the canvas floats on the backdrop like in Procreate.
+const CANVAS_MARGIN: f32 = 24.0;
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ViewUniform {
@@ -27,6 +31,8 @@ pub struct GpuState {
     egui_renderer:   egui_wgpu::Renderer,
     viewport:        [f32; 4],
     text_input_active: bool,
+    /// Backdrop color around the canvas (sRGB, 0..1).
+    pub clear_color: [f64; 3],
 }
 
 impl GpuState {
@@ -230,6 +236,7 @@ impl GpuState {
             egui_ctx, egui_state, egui_renderer,
             viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
             text_input_active: false,
+            clear_color: [0.4, 0.4, 0.4],
         }
     }
 
@@ -247,6 +254,13 @@ impl GpuState {
         let vp = self.viewport;
         self.viewport = [-1.0; 4];
         self.set_viewport(vp);
+    }
+
+    /// True while egui holds the pointer (dragging a dock tab, a slider,
+    /// a splitter...). It then needs a frame on every pointer move, even
+    /// above the canvas, or the drag never completes.
+    pub fn ui_is_dragging(&self) -> bool {
+        self.egui_ctx.is_using_pointer() || self.egui_ctx.dragged_id().is_some()
     }
 
     /// True while an egui text/number field is being edited: shortcuts like
@@ -369,7 +383,7 @@ impl GpuState {
         self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
 
         let ppp = full_output.pixels_per_point;
-        if let Some(r) = free_rect {
+        if let Some(r) = free_rect.map(|r| r.shrink(CANVAS_MARGIN)) {
             let (ww, wh) = (self.config.width as f32, self.config.height as f32);
             let x0 = (r.min.x * ppp).round().clamp(0.0, ww);
             let y0 = (r.min.y * ppp).round().clamp(0.0, wh);
@@ -404,9 +418,10 @@ impl GpuState {
                     view:           &view,
                     resolve_target: None,
                     ops: Operations {
-                        // Gray around the canvas. Same look as before the
-                        // non-sRGB surface switch (0.13 linear ≈ 0.40 sRGB).
-                        load:  LoadOp::Clear(Color { r: 0.40, g: 0.40, b: 0.40, a: 1.0 }),
+                        // Backdrop around the canvas (set by the UI theme).
+                        load:  LoadOp::Clear(Color {
+                            r: self.clear_color[0], g: self.clear_color[1], b: self.clear_color[2], a: 1.0,
+                        }),
                         store: StoreOp::Store,
                     },
                 })],
