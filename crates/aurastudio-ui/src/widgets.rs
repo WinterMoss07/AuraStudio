@@ -91,6 +91,14 @@ fn paint_gradient(painter: &egui::Painter, rect: Rect, color_at: &dyn Fn(f32) ->
 
 // --- Gradient channel slider ----------------------------------------------
 
+/// Snap a 0..1 slider position to the step shown in its number box
+/// (1/255, 1° or 1 %). Without it the bar kept the raw pointer position:
+/// S could be 0.4 % while the box showed "0", and "grays" picked that way
+/// were slightly tinted by the previous hue.
+pub fn snap(t: f32, display_max: f32) -> f32 {
+    (t * display_max).round() / display_max
+}
+
 /// One color channel: label, gradient bar showing what the color becomes
 /// across the whole range (recomputed every frame from the current color),
 /// a marker under the bar, and an editable value. `value` is 0..1; the
@@ -113,7 +121,7 @@ pub fn channel_row(
         let bar = Rect::from_min_size(rect.min, vec2(rect.width(), 14.0));
 
         if let Some(p) = resp.interact_pointer_pos() {
-            let t = ((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0);
+            let t = snap(((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0), display_max);
             if (t - *value).abs() > f32::EPSILON {
                 *value = t;
                 changed = true;
@@ -235,6 +243,19 @@ pub fn color_dot(ui: &mut Ui, color: Color32, size: f32) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displayed_zero_saturation_is_a_true_gray() {
+        // Pointer lands at S = 0.4 %: shown as 0, must give R = G = B.
+        let s = snap(0.004, 100.0);
+        let rgb = hsv_to_rgb([0.0, s, 0.8]);
+        let q = rgb.map(|v| (v * 255.0).round() as u8);
+        assert_eq!(q[0], q[1]);
+        assert_eq!(q[1], q[2]);
+        // Without snapping it was tinted: (204, 203, 203).
+        let raw = hsv_to_rgb([0.0, 0.004, 0.8]).map(|v| (v * 255.0).round() as u8);
+        assert_ne!(raw[0], raw[1]);
+    }
 
     #[test]
     fn hsv_round_trip() {
