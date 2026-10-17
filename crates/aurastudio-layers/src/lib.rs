@@ -74,9 +74,12 @@ impl LayerStack {
     pub fn remove_layer(&mut self, index: usize) {
         if self.layers.len() <= 1 || index >= self.layers.len() { return; }
         self.layers.remove(index);
-        if self.active >= self.layers.len() {
-            self.active = self.layers.len() - 1;
+        // Un calque supprimé sous l'actif décale tous les index au-dessus :
+        // on suit le même calque, pas le même numéro.
+        if index < self.active {
+            self.active -= 1;
         }
+        self.active = self.active.min(self.layers.len() - 1);
     }
 
     pub fn set_active(&mut self, index: usize) {
@@ -159,6 +162,15 @@ mod tests {
         let mut out = vec![0u8; 2 * 2 * 4];
         stack.composite_into(&mut out);
         assert_eq!(&out[0..4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn removing_layer_below_keeps_same_active_layer() {
+        let mut stack = LayerStack::new(2, 2);
+        stack.add_layer("A");
+        stack.add_layer("B"); // actif = B (index 2)
+        stack.remove_layer(1); // supprime A, en dessous
+        assert_eq!(stack.layers[stack.active].name, "B");
     }
 
     #[test]

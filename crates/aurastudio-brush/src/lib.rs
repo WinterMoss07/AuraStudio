@@ -43,13 +43,19 @@ impl Brush {
                 let pidx = (py as u32 * sw + px as u32) as usize;
                 if cov_u8 > stroke_mask[pidx] {
                     stroke_mask[pidx] = cov_u8;
-                    let alpha = cov_u8 as f32 / 255.0;
-                    let ia    = 1.0 - alpha;
-                    let base  = pidx * 4;
-
-                    pixels[base]     = (self.color[0] as f32 * alpha + stroke_base[base]     as f32 * ia) as u8;
-                    pixels[base + 1] = (self.color[1] as f32 * alpha + stroke_base[base + 1] as f32 * ia) as u8;
-                    pixels[base + 2] = (self.color[2] as f32 * alpha + stroke_base[base + 2] as f32 * ia) as u8;
+                    let base = pidx * 4;
+                    // "over" en alpha non prémultiplié : indispensable sur un
+                    // calque transparent (alpha de base 0), sinon le RGB est
+                    // écrit mais le pixel reste invisible.
+                    let sa    = cov_u8 as f32 / 255.0;
+                    let ba    = stroke_base[base + 3] as f32 / 255.0;
+                    let k     = ba * (1.0 - sa);
+                    let out_a = sa + k;
+                    for c in 0..3 {
+                        let v = (self.color[c] as f32 * sa + stroke_base[base + c] as f32 * k) / out_a;
+                        pixels[base + c] = v.round() as u8;
+                    }
+                    pixels[base + 3] = (out_a * 255.0).round() as u8;
                 }
             }
         }
@@ -90,4 +96,27 @@ pub fn stroke_line<S: PaintSurface>(
         dirty  = merge(dirty, r);
     }
     dirty
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct T { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8> }
+    impl PaintSurface for T {
+        fn width(&self) -> u32 { 64 }
+        fn height(&self) -> u32 { 64 }
+        fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) { (&mut self.px, &self.base, &mut self.mask) }
+    }
+
+    #[test]
+    fn simple_brush_is_visible_on_transparent_layer() {
+        let clear: Vec<u8> = [255, 255, 255, 0].repeat(64 * 64);
+        let mut s = T { px: clear.clone(), base: clear, mask: vec![0; 64 * 64] };
+        let mut b = Brush::new();
+        b.radius = 5;
+        stroke_line((32.0, 32.0), (32.0, 32.0), &b, &mut s, 1.0);
+        let i = (32 * 64 + 32) * 4;
+        assert_eq!(&s.px[i..i + 4], &[0, 0, 0, 255]);
+    }
 }
