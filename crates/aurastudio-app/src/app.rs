@@ -53,7 +53,8 @@ pub struct App {
     /// Pressure smoothing distance, fraction of the brush radius.
     smoothing:    f32,
 
-    /// Every open document (one for now; the crate handles several).
+    /// Every open document. One for now (no document tabs yet): it owns
+    /// them, `doc` is the one shown.
     #[allow(dead_code)]
     workspace: Workspace,
     /// The document shown, shared with the paint thread.
@@ -67,6 +68,11 @@ pub struct App {
 
     is_drawing: bool,
     pressure:   f32,
+    /// Pen samples sent for the current stroke (0 at release = a click
+    /// without moving: paint one dot).
+    samples_sent: u32,
+    /// Time origin for mouse samples (pen samples carry their own time).
+    start:      Instant,
     modifiers:  ModifiersState,
     /// Monitor ICC profile (None: not found, treated as sRGB).
     display_profile: Option<DisplayProfile>,
@@ -132,6 +138,8 @@ impl App {
 
             is_drawing: false,
             pressure:   1.0,
+            samples_sent: 0,
+            start:      Instant::now(),
             modifiers:  ModifiersState::empty(),
             display_profile: None,
             color_managed: true,
@@ -291,15 +299,14 @@ impl App {
     /// Start a stroke on the active layer. Refused (with a notice in the
     /// options bar) when it is locked or a folder is selected.
     fn begin_stroke(&mut self) {
-        let refusal = {
-            let doc = self.doc.lock().unwrap();
-            if doc.layers.can_paint() {
-                None
-            } else if doc.layers.active_node().is_folder() {
-                Some("Select a layer to paint (a folder is selected)")
-            } else {
-                Some("Layer is locked")
-            }
+        // Instant feedback when the layer can't be painted. try_lock: if
+        // the paint thread is still busy with the previous stroke, don't
+        // wait for it; it checks again itself and reports a refusal.
+        let refusal = match self.doc.try_lock() {
+            Ok(doc) if doc.layers.can_paint() => None,
+            Ok(doc) if doc.layers.active_node().is_folder() => Some("Select a layer to paint (a folder is selected)"),
+            Ok(_) => Some("Layer is locked"),
+            Err(_) => None,
         };
         if let Some(msg) = refusal {
             self.ui.notify(msg);
@@ -309,6 +316,7 @@ impl App {
         }
         self.is_drawing = true;
         self.pen_active = false;
+        self.samples_sent = 0;
         self.frame_stats = Timing::default();
         self.paint.send(Cmd::Begin {
             doc:       Arc::clone(&self.doc),
@@ -319,14 +327,39 @@ impl App {
     }
 
     fn end_stroke(&mut self) {
+        // A click without moving sent nothing yet: paint one dot there.
+        if self.samples_sent == 0 {
+            self.draw_at(self.cursor.0, self.cursor.1, None);
+        }
+        self.is_drawing = false;
         self.paint.send(Cmd::End);
         self.pen_active = false;
     }
 
-    /// Forward one pen sample to the paint thread (never paints here).
-    fn draw_at(&mut self, wx: f32, wy: f32) {
+    /// Forward one sample to the paint thread (never paints here).
+    /// `pen_time_ms`: the pen's own timestamp; mouse samples use the app
+    /// clock.
+    fn draw_at(&mut self, wx: f32, wy: f32, pen_time_ms: Option<u32>) {
         let Some((x, y)) = self.window_to_canvas(wx, wy) else { return };
-        self.paint.send(Cmd::Sample { x, y, pressure: self.pressure });
+        let time = match pen_time_ms {
+            Some(ms) => ms as f64 / 1000.0,
+            None => self.start.elapsed().as_secs_f64(),
+        };
+        self.samples_sent += 1;
+        self.paint.send(Cmd::Sample { x, y, pressure: self.pressure, time });
+    }
+
+    /// The window lost focus (Alt+Tab...): key releases now go elsewhere,
+    /// so drop held Space, any view drag and any stroke, instead of
+    /// leaving them stuck.
+    fn reset_input(&mut self) {
+        self.space_down = false;
+        self.nav = None;
+        if self.is_drawing {
+            self.end_stroke();
+        }
+        self.update_cursor_icon();
+        self.request_redraw();
     }
 
     /// Native pen samples (WinTab or Windows Ink). Press / release still
@@ -338,7 +371,7 @@ impl App {
             if self.is_drawing {
                 self.pen_active = true;
                 self.pressure   = s.pressure;
-                self.draw_at(s.x, s.y);
+                self.draw_at(s.x, s.y, Some(s.time_ms));
             }
         }
     }
@@ -597,6 +630,8 @@ impl ApplicationHandler<AppEvent> for App {
 
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
 
+            WindowEvent::Focused(false) => self.reset_input(),
+
             // The window may now be on another monitor (other profile).
             WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => self.refresh_display_profile(),
 
@@ -644,7 +679,10 @@ impl ApplicationHandler<AppEvent> for App {
             // releasing above a panel left the app stuck in drawing mode.
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
                 if state.is_pressed() {
-                    if over_canvas && self.space_down {
+                    if self.nav.is_some() || self.is_drawing {
+                        // Already dragging the view (middle button) or
+                        // drawing: a second press starts nothing.
+                    } else if over_canvas && self.space_down {
                         // Space + drag: pan; Shift + Space + drag: rotate (Krita).
                         self.begin_nav(self.modifiers.shift_key());
                     } else if over_canvas {
@@ -654,7 +692,6 @@ impl ApplicationHandler<AppEvent> for App {
                 } else if self.nav.is_some() {
                     self.end_nav();
                 } else if self.is_drawing {
-                    self.is_drawing = false;
                     self.end_stroke();
                 }
             }
@@ -686,7 +723,7 @@ impl ApplicationHandler<AppEvent> for App {
                 if self.nav.is_some() {
                     self.drag_nav();
                 } else if self.is_drawing && !self.pen_active {
-                    self.draw_at(self.cursor.0, self.cursor.1);
+                    self.draw_at(self.cursor.0, self.cursor.1, None);
                 }
             }
 
@@ -704,22 +741,25 @@ impl ApplicationHandler<AppEvent> for App {
                 let pos = (touch.location.x as f32, touch.location.y as f32);
                 match touch.phase {
                     TouchPhase::Started => {
-                        if !self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(pos)) {
+                        if self.is_drawing || !self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(pos)) {
                             return;
                         }
+                        self.cursor = pos;
                         self.begin_stroke();
                         if self.is_drawing {
-                            self.draw_at(pos.0, pos.1);
+                            self.draw_at(pos.0, pos.1, None);
                         }
                     }
                     TouchPhase::Moved => {
                         if self.is_drawing {
-                            self.draw_at(pos.0, pos.1);
+                            self.cursor = pos;
+                            self.draw_at(pos.0, pos.1, None);
                         }
                     }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
-                        self.is_drawing = false;
-                        self.end_stroke();
+                        if self.is_drawing {
+                            self.end_stroke();
+                        }
                     }
                 }
             }

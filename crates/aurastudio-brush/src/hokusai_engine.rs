@@ -22,7 +22,6 @@
 //! layer pixels = stroke_base (the layer before the stroke) + stroke tiles.
 
 use std::collections::HashSet;
-use std::time::Instant;
 
 use aurastudio_canvas::{blend::{blend_over, to_straight_u8}, BlendMode, PaintSurface, Rect};
 use hokusai::brushmodes::draw_dab_default;
@@ -126,7 +125,8 @@ pub struct HokusaiEngine {
     brush:     hokusai::Brush,
     state:     BrushState,
     stroke:    WashStrokeSurface,
-    last_time: Option<Instant>,
+    /// Pen time of the previous sample, in seconds.
+    last_time: Option<f64>,
     radius:    f32,
     blend:     BlendMode,
     pub smoother: PressureSmoother,
@@ -165,11 +165,6 @@ impl HokusaiEngine {
         self.brush.set(BrushSetting::Hardness, SettingValue::constant(b.hardness.clamp(0.02, 0.95)));
     }
 
-    /// Dab density along the stroke (libmypaint's dabs_per_actual_radius).
-    pub fn set_dabs_per_radius(&mut self, dabs: f32) {
-        self.brush.set(BrushSetting::DabsPerActualRadius, SettingValue::constant(dabs.max(1.0)));
-    }
-
     pub fn begin_stroke(&mut self) {
         self.stroke    = WashStrokeSurface::new();
         self.state     = BrushState::default();
@@ -177,13 +172,18 @@ impl HokusaiEngine {
         self.smoother.reset();
     }
 
-
-    /// One pointer sample, in canvas coordinates. hokusai interpolates the
-    /// dabs between two samples itself.
-    pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, x: f32, y: f32, pressure: f32) -> Option<Rect> {
-        let now   = Instant::now();
-        let dtime = self.last_time.map(|t| (now - t).as_secs_f64()).unwrap_or(0.0);
-        self.last_time = Some(now);
+    /// One pointer sample, in canvas coordinates, at pen time `time`
+    /// (seconds, any origin). hokusai interpolates the dabs between two
+    /// samples itself.
+    ///
+    /// The time must come from the pen, not from when the sample is
+    /// painted: samples are painted in batches on the paint thread, and
+    /// libmypaint brushes react to speed (dtime) in their dynamics.
+    pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, x: f32, y: f32, pressure: f32, time: f64) -> Option<Rect> {
+        // Clamped: a repeated timestamp (several packets in one tick) or a
+        // pause must not give libmypaint a zero or huge time step.
+        let dtime = self.last_time.map(|t| (time - t).clamp(0.001, 0.25)).unwrap_or(0.0);
+        self.last_time = Some(time);
         let pressure = self.smoother.apply(x, y, pressure, self.radius);
 
         self.stroke.begin_atomic();
@@ -319,7 +319,7 @@ mod tests {
         let mut e = engine(10);
         let mut dirty = None;
         for i in 0..=50 {
-            dirty = dirty.or(e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 1.0));
+            dirty = dirty.or(e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 1.0, i as f64 * 0.005));
         }
         e.end_stroke(&mut s);
 
@@ -334,7 +334,7 @@ mod tests {
         let mut s = white();
         let mut e = engine(10);
         for i in 0..=50 {
-            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.2);
+            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.2, i as f64 * 0.005);
         }
         e.end_stroke(&mut s);
         let v = red_at(&s, 100, 128) as i32;
@@ -348,11 +348,11 @@ mod tests {
         let mut s = white();
         let mut e = engine(10);
         for i in 0..=50 {
-            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.2);
+            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.2, i as f64 * 0.005);
         }
         let after_first = red_at(&s, 100, 128) as i32;
         for i in (0..=50).rev() {
-            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.3);
+            e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.3, 1.0 + (50 - i) as f64 * 0.005);
         }
         e.end_stroke(&mut s);
         let v = red_at(&s, 100, 128) as i32;
@@ -369,7 +369,7 @@ mod tests {
             s.base.copy_from_slice(&s.px);
             let mut e = engine(10);
             for i in 0..=50 {
-                e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.5);
+                e.stroke_to(&mut s, 40.0 + i as f32 * 3.0, 128.0, 0.5, i as f64 * 0.005);
             }
             e.end_stroke(&mut s);
         }

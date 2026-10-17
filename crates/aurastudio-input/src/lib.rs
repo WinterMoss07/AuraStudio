@@ -4,9 +4,14 @@
 // dependency) so this input layer is ours to modify and optimize.
 
 pub struct StylusSample {
+    /// Physical client pixels (same unit as winit's CursorMoved).
     pub x:        f32,
     pub y:        f32,
+    /// 0..1.
     pub pressure: f32,
+    /// Pen timestamp in milliseconds (the driver's clock, wraps after ~49
+    /// days): only differences between samples are meaningful.
+    pub time_ms:  u32,
 }
 
 // ---------------------------------------------------------------
@@ -67,8 +72,11 @@ mod imp {
         let scale = unsafe { GetDpiForWindow(hwnd) }.max(1) as f32 / 96.0;
         let mut buf = Vec::new();
         inner.queue.drain_into(&mut buf, 256);
+        // No pen timestamp in this API: stamped at drain time.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u32).unwrap_or(0);
         buf.into_iter()
-            .map(|p| StylusSample { x: p.x * scale, y: p.y * scale, pressure: p.pressure })
+            .map(|p| StylusSample { x: p.x * scale, y: p.y * scale, pressure: p.pressure, time_ms: now })
             .collect()
     }
 }
@@ -107,7 +115,16 @@ mod imp {
     };
 
     #[derive(Clone, Copy)]
-    struct PenPacket { x: f32, y: f32, pressure: f32 }
+    struct PenPacket { x: f32, y: f32, pressure: f32, time_ms: u32 }
+
+    /// Queue a packet; when full, drop the oldest one (the newest pen
+    /// position matters most).
+    fn push_latest(queue: &ArrayQueue<PenPacket>, packet: PenPacket) {
+        if queue.push(packet).is_err() {
+            let _ = queue.pop();
+            let _ = queue.push(packet);
+        }
+    }
 
     pub struct Inner {
         queue: Arc<ArrayQueue<PenPacket>>,
@@ -142,7 +159,7 @@ mod imp {
     pub fn drain(inner: &Inner) -> Vec<StylusSample> {
         let mut out = Vec::new();
         while let Some(p) = inner.queue.pop() {
-            out.push(StylusSample { x: p.x, y: p.y, pressure: p.pressure });
+            out.push(StylusSample { x: p.x, y: p.y, pressure: p.pressure, time_ms: p.time_ms });
         }
         out
     }
@@ -165,8 +182,9 @@ mod imp {
                 pressure: if info.penMask & PEN_MASK_PRESSURE != 0 {
                     info.pressure as f32 / 1024.
                 } else { 1. },
+                time_ms: info.pointerInfo.dwTime,
             };
-            let _ = state.queue.push(packet);
+            push_latest(&state.queue, packet);
         }
     }
 
@@ -224,7 +242,7 @@ mod imp {
     // --- WinTab (wintab32.dll, loaded at runtime) -------------------
 
     mod wintab {
-        use super::{c_void, Arc, ArrayQueue, DefSubclassProc, HWND, LPARAM,
+        use super::{c_void, push_latest, Arc, ArrayQueue, DefSubclassProc, HWND, LPARAM,
                      LRESULT, PenPacket, POINT, RemoveWindowSubclass, ScreenToClient,
                      SetWindowSubclass, WPARAM};
         use std::ffi::c_char;
@@ -294,6 +312,8 @@ mod imp {
             packet_mask: u32,
             pressure_range: AxisRange,
             pressure_seen_max: std::cell::Cell<i32>,
+            /// Tilt / rotation axes, read at install; kept for tilt support
+            /// in brushes (not used yet).
             #[allow(dead_code)]
             orientation: [AxisRange; 3],
         }
@@ -331,7 +351,7 @@ mod imp {
                 field_offset(state.packet_mask, PK_X),
                 field_offset(state.packet_mask, PK_Y),
             ) else { return; };
-            let _ = time_offset;
+            let time_ms = packet_u32(&words, time_offset);
             let mut screen = POINT { x: packet_i32(&words, x_offset), y: packet_i32(&words, y_offset) };
             if !unsafe { ScreenToClient(hwnd, &mut screen) }.as_bool() { return; }
             let pressure = field_offset(state.packet_mask, PK_NORMAL_PRESSURE)
@@ -346,11 +366,8 @@ mod imp {
                 })
                 .unwrap_or(1.0);
             // Physical client pixels (see push_info in the Windows Ink section).
-            let packet = PenPacket { x: screen.x as f32, y: screen.y as f32, pressure };
-            if state.queue.push(packet).is_err() {
-                let _ = state.queue.pop();
-                let _ = state.queue.push(packet);
-            }
+            let packet = PenPacket { x: screen.x as f32, y: screen.y as f32, pressure, time_ms };
+            push_latest(&state.queue, packet);
         }
 
         unsafe extern "system" fn window_proc(
@@ -409,7 +426,7 @@ mod imp {
                     context.packet_data = packet_mask;
                     context.packet_mode = 0;
                     context.move_mask = packet_mask & (PK_X | PK_Y | PK_NORMAL_PRESSURE | PK_ORIENTATION);
-                    context.name[..6].copy_from_slice(&b"Efude\0".map(|b| b as c_char));
+                    context.name[..11].copy_from_slice(&b"AuraStudio\0".map(|b| b as c_char));
                     let hwnd = HWND(hwnd);
                     let context_handle = wt_open(hwnd, &mut context, 1);
                     if context_handle.is_null() {
@@ -451,7 +468,8 @@ mod imp {
 }
 
 // ---------------------------------------------------------------
-// Stub macOS/Linux : fallback sur le Touch standard de winit (app.rs).
+// macOS / Linux: no native hook yet; the app falls back to winit's Touch
+// events (see app.rs).
 // ---------------------------------------------------------------
 #[cfg(not(target_os = "windows"))]
 pub struct Stylus;

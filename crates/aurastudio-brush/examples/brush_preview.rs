@@ -26,7 +26,7 @@ fn stroke(s: &mut S, e: &mut HokusaiEngine, b: &Brush, hokusai: bool, pts: &[(f3
     if hokusai {
         e.sync_from(b);
         e.begin_stroke();
-        for &(x, y, p) in pts { e.stroke_to(s, x, y, p); }
+        for (k, &(x, y, p)) in pts.iter().enumerate() { e.stroke_to(s, x, y, p, k as f64 * 0.005); }
         e.end_stroke(s);
     } else {
         let mut sm = PressureSmoother::new(0.5);
