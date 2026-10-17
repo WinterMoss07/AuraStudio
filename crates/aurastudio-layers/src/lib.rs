@@ -1,81 +1,99 @@
 use aurastudio_canvas::{PaintSurface, Rect};
 
-/// Un calque : son propre buffer RGBA8 + son propre état de trait en
-/// cours (stroke_base/stroke_mask), pour que le fix anti double-blend
-/// du brush engine s'applique par calque, pas globalement.
+/// One layer: RGBA8, straight alpha, `width * height * 4` bytes.
 pub struct Layer {
-    pub name:        String,
-    pub visible:     bool,
-    pub opacity:     f32,
-    pub pixels:      Vec<u8>,
-    pub stroke_base: Vec<u8>,
-    pub stroke_mask: Vec<u8>,
-    pub width:       u32,
-    pub height:      u32,
+    pub name:    String,
+    pub visible: bool,
+    pub opacity: f32,
+    pub pixels:  Vec<u8>,
+    /// The background layer is opaque white; clearing it resets it to
+    /// white instead of transparent.
+    pub background: bool,
+}
+
+/// Pixel a layer is cleared to: opaque white for the background,
+/// transparent for the others. Transparent pixels keep a white RGB so a
+/// compositing bug that ignores alpha shows white, not black.
+fn clear_pixel(background: bool) -> [u8; 4] {
+    if background { [255, 255, 255, 255] } else { [255, 255, 255, 0] }
 }
 
 impl Layer {
-    /// transparent=false : calque opaque blanc (fond). transparent=true :
-    /// calque vide (alpha 0) pour dessiner par-dessus sans cacher le dessous.
-    pub fn new(width: u32, height: u32, transparent: bool) -> Self {
-        let fill = if transparent { 0u8 } else { 255u8 };
-        let mut pixels = vec![fill; (width * height * 4) as usize];
-        if transparent {
-            // RGB neutre, alpha à 0 : évite un comportement "noir qui
-            // apparaît" si jamais la composition ignore l'alpha par erreur.
-            for px in pixels.chunks_exact_mut(4) {
-                px[0] = 255; px[1] = 255; px[2] = 255; px[3] = 0;
-            }
-        }
-        let stroke_base = pixels.clone();
-        let stroke_mask = vec![0u8; (width * height) as usize];
-        Self { name: "Calque".into(), visible: true, opacity: 1.0, pixels, stroke_base, stroke_mask, width, height }
+    pub fn new(width: u32, height: u32, background: bool) -> Self {
+        let pixels = clear_pixel(background).repeat((width * height) as usize);
+        Self { name: "Layer".into(), visible: true, opacity: 1.0, pixels, background }
     }
 
-    pub fn begin_stroke(&mut self) {
-        self.stroke_base.copy_from_slice(&self.pixels);
-        self.stroke_mask.iter_mut().for_each(|m| *m = 0);
+    pub fn clear(&mut self) {
+        let px = clear_pixel(self.background);
+        for p in self.pixels.chunks_exact_mut(4) { p.copy_from_slice(&px); }
     }
 }
 
-impl PaintSurface for Layer {
-    fn width(&self)  -> u32 { self.width }
-    fn height(&self) -> u32 { self.height }
-    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) {
-        (&mut self.pixels, &self.stroke_base, &mut self.stroke_mask)
-    }
-}
-
-/// Pile de calques + index du calque actif. v1 : composite CPU simple
-/// (alpha "over" de bas en haut, pondéré par l'opacité du calque) —
-/// pas encore de blend modes ni de composite GPU.
+/// Layer stack + active layer. Composite is on the CPU for now (straight
+/// alpha "over", bottom to top, weighted by layer opacity): no blend
+/// modes or GPU composite yet.
+///
+/// Memory: the per-stroke buffers (snapshot of the layer before the
+/// stroke + stroke coverage) are only needed by the layer being painted,
+/// so they live here once instead of in every layer. A layer costs 4
+/// bytes per pixel instead of 9.
 pub struct LayerStack {
     pub layers: Vec<Layer>,
     pub active: usize,
     pub width:  u32,
     pub height: u32,
+    stroke_base: Vec<u8>,
+    stroke_mask: Vec<u8>,
+}
+
+/// The active layer seen as a paintable surface for the brush engines.
+pub struct ActiveSurface<'a> {
+    pixels: &'a mut [u8],
+    base:   &'a [u8],
+    mask:   &'a mut [u8],
+    width:  u32,
+    height: u32,
+}
+
+impl PaintSurface for ActiveSurface<'_> {
+    fn width(&self)  -> u32 { self.width }
+    fn height(&self) -> u32 { self.height }
+    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) {
+        (self.pixels, self.base, self.mask)
+    }
 }
 
 impl LayerStack {
     pub fn new(width: u32, height: u32) -> Self {
-        let mut base = Layer::new(width, height, false);
-        base.name = "Fond".into();
-        Self { layers: vec![base], active: 0, width, height }
+        let mut base = Layer::new(width, height, true);
+        base.name = "Background".into();
+        let n = (width * height) as usize;
+        Self {
+            layers: vec![base],
+            active: 0,
+            width,
+            height,
+            stroke_base: vec![0; n * 4],
+            stroke_mask: vec![0; n],
+        }
     }
 
     pub fn add_layer(&mut self, name: &str) -> usize {
-        let mut layer = Layer::new(self.width, self.height, true);
+        let mut layer = Layer::new(self.width, self.height, false);
         layer.name = name.into();
-        self.layers.push(layer);
-        self.active = self.layers.len() - 1;
-        self.active
+        // New layer goes right above the active one, like Krita / CSP.
+        let index = self.active + 1;
+        self.layers.insert(index, layer);
+        self.active = index;
+        index
     }
 
     pub fn remove_layer(&mut self, index: usize) {
         if self.layers.len() <= 1 || index >= self.layers.len() { return; }
         self.layers.remove(index);
-        // Un calque supprimé sous l'actif décale tous les index au-dessus :
-        // on suit le même calque, pas le même numéro.
+        // Removing a layer below the active one shifts every index above
+        // it: keep following the same layer, not the same number.
         if index < self.active {
             self.active -= 1;
         }
@@ -90,37 +108,86 @@ impl LayerStack {
         &mut self.layers[self.active]
     }
 
-    /// Composite tous les calques visibles (bas vers haut) dans `out`,
-    /// qui doit faire width*height*4 octets. Alpha "over" standard.
-    pub fn composite_into(&self, out: &mut [u8]) {
-        debug_assert_eq!(out.len(), (self.width * self.height * 4) as usize);
-        out.fill(255); // fond blanc par défaut si tous les calques sont masqués
+    /// Erase the active layer's content (Delete key).
+    pub fn clear_active(&mut self) {
+        let a = self.active;
+        self.layers[a].clear();
+    }
 
-        for layer in &self.layers {
-            if !layer.visible || layer.opacity <= 0.0 { continue; }
-            for (dst, src) in out.chunks_exact_mut(4).zip(layer.pixels.chunks_exact(4)) {
-                let src_a = (src[3] as f32 / 255.0) * layer.opacity;
-                if src_a <= 0.0 { continue; }
-                let ia = 1.0 - src_a;
-                dst[0] = (src[0] as f32 * src_a + dst[0] as f32 * ia) as u8;
-                dst[1] = (src[1] as f32 * src_a + dst[1] as f32 * ia) as u8;
-                dst[2] = (src[2] as f32 * src_a + dst[2] as f32 * ia) as u8;
-                dst[3] = ((src_a + (dst[3] as f32 / 255.0) * ia) * 255.0) as u8;
-            }
+    /// Call when a stroke starts: snapshot the active layer and reset the
+    /// stroke coverage, so the new stroke never blends with itself but
+    /// still paints over earlier strokes.
+    pub fn begin_stroke(&mut self) {
+        self.stroke_base.copy_from_slice(&self.layers[self.active].pixels);
+        self.stroke_mask.fill(0);
+    }
+
+    pub fn active_surface(&mut self) -> ActiveSurface<'_> {
+        ActiveSurface {
+            pixels: &mut self.layers[self.active].pixels,
+            base:   &self.stroke_base,
+            mask:   &mut self.stroke_mask,
+            width:  self.width,
+            height: self.height,
         }
     }
 
-    /// Comme composite_into, mais limité à `rect` — évite de recomposer
-    /// les 2048×2048 pixels à chaque échantillon de pointeur pendant un
-    /// trait. `out` doit toujours faire width*height*4 (indexation
-    /// globale), seule la zone `rect` est réécrite.
+    /// Change the canvas size, keeping the content centered (Krita /
+    /// Photoshop "canvas size" with the default center anchor): growing
+    /// adds empty margins, shrinking crops the borders. Nothing is scaled.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        let (ow, oh) = (self.width as i64, self.height as i64);
+        let (nw, nh) = (width as i64, height as i64);
+        // Position of the old canvas's top-left corner in the new one.
+        let (dx, dy) = ((nw - ow) / 2, (nh - oh) / 2);
+
+        // Overlap, in old-canvas coordinates.
+        let sx0 = (-dx).max(0);
+        let sy0 = (-dy).max(0);
+        let sx1 = (nw - dx).min(ow);
+        let sy1 = (nh - dy).min(oh);
+
+        for layer in &mut self.layers {
+            let mut out = clear_pixel(layer.background).repeat((width * height) as usize);
+            if sx0 < sx1 {
+                for sy in sy0..sy1 {
+                    let src = ((sy * ow + sx0) * 4) as usize..((sy * ow + sx1) * 4) as usize;
+                    let ny = sy + dy;
+                    let dst_start = ((ny * nw + sx0 + dx) * 4) as usize;
+                    out[dst_start..dst_start + src.len()].copy_from_slice(&layer.pixels[src]);
+                }
+            }
+            layer.pixels = out;
+        }
+
+        self.width  = width;
+        self.height = height;
+        let n = (width * height) as usize;
+        self.stroke_base = vec![0; n * 4];
+        self.stroke_mask = vec![0; n];
+    }
+
+    /// Composite every visible layer (bottom to top) into `out`, which must
+    /// be `width * height * 4` bytes.
+    pub fn composite_into(&self, out: &mut [u8]) {
+        self.composite_rect_into(out, (0, 0, self.width, self.height));
+    }
+
+    /// Same as composite_into, limited to `rect`: avoids recompositing the
+    /// whole canvas every frame while a stroke only touches a small area.
+    /// `out` is still indexed as the full canvas; only `rect` is written.
     pub fn composite_rect_into(&self, out: &mut [u8], rect: Rect) {
-        let (x0, y0, x1, y1) = rect;
+        debug_assert_eq!(out.len(), (self.width * self.height * 4) as usize);
+        let (x0, y0) = (rect.0, rect.1);
+        let x1 = rect.2.min(self.width);
+        let y1 = rect.3.min(self.height);
+        if x0 >= x1 || y0 >= y1 { return; }
         let w = self.width;
 
+        // White behind everything, in case every layer is hidden.
         for y in y0..y1 {
             let row = ((y * w + x0) * 4) as usize..((y * w + x1) * 4) as usize;
-            for px in out[row.clone()].chunks_exact_mut(4) { px.copy_from_slice(&[255, 255, 255, 255]); }
+            out[row].fill(255);
         }
 
         for layer in &self.layers {
@@ -147,6 +214,11 @@ impl LayerStack {
 mod tests {
     use super::*;
 
+    fn px(stack: &LayerStack, layer: usize, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * stack.width + x) * 4) as usize;
+        stack.layers[layer].pixels[i..i + 4].try_into().unwrap()
+    }
+
     #[test]
     fn composite_flattens_opaque_base() {
         let stack = LayerStack::new(2, 2);
@@ -158,7 +230,7 @@ mod tests {
     #[test]
     fn transparent_layer_does_not_hide_base() {
         let mut stack = LayerStack::new(2, 2);
-        stack.add_layer("Calque 2");
+        stack.add_layer("Layer 2");
         let mut out = vec![0u8; 2 * 2 * 4];
         stack.composite_into(&mut out);
         assert_eq!(&out[0..4], &[255, 255, 255, 255]);
@@ -168,19 +240,64 @@ mod tests {
     fn removing_layer_below_keeps_same_active_layer() {
         let mut stack = LayerStack::new(2, 2);
         stack.add_layer("A");
-        stack.add_layer("B"); // actif = B (index 2)
-        stack.remove_layer(1); // supprime A, en dessous
+        stack.add_layer("B"); // active = B (index 2)
+        stack.remove_layer(1); // remove A, below it
         assert_eq!(stack.layers[stack.active].name, "B");
+    }
+
+    #[test]
+    fn removing_the_top_active_layer() {
+        let mut stack = LayerStack::new(2, 2);
+        stack.add_layer("A");
+        stack.remove_layer(1);
+        assert_eq!(stack.layers.len(), 1);
+        assert_eq!(stack.active, 0);
+        stack.begin_stroke(); // must not panic with the new active index
     }
 
     #[test]
     fn hidden_layer_is_skipped() {
         let mut stack = LayerStack::new(2, 2);
-        stack.add_layer("Calque 2");
+        stack.add_layer("Layer 2");
         stack.active_layer_mut().pixels[0..4].copy_from_slice(&[0, 0, 0, 255]);
         stack.active_layer_mut().visible = false;
         let mut out = vec![0u8; 2 * 2 * 4];
         stack.composite_into(&mut out);
         assert_eq!(&out[0..4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn clear_resets_to_white_or_transparent() {
+        let mut stack = LayerStack::new(2, 2);
+        stack.active_layer_mut().pixels[0..4].copy_from_slice(&[0, 0, 0, 255]);
+        stack.clear_active();
+        assert_eq!(px(&stack, 0, 0, 0), [255, 255, 255, 255]);
+
+        stack.add_layer("L");
+        stack.active_layer_mut().pixels[0..4].copy_from_slice(&[0, 0, 0, 255]);
+        stack.clear_active();
+        assert_eq!(px(&stack, 1, 0, 0), [255, 255, 255, 0]);
+    }
+
+    #[test]
+    fn resize_keeps_content_centered() {
+        let mut stack = LayerStack::new(4, 4);
+        stack.add_layer("L");
+        // Mark pixel (1, 1) on the paint layer.
+        let i = ((1 * 4 + 1) * 4) as usize;
+        stack.layers[1].pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+
+        stack.resize(8, 8); // grows by 2 on each side
+        assert_eq!((stack.width, stack.height), (8, 8));
+        assert_eq!(px(&stack, 1, 3, 3), [0, 0, 0, 255]);
+        assert_eq!(px(&stack, 1, 0, 0), [255, 255, 255, 0]); // new margin, transparent
+        assert_eq!(px(&stack, 0, 0, 0), [255, 255, 255, 255]); // background margin, white
+
+        stack.resize(4, 4); // back: crops the margins
+        assert_eq!(px(&stack, 1, 1, 1), [0, 0, 0, 255]);
+
+        stack.begin_stroke(); // stroke buffers follow the new size
+        let s = stack.active_surface();
+        assert_eq!(s.width() * s.height(), 16);
     }
 }
