@@ -1,0 +1,12 @@
+[package]
+name = "aurastudio-brushes"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+aurastudio-brush  = { path = "../aurastudio-brush" }
+aurastudio-canvas = { path = "../aurastudio-canvas" }
+png  = "0.18"
+dirs = "7"
+log  = "0.4"
