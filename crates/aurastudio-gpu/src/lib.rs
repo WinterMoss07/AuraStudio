@@ -52,6 +52,8 @@ pub struct GpuState {
     egui_ctx:        egui::Context,
     egui_state:      egui_winit::State,
     egui_renderer:   egui_wgpu::Renderer,
+    /// Window area (physical pixels) where the canvas is drawn: all the
+    /// space not covered by docks. (x, y, width, height)
     viewport:        [f32; 4],
     text_input_active: bool,
     /// Backdrop color around the canvas (sRGB, 0..1).
@@ -261,7 +263,7 @@ impl GpuState {
             cache:         None,
         });
 
-        let canvas = Canvas::new(&device, &queue, canvas_size.0, canvas_size.1);
+        let canvas = Canvas::new(&device, canvas_size.0, canvas_size.1);
         let nearest_sampler = device.create_sampler(&SamplerDescriptor {
             label:          Some("canvas_sampler_nearest"),
             address_mode_u: AddressMode::ClampToEdge,
@@ -310,7 +312,7 @@ impl GpuState {
     /// Replace the canvas texture with a new size. The caller then uploads
     /// the new composite with upload_rect.
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
-        self.canvas = Canvas::new(&self.device, &self.queue, width, height);
+        self.canvas = Canvas::new(&self.device, width, height);
         self.rebuild_bind_groups();
         // New canvas: show it whole.
         self.view.fit_to_area();
@@ -388,24 +390,16 @@ impl GpuState {
         self.text_input_active
     }
 
-    /// Forward a WindowEvent to egui. Returns egui's "consumed" flag (the
-    /// event hit a widget); the app only uses it to request a new frame,
-    /// see is_canvas_at for deciding whether a press starts a stroke.
     /// When egui wants the next frame (zero = right away), consumed once.
     pub fn take_repaint_delay(&mut self) -> Option<std::time::Duration> {
         self.repaint_delay.take()
     }
 
     /// Feed a window event to egui. Returns true when egui needs a new
-    /// frame for it (hover change, click, typing...).
+    /// frame for it (hover change, click, typing...). Whether a press
+    /// starts a stroke is decided by is_canvas_at, not by egui.
     pub fn egui_handle_event(&mut self, event: &winit::event::WindowEvent) -> bool {
         self.egui_state.on_window_event(&self.window, event).repaint
-    }
-
-    /// Window area (physical pixels) where the canvas is drawn: all the
-    /// space not covered by egui docks. (x, y, width, height)
-    pub fn canvas_viewport(&self) -> [f32; 4] {
-        self.viewport
     }
 
     /// True if a press at `pos` (physical window pixels) should start a
@@ -442,7 +436,8 @@ impl GpuState {
         self.viewport = vp;
     }
 
-    /// Upload the view transform for this frame (48 bytes).
+    /// Upload the view transform and color management switch for this
+    /// frame (64 bytes).
     fn write_view_uniform(&mut self) {
         let (c, a) = (self.canvas_size(), self.viewport);
         self.view.update_fit(c, a);
@@ -468,7 +463,7 @@ impl GpuState {
             },
             pixels,
             ImageDataLayout {
-                offset:         ((y0 * w + x0) * 4) as u64,
+                offset:         (y0 as u64 * w as u64 + x0 as u64) * 4,
                 bytes_per_row:  Some(w * 4),
                 rows_per_image: Some(y1 - y0),
             },
@@ -477,9 +472,7 @@ impl GpuState {
     }
 
     /// Draw a frame. egui runs first to know how much room the docks take;
-    /// the canvas is then drawn only in the remaining area, and the UI on
-    /// top of it.
-    /// Draw a frame: canvas, then the UI built by `ui_fn`.
+    /// the canvas is then drawn in the remaining area, and the UI on top.
     pub fn render(&mut self, ui_fn: impl FnOnce(&egui::Context)) {
         self.render_impl(Some(ui_fn));
     }

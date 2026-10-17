@@ -3,9 +3,10 @@ use wgpu::*;
 pub mod blend;
 pub use blend::BlendMode;
 
-pub type Rect = (u32, u32, u32, u32); // x0, y0, x1, y1 (exclusive)
+/// x0, y0, x1, y1 in pixels (x1 / y1 exclusive).
+pub type Rect = (u32, u32, u32, u32);
 
-/// Anything the brush engines can paint on (today: the active layer).
+/// Anything the brush engines can paint on (a paint layer).
 /// pixels / stroke_base / stroke_mask are width*height*4, width*height*4
 /// and width*height bytes. surfaces_mut() returns all three at once to
 /// avoid overlapping mutable/immutable borrows in the brush engine.
@@ -27,7 +28,7 @@ pub struct Canvas {
 impl Canvas {
     pub const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
-    pub fn new(device: &Device, queue: &Queue, width: u32, height: u32) -> Self {
+    pub fn new(device: &Device, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&TextureDescriptor {
             label:           Some("canvas"),
             size:            Extent3d { width, height, depth_or_array_layers: 1 },
@@ -35,31 +36,14 @@ impl Canvas {
             sample_count:    1,
             dimension:       TextureDimension::D2,
             format:          Self::FORMAT,
-            usage:           TextureUsages::TEXTURE_BINDING
-                           | TextureUsages::COPY_DST
-                           | TextureUsages::RENDER_ATTACHMENT,
+            usage:           TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             view_formats:    &[],
         });
 
-        // Starts white; the app uploads the real composite right after.
-        let pixels = vec![255u8; (width * height * 4) as usize];
-
-        queue.write_texture(
-            ImageCopyTexture {
-                texture:   &texture,
-                mip_level: 0,
-                origin:    Origin3d::ZERO,
-                aspect:    TextureAspect::All,
-            },
-            &pixels,
-            ImageDataLayout {
-                offset:         0,
-                bytes_per_row:  Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            Extent3d { width, height, depth_or_array_layers: 1 },
-        );
-
+        // No initial upload: wgpu zero-fills new textures, and the app
+        // uploads the real composite before the first frame. (It used to
+        // build a full white canvas on the CPU here: 16 MB at 2048 px, up
+        // to 1 GB at 16384 px, for nothing.)
         let view    = texture.create_view(&TextureViewDescriptor::default());
         let sampler = device.create_sampler(&SamplerDescriptor {
             label:          Some("canvas_sampler"),

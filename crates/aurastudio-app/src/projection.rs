@@ -26,7 +26,7 @@ pub type SharedProjection = Arc<Mutex<Projection>>;
 
 impl Projection {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { pixels: vec![255; (width * height * 4) as usize], width, height, dirty: Vec::new() }
+        Self { pixels: vec![255; width as usize * height as usize * 4], width, height, dirty: Vec::new() }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

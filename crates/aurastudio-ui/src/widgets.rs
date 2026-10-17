@@ -292,7 +292,7 @@ pub fn folder_shape(p: &egui::Painter, c: Pos2, w: f32, st: Stroke) {
     p.rect_stroke(body, 1.5, st);
 }
 
-/// Padlock, closed or open. `strong` = full contrast (locked).
+/// Padlock, closed (`locked`) or open, in color `col`.
 pub fn paint_lock(p: &egui::Painter, c: Pos2, locked: bool, col: Color32) {
     let st = Stroke::new(1.3_f32, col);
     let body = Rect::from_center_size(c + vec2(0.0, 2.5), vec2(10.0, 7.5));
@@ -311,39 +311,9 @@ pub fn paint_lock(p: &egui::Painter, c: Pos2, locked: bool, col: Color32) {
         })
         .collect();
     p.add(Shape::line(pts, st));
-    p.line_segment([pos2(c.x + dx - 3.2, top - 1.0), pos2(c.x + dx - 3.2, body.top() - lift * 0.0)], st);
+    p.line_segment([pos2(c.x + dx - 3.2, top - 1.0), pos2(c.x + dx - 3.2, body.top())], st);
     if locked {
         p.line_segment([pos2(c.x + 3.2, top - 1.0), pos2(c.x + 3.2, body.top())], st);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn displayed_zero_saturation_is_a_true_gray() {
-        // Pointer lands at S = 0.4 %: shown as 0, must give R = G = B.
-        let s = snap(0.004, 100.0);
-        let rgb = hsv_to_rgb([0.0, s, 0.8]);
-        let q = rgb.map(|v| (v * 255.0).round() as u8);
-        assert_eq!(q[0], q[1]);
-        assert_eq!(q[1], q[2]);
-        // Without snapping it was tinted: (204, 203, 203).
-        let raw = hsv_to_rgb([0.0, 0.004, 0.8]).map(|v| (v * 255.0).round() as u8);
-        assert_ne!(raw[0], raw[1]);
-    }
-
-    #[test]
-    fn hsv_round_trip() {
-        for &rgb in &[[1.0, 0.0, 0.0], [0.2, 0.6, 0.9], [0.5, 0.5, 0.5], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]] {
-            let back = hsv_to_rgb(rgb_to_hsv(rgb));
-            for c in 0..3 {
-                assert!((back[c] - rgb[c]).abs() < 1e-5, "{rgb:?} -> {back:?}");
-            }
-        }
-        // Mid gray is V = 50% here (sRGB values), as in Krita / CSP.
-        assert!((rgb_to_hsv([0.5, 0.5, 0.5])[2] - 0.5).abs() < 1e-6);
     }
 }
 
@@ -376,4 +346,34 @@ pub fn blend_combo(ui: &mut Ui, id: &str, mode: &mut crate::BlendMode, width: f3
             }
         });
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displayed_zero_saturation_is_a_true_gray() {
+        // Pointer lands at S = 0.4 %: shown as 0, must give R = G = B.
+        let s = snap(0.004, 100.0);
+        let rgb = hsv_to_rgb([0.0, s, 0.8]);
+        let q = rgb.map(|v| (v * 255.0).round() as u8);
+        assert_eq!(q[0], q[1]);
+        assert_eq!(q[1], q[2]);
+        // Without snapping it was tinted: (204, 203, 203).
+        let raw = hsv_to_rgb([0.0, 0.004, 0.8]).map(|v| (v * 255.0).round() as u8);
+        assert_ne!(raw[0], raw[1]);
+    }
+
+    #[test]
+    fn hsv_round_trip() {
+        for &rgb in &[[1.0, 0.0, 0.0], [0.2, 0.6, 0.9], [0.5, 0.5, 0.5], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]] {
+            let back = hsv_to_rgb(rgb_to_hsv(rgb));
+            for c in 0..3 {
+                assert!((back[c] - rgb[c]).abs() < 1e-5, "{rgb:?} -> {back:?}");
+            }
+        }
+        // Mid gray is V = 50% here (sRGB values), as in Krita / CSP.
+        assert!((rgb_to_hsv([0.5, 0.5, 0.5])[2] - 0.5).abs() < 1e-6);
+    }
 }
