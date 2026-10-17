@@ -19,16 +19,19 @@ pub struct GpuState {
     canvas_pipeline: RenderPipeline,
     view_buffer:     Buffer,
     view_bind_group: BindGroup,
+    canvas_bgl:      BindGroupLayout,
     pub canvas:      Canvas,
     window:          Arc<Window>,
     egui_ctx:        egui::Context,
     egui_state:      egui_winit::State,
     egui_renderer:   egui_wgpu::Renderer,
     viewport:        [f32; 4],
+    text_input_active: bool,
 }
 
 impl GpuState {
-    pub async fn new(window: Arc<Window>) -> Self {
+    /// `canvas_size`: initial canvas width and height in pixels.
+    pub async fn new(window: Arc<Window>, canvas_size: (u32, u32)) -> Self {
         let size = window.inner_size();
 
         // Vulkan by default (lowest RAM in our tests), Metal on macOS.
@@ -64,7 +67,13 @@ impl GpuState {
                 &DeviceDescriptor {
                     label:             None,
                     required_features: Features::empty(),
-                    required_limits:   Limits::default(),
+                    // Ask for the biggest texture the GPU supports (often
+                    // 16384) instead of wgpu's portable default (8192): it
+                    // caps the canvas size.
+                    required_limits:   Limits {
+                        max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
+                        ..Limits::default()
+                    },
                     memory_hints:      MemoryHints::default(),
                 },
                 None,
@@ -153,7 +162,7 @@ impl GpuState {
         });
 
         let view_uniform = ViewUniform {
-            canvas_size: [2048.0, 2048.0],
+            canvas_size: [canvas_size.0 as f32, canvas_size.1 as f32],
             window_size: [size.width as f32, size.height as f32],
         };
 
@@ -200,26 +209,8 @@ impl GpuState {
             cache:         None,
         });
 
-        let canvas = Canvas::new(&device, &queue, 2048, 2048);
-
-        let view_bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label:   Some("view_bind_group"),
-            layout:  &canvas_bgl,
-            entries: &[
-                BindGroupEntry {
-                    binding:  0,
-                    resource: BindingResource::TextureView(&canvas.view),
-                },
-                BindGroupEntry {
-                    binding:  1,
-                    resource: BindingResource::Sampler(&canvas.sampler),
-                },
-                BindGroupEntry {
-                    binding:  2,
-                    resource: view_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let canvas = Canvas::new(&device, &queue, canvas_size.0, canvas_size.1);
+        let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &view_buffer);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -234,22 +225,49 @@ impl GpuState {
 
         Self {
             surface, device, queue, config,
-            canvas_pipeline, view_buffer, view_bind_group,
+            canvas_pipeline, view_buffer, view_bind_group, canvas_bgl,
             canvas, window,
             egui_ctx, egui_state, egui_renderer,
             viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
+            text_input_active: false,
         }
     }
 
-    /// Transmet un WindowEvent à egui. Retourne true si egui a consommé
-    /// l'event (clic sur un widget, etc.) — dans ce cas l'app ne doit
-    /// pas aussi interpréter l'event comme un coup de pinceau.
+    /// Biggest canvas side the GPU accepts (max 2D texture size).
+    pub fn max_canvas_size(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
+    /// Replace the canvas texture with a new size. The caller then fills
+    /// `canvas.pixels` (layer composite) and marks it dirty.
+    pub fn resize_canvas(&mut self, width: u32, height: u32) {
+        self.canvas = Canvas::new(&self.device, &self.queue, width, height);
+        self.view_bind_group = canvas_bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.view_buffer);
+        // Force the view uniform (canvas size) to be rewritten.
+        let vp = self.viewport;
+        self.viewport = [-1.0; 4];
+        self.set_viewport(vp);
+    }
+
+    /// True while an egui text/number field is being edited: shortcuts like
+    /// Delete must then go to the field, not the canvas.
+    ///
+    /// Not egui's wants_keyboard_input(): that is true whenever ANY widget
+    /// has focus, including a button just clicked (e.g. the delete-layer
+    /// button), which silently disabled the Delete shortcut.
+    pub fn ui_wants_keyboard(&self) -> bool {
+        self.text_input_active
+    }
+
+    /// Forward a WindowEvent to egui. Returns egui's "consumed" flag (the
+    /// event hit a widget); the app only uses it to request a new frame,
+    /// see is_canvas_at for deciding whether a press starts a stroke.
     pub fn egui_handle_event(&mut self, event: &winit::event::WindowEvent) -> bool {
         self.egui_state.on_window_event(&self.window, event).consumed
     }
 
-    /// Zone de la fenêtre (en pixels physiques) où le canvas est dessiné :
-    /// tout l'espace non couvert par les docks egui. (x, y, largeur, hauteur)
+    /// Window area (physical pixels) where the canvas is drawn: all the
+    /// space not covered by egui docks. (x, y, width, height)
     pub fn canvas_viewport(&self) -> [f32; 4] {
         self.viewport
     }
@@ -279,8 +297,8 @@ impl GpuState {
         self.config.width  = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
-        // Recalculé précisément à la prochaine frame depuis la mise en
-        // page egui ; en attendant, toute la fenêtre.
+        // Recomputed from the egui layout on the next frame; until then,
+        // the whole window.
         self.set_viewport([0.0, 0.0, size.width as f32, size.height as f32]);
     }
 
@@ -300,7 +318,7 @@ impl GpuState {
         let rw = x1 - x0;
         let rh = y1 - y0;
 
-        // Paquet contigu : on extrait les lignes de la zone dirty uniquement.
+        // Contiguous upload buffer: only the rows of the dirty rect.
         let mut buf = Vec::with_capacity((rw * rh * 4) as usize);
         for y in y0..y1 {
             let row_start = ((y * w + x0) * 4) as usize;
@@ -325,9 +343,9 @@ impl GpuState {
         );
     }
 
-    /// Dessine une frame. egui tourne en premier pour connaître la place
-    /// prise par les docks ; le canvas est ensuite dessiné uniquement dans
-    /// la zone restante, puis l'UI par-dessus.
+    /// Draw a frame. egui runs first to know how much room the docks take;
+    /// the canvas is then drawn only in the remaining area, and the UI on
+    /// top of it.
     pub fn render(&mut self, ui_fn: impl FnOnce(&egui::Context)) {
         let raw_input = self.egui_state.take_egui_input(&self.window);
         let mut ui_fn = Some(ui_fn);
@@ -336,6 +354,18 @@ impl GpuState {
             if let Some(f) = ui_fn.take() { f(ctx); }
             free_rect = Some(ctx.available_rect());
         });
+        // egui asks for another frame right away when its layout isn't done
+        // (e.g. windows sizing themselves on the first frames). With
+        // ControlFlow::Wait nothing else would trigger it: panels stayed
+        // invisible at startup until the mouse moved.
+        if full_output.viewport_output.get(&egui::ViewportId::ROOT)
+            .is_some_and(|v| v.repaint_delay.is_zero())
+        {
+            self.window.request_redraw();
+        }
+
+        // egui asks for IME (text input) only while a text field is focused.
+        self.text_input_active = full_output.platform_output.ime.is_some();
         self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
 
         let ppp = full_output.pixels_per_point;
@@ -426,4 +456,16 @@ impl GpuState {
         self.queue.submit(std::iter::once(enc.finish()));
         output.present();
     }
+}
+
+fn canvas_bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas, view_buffer: &Buffer) -> BindGroup {
+    device.create_bind_group(&BindGroupDescriptor {
+        label:   Some("view_bind_group"),
+        layout,
+        entries: &[
+            BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&canvas.view) },
+            BindGroupEntry { binding: 1, resource: BindingResource::Sampler(&canvas.sampler) },
+            BindGroupEntry { binding: 2, resource: view_buffer.as_entire_binding() },
+        ],
+    })
 }

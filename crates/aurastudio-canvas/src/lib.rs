@@ -2,11 +2,10 @@ use wgpu::*;
 
 pub type Rect = (u32, u32, u32, u32); // x0, y0, x1, y1 (exclusive)
 
-/// Toute surface peignable par aurastudio-brush : le canvas final (GPU)
-/// ou un calque individuel (aurastudio-layers). pixels/stroke_base/
-/// stroke_mask doivent faire width*height*4 / width*height*4 / width*height
-/// octets. surfaces_mut() renvoie les trois en une fois pour éviter des
-/// emprunts mutables/immuables qui se chevauchent dans le brush engine.
+/// Anything the brush engines can paint on (today: the active layer).
+/// pixels / stroke_base / stroke_mask are width*height*4, width*height*4
+/// and width*height bytes. surfaces_mut() returns all three at once to
+/// avoid overlapping mutable/immutable borrows in the brush engine.
 pub trait PaintSurface {
     fn width(&self)  -> u32;
     fn height(&self) -> u32;
@@ -18,9 +17,8 @@ pub struct Canvas {
     pub texture:     Texture,
     pub view:        TextureView,
     pub sampler:     Sampler,
-    pub pixels:      Vec<u8>, // état affiché / uploadé au GPU
-    pub stroke_base: Vec<u8>, // snapshot du canvas avant le trait en cours
-    pub stroke_mask: Vec<u8>, // couverture 0-255 du trait en cours (max-accumulate)
+    /// Composite of all layers, uploaded to the GPU texture (dirty rect).
+    pub pixels:      Vec<u8>,
     pub width:       u32,
     pub height:      u32,
     pub dirty_rect:  Option<Rect>,
@@ -71,14 +69,7 @@ impl Canvas {
             ..Default::default()
         });
 
-        let stroke_base = pixels.clone();
-        let stroke_mask = vec![0u8; (width * height) as usize];
-
-        Self {
-            texture, view, sampler, pixels,
-            stroke_base, stroke_mask,
-            width, height, dirty_rect: None,
-        }
+        Self { texture, view, sampler, pixels, width, height, dirty_rect: None }
     }
 
     pub fn mark_dirty(&mut self, rect: Rect) {
@@ -90,20 +81,5 @@ impl Canvas {
             ),
         });
     }
-
-    /// À appeler quand un nouveau trait commence (pointer/souris down).
-    /// Fige l'état du canvas comme base, et vide le masque de couverture
-    /// pour que le prochain trait ne se mélange pas avec le précédent.
-    pub fn begin_stroke(&mut self) {
-        self.stroke_base.copy_from_slice(&self.pixels);
-        self.stroke_mask.iter_mut().for_each(|m| *m = 0);
-    }
 }
 
-impl PaintSurface for Canvas {
-    fn width(&self)  -> u32 { self.width }
-    fn height(&self) -> u32 { self.height }
-    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) {
-        (&mut self.pixels, &self.stroke_base, &mut self.stroke_mask)
-    }
-}
