@@ -109,7 +109,21 @@ impl App {
         if let Some(w) = &self.window { w.request_redraw(); }
     }
 
+    /// Start a stroke on the active layer. Refused (with a notice in the
+    /// options bar) when it is locked or a folder is selected.
     fn begin_stroke(&mut self) {
+        if !self.layers.can_paint() {
+            let msg = if self.layers.active_node().is_folder() {
+                "Select a layer to paint (a folder is selected)"
+            } else {
+                "Layer is locked"
+            };
+            self.ui.notify(msg);
+            self.is_drawing = false;
+            self.request_redraw();
+            return;
+        }
+        self.is_drawing = true;
         self.layers.begin_stroke();
         if self.use_hokusai {
             self.hokusai.smoother.span = self.pen_smoother.span;
@@ -128,12 +142,13 @@ impl App {
         }
         self.stats = StrokeStats::default();
         if self.use_hokusai && self.last_pos.is_some() {
-            let rect = self.hokusai.end_stroke(&mut self.layers.active_surface());
-            self.present_rect(rect);
+            if let Some(mut surface) = self.layers.active_surface() {
+                let rect = self.hokusai.end_stroke(&mut surface);
+                self.present_rect(rect);
+            }
         }
         if self.last_pos.is_some() {
-            let id = self.layers.layers[self.layers.active].id;
-            self.ui.invalidate_thumbnail(id);
+            self.ui.invalidate_thumbnail(self.layers.active_id());
             self.request_redraw();
         }
         self.last_pos   = None;
@@ -144,7 +159,7 @@ impl App {
         let Some(pos) = self.window_to_canvas(wx, wy) else { return };
         let t0 = Instant::now();
         let pressure = self.pressure;
-        let mut surface = self.layers.active_surface();
+        let Some(mut surface) = self.layers.active_surface() else { return };
 
         let rect = if self.use_hokusai {
             self.last_pos = Some((pos.0, pos.1, pressure));
@@ -248,10 +263,12 @@ impl App {
     /// transparent for the others), like Krita / CSP.
     fn clear_active_layer(&mut self) {
         if self.is_drawing { return; }
-        self.layers.clear_active();
-        let id = self.layers.layers[self.layers.active].id;
-        self.ui.invalidate_thumbnail(id);
-        self.layers_dirty = true;
+        if self.layers.clear_active() {
+            self.ui.invalidate_thumbnail(self.layers.active_id());
+            self.layers_dirty = true;
+        } else {
+            self.ui.notify("Layer is locked or is a folder");
+        }
         self.request_redraw();
     }
 }
@@ -340,7 +357,6 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
                 if state.is_pressed() {
                     if over_canvas {
-                        self.is_drawing = true;
                         self.pressure   = 1.0;
                         self.begin_stroke();
                     }
@@ -374,9 +390,10 @@ impl ApplicationHandler for App {
                         if !self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(pos)) {
                             return;
                         }
-                        self.is_drawing = true;
                         self.begin_stroke();
-                        self.draw_at(pos.0, pos.1);
+                        if self.is_drawing {
+                            self.draw_at(pos.0, pos.1);
+                        }
                     }
                     TouchPhase::Moved => {
                         if self.is_drawing {
