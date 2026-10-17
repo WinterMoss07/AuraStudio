@@ -11,11 +11,12 @@ use winit::{
 };
 
 use aurastudio_brush::Brush;
+use aurastudio_brushes::Library;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
 use aurastudio_document::{SharedDoc, Workspace};
-use aurastudio_ui::{Actions, Model, UiState, ViewCmd};
+use aurastudio_ui::{Actions, ImportBrushes, Model, UiState, ViewCmd};
 
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
@@ -46,10 +47,13 @@ pub struct App {
     gpu:    Option<GpuState>,
     stylus: Option<Stylus>,
 
+    /// Brush presets (built-in, MyPaint collection, imported).
+    library:      Library,
+    /// Selected preset.
+    preset:       usize,
+    /// Working settings of the selected preset (copied back into it when
+    /// another one is selected) + the global color.
     brush:        Brush,
-    /// true = hokusai engine (libmypaint, for textured brushes later),
-    /// false = swept round pen (default).
-    use_hokusai:  bool,
     /// Pressure smoothing distance, fraction of the brush radius.
     smoothing:    f32,
 
@@ -90,6 +94,12 @@ pub struct App {
     pen_active: bool,
     /// Last known cursor position, physical window pixels.
     cursor:     (f32, f32),
+    /// The cursor is over the canvas area (not a docker), from the last
+    /// event; and inside the window at all.
+    over_canvas: bool,
+    cursor_in_window: bool,
+    /// The OS cursor is hidden (the brush outline replaces it).
+    os_cursor_hidden: bool,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -108,6 +118,8 @@ pub struct App {
 
 impl App {
     pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
+        let library = Library::load();
+        log::info!("brushes: {} presets ({} groups)", library.presets.len(), library.groups().len());
         let mut workspace = Workspace::new();
         let doc = workspace.new_document("Untitled", DEFAULT_CANVAS.0, DEFAULT_CANVAS.1);
         let projection = Arc::new(std::sync::Mutex::new(Projection::new(DEFAULT_CANVAS.0, DEFAULT_CANVAS.1)));
@@ -125,9 +137,10 @@ impl App {
             gpu:    None,
             stylus: None,
 
-            brush:       Brush::new(),
-            use_hokusai: false,
-            smoothing:   0.5,
+            brush:       library.presets[0].settings.clone(),
+            smoothing:   library.presets[0].smoothing,
+            library,
+            preset:      0,
 
             workspace,
             doc,
@@ -148,6 +161,9 @@ impl App {
             nav:        None,
             pen_active: false,
             cursor:     (0.0, 0.0),
+            over_canvas: false,
+            cursor_in_window: false,
+            os_cursor_hidden: false,
 
             painted:      false,
             // Upload the first composite.
@@ -195,8 +211,23 @@ impl App {
         self.request_redraw();
     }
 
+    /// Brush outline under the cursor over the canvas (Krita style), in
+    /// place of the OS arrow; the arrow / hand comes back over the dockers
+    /// and while navigating.
+    fn update_brush_cursor(&mut self) {
+        let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none();
+        let Some(gpu) = &mut self.gpu else { return };
+        let outline = show.then(|| (self.cursor, self.brush.radius as f32 * gpu.zoom()));
+        gpu.set_brush_cursor(outline);
+        if show != self.os_cursor_hidden {
+            self.os_cursor_hidden = show;
+            if let Some(w) = &self.window { w.set_cursor_visible(!show); }
+        }
+    }
+
     /// Hand cursor while Space is held / the view is being dragged.
-    fn update_cursor_icon(&self) {
+    fn update_cursor_icon(&mut self) {
+        self.update_brush_cursor();
         let Some(w) = &self.window else { return };
         let icon = match (self.nav, self.space_down) {
             (Some(_), _) => CursorIcon::Grabbing,
@@ -257,6 +288,46 @@ impl App {
         aurastudio_ui::set_display_transform(transform.map(|t| {
             Arc::new(move |c: [u8; 3]| t.apply(c)) as Arc<dyn Fn([u8; 3]) -> [u8; 3] + Send + Sync>
         }));
+        self.request_redraw();
+    }
+
+    /// Switch brush: the current one keeps the settings it has now (each
+    /// brush has its own size, opacity, blend...), the new one brings its
+    /// own. The color stays.
+    fn select_preset(&mut self, index: usize) {
+        if index == self.preset || index >= self.library.presets.len() { return; }
+        let color = self.brush.color;
+        let old = &mut self.library.presets[self.preset];
+        old.settings = self.brush.clone();
+        old.smoothing = self.smoothing;
+        let new = &self.library.presets[index];
+        self.brush = new.settings.clone();
+        self.brush.color = color;
+        self.smoothing = new.smoothing;
+        self.preset = index;
+    }
+
+    /// File dialog, then copy the chosen MyPaint brushes into the library.
+    fn import_brushes(&mut self, kind: ImportBrushes) {
+        let dialog = rfd::FileDialog::new().set_title("Import MyPaint brushes");
+        let paths: Vec<std::path::PathBuf> = match kind {
+            ImportBrushes::Files => dialog.add_filter("MyPaint brush", &["myb"]).pick_files().unwrap_or_default(),
+            ImportBrushes::Folder => dialog.pick_folder().into_iter().collect(),
+        };
+        let mut added = 0;
+        let mut error = None;
+        for p in &paths {
+            match self.library.import(p) {
+                Ok(n) => added += n,
+                Err(e) => error = Some(e),
+            }
+        }
+        if paths.is_empty() { return; }
+        match (added, error) {
+            (0, Some(e)) => self.ui.notify(&format!("Import failed: {e}")),
+            (n, _) => self.ui.notify(&format!("{n} brush(es) imported")),
+        }
+        log::info!("brush import: {added} added from {paths:?}");
         self.request_redraw();
     }
 
@@ -321,7 +392,7 @@ impl App {
         self.paint.send(Cmd::Begin {
             doc:       Arc::clone(&self.doc),
             brush:     self.brush.clone(),
-            hokusai:   self.use_hokusai,
+            engine:    self.library.presets[self.preset].engine.clone(),
             smoothing: self.smoothing,
         });
     }
@@ -371,7 +442,11 @@ impl App {
             if self.is_drawing {
                 self.pen_active = true;
                 self.pressure   = s.pressure;
+                // The outline follows the pen's own samples (newer than
+                // the mouse events Windows derives from them).
+                self.cursor     = (s.x, s.y);
                 self.draw_at(s.x, s.y, Some(s.time_ms));
+                self.request_redraw();
             }
         }
     }
@@ -399,6 +474,7 @@ impl App {
     }
 
     fn render_frame(&mut self) {
+        self.update_brush_cursor();
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
@@ -420,7 +496,9 @@ impl App {
         let ui_state   = &mut self.ui;
         let doc        = &self.doc;
         let brush      = &mut self.brush;
-        let use_hokusai = &mut self.use_hokusai;
+        let presets    = &self.library.presets[..];
+        let preset_before = self.preset;
+        let mut preset = self.preset;
         let smoothing  = &mut self.smoothing;
         let canvas_edit = &mut self.canvas_edit;
         let mut actions = Actions::default();
@@ -433,7 +511,8 @@ impl App {
             let (can_undo, can_redo) = (doc.history().undo_len() > 0, doc.history().redo_len() > 0);
             let mut model = Model {
                 brush,
-                use_hokusai,
+                presets,
+                preset: &mut preset,
                 pressure_smoothing: smoothing,
                 layers: &mut doc.layers,
                 can_undo,
@@ -475,6 +554,8 @@ impl App {
         if (self.color_managed, self.perceptual) != (cm_before, perceptual_before) {
             self.apply_color_management();
         }
+        if preset != preset_before { self.select_preset(preset); }
+        if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         if actions.undo { self.undo(); }
         if actions.redo { self.redo(); }
@@ -615,6 +696,7 @@ impl ApplicationHandler<AppEvent> for App {
         if !is_redraw && (ui_needs_frame || ui_dragging) {
             self.request_redraw();
         }
+        self.over_canvas = over_canvas;
 
         self.drain_stylus();
 
@@ -718,8 +800,22 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
 
+            WindowEvent::CursorEntered { .. } => self.cursor_in_window = true,
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor_in_window = false;
+                self.update_brush_cursor();
+                self.request_redraw();
+            }
+
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
+                self.cursor_in_window = true;
+                self.over_canvas = self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(self.cursor));
+                // The outline moves with the cursor: a frame is needed.
+                if self.over_canvas || self.os_cursor_hidden {
+                    self.update_brush_cursor();
+                    self.request_redraw();
+                }
                 if self.nav.is_some() {
                     self.drag_nav();
                 } else if self.is_drawing && !self.pen_active {

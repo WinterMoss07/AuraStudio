@@ -22,6 +22,19 @@ struct ViewUniform {
     cm:          [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorUniform {
+    center: [f32; 2],
+    radius: f32,
+    cross:  f32,
+    screen: [f32; 2],
+    _pad:   [f32; 2],
+}
+
+/// Below this outline radius (screen pixels) a crosshair is shown instead.
+const MIN_OUTLINE_RADIUS: f32 = 3.0;
+
 pub struct GpuState {
     surface:         Surface<'static>,
     device:          Device,
@@ -43,6 +56,12 @@ pub struct GpuState {
     /// color_managed is on.
     lut:             DisplayLut,
     color_managed:   bool,
+    /// Brush outline: pipeline, uniform, and where to draw it (center in
+    /// physical pixels, radius in screen pixels); None = hidden.
+    cursor_pipeline: RenderPipeline,
+    cursor_buffer:   Buffer,
+    cursor_bind:     BindGroup,
+    brush_cursor:    Option<((f32, f32), f32)>,
     /// Last UI primitives, redrawn as-is by render_cached_ui.
     last_ui:         Option<(Vec<egui::ClippedPrimitive>, f32)>,
     view_bind_group: BindGroup,
@@ -263,6 +282,7 @@ impl GpuState {
             cache:         None,
         });
 
+        let (cursor_pipeline, cursor_buffer, cursor_bind) = cursor_pipeline(&device, format);
         let canvas = Canvas::new(&device, canvas_size.0, canvas_size.1);
         let nearest_sampler = device.create_sampler(&SamplerDescriptor {
             label:          Some("canvas_sampler_nearest"),
@@ -292,6 +312,8 @@ impl GpuState {
             nearest_sampler, nearest_bind_group,
             view: CanvasView::default(),
             last_ui: None,
+            cursor_pipeline, cursor_buffer, cursor_bind,
+            brush_cursor: None,
             lut,
             color_managed: false,
             canvas, window,
@@ -334,6 +356,17 @@ impl GpuState {
             }
             _ => self.color_managed = false,
         }
+    }
+
+    /// Show the brush outline at `center` (physical window pixels) with
+    /// `radius` in screen pixels, or hide it.
+    pub fn set_brush_cursor(&mut self, cursor: Option<((f32, f32), f32)>) {
+        self.brush_cursor = cursor;
+    }
+
+    /// Current zoom (screen pixels per canvas pixel).
+    pub fn zoom(&self) -> f32 {
+        self.view.zoom
     }
 
     fn canvas_size(&self) -> (u32, u32) {
@@ -601,6 +634,33 @@ impl GpuState {
             self.egui_renderer.render(&mut pass.forget_lifetime(), &tris, &screen_descriptor);
         }
 
+        // Brush outline, over everything (it follows the pen also while
+        // the UI is shown from cache mid-stroke).
+        if let Some(((cx, cy), r)) = self.brush_cursor {
+            let u = CursorUniform {
+                center: [cx, cy],
+                radius: r.max(MIN_OUTLINE_RADIUS),
+                cross: if r < MIN_OUTLINE_RADIUS { 1.0 } else { 0.0 },
+                screen: [self.config.width as f32, self.config.height as f32],
+                _pad: [0.0; 2],
+            };
+            self.queue.write_buffer(&self.cursor_buffer, 0, bytemuck::cast_slice(&[u]));
+            let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
+                label: Some("cursor_pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view:           &view,
+                    resolve_target: None,
+                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes:         None,
+                occlusion_query_set:      None,
+            });
+            pass.set_pipeline(&self.cursor_pipeline);
+            pass.set_bind_group(0, &self.cursor_bind, &[]);
+            pass.draw(0..6, 0..1);
+        }
+
         for id in &textures_free {
             self.egui_renderer.free_texture(id);
         }
@@ -627,6 +687,61 @@ impl GpuState {
         }
         self.swapchain_rebuilt = suboptimal;
     }
+}
+
+/// Pipeline drawing the brush outline (shaders/cursor.wgsl), premultiplied
+/// alpha over the frame.
+fn cursor_pipeline(device: &Device, format: TextureFormat) -> (RenderPipeline, Buffer, BindGroup) {
+    let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label:   Some("cursor_bgl"),
+        entries: &[BindGroupLayoutEntry {
+            binding:    0,
+            visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+            ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        }],
+    });
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label:              Some("cursor_buffer"),
+        size:               std::mem::size_of::<CursorUniform>() as u64,
+        usage:              BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind = device.create_bind_group(&BindGroupDescriptor {
+        label:   Some("cursor_bind"),
+        layout:  &layout,
+        entries: &[BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+    });
+    let shader = device.create_shader_module(ShaderModuleDescriptor {
+        label:  Some("cursor_shader"),
+        source: ShaderSource::Wgsl(include_str!("shaders/cursor.wgsl").into()),
+    });
+    let pl = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("cursor_pl"), bind_group_layouts: &[&layout], push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+        label:  Some("cursor_pipeline"),
+        layout: Some(&pl),
+        vertex: VertexState {
+            module: &shader, entry_point: Some("vs_main"), buffers: &[],
+            compilation_options: PipelineCompilationOptions::default(),
+        },
+        fragment: Some(FragmentState {
+            module: &shader, entry_point: Some("fs_main"),
+            targets: &[Some(ColorTargetState {
+                format,
+                blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: ColorWrites::ALL,
+            })],
+            compilation_options: PipelineCompilationOptions::default(),
+        }),
+        primitive: PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+    (pipeline, buffer, bind)
 }
 
 /// 2x2x2 identity table: each corner maps to itself.
