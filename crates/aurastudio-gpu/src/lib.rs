@@ -469,7 +469,21 @@ impl GpuState {
         }
 
         self.queue.submit(std::iter::once(enc.finish()));
+        let suboptimal = output.suboptimal;
         output.present();
+
+        // The swapchain still works but no longer matches the window
+        // (resize in progress, maximize, DPI or monitor change): rebuild
+        // it at the window's real size, otherwise Vulkan reports it on
+        // every single frame.
+        if suboptimal {
+            let size = self.window.inner_size();
+            if size.width > 0 && size.height > 0 {
+                self.config.width  = size.width;
+                self.config.height = size.height;
+                self.surface.configure(&self.device, &self.config);
+            }
+        }
     }
 }
 
