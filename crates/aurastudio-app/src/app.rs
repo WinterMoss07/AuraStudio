@@ -114,6 +114,12 @@ impl ApplicationHandler for App {
         _id:        WindowId,
         event:      WindowEvent,
     ) {
+        // egui a priorité : si l'event concerne un widget (clic sur un
+        // slider du color picker, etc.), on ne dessine pas sur le canvas.
+        let consumed_by_ui = self.gpu.as_mut()
+            .map(|gpu| gpu.egui_handle_event(&event))
+            .unwrap_or(false);
+
         self.drain_stylus();
 
         match event {
@@ -128,7 +134,7 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
+            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } if !consumed_by_ui => {
                 self.is_drawing = state.is_pressed();
                 self.pressure   = 1.0;
                 if self.is_drawing {
@@ -138,7 +144,7 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::CursorMoved { position, .. } => {
+            WindowEvent::CursorMoved { position, .. } if !consumed_by_ui => {
                 if self.is_drawing {
                     self.draw_at(position.x as f32, position.y as f32);
                 }
@@ -147,7 +153,7 @@ impl ApplicationHandler for App {
             // Fallback macOS/Linux uniquement : sous Windows, drain_stylus
             // (efude-input) gère déjà tout, donc on ignore Touch ici pour
             // ne pas dessiner en double.
-            WindowEvent::Touch(touch) if cfg!(not(target_os = "windows")) => {
+            WindowEvent::Touch(touch) if cfg!(not(target_os = "windows")) && !consumed_by_ui => {
                 use winit::event::{Force, TouchPhase};
                 self.pressure = match touch.force {
                     Some(Force::Normalized(f)) => f as f32,
@@ -176,11 +182,50 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = &mut self.gpu {
-                    gpu.render();
+                    let brush = &mut self.brush;
+                    gpu.render(|ctx| color_picker_panel(ctx, brush));
                 }
             }
 
             _ => {}
         }
     }
+}
+
+/// Panneau egui : carré de preview + sliders RGB et HSV, synchronisés
+/// avec la couleur active du brush. Volontairement minimal (pas encore
+/// de calques/palette) — brique color picker v1.
+fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush) {
+    egui::Window::new("Couleur")
+        .resizable(false)
+        .default_pos([16.0, 16.0])
+        .show(ctx, |ui| {
+            let [r, g, b] = brush.color;
+            let mut hsva = egui::ecolor::Hsva::from_srgb([r, g, b]);
+
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 4.0, egui::Color32::from(hsva));
+
+            ui.separator();
+            ui.label("RGB");
+            let mut r = brush.color[0];
+            let mut g = brush.color[1];
+            let mut b = brush.color[2];
+            ui.add(egui::Slider::new(&mut r, 0..=255).text("R"));
+            ui.add(egui::Slider::new(&mut g, 0..=255).text("G"));
+            ui.add(egui::Slider::new(&mut b, 0..=255).text("B"));
+            brush.color = [r, g, b];
+
+            ui.separator();
+            ui.label("HSV");
+            let changed_h = ui.add(egui::Slider::new(&mut hsva.h, 0.0..=1.0).text("H")).changed();
+            let changed_s = ui.add(egui::Slider::new(&mut hsva.s, 0.0..=1.0).text("S")).changed();
+            let changed_v = ui.add(egui::Slider::new(&mut hsva.v, 0.0..=1.0).text("V")).changed();
+            if changed_h || changed_s || changed_v {
+                brush.color = hsva.to_srgb();
+            }
+
+            ui.separator();
+            ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacité"));
+        });
 }

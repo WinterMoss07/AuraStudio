@@ -9,3 +9,6 @@ wgpu              = "23"
 winit             = "0.30"
 bytemuck          = { version = "1", features = ["derive"] }
 log               = "0.4"
+egui = "0.30"
+egui-wgpu = "0.30"
+egui-winit = "0.30"

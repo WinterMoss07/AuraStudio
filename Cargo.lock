@@ -213,6 +213,9 @@ version = "0.1.0"
 dependencies = [
  "aurastudio-canvas",
  "bytemuck",
+ "egui",
+ "egui-wgpu",
+ "egui-winit",
  "log",
  "wgpu",
  "winit",

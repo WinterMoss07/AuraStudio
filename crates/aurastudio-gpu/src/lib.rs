@@ -20,7 +20,10 @@ pub struct GpuState {
     view_buffer:     Buffer,
     view_bind_group: BindGroup,
     pub canvas:      Canvas,
-    _window:         Arc<Window>,
+    window:          Arc<Window>,
+    egui_ctx:        egui::Context,
+    egui_state:      egui_winit::State,
+    egui_renderer:   egui_wgpu::Renderer,
 }
 
 impl GpuState {
@@ -182,11 +185,30 @@ impl GpuState {
             ],
         });
 
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+
         Self {
             surface, device, queue, config,
             canvas_pipeline, view_buffer, view_bind_group,
-            canvas, _window: window,
+            canvas, window,
+            egui_ctx, egui_state, egui_renderer,
         }
+    }
+
+    /// Transmet un WindowEvent à egui. Retourne true si egui a consommé
+    /// l'event (clic sur un widget, etc.) — dans ce cas l'app ne doit
+    /// pas aussi interpréter l'event comme un coup de pinceau.
+    pub fn egui_handle_event(&mut self, event: &winit::event::WindowEvent) -> bool {
+        self.egui_state.on_window_event(&self.window, event).consumed
     }
 
     pub fn window_size(&self) -> (f32, f32) {
@@ -237,7 +259,9 @@ impl GpuState {
         );
     }
 
-    pub fn render(&mut self) {
+    /// Dessine une frame : canvas puis panneaux egui (ex: color picker)
+    /// construits par `ui_fn`, qui reçoit le egui::Context courant.
+    pub fn render(&mut self, ui_fn: impl FnOnce(&egui::Context)) {
         if self.canvas.dirty_rect.is_some() {
             self.upload_canvas();
             self.canvas.dirty_rect = None;
@@ -276,6 +300,44 @@ impl GpuState {
             pass.set_pipeline(&self.canvas_pipeline);
             pass.set_bind_group(0, &self.view_bind_group, &[]);
             pass.draw(0..6, 0..1);
+        }
+
+        // --- Passe egui (color picker, panneaux) par-dessus le canvas ---
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let mut ui_fn = Some(ui_fn);
+        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+            if let Some(f) = ui_fn.take() { f(ctx); }
+        });
+        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+
+        let tris = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        for (id, delta) in &full_output.textures_delta.set {
+            self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
+        }
+
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels:    [self.config.width, self.config.height],
+            pixels_per_point:  full_output.pixels_per_point,
+        };
+        self.egui_renderer.update_buffers(&self.device, &self.queue, &mut enc, &tris, &screen_descriptor);
+
+        {
+            let pass = enc.begin_render_pass(&RenderPassDescriptor {
+                label: Some("egui_pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view:           &view,
+                    resolve_target: None,
+                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes:         None,
+                occlusion_query_set:      None,
+            });
+            self.egui_renderer.render(&mut pass.forget_lifetime(), &tris, &screen_descriptor);
+        }
+
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
         }
 
         self.queue.submit(std::iter::once(enc.finish()));
