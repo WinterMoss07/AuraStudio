@@ -153,6 +153,28 @@ pub fn blend_pixel_u8(backdrop: [u8; 4], color: [u8; 3], a_s: f32, mode: BlendMo
     to_straight_u8(p)
 }
 
+/// Brush paint: `color` at 8-bit coverage `cov` over a straight-alpha
+/// layer pixel. Same result as blend_pixel_u8, with integer fast paths
+/// for the common cases of Normal mode: empty pixel (new layer) and
+/// opaque pixel (background, painted areas). Other cases go through
+/// blend_pixel_u8.
+#[inline(always)]
+pub fn paint_pixel_u8(backdrop: [u8; 4], color: [u8; 3], cov: u8, mode: BlendMode) -> [u8; 4] {
+    if mode == BlendMode::Normal {
+        let ab = backdrop[3];
+        if ab == 0 {
+            return [color[0], color[1], color[2], cov];
+        }
+        if ab == 255 {
+            let a = cov as u32;
+            let ia = 255 - a;
+            let mix = |c: u8, b: u8| ((c as u32 * a + b as u32 * ia + 127) / 255) as u8;
+            return [mix(color[0], backdrop[0]), mix(color[1], backdrop[1]), mix(color[2], backdrop[2]), 255];
+        }
+    }
+    blend_pixel_u8(backdrop, color, cov as f32 / 255.0, mode)
+}
+
 #[inline(always)]
 pub fn to_straight_u8(p: Premul) -> [u8; 4] {
     let a = p[3].clamp(0.0, 1.0);
@@ -198,6 +220,23 @@ mod tests {
         let clear = [255, 255, 255, 0];
         for mode in BlendMode::ALL {
             assert_eq!(blend_pixel_u8(clear, [10, 20, 30], 1.0, mode), [10, 20, 30, 255], "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn integer_paint_matches_float_blend() {
+        // Fast paths must give the same bytes as the general path (±1).
+        for backdrop in [[255, 255, 255, 0], [12, 200, 90, 255], [255, 255, 255, 255], [40, 50, 60, 128]] {
+            for cov in [0u8, 1, 51, 77, 128, 200, 254, 255] {
+                let fast = paint_pixel_u8(backdrop, [10, 120, 250], cov, BlendMode::Normal);
+                let slow = blend_pixel_u8(backdrop, [10, 120, 250], cov as f32 / 255.0, BlendMode::Normal);
+                for k in 0..4 {
+                    // On an empty pixel the color of a fully transparent
+                    // result doesn't matter.
+                    if slow[3] == 0 && k < 3 { continue; }
+                    assert!((fast[k] as i32 - slow[k] as i32).abs() <= 1, "{backdrop:?} cov {cov}: {fast:?} vs {slow:?}");
+                }
+            }
         }
     }
 

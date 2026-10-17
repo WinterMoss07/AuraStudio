@@ -17,6 +17,10 @@ fn main() {
     // Optional filters: BENCH_RADIUS=500 BENCH_ENGINE=simple|hokusai
     let only_r: Option<u32> = std::env::var("BENCH_RADIUS").ok().and_then(|v| v.parse().ok());
     let only_e = std::env::var("BENCH_ENGINE").ok();
+    // BENCH_PRESSURE=steady: near-constant pressure (typical painting);
+    // default: pressure swinging all the time (worst case: every rise
+    // repaints the whole disc).
+    let steady = std::env::var("BENCH_PRESSURE").is_ok_and(|v| v == "steady");
     for radius in [10u32, 50, 130, 250, 500] {
         if only_r.is_some_and(|r| r != radius) { continue; }
         for hokusai in [true, false] {
@@ -42,7 +46,7 @@ fn main() {
                 // ~8 px between samples: a fast-ish stroke at 200 Hz.
                 let t = i as f32 / n as f32;
                 let p = (300.0 + i as f32 * 8.0, 1000.0 + (t * 20.0).sin() * 300.0);
-                let pr = 0.3 + 0.7 * (t * 9.0).sin().abs();
+                let pr = if steady { 0.8 + 0.02 * (t * 9.0).sin() } else { 0.3 + 0.7 * (t * 9.0).sin().abs() };
                 let t0 = Instant::now();
                 if hokusai { e.stroke_to(&mut s, p.0, p.1, pr, i as f64 * 0.005); } else { stroke_line(last, p, &b, &mut s, last_p, pr); }
                 last_p = pr;

@@ -1,4 +1,4 @@
-use aurastudio_canvas::{blend::{blend_pixel_u8, unit_to_u8}, BlendMode, PaintSurface, Rect};
+use aurastudio_canvas::{blend::{paint_pixel_u8, unit_to_u8}, BlendMode, PaintSurface, Rect};
 
 mod hokusai_engine;
 pub use hokusai_engine::HokusaiEngine;
@@ -94,6 +94,7 @@ pub fn stroke_line<S: PaintSurface>(
 
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     let len2 = dx * dx + dy * dy;
+    let inv_len2 = if len2 > 0.0 { 1.0 / len2 } else { 0.0 };
     let sw = surface.width() as usize;
     let (pixels, stroke_base, stroke_mask) = surface.surfaces_mut();
 
@@ -102,11 +103,16 @@ pub fn stroke_line<S: PaintSurface>(
     // highest opacity by the previous ones. Skipping them with one byte
     // compare, before any math, is what keeps 200+ px strokes cheap.
     let seg_max_u8 = unit_to_u8(cap_a.max(cap_b));
-    let reach2 = (r + 0.5) * (r + 0.5);
+    let reach = r + 0.5;
+    let reach2 = reach * reach;
     // Width of the fading edge: at least 1 px (anti-aliasing), up to the
     // whole radius at hardness 0.
     let soft = (r * (1.0 - brush.hardness.clamp(0.0, 1.0))).max(1.0);
     let inv_soft = 1.0 / soft;
+    // Inside this distance the edge factor is 1: no square root needed
+    // (on a hard brush, that is everything but the 1 px rim).
+    let solid = (reach - soft).max(0.0);
+    let solid2 = solid * solid;
 
     // Bounds of the pixels actually written. With big brushes, most of the
     // segment's box is skipped (already covered), and the real change is a
@@ -116,27 +122,50 @@ pub fn stroke_line<S: PaintSurface>(
 
     for py in y0..y1 {
         let cy = py as f32 + 0.5;
+        // Only the part of the row inside the capsule (a circle-ish shape
+        // fills ~79 % of its box at most): no work on the corners.
+        let Some((sx0, sx1)) = capsule_row_span(from, to, reach, cy) else { continue };
+        let xa = (sx0.floor() as i32).max(x0);
+        let xb = ((sx1.ceil() as i32) + 1).min(x1);
+        if xa >= xb { continue; }
         let row = py as usize * sw;
-        for px in x0..x1 {
-            let pidx = row + px as usize;
+        let ry = cy - from.1;
+        let (mut row_x0, mut row_x1) = (i32::MAX, i32::MIN);
+        let mut px = xa;
+        while px < xb {
+            // Skip already-covered pixels 16 at a time: one vector min over
+            // the mask instead of 16 compares (the common case once a big
+            // brush moves on at steady pressure).
+            if px + 16 <= xb {
+                let start = row + px as usize;
+                let chunk: &[u8; 16] = stroke_mask[start..start + 16].try_into().unwrap();
+                if chunk.iter().fold(u8::MAX, |m, &v| m.min(v)) >= seg_max_u8 {
+                    px += 16;
+                    continue;
+                }
+            }
+            let x = px;
+            px += 1;
+            let pidx = row + x as usize;
             if stroke_mask[pidx] >= seg_max_u8 { continue; }
 
-            let cx = px as f32 + 0.5;
+            let cx = x as f32 + 0.5;
             // Closest point on the segment, and where along it (0..1).
-            let t = if len2 > 0.0 {
-                (((cx - from.0) * dx + (cy - from.1) * dy) / len2).clamp(0.0, 1.0)
-            } else { 0.0 };
+            let t = (((cx - from.0) * dx + ry * dy) * inv_len2).clamp(0.0, 1.0);
             let ex = cx - (from.0 + dx * t);
             let ey = cy - (from.1 + dy * t);
             let d2 = ex * ex + ey * ey;
             if d2 >= reach2 { continue; }
-            // Fading edge (smoothstep), 1 px wide on a hard brush.
-            let t_edge = ((r + 0.5 - d2.sqrt()) * inv_soft).clamp(0.0, 1.0);
-            if t_edge <= 0.0 { continue; }
-            let edge = if soft > 1.0 { t_edge * t_edge * (3.0 - 2.0 * t_edge) } else { t_edge };
+            let edge = if d2 <= solid2 {
+                1.0
+            } else {
+                // Fading edge (smoothstep), 1 px wide on a hard brush.
+                let t_edge = ((reach - d2.sqrt()) * inv_soft).clamp(0.0, 1.0);
+                if t_edge <= 0.0 { continue; }
+                if soft > 1.0 { t_edge * t_edge * (3.0 - 2.0 * t_edge) } else { t_edge }
+            };
 
-            let cov = (cap_a + (cap_b - cap_a) * t) * edge;
-            let cov_u8 = unit_to_u8(cov);
+            let cov_u8 = unit_to_u8((cap_a + (cap_b - cap_a) * t) * edge);
             if cov_u8 <= stroke_mask[pidx] { continue; }
             stroke_mask[pidx] = cov_u8;
 
@@ -144,18 +173,70 @@ pub fn stroke_line<S: PaintSurface>(
             // before the stroke, at this pixel's coverage.
             let base = pidx * 4;
             let backdrop = [stroke_base[base], stroke_base[base + 1], stroke_base[base + 2], stroke_base[base + 3]];
-            let out = blend_pixel_u8(backdrop, brush.color, cov_u8 as f32 / 255.0, brush.blend);
+            let out = paint_pixel_u8(backdrop, brush.color, cov_u8, brush.blend);
             pixels[base..base + 4].copy_from_slice(&out);
-
-            let (ux, uy) = (px as u32, py as u32);
-            wx0 = wx0.min(ux);
-            wx1 = wx1.max(ux + 1);
-            wy0 = wy0.min(uy);
-            wy1 = wy1.max(uy + 1);
+            row_x0 = row_x0.min(x);
+            row_x1 = row_x1.max(x + 1);
+        }
+        if row_x0 < row_x1 {
+            wx0 = wx0.min(row_x0 as u32);
+            wx1 = wx1.max(row_x1 as u32);
+            wy0 = wy0.min(py as u32);
+            wy1 = wy1.max(py as u32 + 1);
         }
     }
 
     (wx0 < wx1).then_some((wx0, wy0, wx1, wy1))
+}
+
+/// Horizontal extent [x0, x1] of the capsule (segment `a`-`b`, radius
+/// `reach`) on the row at height `y`, or None if the row misses it.
+///
+/// The capsule is convex, so its row section is one interval: the union
+/// of the two end circles' sections and the swept band's section.
+fn capsule_row_span(a: (f32, f32), b: (f32, f32), reach: f32, y: f32) -> Option<(f32, f32)> {
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    let mut add = |l: f32, h: f32| { lo = lo.min(l); hi = hi.max(h); };
+
+    for c in [a, b] {
+        let dy = y - c.1;
+        let h2 = reach * reach - dy * dy;
+        if h2 > 0.0 {
+            let h = h2.sqrt();
+            add(c.0 - h, c.0 + h);
+        }
+    }
+
+    // Band: points whose projection falls inside the segment and whose
+    // distance to its line is under `reach`.
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len > 1e-3 && dx.abs() > 1e-6 {
+        let (ux, uy) = (dx / len, dy / len);
+        // Along the segment: 0 <= (x - a.x) * ux + (y - a.y) * uy <= len.
+        let s0 = (0.0 - (y - a.1) * uy) / ux + a.0;
+        let s1 = (len - (y - a.1) * uy) / ux + a.0;
+        let (t_lo, t_hi) = (s0.min(s1), s0.max(s1));
+        // Across: |(x - a.x) * -uy + (y - a.y) * ux| < reach.
+        let (b_lo, b_hi) = if uy.abs() > 1e-6 {
+            let c0 = ((y - a.1) * ux - reach) / uy + a.0;
+            let c1 = ((y - a.1) * ux + reach) / uy + a.0;
+            (c0.min(c1), c0.max(c1))
+        } else if ((y - a.1) * ux).abs() < reach {
+            (f32::NEG_INFINITY, f32::INFINITY)
+        } else {
+            (1.0, 0.0)
+        };
+        let (l, h) = (t_lo.max(b_lo), t_hi.min(b_hi));
+        if l <= h { add(l, h); }
+    } else if len > 1e-3 {
+        // Vertical segment: the band is a column between the end circles.
+        let (ymin, ymax) = (a.1.min(b.1), a.1.max(b.1));
+        if y >= ymin && y <= ymax { add(a.0 - reach, a.0 + reach); }
+    }
+
+    (lo <= hi).then_some((lo, hi))
 }
 
 #[cfg(test)]
@@ -239,6 +320,31 @@ mod tests {
         assert!((mid - 128).abs() <= 3, "middle {mid}");
         let row: Vec<u8> = (10..110).map(|x| red_at(&s, x, 64)).collect();
         assert!(row.windows(2).all(|w| w[1] <= w[0]), "not monotonic: {row:?}");
+    }
+
+    /// The row-span shortcut must never skip a pixel the full scan paints:
+    /// compare with a brute-force reference on segments in all directions.
+    #[test]
+    fn row_spans_cover_every_painted_pixel() {
+        let reach = 9.5;
+        for (a, b) in [((40.0, 60.0), (90.0, 70.0)), ((64.0, 20.0), (64.0, 100.0)), ((30.0, 90.0), (95.0, 30.0)),
+                       ((50.0, 50.0), (50.3, 50.1)), ((20.0, 64.0), (110.0, 64.0))] {
+            for py in 0..128 {
+                let y = py as f32 + 0.5;
+                let span = capsule_row_span(a, b, reach, y);
+                for px in 0..128 {
+                    let x = px as f32 + 0.5;
+                    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                    let len2 = dx * dx + dy * dy;
+                    let t = if len2 > 0.0 { (((x - a.0) * dx + (y - a.1) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (ex, ey) = (x - (a.0 + dx * t), y - (a.1 + dy * t));
+                    if ex * ex + ey * ey < reach * reach {
+                        let (lo, hi) = span.unwrap_or_else(|| panic!("row {py} missed for {a:?}-{b:?}"));
+                        assert!(x >= lo.floor() && x <= hi.ceil() + 1.0, "px {px},{py} outside {lo}..{hi}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
