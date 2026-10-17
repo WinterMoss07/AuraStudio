@@ -69,19 +69,37 @@ impl GpuState {
             .expect("Failed to create device");
 
         let caps   = surface.get_capabilities(&adapter);
+        // Non-sRGB surface: canvas pixels are already sRGB-encoded bytes and
+        // must reach the screen unchanged. With an sRGB surface the GPU
+        // encoded them a second time: everything looked lighter, mid-tones
+        // were compressed and gradients banded. egui also expects this.
         let format = caps.formats.iter().copied()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
+
+        // Latency: Mailbox shows the newest frame at the next vsync without
+        // tearing and without queueing old frames. Fifo (classic vsync, the
+        // fallback) can queue frames, each adding ~16 ms of lag at 60 Hz.
+        // Rendering only happens on demand (ControlFlow::Wait), so Mailbox
+        // doesn't make the GPU spin.
+        let present_mode = if caps.present_modes.contains(&PresentMode::Mailbox) {
+            PresentMode::Mailbox
+        } else {
+            PresentMode::Fifo
+        };
+        log::info!("surface: {format:?}, present mode {present_mode:?} (available: {:?})", caps.present_modes);
 
         let config = SurfaceConfiguration {
             usage:                         TextureUsages::RENDER_ATTACHMENT,
             format,
             width:                         size.width.max(1),
             height:                        size.height.max(1),
-            present_mode:                  PresentMode::AutoVsync,
+            present_mode,
             alpha_mode:                    caps.alpha_modes[0],
             view_formats:                  vec![],
-            desired_maximum_frame_latency: 2,
+            // At most 1 frame in flight: a new stroke sample is never stuck
+            // behind an older frame waiting to be shown.
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &config);
 
@@ -339,7 +357,9 @@ impl GpuState {
                     view:           &view,
                     resolve_target: None,
                     ops: Operations {
-                        load:  LoadOp::Clear(Color { r: 0.13, g: 0.13, b: 0.13, a: 1.0 }),
+                        // Gray around the canvas. Same look as before the
+                        // non-sRGB surface switch (0.13 linear ≈ 0.40 sRGB).
+                        load:  LoadOp::Clear(Color { r: 0.40, g: 0.40, b: 0.40, a: 1.0 }),
                         store: StoreOp::Store,
                     },
                 })],
