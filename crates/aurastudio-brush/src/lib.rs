@@ -1,5 +1,8 @@
 use aurastudio_canvas::{PaintSurface, Rect};
 
+mod hokusai_engine;
+pub use hokusai_engine::HokusaiEngine;
+
 pub struct Brush {
     pub color:   [u8; 3],
     pub opacity: f32,
