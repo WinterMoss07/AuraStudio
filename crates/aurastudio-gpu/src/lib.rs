@@ -31,12 +31,16 @@ impl GpuState {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
 
-        let backend = if cfg!(target_os = "windows") {
-            Backends::VULKAN
-        } else if cfg!(target_os = "macos") {
-            Backends::METAL
-        } else {
-            Backends::VULKAN
+        // Vulkan by default (lowest RAM in our tests), Metal on macOS.
+        // AURASTUDIO_BACKEND=dx12|vulkan|metal|gl overrides it, to compare
+        // latency per GPU driver without rebuilding.
+        let backend = match std::env::var("AURASTUDIO_BACKEND").ok().as_deref() {
+            Some("dx12")   => Backends::DX12,
+            Some("vulkan") => Backends::VULKAN,
+            Some("metal")  => Backends::METAL,
+            Some("gl")     => Backends::GL,
+            _ if cfg!(target_os = "macos") => Backends::METAL,
+            _ => Backends::VULKAN,
         };
 
         let instance = Instance::new(InstanceDescriptor {
@@ -77,17 +81,30 @@ impl GpuState {
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
 
-        // Latency: Mailbox shows the newest frame at the next vsync without
-        // tearing and without queueing old frames. Fifo (classic vsync, the
-        // fallback) can queue frames, each adding ~16 ms of lag at 60 Hz.
-        // Rendering only happens on demand (ControlFlow::Wait), so Mailbox
-        // doesn't make the GPU spin.
-        let present_mode = if caps.present_modes.contains(&PresentMode::Mailbox) {
-            PresentMode::Mailbox
-        } else {
-            PresentMode::Fifo
+        // Latency, best first:
+        // - Mailbox: newest frame shown at the next vsync, never queued, no
+        //   tearing. Not offered by every driver (Intel Vulkan on Windows
+        //   only has Immediate + Fifo).
+        // - Immediate: presented right away, no wait for vsync. In a normal
+        //   window the Windows compositor (DWM) still syncs to the display,
+        //   so it doesn't tear there.
+        // - Fifo: classic vsync. Rendering blocks until the next refresh, and
+        //   pen samples arriving meanwhile wait one more frame: measured as
+        //   ~14 ms per frame on an Intel Arc 140T, the main remaining lag.
+        // Rendering only happens on demand (ControlFlow::Wait), so neither
+        // Mailbox nor Immediate makes the GPU spin when idle.
+        // AURASTUDIO_PRESENT=mailbox|immediate|fifo overrides the choice.
+        let wanted = match std::env::var("AURASTUDIO_PRESENT").ok().as_deref() {
+            Some("mailbox")   => vec![PresentMode::Mailbox],
+            Some("immediate") => vec![PresentMode::Immediate],
+            Some("fifo")      => vec![PresentMode::Fifo],
+            _ => vec![PresentMode::Mailbox, PresentMode::Immediate],
         };
-        log::info!("surface: {format:?}, present mode {present_mode:?} (available: {:?})", caps.present_modes);
+        let present_mode = wanted.into_iter()
+            .find(|m| caps.present_modes.contains(m))
+            .unwrap_or(PresentMode::Fifo);
+        log::info!("surface: {format:?}, present mode {present_mode:?} (available: {:?}), backend {:?}",
+            caps.present_modes, adapter.get_info().backend);
 
         let config = SurfaceConfiguration {
             usage:                         TextureUsages::RENDER_ATTACHMENT,
