@@ -1,7 +1,12 @@
 use aurastudio_canvas::{blend::{paint_pixel_u8, unit_to_u8}, BlendMode, PaintSurface, Rect};
 
 mod hokusai_engine;
+mod mypaint_engine;
 pub use hokusai_engine::HokusaiEngine;
+pub use mypaint_engine::MyPaintEngine;
+/// hokusai's brush type (a parsed .myb), for the brush library.
+pub use hokusai::Brush as MyPaintBrush;
+pub use hokusai::myb::from_str as parse_myb;
 
 #[derive(Clone, Debug)]
 pub struct Brush {

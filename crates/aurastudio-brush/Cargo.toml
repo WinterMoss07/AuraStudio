@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 aurastudio-canvas = { path = "../aurastudio-canvas" }
 hokusai = "0.3"
+
+[dev-dependencies]
+png = "0.18"
