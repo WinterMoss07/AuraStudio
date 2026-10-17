@@ -2,6 +2,8 @@ use aurastudio_canvas::{PaintSurface, Rect};
 
 /// One layer: RGBA8, straight alpha, `width * height * 4` bytes.
 pub struct Layer {
+    /// Stable identity (thumbnails, UI state) that survives reordering.
+    pub id:      u64,
     pub name:    String,
     pub visible: bool,
     pub opacity: f32,
@@ -21,7 +23,7 @@ fn clear_pixel(background: bool) -> [u8; 4] {
 impl Layer {
     pub fn new(width: u32, height: u32, background: bool) -> Self {
         let pixels = clear_pixel(background).repeat((width * height) as usize);
-        Self { name: "Layer".into(), visible: true, opacity: 1.0, pixels, background }
+        Self { id: 0, name: "Layer".into(), visible: true, opacity: 1.0, pixels, background }
     }
 
     pub fn clear(&mut self) {
@@ -45,6 +47,7 @@ pub struct LayerStack {
     pub height: u32,
     stroke_base: Vec<u8>,
     stroke_mask: Vec<u8>,
+    next_id:     u64,
 }
 
 /// The active layer seen as a paintable surface for the brush engines.
@@ -68,6 +71,7 @@ impl LayerStack {
     pub fn new(width: u32, height: u32) -> Self {
         let mut base = Layer::new(width, height, true);
         base.name = "Background".into();
+        base.id = 1;
         let n = (width * height) as usize;
         Self {
             layers: vec![base],
@@ -76,17 +80,48 @@ impl LayerStack {
             height,
             stroke_base: vec![0; n * 4],
             stroke_mask: vec![0; n],
+            next_id: 2,
         }
+    }
+
+    fn insert_above_active(&mut self, mut layer: Layer) -> usize {
+        layer.id = self.next_id;
+        self.next_id += 1;
+        // New layers go right above the active one, like Krita / CSP.
+        let index = self.active + 1;
+        self.layers.insert(index, layer);
+        self.active = index;
+        index
     }
 
     pub fn add_layer(&mut self, name: &str) -> usize {
         let mut layer = Layer::new(self.width, self.height, false);
         layer.name = name.into();
-        // New layer goes right above the active one, like Krita / CSP.
-        let index = self.active + 1;
-        self.layers.insert(index, layer);
-        self.active = index;
-        index
+        self.insert_above_active(layer)
+    }
+
+    /// Copy of the active layer, placed above it and made active.
+    pub fn duplicate_active(&mut self) -> usize {
+        let src = &self.layers[self.active];
+        let copy = Layer {
+            id:         0,
+            name:       format!("{} copy", src.name),
+            visible:    src.visible,
+            opacity:    src.opacity,
+            pixels:     src.pixels.clone(),
+            background: false,
+        };
+        self.insert_above_active(copy)
+    }
+
+    /// Move the active layer one step up (+1) or down (-1) in the stack.
+    pub fn move_active(&mut self, up: bool) {
+        let a = self.active;
+        let b = if up { a + 1 } else { a.wrapping_sub(1) };
+        if b < self.layers.len() {
+            self.layers.swap(a, b);
+            self.active = b;
+        }
     }
 
     pub fn remove_layer(&mut self, index: usize) {
@@ -253,6 +288,32 @@ mod tests {
         assert_eq!(stack.layers.len(), 1);
         assert_eq!(stack.active, 0);
         stack.begin_stroke(); // must not panic with the new active index
+    }
+
+    #[test]
+    fn duplicate_and_move() {
+        let mut stack = LayerStack::new(2, 2);
+        stack.add_layer("A");
+        stack.layers[1].pixels[0..4].copy_from_slice(&[1, 2, 3, 255]);
+        stack.duplicate_active();
+        assert_eq!(stack.layers.len(), 3);
+        assert_eq!(stack.active, 2);
+        assert_eq!(stack.layers[2].name, "A copy");
+        assert_eq!(&stack.layers[2].pixels[0..4], &[1, 2, 3, 255]);
+        assert!(!stack.layers[2].background);
+        // Ids stay unique.
+        let ids: std::collections::HashSet<_> = stack.layers.iter().map(|l| l.id).collect();
+        assert_eq!(ids.len(), 3);
+
+        stack.move_active(false); // "A copy" goes below "A"
+        assert_eq!(stack.active, 1);
+        assert_eq!(stack.layers[1].name, "A copy");
+        stack.move_active(true);
+        stack.move_active(true); // already on top: no-op
+        assert_eq!(stack.active, 2);
+        stack.set_active(0);
+        stack.move_active(false); // already at the bottom: no-op
+        assert_eq!(stack.active, 0);
     }
 
     #[test]
