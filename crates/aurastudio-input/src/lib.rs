@@ -27,10 +27,12 @@ pub struct Stylus { inner: imp::Inner }
 mod imp {
     use super::StylusSample;
     use efude_input::{PenInputQueue, WindowsInkHook, WintabHook};
+    use windows::Win32::{Foundation::HWND, UI::HiDpi::GetDpiForWindow};
 
     pub struct Inner {
         queue: PenInputQueue,
-        _hook: Hook,
+        hwnd:  isize,
+        hook:  Hook,
     }
 
     enum Hook { Wintab(WintabHook), Ink(WindowsInkHook), None }
@@ -47,14 +49,26 @@ mod imp {
             },
         };
 
-        Inner { queue, _hook: hook }
+        Inner { queue, hwnd: hwnd_raw, hook }
+    }
+
+    pub fn backend(inner: &Inner) -> &'static str {
+        match inner.hook {
+            Hook::Wintab(_) => "WinTab (efude-input upstream)",
+            Hook::Ink(_)    => "Windows Ink (efude-input upstream)",
+            Hook::None      => "none",
+        }
     }
 
     pub fn drain(inner: &Inner) -> Vec<StylusSample> {
+        // efude-input reports logical pixels; scale back to physical
+        // pixels so the A/B comparison draws at the right place.
+        let hwnd  = HWND(inner.hwnd as *mut std::ffi::c_void);
+        let scale = unsafe { GetDpiForWindow(hwnd) }.max(1) as f32 / 96.0;
         let mut buf = Vec::new();
         inner.queue.drain_into(&mut buf, 256);
         buf.into_iter()
-            .map(|p| StylusSample { x: p.x, y: p.y, pressure: p.pressure })
+            .map(|p| StylusSample { x: p.x * scale, y: p.y * scale, pressure: p.pressure })
             .collect()
     }
 }
@@ -66,6 +80,10 @@ impl Stylus {
     }
     pub fn drain(&self) -> Vec<StylusSample> {
         imp::drain(&self.inner)
+    }
+    /// Which native pen API got hooked: shown in the log at startup.
+    pub fn backend(&self) -> &'static str {
+        imp::backend(&self.inner)
     }
 }
 
@@ -79,7 +97,6 @@ mod imp {
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
         Graphics::Gdi::ScreenToClient,
         UI::{
-            HiDpi::GetDpiForWindow,
             Input::Pointer::{GetPointerPenInfo, GetPointerPenInfoHistory, POINTER_PEN_INFO},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
@@ -94,7 +111,7 @@ mod imp {
 
     pub struct Inner {
         queue: Arc<ArrayQueue<PenPacket>>,
-        _hook: Hook,
+        hook:  Hook,
     }
 
     enum Hook { Wintab(wintab::WintabHook), Ink(WindowsInkHook), None }
@@ -111,7 +128,15 @@ mod imp {
             },
         };
 
-        Inner { queue, _hook: hook }
+        Inner { queue, hook }
+    }
+
+    pub fn backend(inner: &Inner) -> &'static str {
+        match inner.hook {
+            Hook::Wintab(_) => "WinTab",
+            Hook::Ink(_)    => "Windows Ink",
+            Hook::None      => "none",
+        }
     }
 
     pub fn drain(inner: &Inner) -> Vec<StylusSample> {
@@ -129,11 +154,14 @@ mod imp {
 
     fn push_info(hwnd: HWND, state: &HookState, info: &POINTER_PEN_INFO) {
         let mut point = info.pointerInfo.ptPixelLocation;
+        // Physical client pixels, same unit as winit's CursorMoved and the
+        // wgpu surface. efude divides by the DPI scale (its UI works in
+        // logical pixels); doing that here put pen samples at 1/scale of
+        // their real position on high-DPI screens.
         if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool() {
-            let dpi = unsafe { GetDpiForWindow(hwnd) }.max(1) as f32 / 96.;
             let packet = PenPacket {
-                x: point.x as f32 / dpi,
-                y: point.y as f32 / dpi,
+                x: point.x as f32,
+                y: point.y as f32,
                 pressure: if info.penMask & PEN_MASK_PRESSURE != 0 {
                     info.pressure as f32 / 1024.
                 } else { 1. },
@@ -196,7 +224,7 @@ mod imp {
     // --- WinTab (wintab32.dll, chargé dynamiquement) -------------
 
     mod wintab {
-        use super::{c_void, Arc, ArrayQueue, DefSubclassProc, GetDpiForWindow, HWND, LPARAM,
+        use super::{c_void, Arc, ArrayQueue, DefSubclassProc, HWND, LPARAM,
                      LRESULT, PenPacket, POINT, RemoveWindowSubclass, ScreenToClient,
                      SetWindowSubclass, WPARAM};
         use std::ffi::c_char;
@@ -306,7 +334,6 @@ mod imp {
             let _ = time_offset;
             let mut screen = POINT { x: packet_i32(&words, x_offset), y: packet_i32(&words, y_offset) };
             if !unsafe { ScreenToClient(hwnd, &mut screen) }.as_bool() { return; }
-            let dpi = unsafe { GetDpiForWindow(hwnd) }.max(1) as f32 / 96.0;
             let pressure = field_offset(state.packet_mask, PK_NORMAL_PRESSURE)
                 .map(|offset| {
                     let raw = packet_u32(&words, offset) as i32;
@@ -318,7 +345,8 @@ mod imp {
                     normalized(raw, range)
                 })
                 .unwrap_or(1.0);
-            let packet = PenPacket { x: screen.x as f32 / dpi, y: screen.y as f32 / dpi, pressure };
+            // Physical client pixels (see push_info in the Windows Ink section).
+            let packet = PenPacket { x: screen.x as f32, y: screen.y as f32, pressure };
             if state.queue.push(packet).is_err() {
                 let _ = state.queue.pop();
                 let _ = state.queue.push(packet);
@@ -432,4 +460,5 @@ pub struct Stylus;
 impl Stylus {
     pub fn install(_hwnd: isize) -> Self { Self }
     pub fn drain(&self) -> Vec<StylusSample> { Vec::new() }
+    pub fn backend(&self) -> &'static str { "none (winit touch events)" }
 }
