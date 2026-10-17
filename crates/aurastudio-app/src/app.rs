@@ -1,80 +1,105 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
-    event::{MouseButton, WindowEvent},
+    event::{ElementState, MouseButton, WindowEvent},
     event_loop::ActiveEventLoop,
+    keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
+
 use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, PressureSmoother};
+use aurastudio_canvas::Rect;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_layers::LayerStack;
 
-/// Taille fixe du canvas pour l'instant (doit matcher Canvas::new dans
-/// aurastudio-gpu, 2048x2048) — passera en paramètre config plus tard.
-const CANVAS_SIZE: u32 = 2048;
+/// Canvas size at startup; changed afterwards from the Canvas docker.
+const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
+
+/// Brush size range shown in the UI, as a diameter in pixels.
+const MAX_BRUSH_SIZE: u32 = 1000;
 
 pub struct App {
-    window:     Option<Arc<Window>>,
-    gpu:        Option<GpuState>,
-    brush:      Brush,
-    layers:     LayerStack,
-    is_drawing:   bool,
-    /// Last sample of the current stroke: canvas x, y and smoothed pressure.
-    last_pos:     Option<(f32, f32, f32)>,
-    pen_smoother: PressureSmoother,
-    pressure:     f32,
-    stylus:       Option<Stylus>,
-    /// true quand un changement hors-trait (visibilité, opacité, ajout/
-    /// suppression de calque) demande une recomposition pleine image,
-    /// plutôt que le composite_rect_into local fait pendant un trait.
-    layers_dirty: bool,
-    stats:        StrokeStats,
-    /// Canvas area painted since the last frame, recomposited at render.
-    pending:      Option<aurastudio_canvas::Rect>,
-    last_frame:   Option<std::time::Instant>,
+    window: Option<Arc<Window>>,
+    gpu:    Option<GpuState>,
+    stylus: Option<Stylus>,
+
+    brush:        Brush,
     hokusai:      HokusaiEngine,
-    /// true = moteur hokusai (libmypaint), false = brush rond simple.
+    /// true = hokusai engine (libmypaint, for textured brushes later),
+    /// false = swept round pen (default).
     use_hokusai:  bool,
-    /// true dès que le stylet natif a envoyé des samples pendant le trait
-    /// en cours : on ignore alors les CursorMoved que Windows synthétise
-    /// pour le même stylet, sinon le trait reçoit deux flux de positions
-    /// légèrement décalées (bords ondulés / zigzag).
-    pen_active:   bool,
+    pen_smoother: PressureSmoother,
+
+    layers: LayerStack,
+    /// Width / height typed in the Canvas docker, applied by "Resize".
+    canvas_edit: (u32, u32),
+
+    is_drawing: bool,
+    /// Last sample of the current stroke: canvas x, y and smoothed pressure.
+    last_pos:   Option<(f32, f32, f32)>,
+    pressure:   f32,
+    /// Set once the native pen sent samples during the current stroke:
+    /// the CursorMoved events Windows synthesizes for the same pen are then
+    /// ignored, otherwise the stroke gets two slightly offset position
+    /// streams (wavy / zigzag edges).
+    pen_active: bool,
     /// Last known cursor position, physical window pixels.
-    cursor:       (f32, f32),
+    cursor:     (f32, f32),
+
+    /// Canvas area painted since the last frame, recomposited at render.
+    pending:      Option<Rect>,
+    /// A change outside strokes (visibility, opacity, add/remove/clear
+    /// layer, resize) needs a full-canvas recomposite.
+    layers_dirty: bool,
+    last_frame:   Option<Instant>,
+    stats:        StrokeStats,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
-            window:       None,
-            gpu:          None,
+            window: None,
+            gpu:    None,
+            stylus: None,
+
             brush:        Brush::new(),
-            layers:       LayerStack::new(CANVAS_SIZE, CANVAS_SIZE),
-            is_drawing:   false,
-            last_pos:     None,
-            pen_smoother: PressureSmoother::new(0.5),
-            pressure:     1.0,
-            stylus:       None,
-            layers_dirty: false,
-            stats:        StrokeStats::default(),
-            pending:      None,
-            last_frame:   None,
             hokusai:      HokusaiEngine::new(),
             use_hokusai:  false,
-            pen_active:   false,
-            cursor:       (0.0, 0.0),
+            pen_smoother: PressureSmoother::new(0.5),
+
+            layers:      LayerStack::new(DEFAULT_CANVAS.0, DEFAULT_CANVAS.1),
+            canvas_edit: DEFAULT_CANVAS,
+
+            is_drawing: false,
+            last_pos:   None,
+            pressure:   1.0,
+            pen_active: false,
+            cursor:     (0.0, 0.0),
+
+            pending:      None,
+            layers_dirty: false,
+            last_frame:   None,
+            stats:        StrokeStats::default(),
         }
     }
 }
 
+/// What the docks asked for during a frame, applied once the UI is done.
+#[derive(Default)]
+struct UiActions {
+    recomposite: bool,
+    resize_to:   Option<(u32, u32)>,
+}
+
 impl App {
+    /// Window pixels -> canvas pixels. The canvas is letterboxed inside the
+    /// free area left by the docks (the GPU viewport), not the whole window,
+    /// so both the viewport origin and its size matter here.
     fn window_to_canvas(&self, wx: f32, wy: f32) -> Option<(f32, f32)> {
-        // Window pixels -> canvas pixels. The canvas is letterboxed inside
-        // the free area left by the docks (the GPU viewport), not the whole
-        // window, so both the viewport origin and its size matter here.
         let gpu = self.gpu.as_ref()?;
         let [vx, vy, vw, vh] = gpu.canvas_viewport();
         let cw = gpu.canvas.width  as f32;
@@ -87,8 +112,12 @@ impl App {
         Some(((wx - offset_x) / scale, (wy - offset_y) / scale))
     }
 
+    fn request_redraw(&self) {
+        if let Some(w) = &self.window { w.request_redraw(); }
+    }
+
     fn begin_stroke(&mut self) {
-        self.layers.active_layer_mut().begin_stroke();
+        self.layers.begin_stroke();
         if self.use_hokusai {
             self.hokusai.sync_from(&self.brush);
             self.hokusai.begin_stroke();
@@ -105,27 +134,56 @@ impl App {
         }
         self.stats = StrokeStats::default();
         if self.use_hokusai && self.last_pos.is_some() {
-            let rect = self.hokusai.end_stroke(self.layers.active_layer_mut());
+            let rect = self.hokusai.end_stroke(&mut self.layers.active_surface());
             self.present_rect(rect);
         }
         self.last_pos   = None;
         self.pen_active = false;
     }
 
-    /// Recompose uniquement le rectangle touché (pas tout le canvas)
-    /// dans le buffer GPU, puis marque la zone dirty pour upload.
+    fn draw_at(&mut self, wx: f32, wy: f32) {
+        let Some(pos) = self.window_to_canvas(wx, wy) else { return };
+        let t0 = Instant::now();
+        let pressure = self.pressure;
+        let mut surface = self.layers.active_surface();
+
+        let rect = if self.use_hokusai {
+            self.last_pos = Some((pos.0, pos.1, pressure));
+            self.hokusai.stroke_to(&mut surface, pos.0, pos.1, pressure)
+        } else {
+            let p = self.pen_smoother.apply(pos.0, pos.1, pressure, self.brush.radius as f32);
+            let (fx, fy, fp) = self.last_pos.unwrap_or((pos.0, pos.1, p));
+            self.last_pos = Some((pos.0, pos.1, p));
+            stroke_line((fx, fy), pos, &self.brush, &mut surface, fp, p)
+        };
+        self.stats.paint.add(t0.elapsed());
+        self.present_rect(rect);
+    }
+
+    /// Native pen samples (WinTab or Windows Ink). Press / release still
+    /// comes from MouseInput, which Windows always synthesizes for the pen;
+    /// only position and pressure come from here.
+    fn drain_stylus(&mut self) {
+        let Some(stylus) = &self.stylus else { return };
+        for s in stylus.drain() {
+            if self.is_drawing {
+                self.pen_active = true;
+                self.pressure   = s.pressure;
+                self.draw_at(s.x, s.y);
+            }
+        }
+    }
+
     /// Record that `rect` of the active layer changed. The layers are only
     /// recomposited once per displayed frame (in render_frame), not once
     /// per pen sample: at 200 px that recomposite was most of the cost.
-    fn present_rect(&mut self, rect: Option<aurastudio_canvas::Rect>) {
+    fn present_rect(&mut self, rect: Option<Rect>) {
         let Some(r) = rect else { return };
         self.pending = Some(match self.pending {
             None    => r,
             Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
         });
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
+        self.request_redraw();
         self.render_if_due();
     }
 
@@ -138,7 +196,7 @@ impl App {
     /// until the pen was lifted. Krita likewise refreshes the canvas on its
     /// own timer rather than waiting for the window system.
     fn render_if_due(&mut self) {
-        const MIN_FRAME: std::time::Duration = std::time::Duration::from_millis(4);
+        const MIN_FRAME: Duration = Duration::from_millis(4);
         if self.pending.is_none() { return; }
         if self.last_frame.is_some_and(|t| t.elapsed() < MIN_FRAME) { return; }
         self.render_frame();
@@ -146,68 +204,52 @@ impl App {
 
     fn render_frame(&mut self) {
         let Some(gpu) = &mut self.gpu else { return };
-        let t0 = std::time::Instant::now();
+        let t0 = Instant::now();
 
         if let Some(rect) = self.pending.take() {
             self.layers.composite_rect_into(&mut gpu.canvas.pixels, rect);
             gpu.canvas.mark_dirty(rect);
         }
 
+        let max_canvas  = gpu.max_canvas_size();
         let brush       = &mut self.brush;
-        let layers      = &mut self.layers;
         let use_hokusai = &mut self.use_hokusai;
-        let mut changed = false;
+        let layers      = &mut self.layers;
+        let canvas_edit = &mut self.canvas_edit;
+        let mut actions = UiActions::default();
         gpu.render(|ctx| {
-            color_picker_panel(ctx, brush, use_hokusai);
-            changed = layers_panel(ctx, layers);
+            color_panel(ctx, brush, use_hokusai);
+            layers_panel(ctx, layers, &mut actions);
+            canvas_panel(ctx, layers, canvas_edit, max_canvas, &mut actions);
         });
         if self.is_drawing {
             self.stats.frame.add(t0.elapsed());
         }
-        self.last_frame = Some(std::time::Instant::now());
+        self.last_frame = Some(Instant::now());
 
-        if changed || self.layers_dirty {
+        if let Some((w, h)) = actions.resize_to {
+            log::info!("canvas resize: {}x{} -> {w}x{h}", self.layers.width, self.layers.height);
+            self.layers.resize(w, h);
+            gpu.resize_canvas(w, h);
+            self.layers_dirty = true;
+        }
+        if actions.recomposite || self.layers_dirty {
+            let (w, h) = (self.layers.width, self.layers.height);
             self.layers.composite_into(&mut gpu.canvas.pixels);
-            gpu.canvas.mark_dirty((0, 0, CANVAS_SIZE, CANVAS_SIZE));
+            gpu.canvas.mark_dirty((0, 0, w, h));
             self.layers_dirty = false;
             // Uploaded with the next frame.
-            if let Some(w) = &self.window { w.request_redraw(); }
+            self.request_redraw();
         }
     }
 
-    fn draw_at(&mut self, wx: f32, wy: f32) {
-        let Some(pos) = self.window_to_canvas(wx, wy) else { return };
-        let t0 = std::time::Instant::now();
-        let pressure = self.pressure;
-        let layer    = self.layers.active_layer_mut();
-
-        let rect = if self.use_hokusai {
-            self.last_pos = Some((pos.0, pos.1, pressure));
-            self.hokusai.stroke_to(layer, pos.0, pos.1, pressure)
-        } else {
-            let p = self.pen_smoother.apply(pos.0, pos.1, pressure, self.brush.radius as f32);
-            let (fx, fy, fp) = self.last_pos.unwrap_or((pos.0, pos.1, p));
-            self.last_pos = Some((pos.0, pos.1, p));
-            stroke_line((fx, fy), pos, &self.brush, layer, fp, p)
-        };
-        self.stats.paint.add(t0.elapsed());
-        self.present_rect(rect);
-    }
-
-    /// Draine les échantillons stylet natifs (WinTab ou Windows Ink via
-    /// efude-input). Le press/release reste géré par MouseInput, car
-    /// Windows synthétise toujours des events souris compatibles pour
-    /// le stylet — c'est uniquement la position/pression qui vient d'ici.
-    fn drain_stylus(&mut self) {
-        let Some(stylus) = &self.stylus else { return; };
-        let samples = stylus.drain();
-        for s in samples {
-            if self.is_drawing {
-                self.pen_active = true;
-                self.pressure   = s.pressure;
-                self.draw_at(s.x, s.y);
-            }
-        }
+    /// Delete key: erase the active layer (white for the background,
+    /// transparent for the others), like Krita / CSP.
+    fn clear_active_layer(&mut self) {
+        if self.is_drawing { return; }
+        self.layers.clear_active();
+        self.layers_dirty = true;
+        self.request_redraw();
     }
 }
 
@@ -226,7 +268,9 @@ impl ApplicationHandler for App {
             .with_inner_size(winit::dpi::LogicalSize::new(1280u32, 800u32));
 
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
-        let gpu    = pollster::block_on(GpuState::new(Arc::clone(&window)));
+        let size   = (self.layers.width, self.layers.height);
+        let gpu    = pollster::block_on(GpuState::new(Arc::clone(&window), size));
+        log::info!("max canvas size: {} px", gpu.max_canvas_size());
 
         if let Ok(handle) = window.window_handle() {
             if let RawWindowHandle::Win32(h) = handle.as_raw() {
@@ -258,7 +302,7 @@ impl ApplicationHandler for App {
             .map(|gpu| gpu.is_canvas_at(self.cursor))
             .unwrap_or(false);
         if consumed_by_ui || (!self.is_drawing && !over_canvas) {
-            if let Some(w) = &self.window { w.request_redraw(); }
+            self.request_redraw();
         }
 
         self.drain_stylus();
@@ -270,8 +314,19 @@ impl ApplicationHandler for App {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(size);
                 }
-                if let Some(w) = &self.window {
-                    w.request_redraw();
+                self.request_redraw();
+            }
+
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                // Typing in a docker field (e.g. canvas width) must not
+                // erase the layer.
+                let ui_typing = self.gpu.as_ref().is_some_and(|g| g.ui_wants_keyboard());
+                if key.state == ElementState::Pressed
+                    && !key.repeat
+                    && !ui_typing
+                    && key.logical_key == Key::Named(NamedKey::Delete)
+                {
+                    self.clear_active_layer();
                 }
             }
 
@@ -297,9 +352,8 @@ impl ApplicationHandler for App {
                 }
             }
 
-            // Fallback macOS/Linux uniquement : sous Windows, drain_stylus
-            // (efude-input) gère déjà tout, donc on ignore Touch ici pour
-            // ne pas dessiner en double.
+            // macOS / Linux fallback only: on Windows, drain_stylus already
+            // handles the pen, so Touch is ignored there to avoid drawing twice.
             WindowEvent::Touch(touch) if cfg!(not(target_os = "windows")) => {
                 use winit::event::{Force, TouchPhase};
                 self.pressure = match touch.force {
@@ -309,19 +363,19 @@ impl ApplicationHandler for App {
                     }
                     None => 1.0,
                 };
+                let pos = (touch.location.x as f32, touch.location.y as f32);
                 match touch.phase {
                     TouchPhase::Started => {
-                        let pos = (touch.location.x as f32, touch.location.y as f32);
                         if !self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(pos)) {
                             return;
                         }
                         self.is_drawing = true;
                         self.begin_stroke();
-                        self.draw_at(touch.location.x as f32, touch.location.y as f32);
+                        self.draw_at(pos.0, pos.1);
                     }
                     TouchPhase::Moved => {
                         if self.is_drawing {
-                            self.draw_at(touch.location.x as f32, touch.location.y as f32);
+                            self.draw_at(pos.0, pos.1);
                         }
                     }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
@@ -338,11 +392,10 @@ impl ApplicationHandler for App {
     }
 }
 
-/// Panneau egui : carré de preview + sliders RGB et HSV, synchronisés
-/// avec la couleur active du brush. Volontairement minimal (pas encore
-/// de calques/palette) — brique color picker v1.
-fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush, use_hokusai: &mut bool) {
-    egui::Window::new("Couleur")
+/// Color docker v1: preview swatch, RGB and HSV sliders kept in sync with
+/// the brush color, brush size / opacity. Krita / CSP-style docks are next.
+fn color_panel(ctx: &egui::Context, brush: &mut Brush, use_hokusai: &mut bool) {
+    egui::Window::new("Color")
         .resizable(false)
         .default_pos([16.0, 16.0])
         .show(ctx, |ui| {
@@ -372,55 +425,103 @@ fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush, use_hokusai: &mut 
             }
 
             ui.separator();
-            ui.label("Pinceau");
-            ui.add(egui::Slider::new(&mut brush.radius, 1..=200).text("Taille"));
-            ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacité"));
-            ui.checkbox(use_hokusai, "Moteur hokusai (libmypaint, textured brushes)");
+            ui.label("Brush");
+            // Shown as a diameter (like Krita / CSP), stored as a radius.
+            // Logarithmic so small sizes stay precise on a 1..1000 range.
+            let mut size = brush.radius * 2;
+            if ui.add(egui::Slider::new(&mut size, 1..=MAX_BRUSH_SIZE).logarithmic(true).text("Size (px)")).changed() {
+                brush.radius = (size / 2).max(1);
+            }
+            ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacity"));
+            ui.checkbox(use_hokusai, "hokusai engine (libmypaint, textured brushes)");
         });
 }
 
-/// Panneau egui : liste des calques (du haut vers le bas, comme Krita/
-/// CSP), visibilité, opacité, sélection du calque actif, ajout/suppr.
-/// Retourne true si un changement nécessite une recomposition pleine
-/// image (visibilité/opacité/ajout/suppression — pas un trait de pinceau,
-/// déjà géré en local par composite_rect_into).
-fn layers_panel(ctx: &egui::Context, layers: &mut LayerStack) -> bool {
-    let mut changed = false;
-
-    egui::Window::new("Calques")
+/// Layers docker v1: list top to bottom (like Krita / CSP), visibility,
+/// opacity, active layer, add / delete.
+fn layers_panel(ctx: &egui::Context, layers: &mut LayerStack, actions: &mut UiActions) {
+    egui::Window::new("Layers")
         .resizable(false)
-        .default_pos([16.0, 320.0])
+        .default_pos([16.0, 380.0])
         .show(ctx, |ui| {
-            if ui.button("+ Nouveau calque").clicked() {
-                let n = layers.layers.len() + 1;
-                layers.add_layer(&format!("Calque {n}"));
-                changed = true;
-            }
+            let mut remove = None;
 
+            ui.horizontal(|ui| {
+                if ui.button("+ New layer").clicked() {
+                    let n = layers.layers.len();
+                    layers.add_layer(&format!("Layer {n}"));
+                    actions.recomposite = true;
+                }
+                ui.label("Del: clear active layer");
+            });
             ui.separator();
 
-            // Du haut vers le bas dans l'UI = de la fin vers le début du Vec.
+            // Top of the list = end of the Vec.
             for i in (0..layers.layers.len()).rev() {
                 ui.horizontal(|ui| {
+                    if ui.checkbox(&mut layers.layers[i].visible, "").changed() {
+                        actions.recomposite = true;
+                    }
                     let active = layers.active == i;
                     if ui.selectable_label(active, &layers.layers[i].name).clicked() {
                         layers.set_active(i);
                     }
-                    if ui.checkbox(&mut layers.layers[i].visible, "").changed() {
-                        changed = true;
-                    }
                     if layers.layers.len() > 1 && ui.small_button("🗑").clicked() {
-                        layers.remove_layer(i);
-                        changed = true;
+                        // Removed after the loop: removing here made the
+                        // opacity slider below read a layer that no longer
+                        // existed (index out of bounds -> crash).
+                        remove = Some(i);
                     }
                 });
-                if ui.add(egui::Slider::new(&mut layers.layers[i].opacity, 0.0..=1.0).text("opacité")).changed() {
-                    changed = true;
+                let opacity = egui::Slider::new(&mut layers.layers[i].opacity, 0.0..=1.0).text("opacity");
+                if ui.add(opacity).changed() {
+                    actions.recomposite = true;
                 }
             }
-        });
 
-    changed
+            if let Some(i) = remove {
+                layers.remove_layer(i);
+                actions.recomposite = true;
+            }
+        });
+}
+
+/// Canvas docker: type a width and height, then Resize. The content stays
+/// centered (margins added or borders cropped, nothing is scaled).
+fn canvas_panel(
+    ctx: &egui::Context,
+    layers: &LayerStack,
+    edit: &mut (u32, u32),
+    max_size: u32,
+    actions: &mut UiActions,
+) {
+    // Top-right corner until the docks land (the left column is full).
+    let right = ctx.screen_rect().right();
+    egui::Window::new("Canvas")
+        .resizable(false)
+        .default_pos([right - 220.0, 16.0])
+        .show(ctx, |ui| {
+            ui.label(format!("Current: {} x {} px", layers.width, layers.height));
+            egui::Grid::new("canvas_size").num_columns(2).show(ui, |ui| {
+                ui.label("Width");
+                ui.add(egui::DragValue::new(&mut edit.0).range(1..=max_size).suffix(" px"));
+                ui.end_row();
+                ui.label("Height");
+                ui.add(egui::DragValue::new(&mut edit.1).range(1..=max_size).suffix(" px"));
+                ui.end_row();
+            });
+
+            // RAM estimate: 4 bytes/px per layer, plus the composite (4),
+            // the stroke snapshot (4) and the stroke mask (1).
+            let px = edit.0 as f64 * edit.1 as f64;
+            let mb = px * (4.0 * layers.layers.len() as f64 + 9.0) / (1024.0 * 1024.0);
+            ui.label(format!("≈ {mb:.0} MB RAM with {} layer(s)", layers.layers.len()));
+
+            let unchanged = *edit == (layers.width, layers.height);
+            if ui.add_enabled(!unchanged, egui::Button::new("Resize")).clicked() {
+                actions.resize_to = Some(*edit);
+            }
+        });
 }
 
 /// CPU time spent per stroke, logged when the stroke ends so latency can be
@@ -434,12 +535,12 @@ struct StrokeStats {
 #[derive(Default)]
 struct Timing {
     count: u32,
-    total: std::time::Duration,
-    max:   std::time::Duration,
+    total: Duration,
+    max:   Duration,
 }
 
 impl Timing {
-    fn add(&mut self, d: std::time::Duration) {
+    fn add(&mut self, d: Duration) {
         self.count += 1;
         self.total += d;
         self.max = self.max.max(d);
