@@ -90,7 +90,9 @@ pub type SharedDoc = Arc<Mutex<Document>>;
 
 /// Every open document, and which one is shown.
 pub struct Workspace {
-    docs:    Vec<SharedDoc>,
+    /// Ids kept next to the documents: finding one never locks them (a
+    /// document can be busy being painted on the paint thread).
+    docs:    Vec<(DocId, SharedDoc)>,
     active:  usize,
     next_id: u64,
 }
@@ -109,18 +111,18 @@ impl Workspace {
         let id = DocId(self.next_id);
         self.next_id += 1;
         let doc = Arc::new(Mutex::new(Document::new(id, name, width, height)));
-        self.docs.push(Arc::clone(&doc));
+        self.docs.push((id, Arc::clone(&doc)));
         self.active = self.docs.len() - 1;
         doc
     }
 
     /// The document being shown (None when nothing is open).
     pub fn active(&self) -> Option<SharedDoc> {
-        self.docs.get(self.active).cloned()
+        self.docs.get(self.active).map(|(_, d)| Arc::clone(d))
     }
 
     pub fn set_active(&mut self, id: DocId) -> bool {
-        match self.docs.iter().position(|d| d.lock().unwrap().id() == id) {
+        match self.docs.iter().position(|(d, _)| *d == id) {
             Some(i) => { self.active = i; true }
             None => false,
         }
@@ -128,7 +130,7 @@ impl Workspace {
 
     /// Close a document; its memory (layers + history) goes with it.
     pub fn close(&mut self, id: DocId) -> bool {
-        let Some(i) = self.docs.iter().position(|d| d.lock().unwrap().id() == id) else { return false };
+        let Some(i) = self.docs.iter().position(|(d, _)| *d == id) else { return false };
         self.docs.remove(i);
         self.active = self.active.min(self.docs.len().saturating_sub(1));
         true
@@ -146,7 +148,7 @@ mod tests {
 
     fn paint(doc: &mut Document, id: u64, rect: Rect, rgba: [u8; 4]) {
         // Simulates a stroke: snapshot, change pixels, commit.
-        doc.layers.begin_stroke();
+        assert!(doc.layers.begin_stroke(id));
         let n = ((rect.2 - rect.0) * (rect.3 - rect.1)) as usize;
         assert!(doc.layers.set_layer_rect(id, rect, &rgba.repeat(n)));
         doc.commit_stroke(id, rect);
@@ -213,7 +215,7 @@ mod tests {
         let id = doc.layers.add_layer("ink");
         // Noise does not compress: each full-canvas step is ~256 KB.
         for k in 0..4u8 {
-            doc.layers.begin_stroke();
+            assert!(doc.layers.begin_stroke(id));
             let mut x = 0x9E37_79B9_7F4A_7C15u64 ^ k as u64;
             let data: Vec<u8> = (0..256 * 256 * 4).map(|_| {
                 x ^= x << 13; x ^= x >> 7; x ^= x << 17; // xorshift64

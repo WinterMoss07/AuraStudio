@@ -106,7 +106,7 @@ fn clear_pixel(background: bool) -> [u8; 4] {
 
 impl Layer {
     pub fn new(width: u32, height: u32, background: bool) -> Self {
-        let pixels = clear_pixel(background).repeat((width * height) as usize);
+        let pixels = clear_pixel(background).repeat(width as usize * height as usize);
         Self {
             id: 0,
             name: "Layer".into(),
@@ -135,8 +135,8 @@ pub struct Row {
     pub locked_by_parent: bool,
 }
 
-/// The active layer seen as a paintable surface for the brush engines.
-pub struct ActiveSurface<'a> {
+/// A paint layer seen as a paintable surface for the brush engines.
+pub struct LayerSurface<'a> {
     pixels: &'a mut [u8],
     base:   &'a [u8],
     mask:   &'a mut [u8],
@@ -144,7 +144,7 @@ pub struct ActiveSurface<'a> {
     height: u32,
 }
 
-impl PaintSurface for ActiveSurface<'_> {
+impl PaintSurface for LayerSurface<'_> {
     fn width(&self)  -> u32 { self.width }
     fn height(&self) -> u32 { self.height }
     fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) {
@@ -226,7 +226,7 @@ impl LayerStack {
         let mut base = Layer::new(width, height, true);
         base.name = "Background".into();
         base.id = 1;
-        let n = (width * height) as usize;
+        let n = width as usize * height as usize;
         Self {
             root: vec![Node::Layer(base)],
             active: 1,
@@ -456,14 +456,19 @@ impl LayerStack {
         true
     }
 
-    /// Call when a stroke starts: snapshot the active layer and reset the
-    /// stroke coverage, so the new stroke never blends with itself but
-    /// still paints over earlier strokes.
-    pub fn begin_stroke(&mut self) {
+    /// Call when a stroke starts on paint layer `id`: snapshot it and reset
+    /// the stroke coverage, so the new stroke never blends with itself but
+    /// still paints over earlier strokes. False if `id` is not a paint layer.
+    ///
+    /// A stroke targets a layer by id, not "the active layer": strokes are
+    /// painted on another thread, possibly a little after the pen, and the
+    /// user may select or delete another layer meanwhile.
+    pub fn begin_stroke(&mut self, id: u64) -> bool {
         // Borrow `root` and `stroke_base` as separate fields.
-        let Some(Node::Layer(l)) = node_in(&self.root, self.active) else { return };
+        let Some(Node::Layer(l)) = node_in(&self.root, id) else { return false };
         self.stroke_base.copy_from_slice(&l.pixels);
         self.stroke_mask.fill(0);
+        true
     }
 
     /// Pixels of `rect` in the active layer as it was when the current
@@ -494,14 +499,14 @@ impl LayerStack {
         true
     }
 
-    /// The active paint layer as a brush surface; None for a folder.
-    pub fn active_surface(&mut self) -> Option<ActiveSurface<'_>> {
+    /// Paint layer `id` as a brush surface (with the stroke buffers of
+    /// begin_stroke); None if it is gone or a folder.
+    pub fn layer_surface(&mut self, id: u64) -> Option<LayerSurface<'_>> {
         let (w, h) = (self.width, self.height);
-        let id = self.active;
         let path = self.path(id)?;
         let (last, parent) = path.split_last()?;
         let Node::Layer(l) = &mut siblings_mut(&mut self.root, parent)[*last] else { return None };
-        Some(ActiveSurface {
+        Some(LayerSurface {
             pixels: &mut l.pixels,
             base:   &self.stroke_base,
             mask:   &mut self.stroke_mask,
@@ -569,7 +574,7 @@ impl LayerStack {
         let sy1 = (nh - dy).min(oh);
 
         walk(&mut self.root, &mut |layer: &mut Layer| {
-            let mut out = clear_pixel(layer.background).repeat((width * height) as usize);
+            let mut out = clear_pixel(layer.background).repeat(width as usize * height as usize);
             if sx0 < sx1 {
                 for sy in sy0..sy1 {
                     let src = ((sy * ow + sx0) * 4) as usize..((sy * ow + sx1) * 4) as usize;
@@ -583,7 +588,7 @@ impl LayerStack {
 
         self.width  = width;
         self.height = height;
-        let n = (width * height) as usize;
+        let n = width as usize * height as usize;
         self.stroke_base = vec![0; n * 4];
         self.stroke_mask = vec![0; n];
     }
@@ -603,7 +608,7 @@ impl LayerStack {
     /// the general premultiplied path. (Was ~27 ns/px, see
     /// examples/bench_composite.rs.)
     pub fn composite_rect_into(&self, out: &mut [u8], rect: Rect) {
-        debug_assert_eq!(out.len(), (self.width * self.height * 4) as usize);
+        debug_assert_eq!(out.len(), self.width as usize * self.height as usize * 4);
         let (x0, y0) = (rect.0, rect.1);
         let x1 = rect.2.min(self.width);
         let y1 = rect.3.min(self.height);
@@ -612,7 +617,7 @@ impl LayerStack {
         let mut group: Vec<Premul> = Vec::new();
 
         for y in y0..y1 {
-            let start = ((y * self.width + x0) * 4) as usize;
+            let start = (y as usize * self.width as usize + x0 as usize) * 4;
             let dst = &mut out[start..start + n * 4];
             // White behind everything.
             dst.fill(255);
@@ -632,7 +637,7 @@ fn composite_row_opaque(
         if !node.visible() || node.opacity() <= 0.0 { continue; }
         match node {
             Node::Layer(l) => {
-                let start = ((y * width + x0) * 4) as usize;
+                let start = (y as usize * width as usize + x0 as usize) * 4;
                 let src = &l.pixels[start..start + n * 4];
                 blend_layer_opaque(dst, src, l.opacity * opacity_scale, l.blend);
             }
@@ -709,7 +714,7 @@ fn composite_row(nodes: &[Node], width: u32, y: u32, x0: u32, row: &mut [Premul]
         match node {
             Node::Layer(l) => {
                 let op = l.opacity * opacity_scale;
-                let start = ((y * width + x0) * 4) as usize;
+                let start = (y as usize * width as usize + x0 as usize) * 4;
                 let src = &l.pixels[start..start + row.len() * 4];
                 for (dst, s) in row.iter_mut().zip(src.chunks_exact(4)) {
                     if s[3] == 0 { continue; }
@@ -874,7 +879,8 @@ mod tests {
         let mut s = LayerStack::new(2, 2);
         s.add_folder("F");
         assert!(!s.can_paint());
-        assert!(s.active_surface().is_none());
+        assert!(s.layer_surface(s.active_id()).is_none());
+        assert!(!s.begin_stroke(s.active_id()));
     }
 
     #[test]
@@ -903,7 +909,7 @@ mod tests {
         assert!(s.remove_active()); // folder with its content
         assert_eq!(names_top_down(&s), ["Background"]);
         assert_eq!(s.active_id(), 1);
-        s.begin_stroke();
+        assert!(s.begin_stroke(1));
     }
 
     #[test]
@@ -924,14 +930,14 @@ mod tests {
         s.add_folder("F");
         let l = s.add_layer("L");
         if let Some(Node::Layer(layer)) = s.node_mut(l) {
-            let i = ((1 * 4 + 1) * 4) as usize;
+            let i = (4 + 1) * 4;
             layer.pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
         }
         s.resize(8, 8);
         assert_eq!(layer_px(&s, l, 3, 3), [0, 0, 0, 255]);
         assert_eq!(layer_px(&s, l, 0, 0), [255, 255, 255, 0]);
         assert_eq!(layer_px(&s, 1, 0, 0), [255, 255, 255, 255]);
-        s.begin_stroke();
-        assert_eq!(s.active_surface().unwrap().width(), 8);
+        assert!(s.begin_stroke(l));
+        assert_eq!(s.layer_surface(l).unwrap().width(), 8);
     }
 }

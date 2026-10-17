@@ -44,8 +44,8 @@ const UPDATE_PERIOD: Duration = Duration::from_millis(8);
 pub enum Cmd {
     /// Start a stroke on the active layer of `doc` with these settings.
     Begin { doc: SharedDoc, brush: Brush, hokusai: bool, smoothing: f32 },
-    /// One pen sample, canvas coordinates.
-    Sample { x: f32, y: f32, pressure: f32 },
+    /// One pen sample: canvas coordinates, pressure, pen time in seconds.
+    Sample { x: f32, y: f32, pressure: f32, time: f64 },
     End,
     Undo(SharedDoc),
     Redo(SharedDoc),
@@ -113,6 +113,12 @@ struct Worker {
     smoother: PressureSmoother,
     /// The stroke started on a paintable layer.
     active:   bool,
+    /// Layer the stroke paints on, fixed at Begin (not "the active layer":
+    /// the user may select or delete another one while the backlog of a
+    /// big brush is still being painted).
+    layer:    u64,
+    /// Canvas size at Begin: a resize meanwhile ends the stroke.
+    size:     (u32, u32),
     /// Last sample of the stroke: x, y and smoothed pressure.
     last:     Option<(f32, f32, f32)>,
     /// Everything the stroke touched: the area saved for undo.
@@ -129,6 +135,8 @@ impl Worker {
             use_hokusai: false,
             smoother: PressureSmoother::new(0.5),
             active: false,
+            layer: 0,
+            size: (0, 0),
             last: None,
             stroke_rect: None,
             stats: Stats::default(),
@@ -154,11 +162,22 @@ impl Worker {
             while let Some(cmd) = queue.pop_front() {
                 match cmd {
                     Cmd::Begin { doc, brush, hokusai, smoothing } => {
+                        // A stroke still open (its End never came, e.g. the
+                        // window lost focus): finish it first, so it is
+                        // recorded for undo like any other.
+                        if self.active {
+                            if let Some((rect, id)) = self.with_doc(|w, d| w.end(d)).flatten() {
+                                if let Some(r) = rect { add_rect(&mut self.pending, r); }
+                                events.push(Event::LayerChanged { layer_id: id });
+                            }
+                        }
                         self.doc = Some(doc);
-                        self.with_doc(|w, d| w.begin(d, brush, hokusai, smoothing));
+                        if self.with_doc(|w, d| w.begin(d, brush, hokusai, smoothing)) == Some(false) {
+                            events.push(Event::Notice("Layer is locked or is a folder"));
+                        }
                     }
-                    Cmd::Sample { x, y, pressure } => {
-                        let r = self.with_doc(|w, d| w.sample(d, x, y, pressure)).flatten();
+                    Cmd::Sample { x, y, pressure, time } => {
+                        let r = self.with_doc(|w, d| w.sample(d, x, y, pressure, time)).flatten();
                         if let Some(r) = r {
                             add_rect(&mut self.pending, r);
                             merge(&mut self.stroke_rect, Some(r));
@@ -255,16 +274,17 @@ impl Worker {
         }
     }
 
-    fn begin(&mut self, doc: &mut Document, brush: Brush, hokusai: bool, smoothing: f32) {
-        // The main thread already refused locked layers / folders; checked
-        // again here in case the layer changed in between.
-        self.active = doc.layers.can_paint();
+    /// Start a stroke on the active layer. False if it can't be painted
+    /// (locked, or a folder is selected).
+    fn begin(&mut self, doc: &mut Document, brush: Brush, hokusai: bool, smoothing: f32) -> bool {
         self.last = None;
         self.stroke_rect = None;
         self.stats = Stats::default();
-        if !self.active { return; }
+        self.layer = doc.layers.active_id();
+        self.size = (doc.layers.width, doc.layers.height);
+        self.active = doc.layers.can_paint() && doc.layers.begin_stroke(self.layer);
+        if !self.active { return false; }
 
-        doc.layers.begin_stroke();
         self.brush = brush;
         self.use_hokusai = hokusai;
         self.smoother.span = smoothing;
@@ -274,15 +294,26 @@ impl Worker {
             self.hokusai.sync_from(&self.brush);
             self.hokusai.begin_stroke();
         }
+        true
     }
 
-    fn sample(&mut self, doc: &mut Document, x: f32, y: f32, pressure: f32) -> Option<Rect> {
+    fn sample(&mut self, doc: &mut Document, x: f32, y: f32, pressure: f32, time: f64) -> Option<Rect> {
         if !self.active { return None; }
+        // The canvas was resized under the stroke: its snapshot no longer
+        // matches the layer. Stop here (what was painted stays, undoable).
+        if (doc.layers.width, doc.layers.height) != self.size {
+            self.active = false;
+            return None;
+        }
         let t0 = Instant::now();
-        let mut surface = doc.layers.active_surface()?;
+        let Some(mut surface) = doc.layers.layer_surface(self.layer) else {
+            // The layer was deleted: nothing left to paint on.
+            self.active = false;
+            return None;
+        };
         let rect = if self.use_hokusai {
             self.last = Some((x, y, pressure));
-            self.hokusai.stroke_to(&mut surface, x, y, pressure)
+            self.hokusai.stroke_to(&mut surface, x, y, pressure, time)
         } else {
             let p = self.smoother.apply(x, y, pressure, self.brush.radius as f32);
             let (fx, fy, fp) = self.last.unwrap_or((x, y, p));
@@ -297,15 +328,20 @@ impl Worker {
     /// area and the layer id, or None if nothing was painted.
     fn end(&mut self, doc: &mut Document) -> Option<(Option<Rect>, u64)> {
         let was_active = std::mem::take(&mut self.active);
-        if !was_active || self.last.take().is_none() { return None; }
+        // Also after an aborted stroke (layer deleted / canvas resized):
+        // whatever was painted before is still recorded for undo.
+        self.last.take()?;
+        let id = self.layer;
+        let same_size = (doc.layers.width, doc.layers.height) == self.size;
         let mut rect = None;
-        if self.use_hokusai {
-            if let Some(mut surface) = doc.layers.active_surface() {
+        if self.use_hokusai && was_active {
+            if let Some(mut surface) = doc.layers.layer_surface(id) {
                 rect = self.hokusai.end_stroke(&mut surface);
             }
         }
         merge(&mut self.stroke_rect, rect);
-        let id = doc.layers.active_id();
+        // After a resize the snapshot no longer matches: nothing to record.
+        if !same_size { self.stroke_rect = None; }
         if let Some(r) = self.stroke_rect.take() {
             let t0 = Instant::now();
             doc.commit_stroke(id, r);
@@ -385,8 +421,8 @@ mod tests {
         let mut brush = Brush::new();
         brush.radius = 4;
         pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, hokusai: false, smoothing: 0.0 });
-        pt.send(Cmd::Sample { x: 10.0, y, pressure: 1.0 });
-        pt.send(Cmd::Sample { x: 50.0, y, pressure: 1.0 });
+        pt.send(Cmd::Sample { x: 10.0, y, pressure: 1.0, time: 0.0 });
+        pt.send(Cmd::Sample { x: 50.0, y, pressure: 1.0, time: 0.01 });
         pt.send(Cmd::End);
     }
 
@@ -428,6 +464,68 @@ mod tests {
         pt.send(Cmd::Redo(Arc::clone(&doc)));
         drop(pt);
         assert_eq!(pixel(&doc, id, 30, 40), [0, 0, 0, 255]);
+    }
+
+    /// Selecting another layer while the stroke is still queued must not
+    /// move the rest of the stroke onto it (the stroke keeps its layer).
+    #[test]
+    fn stroke_stays_on_its_layer_when_selection_changes() {
+        let (doc, id) = doc_with_layer();
+        let other = doc.lock().unwrap().layers.add_layer("other");
+        doc.lock().unwrap().layers.set_active(id);
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        let mut brush = Brush::new();
+        brush.radius = 4;
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, hokusai: false, smoothing: 0.0 });
+        pt.send(Cmd::Sample { x: 10.0, y: 30.0, pressure: 1.0, time: 0.0 });
+        std::thread::sleep(Duration::from_millis(50));
+        // The user selects another layer while the stroke goes on.
+        doc.lock().unwrap().layers.set_active(other);
+        pt.send(Cmd::Sample { x: 50.0, y: 30.0, pressure: 1.0, time: 0.01 });
+        pt.send(Cmd::End);
+        drop(pt);
+        assert_eq!(pixel(&doc, id, 40, 30), [0, 0, 0, 255]);
+        assert_eq!(pixel(&doc, other, 40, 30)[3], 0);
+    }
+
+    /// A Begin without End (window lost focus...) still records the
+    /// unfinished stroke for undo before starting the next one.
+    #[test]
+    fn unfinished_stroke_is_recorded_for_undo() {
+        let (doc, _) = doc_with_layer();
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        let mut brush = Brush::new();
+        brush.radius = 4;
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), hokusai: false, smoothing: 0.0 });
+        pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
+        stroke(&pt, &doc, 40.0);
+        drop(pt);
+        assert_eq!(doc.lock().unwrap().history().undo_len(), 2);
+    }
+
+    /// Deleting the layer mid-stroke stops the stroke; what was painted
+    /// before is still undoable and nothing lands on another layer.
+    #[test]
+    fn deleted_layer_ends_the_stroke_cleanly() {
+        let (doc, id) = doc_with_layer();
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        let mut brush = Brush::new();
+        brush.radius = 4;
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, hokusai: false, smoothing: 0.0 });
+        pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
+        std::thread::sleep(Duration::from_millis(50));
+        {
+            let mut d = doc.lock().unwrap();
+            d.layers.set_active(id);
+            assert!(d.layers.remove_active());
+        }
+        pt.send(Cmd::Sample { x: 50.0, y: 10.0, pressure: 1.0, time: 0.01 });
+        pt.send(Cmd::End);
+        drop(pt);
+        let d = doc.lock().unwrap();
+        // Only the background is left, untouched.
+        let Some(Node::Layer(bg)) = d.layers.node(1) else { panic!() };
+        assert!(bg.pixels.chunks(4).all(|p| p == [255, 255, 255, 255]));
     }
 
     /// A locked layer is never painted, even if a stroke is sent.
@@ -491,7 +589,7 @@ mod tests {
                 let t = i as f32 / n as f32;
                 let x = 300.0 + i as f32 * 7.0;
                 let y = 1000.0 + (t * 12.0).sin() * 400.0;
-                pt.send(Cmd::Sample { x, y, pressure: 0.3 + 0.7 * (t * 9.0).sin().abs() });
+                pt.send(Cmd::Sample { x, y, pressure: 0.3 + 0.7 * (t * 9.0).sin().abs(), time: i as f64 * 0.005 });
                 let due = t0 + Duration::from_millis(5 * (i as u64 + 1));
                 while Instant::now() < due { std::thread::sleep(Duration::from_micros(200)); }
             }
@@ -520,7 +618,8 @@ mod tests {
             let mut screen = vec![0u8; 2048 * 2048 * 4];
             let mut brush = Brush::new();
             brush.radius = radius;
-            d.layers.begin_stroke();
+            let ink = d.layers.active_id();
+            d.layers.begin_stroke(ink);
             let mut pending: Option<Rect> = None;
             let mut last_frame = Instant::now();
             let mut frames = Timing::default();
@@ -533,7 +632,7 @@ mod tests {
                 let y = 1000.0 + (t * 12.0).sin() * 400.0;
                 let p = 0.3 + 0.7 * (t * 9.0).sin().abs();
                 let (fx, fy, fp) = last.unwrap_or((x, y, p));
-                let mut surface = d.layers.active_surface().unwrap();
+                let mut surface = d.layers.layer_surface(ink).unwrap();
                 merge(&mut pending, stroke_line((fx, fy), (x, y), &brush, &mut surface, fp, p));
                 last = Some((x, y, p));
                 if last_frame.elapsed() >= Duration::from_millis(4) {
@@ -554,20 +653,18 @@ mod tests {
                 lag.as_secs_f64() * 1000.0, frames);
         }
     }
-}
 
-/// GUI side of the benchmark: copy the finished rectangles (stands for the
-/// GPU upload, which copies them into wgpu's staging memory).
-#[cfg(test)]
-#[allow(dead_code)]
-fn gui_show_painted(projection: &SharedProjection, screen: &mut [u8]) {
-    let mut p = projection.lock().unwrap();
-    let w = p.width as usize;
-    for (x0, y0, x1, y1) in p.take_dirty() {
-        for y in y0 as usize..y1 as usize {
-            let a = (y * w + x0 as usize) * 4;
-            let b = (y * w + x1 as usize) * 4;
-            screen[a..b].copy_from_slice(&p.pixels[a..b]);
+    /// GUI side of the benchmark: copy the finished rectangles (stands for the
+    /// GPU upload, which copies them into wgpu's staging memory).
+    fn gui_show_painted(projection: &SharedProjection, screen: &mut [u8]) {
+        let mut p = projection.lock().unwrap();
+        let w = p.width as usize;
+        for (x0, y0, x1, y1) in p.take_dirty() {
+            for y in y0 as usize..y1 as usize {
+                let a = (y * w + x0 as usize) * 4;
+                let b = (y * w + x1 as usize) * 4;
+                screen[a..b].copy_from_slice(&p.pixels[a..b]);
+            }
         }
     }
 }
