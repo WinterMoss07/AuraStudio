@@ -5,6 +5,12 @@
 //! loop: pen packets and UI frames waited behind the painting. Now samples
 //! queue up while one is being painted, and are painted in batches.
 //!
+//! Rule: a brush always paints on this ONE thread. Never split a stroke or
+//! a dab across threads (rayon, tiles...): the pieces must be gathered and
+//! reconciled afterwards, which costs more than it saves. Measured here:
+//! a parallel round pen made every stroke slower, hokusai included. This
+//! thread exists to keep painting off the input / UI thread, not to split it.
+//!
 //! The layer stack is shared under a mutex. The worker holds it for at
 //! most BATCH_TIME at once, so the main thread can always grab it to
 //! composite the changed area and show progress, even mid-stroke.
