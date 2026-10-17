@@ -183,10 +183,10 @@ dependencies = [
  "aurastudio-gpu",
  "aurastudio-input",
  "aurastudio-layers",
+ "aurastudio-ui",
  "egui",
  "egui-wgpu",
  "egui-winit",
- "egui_dock",
  "env_logger",
  "log",
  "pollster",
@@ -238,6 +238,16 @@ name = "aurastudio-layers"
 version = "0.1.0"
 dependencies = [
  "aurastudio-canvas",
+]
+
+[[package]]
+name = "aurastudio-ui"
+version = "0.1.0"
+dependencies = [
+ "aurastudio-brush",
+ "aurastudio-layers",
+ "egui",
+ "egui_dock",
 ]
 
 [[package]]

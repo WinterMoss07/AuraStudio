@@ -15,12 +15,10 @@ use aurastudio_canvas::Rect;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_layers::LayerStack;
+use aurastudio_ui::{Actions, Model, UiState};
 
 /// Canvas size at startup; changed afterwards from the Canvas docker.
 const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
-
-/// Brush size range shown in the UI, as a diameter in pixels.
-const MAX_BRUSH_SIZE: u32 = 1000;
 
 pub struct App {
     window: Option<Arc<Window>>,
@@ -35,8 +33,9 @@ pub struct App {
     pen_smoother: PressureSmoother,
 
     layers: LayerStack,
-    /// Width / height typed in the Canvas docker, applied by "Resize".
+    /// Width / height typed in the Canvas dock, applied by "Resize".
     canvas_edit: (u32, u32),
+    ui:          UiState,
 
     is_drawing: bool,
     /// Last sample of the current stroke: canvas x, y and smoothed pressure.
@@ -73,6 +72,7 @@ impl Default for App {
 
             layers:      LayerStack::new(DEFAULT_CANVAS.0, DEFAULT_CANVAS.1),
             canvas_edit: DEFAULT_CANVAS,
+            ui:          UiState::new(),
 
             is_drawing: false,
             last_pos:   None,
@@ -86,13 +86,6 @@ impl Default for App {
             stats:        StrokeStats::default(),
         }
     }
-}
-
-/// What the docks asked for during a frame, applied once the UI is done.
-#[derive(Default)]
-struct UiActions {
-    recomposite: bool,
-    resize_to:   Option<(u32, u32)>,
 }
 
 impl App {
@@ -119,6 +112,7 @@ impl App {
     fn begin_stroke(&mut self) {
         self.layers.begin_stroke();
         if self.use_hokusai {
+            self.hokusai.smoother.span = self.pen_smoother.span;
             self.hokusai.sync_from(&self.brush);
             self.hokusai.begin_stroke();
         }
@@ -136,6 +130,11 @@ impl App {
         if self.use_hokusai && self.last_pos.is_some() {
             let rect = self.hokusai.end_stroke(&mut self.layers.active_surface());
             self.present_rect(rect);
+        }
+        if self.last_pos.is_some() {
+            let id = self.layers.layers[self.layers.active].id;
+            self.ui.invalidate_thumbnail(id);
+            self.request_redraw();
         }
         self.last_pos   = None;
         self.pen_active = false;
@@ -211,17 +210,18 @@ impl App {
             gpu.canvas.mark_dirty(rect);
         }
 
-        let max_canvas  = gpu.max_canvas_size();
-        let brush       = &mut self.brush;
-        let use_hokusai = &mut self.use_hokusai;
-        let layers      = &mut self.layers;
-        let canvas_edit = &mut self.canvas_edit;
-        let mut actions = UiActions::default();
-        gpu.render(|ctx| {
-            color_panel(ctx, brush, use_hokusai);
-            layers_panel(ctx, layers, &mut actions);
-            canvas_panel(ctx, layers, canvas_edit, max_canvas, &mut actions);
-        });
+        let max_canvas = gpu.max_canvas_size();
+        let ui_state   = &mut self.ui;
+        let mut model = Model {
+            brush:              &mut self.brush,
+            use_hokusai:        &mut self.use_hokusai,
+            pressure_smoothing: &mut self.pen_smoother.span,
+            layers:             &mut self.layers,
+            canvas_edit:        &mut self.canvas_edit,
+            max_canvas,
+        };
+        let mut actions = Actions::default();
+        gpu.render(|ctx| aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions));
         if self.is_drawing {
             self.stats.frame.add(t0.elapsed());
         }
@@ -231,6 +231,7 @@ impl App {
             log::info!("canvas resize: {}x{} -> {w}x{h}", self.layers.width, self.layers.height);
             self.layers.resize(w, h);
             gpu.resize_canvas(w, h);
+            self.ui.invalidate_all_thumbnails();
             self.layers_dirty = true;
         }
         if actions.recomposite || self.layers_dirty {
@@ -248,6 +249,8 @@ impl App {
     fn clear_active_layer(&mut self) {
         if self.is_drawing { return; }
         self.layers.clear_active();
+        let id = self.layers.layers[self.layers.active].id;
+        self.ui.invalidate_thumbnail(id);
         self.layers_dirty = true;
         self.request_redraw();
     }
@@ -265,11 +268,12 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
             .with_title("AuraStudio v0.1")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280u32, 800u32));
+            .with_inner_size(winit::dpi::LogicalSize::new(1440u32, 900u32));
 
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let size   = (self.layers.width, self.layers.height);
-        let gpu    = pollster::block_on(GpuState::new(Arc::clone(&window), size));
+        let mut gpu = pollster::block_on(GpuState::new(Arc::clone(&window), size));
+        gpu.clear_color = aurastudio_ui::theme::backdrop_rgb();
         log::info!("max canvas size: {} px", gpu.max_canvas_size());
 
         if let Ok(handle) = window.window_handle() {
@@ -301,7 +305,8 @@ impl ApplicationHandler for App {
         let over_canvas = self.gpu.as_ref()
             .map(|gpu| gpu.is_canvas_at(self.cursor))
             .unwrap_or(false);
-        if consumed_by_ui || (!self.is_drawing && !over_canvas) {
+        let ui_dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
+        if consumed_by_ui || ui_dragging || (!self.is_drawing && !over_canvas) {
             self.request_redraw();
         }
 
@@ -390,138 +395,6 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
-}
-
-/// Color docker v1: preview swatch, RGB and HSV sliders kept in sync with
-/// the brush color, brush size / opacity. Krita / CSP-style docks are next.
-fn color_panel(ctx: &egui::Context, brush: &mut Brush, use_hokusai: &mut bool) {
-    egui::Window::new("Color")
-        .resizable(false)
-        .default_pos([16.0, 16.0])
-        .show(ctx, |ui| {
-            let [r, g, b] = brush.color;
-            let mut hsva = egui::ecolor::Hsva::from_srgb([r, g, b]);
-
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, egui::Color32::from(hsva));
-
-            ui.separator();
-            ui.label("RGB");
-            let mut r = brush.color[0];
-            let mut g = brush.color[1];
-            let mut b = brush.color[2];
-            ui.add(egui::Slider::new(&mut r, 0..=255).text("R"));
-            ui.add(egui::Slider::new(&mut g, 0..=255).text("G"));
-            ui.add(egui::Slider::new(&mut b, 0..=255).text("B"));
-            brush.color = [r, g, b];
-
-            ui.separator();
-            ui.label("HSV");
-            let changed_h = ui.add(egui::Slider::new(&mut hsva.h, 0.0..=1.0).text("H")).changed();
-            let changed_s = ui.add(egui::Slider::new(&mut hsva.s, 0.0..=1.0).text("S")).changed();
-            let changed_v = ui.add(egui::Slider::new(&mut hsva.v, 0.0..=1.0).text("V")).changed();
-            if changed_h || changed_s || changed_v {
-                brush.color = hsva.to_srgb();
-            }
-
-            ui.separator();
-            ui.label("Brush");
-            // Shown as a diameter (like Krita / CSP), stored as a radius.
-            // Logarithmic so small sizes stay precise on a 1..1000 range.
-            let mut size = brush.radius * 2;
-            if ui.add(egui::Slider::new(&mut size, 1..=MAX_BRUSH_SIZE).logarithmic(true).text("Size (px)")).changed() {
-                brush.radius = (size / 2).max(1);
-            }
-            ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacity"));
-            ui.checkbox(use_hokusai, "hokusai engine (libmypaint, textured brushes)");
-        });
-}
-
-/// Layers docker v1: list top to bottom (like Krita / CSP), visibility,
-/// opacity, active layer, add / delete.
-fn layers_panel(ctx: &egui::Context, layers: &mut LayerStack, actions: &mut UiActions) {
-    egui::Window::new("Layers")
-        .resizable(false)
-        .default_pos([16.0, 380.0])
-        .show(ctx, |ui| {
-            let mut remove = None;
-
-            ui.horizontal(|ui| {
-                if ui.button("+ New layer").clicked() {
-                    let n = layers.layers.len();
-                    layers.add_layer(&format!("Layer {n}"));
-                    actions.recomposite = true;
-                }
-                ui.label("Del: clear active layer");
-            });
-            ui.separator();
-
-            // Top of the list = end of the Vec.
-            for i in (0..layers.layers.len()).rev() {
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut layers.layers[i].visible, "").changed() {
-                        actions.recomposite = true;
-                    }
-                    let active = layers.active == i;
-                    if ui.selectable_label(active, &layers.layers[i].name).clicked() {
-                        layers.set_active(i);
-                    }
-                    if layers.layers.len() > 1 && ui.small_button("🗑").clicked() {
-                        // Removed after the loop: removing here made the
-                        // opacity slider below read a layer that no longer
-                        // existed (index out of bounds -> crash).
-                        remove = Some(i);
-                    }
-                });
-                let opacity = egui::Slider::new(&mut layers.layers[i].opacity, 0.0..=1.0).text("opacity");
-                if ui.add(opacity).changed() {
-                    actions.recomposite = true;
-                }
-            }
-
-            if let Some(i) = remove {
-                layers.remove_layer(i);
-                actions.recomposite = true;
-            }
-        });
-}
-
-/// Canvas docker: type a width and height, then Resize. The content stays
-/// centered (margins added or borders cropped, nothing is scaled).
-fn canvas_panel(
-    ctx: &egui::Context,
-    layers: &LayerStack,
-    edit: &mut (u32, u32),
-    max_size: u32,
-    actions: &mut UiActions,
-) {
-    // Top-right corner until the docks land (the left column is full).
-    let right = ctx.screen_rect().right();
-    egui::Window::new("Canvas")
-        .resizable(false)
-        .default_pos([right - 220.0, 16.0])
-        .show(ctx, |ui| {
-            ui.label(format!("Current: {} x {} px", layers.width, layers.height));
-            egui::Grid::new("canvas_size").num_columns(2).show(ui, |ui| {
-                ui.label("Width");
-                ui.add(egui::DragValue::new(&mut edit.0).range(1..=max_size).suffix(" px"));
-                ui.end_row();
-                ui.label("Height");
-                ui.add(egui::DragValue::new(&mut edit.1).range(1..=max_size).suffix(" px"));
-                ui.end_row();
-            });
-
-            // RAM estimate: 4 bytes/px per layer, plus the composite (4),
-            // the stroke snapshot (4) and the stroke mask (1).
-            let px = edit.0 as f64 * edit.1 as f64;
-            let mb = px * (4.0 * layers.layers.len() as f64 + 9.0) / (1024.0 * 1024.0);
-            ui.label(format!("≈ {mb:.0} MB RAM with {} layer(s)", layers.layers.len()));
-
-            let unchanged = *edit == (layers.width, layers.height);
-            if ui.add_enabled(!unchanged, egui::Button::new("Resize")).clicked() {
-                actions.resize_to = Some(*edit);
-            }
-        });
 }
 
 /// CPU time spent per stroke, logged when the stroke ends so latency can be
