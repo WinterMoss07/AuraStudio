@@ -14,10 +14,20 @@ impl PaintSurface for S {
 
 fn main() {
     let (w, h) = (2048u32, 2048u32);
-    for radius in [10u32, 50, 130] {
+    // Optional filters: BENCH_RADIUS=500 BENCH_ENGINE=simple|hokusai
+    let only_r: Option<u32> = std::env::var("BENCH_RADIUS").ok().and_then(|v| v.parse().ok());
+    let only_e = std::env::var("BENCH_ENGINE").ok();
+    for radius in [10u32, 50, 130, 250, 500] {
+        if only_r.is_some_and(|r| r != radius) { continue; }
         for hokusai in [true, false] {
+            if only_e.as_deref().is_some_and(|e| (e == "hokusai") != hokusai) { continue; }
             let white = vec![255u8; (w * h * 4) as usize];
             let mut s = S { px: white.clone(), base: white, mask: vec![0; (w * h) as usize], w, h };
+            // Touch every page first: a fresh buffer costs a page fault on
+            // first write, which made timings depend on what ran before. The
+            // app reuses its buffers, so warm memory is what it sees.
+            s.mask.fill(1);
+            s.mask.fill(0);
             let mut b = Brush::new();
             b.radius = radius;
             let mut e = HokusaiEngine::new();

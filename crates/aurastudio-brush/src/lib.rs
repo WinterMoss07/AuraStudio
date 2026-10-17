@@ -3,6 +3,7 @@ use aurastudio_canvas::{blend::blend_pixel_u8, BlendMode, PaintSurface, Rect};
 mod hokusai_engine;
 pub use hokusai_engine::HokusaiEngine;
 
+#[derive(Clone, Debug)]
 pub struct Brush {
     pub color:   [u8; 3],
     pub opacity: f32,
