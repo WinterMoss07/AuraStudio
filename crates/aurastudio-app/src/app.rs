@@ -6,7 +6,7 @@ use winit::{
     event_loop::ActiveEventLoop,
     window::{Window, WindowId},
 };
-use aurastudio_brush::{stroke_line, Brush, HokusaiEngine};
+use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, PressureSmoother};
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_layers::LayerStack;
@@ -21,13 +21,16 @@ pub struct App {
     brush:      Brush,
     layers:     LayerStack,
     is_drawing:   bool,
-    last_pos:     Option<(f32, f32)>,
+    /// Last sample of the current stroke: canvas x, y and smoothed pressure.
+    last_pos:     Option<(f32, f32, f32)>,
+    pen_smoother: PressureSmoother,
     pressure:     f32,
     stylus:       Option<Stylus>,
     /// true quand un changement hors-trait (visibilité, opacité, ajout/
     /// suppression de calque) demande une recomposition pleine image,
     /// plutôt que le composite_rect_into local fait pendant un trait.
     layers_dirty: bool,
+    stats:        StrokeStats,
     hokusai:      HokusaiEngine,
     /// true = moteur hokusai (libmypaint), false = brush rond simple.
     use_hokusai:  bool,
@@ -49,11 +52,13 @@ impl Default for App {
             layers:       LayerStack::new(CANVAS_SIZE, CANVAS_SIZE),
             is_drawing:   false,
             last_pos:     None,
+            pen_smoother: PressureSmoother::new(0.5),
             pressure:     1.0,
             stylus:       None,
             layers_dirty: false,
+            stats:        StrokeStats::default(),
             hokusai:      HokusaiEngine::new(),
-            use_hokusai:  true,
+            use_hokusai:  false,
             pen_active:   false,
             cursor:       (0.0, 0.0),
         }
@@ -85,9 +90,15 @@ impl App {
         }
         self.last_pos   = None;
         self.pen_active = false;
+        self.pen_smoother.reset();
     }
 
     fn end_stroke(&mut self) {
+        if self.stats.paint.count > 0 {
+            log::info!("stroke: {} samples | paint+composite {} | frame {}",
+                self.stats.paint.count, self.stats.paint, self.stats.frame);
+        }
+        self.stats = StrokeStats::default();
         if self.use_hokusai && self.last_pos.is_some() {
             let rect = self.hokusai.end_stroke(self.layers.active_layer_mut());
             self.present_rect(rect);
@@ -109,16 +120,20 @@ impl App {
 
     fn draw_at(&mut self, wx: f32, wy: f32) {
         let Some(pos) = self.window_to_canvas(wx, wy) else { return };
+        let t0 = std::time::Instant::now();
         let pressure = self.pressure;
         let layer    = self.layers.active_layer_mut();
 
         let rect = if self.use_hokusai {
+            self.last_pos = Some((pos.0, pos.1, pressure));
             self.hokusai.stroke_to(layer, pos.0, pos.1, pressure)
         } else {
-            let from = self.last_pos.unwrap_or(pos);
-            stroke_line(from, pos, &self.brush, layer, pressure)
+            let p = self.pen_smoother.apply(pos.0, pos.1, pressure, self.brush.radius as f32);
+            let (fx, fy, fp) = self.last_pos.unwrap_or((pos.0, pos.1, p));
+            self.last_pos = Some((pos.0, pos.1, p));
+            stroke_line((fx, fy), pos, &self.brush, layer, fp, p)
         };
-        self.last_pos = Some(pos);
+        self.stats.paint.add(t0.elapsed());
         self.present_rect(rect);
     }
 
@@ -140,6 +155,14 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    /// Called once winit has dispatched every pending OS message, right
+    /// before it waits for new ones. WinTab packets arrive as their own
+    /// window messages, which produce no winit event: draining here paints
+    /// them immediately instead of waiting for the next mouse event.
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        self.drain_stylus();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
             .with_title("AuraStudio v0.1")
@@ -257,10 +280,14 @@ impl ApplicationHandler for App {
                     let layers      = &mut self.layers;
                     let use_hokusai = &mut self.use_hokusai;
                     let mut changed = false;
+                    let t0 = std::time::Instant::now();
                     gpu.render(|ctx| {
                         color_picker_panel(ctx, brush, use_hokusai);
                         changed = layers_panel(ctx, layers);
                     });
+                    if self.is_drawing {
+                        self.stats.frame.add(t0.elapsed());
+                    }
 
                     if changed || self.layers_dirty {
                         self.layers.composite_into(&mut gpu.canvas.pixels);
@@ -314,7 +341,7 @@ fn color_picker_panel(ctx: &egui::Context, brush: &mut Brush, use_hokusai: &mut 
             ui.label("Pinceau");
             ui.add(egui::Slider::new(&mut brush.radius, 1..=200).text("Taille"));
             ui.add(egui::Slider::new(&mut brush.opacity, 0.0..=1.0).text("Opacité"));
-            ui.checkbox(use_hokusai, "Moteur hokusai (libmypaint)");
+            ui.checkbox(use_hokusai, "Moteur hokusai (libmypaint, textured brushes)");
         });
 }
 
@@ -360,4 +387,35 @@ fn layers_panel(ctx: &egui::Context, layers: &mut LayerStack) -> bool {
         });
 
     changed
+}
+
+/// CPU time spent per stroke, logged when the stroke ends so latency can be
+/// measured on the real machine instead of guessed.
+#[derive(Default)]
+struct StrokeStats {
+    paint: Timing,
+    frame: Timing,
+}
+
+#[derive(Default)]
+struct Timing {
+    count: u32,
+    total: std::time::Duration,
+    max:   std::time::Duration,
+}
+
+impl Timing {
+    fn add(&mut self, d: std::time::Duration) {
+        self.count += 1;
+        self.total += d;
+        self.max = self.max.max(d);
+    }
+}
+
+impl std::fmt::Display for Timing {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if self.count == 0 { return write!(f, "-"); }
+        let avg = self.total.as_secs_f64() * 1000.0 / self.count as f64;
+        write!(f, "avg {avg:.2} ms, max {:.2} ms", self.max.as_secs_f64() * 1000.0)
+    }
 }
