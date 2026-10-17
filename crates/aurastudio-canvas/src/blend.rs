@@ -105,7 +105,13 @@ pub type Premul = [f32; 4];
 
 /// Blend a straight source color `cs` with alpha `a_s` onto a premultiplied
 /// backdrop, in place.
-#[inline]
+///
+/// Called per pixel by every painting and compositing loop. The Normal
+/// path is kept tiny and always inlined; the other modes live in a separate
+/// function. With the 13-mode `match` inline, LLVM stopped inlining this
+/// once it had enough call sites, and every loop (brush, hokusai,
+/// compositing) got 2.5-3x slower.
+#[inline(always)]
 pub fn blend_over(dst: &mut Premul, cs: [f32; 3], a_s: f32, mode: BlendMode) {
     if a_s <= 0.0 { return; }
     let a_b = dst[3];
@@ -114,20 +120,26 @@ pub fn blend_over(dst: &mut Premul, cs: [f32; 3], a_s: f32, mode: BlendMode) {
             dst[c] = cs[c] * a_s + dst[c] * (1.0 - a_s);
         }
     } else {
-        for c in 0..3 {
-            let cb = dst[c] / a_b;
-            dst[c] = cs[c] * a_s * (1.0 - a_b)
-                + dst[c] * (1.0 - a_s)
-                + a_s * a_b * mode.channel(cb, cs[c]).clamp(0.0, 1.0);
-        }
+        blend_over_mode(dst, cs, a_s, a_b, mode);
     }
     dst[3] = a_s + a_b * (1.0 - a_s);
+}
+
+/// Color part of blend_over for the non-Normal modes (alpha set by caller).
+#[inline(never)]
+fn blend_over_mode(dst: &mut Premul, cs: [f32; 3], a_s: f32, a_b: f32, mode: BlendMode) {
+    for c in 0..3 {
+        let cb = dst[c] / a_b;
+        dst[c] = cs[c] * a_s * (1.0 - a_b)
+            + dst[c] * (1.0 - a_s)
+            + a_s * a_b * mode.channel(cb, cs[c]).clamp(0.0, 1.0);
+    }
 }
 
 /// Same for 8-bit straight-alpha pixels: the brush engines paint the
 /// brush color with coverage `a_s` (opacity × pressure × edge) onto the
 /// layer as it was before the stroke.
-#[inline]
+#[inline(always)]
 pub fn blend_pixel_u8(backdrop: [u8; 4], color: [u8; 3], a_s: f32, mode: BlendMode) -> [u8; 4] {
     let a_b = backdrop[3] as f32 / 255.0;
     let mut p: Premul = [
@@ -141,7 +153,7 @@ pub fn blend_pixel_u8(backdrop: [u8; 4], color: [u8; 3], a_s: f32, mode: BlendMo
     to_straight_u8(p)
 }
 
-#[inline]
+#[inline(always)]
 pub fn to_straight_u8(p: Premul) -> [u8; 4] {
     let a = p[3].clamp(0.0, 1.0);
     if a <= 0.0 {
