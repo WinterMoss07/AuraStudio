@@ -106,9 +106,10 @@ impl TiledSurface for WashStrokeSurface {
                             // Straight dab color, re-premultiplied by the
                             // new alpha (the color is constant per stroke).
                             for c in 0..3 {
-                                d[c] = (s[c] as f32 / sa * new_a).round() as u16;
+                                // + 0.5: round without a libm call (all >= 0).
+                                d[c] = (s[c] as f32 / sa * new_a + 0.5) as u16;
                             }
-                            d[3] = new_a.round() as u16;
+                            d[3] = (new_a + 0.5) as u16;
                         }
                     }
                     // Leave the scratch tile empty for the next dab.

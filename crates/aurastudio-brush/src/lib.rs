@@ -1,4 +1,4 @@
-use aurastudio_canvas::{blend::blend_pixel_u8, BlendMode, PaintSurface, Rect};
+use aurastudio_canvas::{blend::{blend_pixel_u8, unit_to_u8}, BlendMode, PaintSurface, Rect};
 
 mod hokusai_engine;
 pub use hokusai_engine::HokusaiEngine;
@@ -70,6 +70,8 @@ impl PressureSmoother {
 /// (stroke_mask): crossing the stroke again at 30% after 20% gives 30%,
 /// not 50% (Krita / CSP behaviour with build-up off). The pixel is then
 /// recomposited once from stroke_base (the surface before the stroke).
+///
+/// Returns the bounds of the pixels it changed (None if none).
 pub fn stroke_line<S: PaintSurface>(
     from:  (f32, f32),
     to:    (f32, f32),
@@ -99,12 +101,18 @@ pub fn stroke_line<S: PaintSurface>(
     // pixels of this segment were already painted at (or above) its
     // highest opacity by the previous ones. Skipping them with one byte
     // compare, before any math, is what keeps 200+ px strokes cheap.
-    let seg_max_u8 = (cap_a.max(cap_b) * 255.0).round() as u8;
+    let seg_max_u8 = unit_to_u8(cap_a.max(cap_b));
     let reach2 = (r + 0.5) * (r + 0.5);
     // Width of the fading edge: at least 1 px (anti-aliasing), up to the
     // whole radius at hardness 0.
     let soft = (r * (1.0 - brush.hardness.clamp(0.0, 1.0))).max(1.0);
     let inv_soft = 1.0 / soft;
+
+    // Bounds of the pixels actually written. With big brushes, most of the
+    // segment's box is skipped (already covered), and the real change is a
+    // thin crescent at the front: reporting only that keeps the layer
+    // merge and the GPU upload small (1000 px brush: ~1 % of the box).
+    let (mut wx0, mut wy0, mut wx1, mut wy1) = (u32::MAX, u32::MAX, 0u32, 0u32);
 
     for py in y0..y1 {
         let cy = py as f32 + 0.5;
@@ -128,7 +136,7 @@ pub fn stroke_line<S: PaintSurface>(
             let edge = if soft > 1.0 { t_edge * t_edge * (3.0 - 2.0 * t_edge) } else { t_edge };
 
             let cov = (cap_a + (cap_b - cap_a) * t) * edge;
-            let cov_u8 = (cov * 255.0).round() as u8;
+            let cov_u8 = unit_to_u8(cov);
             if cov_u8 <= stroke_mask[pidx] { continue; }
             stroke_mask[pidx] = cov_u8;
 
@@ -138,10 +146,16 @@ pub fn stroke_line<S: PaintSurface>(
             let backdrop = [stroke_base[base], stroke_base[base + 1], stroke_base[base + 2], stroke_base[base + 3]];
             let out = blend_pixel_u8(backdrop, brush.color, cov_u8 as f32 / 255.0, brush.blend);
             pixels[base..base + 4].copy_from_slice(&out);
+
+            let (ux, uy) = (px as u32, py as u32);
+            wx0 = wx0.min(ux);
+            wx1 = wx1.max(ux + 1);
+            wy0 = wy0.min(uy);
+            wy1 = wy1.max(uy + 1);
         }
     }
 
-    Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32))
+    (wx0 < wx1).then_some((wx0, wy0, wx1, wy1))
 }
 
 #[cfg(test)]
