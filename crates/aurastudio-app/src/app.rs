@@ -36,6 +36,8 @@ pub struct App {
     /// pour le même stylet, sinon le trait reçoit deux flux de positions
     /// légèrement décalées (bords ondulés / zigzag).
     pen_active:   bool,
+    /// Last known cursor position, physical window pixels.
+    cursor:       (f32, f32),
 }
 
 impl Default for App {
@@ -53,20 +55,24 @@ impl Default for App {
             hokusai:      HokusaiEngine::new(),
             use_hokusai:  true,
             pen_active:   false,
+            cursor:       (0.0, 0.0),
         }
     }
 }
 
 impl App {
     fn window_to_canvas(&self, wx: f32, wy: f32) -> Option<(f32, f32)> {
+        // Window pixels -> canvas pixels. The canvas is letterboxed inside
+        // the free area left by the docks (the GPU viewport), not the whole
+        // window, so both the viewport origin and its size matter here.
         let gpu = self.gpu.as_ref()?;
-        let (ww, wh) = gpu.window_size();
+        let [vx, vy, vw, vh] = gpu.canvas_viewport();
         let cw = gpu.canvas.width  as f32;
         let ch = gpu.canvas.height as f32;
 
-        let scale    = (ww / cw).min(wh / ch);
-        let offset_x = (ww - cw * scale) / 2.0;
-        let offset_y = (wh - ch * scale) / 2.0;
+        let scale    = (vw / cw).min(vh / ch);
+        let offset_x = vx + (vw - cw * scale) / 2.0;
+        let offset_y = vy + (vh - ch * scale) / 2.0;
 
         Some(((wx - offset_x) / scale, (wy - offset_y) / scale))
     }
@@ -144,7 +150,9 @@ impl ApplicationHandler for App {
 
         if let Ok(handle) = window.window_handle() {
             if let RawWindowHandle::Win32(h) = handle.as_raw() {
-                self.stylus = Some(Stylus::install(h.hwnd.get()));
+                let stylus = Stylus::install(h.hwnd.get());
+                log::info!("pen input backend: {}", stylus.backend());
+                self.stylus = Some(stylus);
             }
         }
 
@@ -159,16 +167,17 @@ impl ApplicationHandler for App {
         _id:        WindowId,
         event:      WindowEvent,
     ) {
-        // egui a priorité : si l'event concerne un widget (clic sur un
-        // slider du color picker, etc.), on ne dessine pas sur le canvas.
+        // egui sees every event. Its "consumed" flag is only used to know
+        // when the UI needs a new frame (hover, slider drag...); whether a
+        // press starts a stroke is decided by GpuState::is_canvas_at, see
+        // there for why egui's flag can't be trusted for that.
         let consumed_by_ui = self.gpu.as_mut()
             .map(|gpu| gpu.egui_handle_event(&event))
             .unwrap_or(false);
-
-        // egui a besoin d'un redraw à chaque interaction avec un widget
-        // (hover, drag de slider...) — sans ça l'UI resterait figée sous
-        // ControlFlow::Wait tant qu'aucun autre event ne force une frame.
-        if consumed_by_ui {
+        let over_canvas = self.gpu.as_ref()
+            .map(|gpu| gpu.is_canvas_at(self.cursor))
+            .unwrap_or(false);
+        if consumed_by_ui || (!self.is_drawing && !over_canvas) {
             if let Some(w) = &self.window { w.request_redraw(); }
         }
 
@@ -186,26 +195,32 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } if !consumed_by_ui => {
-                self.is_drawing = state.is_pressed();
-                self.pressure   = 1.0;
-                if self.is_drawing {
-                    self.begin_stroke();
-                } else {
+            // A release always ends the stroke, even over a dock; otherwise
+            // releasing above a panel left the app stuck in drawing mode.
+            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
+                if state.is_pressed() {
+                    if over_canvas {
+                        self.is_drawing = true;
+                        self.pressure   = 1.0;
+                        self.begin_stroke();
+                    }
+                } else if self.is_drawing {
+                    self.is_drawing = false;
                     self.end_stroke();
                 }
             }
 
-            WindowEvent::CursorMoved { position, .. } if !consumed_by_ui => {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as f32, position.y as f32);
                 if self.is_drawing && !self.pen_active {
-                    self.draw_at(position.x as f32, position.y as f32);
+                    self.draw_at(self.cursor.0, self.cursor.1);
                 }
             }
 
             // Fallback macOS/Linux uniquement : sous Windows, drain_stylus
             // (efude-input) gère déjà tout, donc on ignore Touch ici pour
             // ne pas dessiner en double.
-            WindowEvent::Touch(touch) if cfg!(not(target_os = "windows")) && !consumed_by_ui => {
+            WindowEvent::Touch(touch) if cfg!(not(target_os = "windows")) => {
                 use winit::event::{Force, TouchPhase};
                 self.pressure = match touch.force {
                     Some(Force::Normalized(f)) => f as f32,
@@ -216,6 +231,10 @@ impl ApplicationHandler for App {
                 };
                 match touch.phase {
                     TouchPhase::Started => {
+                        let pos = (touch.location.x as f32, touch.location.y as f32);
+                        if !self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(pos)) {
+                            return;
+                        }
                         self.is_drawing = true;
                         self.begin_stroke();
                         self.draw_at(touch.location.x as f32, touch.location.y as f32);

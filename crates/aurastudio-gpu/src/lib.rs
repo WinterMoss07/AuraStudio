@@ -24,6 +24,7 @@ pub struct GpuState {
     egui_ctx:        egui::Context,
     egui_state:      egui_winit::State,
     egui_renderer:   egui_wgpu::Renderer,
+    viewport:        [f32; 4],
 }
 
 impl GpuState {
@@ -201,6 +202,7 @@ impl GpuState {
             canvas_pipeline, view_buffer, view_bind_group,
             canvas, window,
             egui_ctx, egui_state, egui_renderer,
+            viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
         }
     }
 
@@ -211,8 +213,30 @@ impl GpuState {
         self.egui_state.on_window_event(&self.window, event).consumed
     }
 
-    pub fn window_size(&self) -> (f32, f32) {
-        (self.config.width as f32, self.config.height as f32)
+    /// Zone de la fenêtre (en pixels physiques) où le canvas est dessiné :
+    /// tout l'espace non couvert par les docks egui. (x, y, largeur, hauteur)
+    pub fn canvas_viewport(&self) -> [f32; 4] {
+        self.viewport
+    }
+
+    /// True if a press at `pos` (physical window pixels) should start a
+    /// stroke: inside the canvas area and not under any egui panel.
+    ///
+    /// We don't rely on egui's own "consumed" flag for this: it is based on
+    /// the pointer position of egui's *last frame*, which is stale because
+    /// we only redraw on demand (ControlFlow::Wait), so it rejected clicks
+    /// made on the canvas.
+    pub fn is_canvas_at(&self, pos: (f32, f32)) -> bool {
+        let [vx, vy, vw, vh] = self.viewport;
+        let inside = pos.0 >= vx && pos.0 < vx + vw && pos.1 >= vy && pos.1 < vy + vh;
+        let ppp = self.egui_ctx.pixels_per_point();
+        // Docked panels are already outside the viewport. Here we only look
+        // for floating windows/popups above the canvas: egui keeps a
+        // full-window Background-order layer, which must not count.
+        let over_ui = self.egui_ctx
+            .layer_id_at(egui::pos2(pos.0 / ppp, pos.1 / ppp))
+            .is_some_and(|layer| layer.order != egui::Order::Background);
+        inside && !over_ui
     }
 
     pub fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
@@ -220,10 +244,17 @@ impl GpuState {
         self.config.width  = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+        // Recalculé précisément à la prochaine frame depuis la mise en
+        // page egui ; en attendant, toute la fenêtre.
+        self.set_viewport([0.0, 0.0, size.width as f32, size.height as f32]);
+    }
 
+    fn set_viewport(&mut self, vp: [f32; 4]) {
+        if vp == self.viewport { return; }
+        self.viewport = vp;
         let uniform = ViewUniform {
             canvas_size: [self.canvas.width as f32, self.canvas.height as f32],
-            window_size: [size.width as f32, size.height as f32],
+            window_size: [vp[2], vp[3]],
         };
         self.queue.write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
@@ -259,9 +290,29 @@ impl GpuState {
         );
     }
 
-    /// Dessine une frame : canvas puis panneaux egui (ex: color picker)
-    /// construits par `ui_fn`, qui reçoit le egui::Context courant.
+    /// Dessine une frame. egui tourne en premier pour connaître la place
+    /// prise par les docks ; le canvas est ensuite dessiné uniquement dans
+    /// la zone restante, puis l'UI par-dessus.
     pub fn render(&mut self, ui_fn: impl FnOnce(&egui::Context)) {
+        let raw_input = self.egui_state.take_egui_input(&self.window);
+        let mut ui_fn = Some(ui_fn);
+        let mut free_rect = None;
+        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+            if let Some(f) = ui_fn.take() { f(ctx); }
+            free_rect = Some(ctx.available_rect());
+        });
+        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+
+        let ppp = full_output.pixels_per_point;
+        if let Some(r) = free_rect {
+            let (ww, wh) = (self.config.width as f32, self.config.height as f32);
+            let x0 = (r.min.x * ppp).round().clamp(0.0, ww);
+            let y0 = (r.min.y * ppp).round().clamp(0.0, wh);
+            let x1 = (r.max.x * ppp).round().clamp(x0, ww);
+            let y1 = (r.max.y * ppp).round().clamp(y0, wh);
+            self.set_viewport([x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)]);
+        }
+
         if self.canvas.dirty_rect.is_some() {
             self.upload_canvas();
             self.canvas.dirty_rect = None;
@@ -297,27 +348,22 @@ impl GpuState {
                 occlusion_query_set:      None,
             });
 
+            let [vx, vy, vw, vh] = self.viewport;
+            pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
             pass.set_pipeline(&self.canvas_pipeline);
             pass.set_bind_group(0, &self.view_bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
 
-        // --- Passe egui (color picker, panneaux) par-dessus le canvas ---
-        let raw_input = self.egui_state.take_egui_input(&self.window);
-        let mut ui_fn = Some(ui_fn);
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            if let Some(f) = ui_fn.take() { f(ctx); }
-        });
-        self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
-
-        let tris = self.egui_ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+        // --- Passe egui (docks) par-dessus le canvas ---
+        let tris = self.egui_ctx.tessellate(full_output.shapes, ppp);
         for (id, delta) in &full_output.textures_delta.set {
             self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
         }
 
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels:    [self.config.width, self.config.height],
-            pixels_per_point:  full_output.pixels_per_point,
+            pixels_per_point:  ppp,
         };
         self.egui_renderer.update_buffers(&self.device, &self.queue, &mut enc, &tris, &screen_descriptor);
 
