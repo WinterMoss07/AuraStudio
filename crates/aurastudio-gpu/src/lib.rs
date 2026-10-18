@@ -62,6 +62,8 @@ pub struct GpuState {
     cursor_buffer:   Buffer,
     cursor_bind:     BindGroup,
     brush_cursor:    Option<((f32, f32), f32)>,
+    /// Cursor egui wants over its widgets, from the last UI frame.
+    egui_cursor:     egui::CursorIcon,
     /// Last UI primitives, redrawn as-is by render_cached_ui.
     last_ui:         Option<(Vec<egui::ClippedPrimitive>, f32)>,
     view_bind_group: BindGroup,
@@ -317,6 +319,7 @@ impl GpuState {
             last_ui: None,
             cursor_pipeline, cursor_buffer, cursor_bind,
             brush_cursor: None,
+            egui_cursor: egui::CursorIcon::Default,
             lut,
             color_managed: false,
             canvas, window,
@@ -363,6 +366,11 @@ impl GpuState {
 
     /// Show the brush outline at `center` (physical window pixels) with
     /// `radius` in screen pixels, or hide it.
+    /// Cursor egui wants over its widgets (from the last UI frame).
+    pub fn egui_cursor(&self) -> egui::CursorIcon {
+        self.egui_cursor
+    }
+
     pub fn set_brush_cursor(&mut self, cursor: Option<((f32, f32), f32)>) {
         self.brush_cursor = cursor;
     }
@@ -545,7 +553,12 @@ impl GpuState {
 
                 // egui asks for IME (text input) only while a text field is focused.
                 self.text_input_active = full_output.platform_output.ime.is_some();
-                self.egui_state.handle_platform_output(&self.window, full_output.platform_output);
+                // The app picks the cursor (brush outline, hands): keep egui's
+                // suggestion for it, and let egui itself always ask for the
+                // same one, so it never touches the window cursor again.
+                let mut platform_output = full_output.platform_output;
+                self.egui_cursor = std::mem::replace(&mut platform_output.cursor_icon, egui::CursorIcon::Default);
+                self.egui_state.handle_platform_output(&self.window, platform_output);
 
                 let ppp = full_output.pixels_per_point;
                 // The canvas area goes right up to the docks (a zoomed-in

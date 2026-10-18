@@ -101,8 +101,10 @@ pub struct App {
     /// event; and inside the window at all.
     over_canvas: bool,
     cursor_in_window: bool,
-    /// The OS cursor is hidden (the brush outline replaces it).
-    os_cursor_hidden: bool,
+    /// The brush outline is drawn (it replaces the OS cursor).
+    outline_shown: bool,
+    /// Our cursors (hands, rotate), made once the event loop runs.
+    cursors: Option<crate::cursors::Cursors>,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -183,7 +185,8 @@ impl App {
             cursor:     (0.0, 0.0),
             over_canvas: false,
             cursor_in_window: false,
-            os_cursor_hidden: false,
+            outline_shown: false,
+            cursors: None,
 
             painted:      false,
             // Upload the first composite.
@@ -253,25 +256,34 @@ impl App {
     /// and while navigating.
     fn update_brush_cursor(&mut self) {
         let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none();
-        let Some(gpu) = &mut self.gpu else { return };
-        let outline = show.then(|| (self.cursor, self.brush.radius as f32 * gpu.zoom()));
-        gpu.set_brush_cursor(outline);
-        if show != self.os_cursor_hidden {
-            self.os_cursor_hidden = show;
-            if let Some(w) = &self.window { w.set_cursor_visible(!show); }
+        self.outline_shown = show;
+        if let Some(gpu) = &mut self.gpu {
+            let outline = show.then(|| (self.cursor, self.brush.radius as f32 * gpu.zoom()));
+            gpu.set_brush_cursor(outline);
         }
+        self.apply_cursor();
     }
 
-    /// Hand cursor while Space is held / the view is being dragged.
+    /// Space / Shift / view drag changed: outline and cursor follow.
     fn update_cursor_icon(&mut self) {
         self.update_brush_cursor();
-        let Some(w) = &self.window else { return };
-        let icon = match (self.nav, self.space_down) {
-            (Some(_), _) => CursorIcon::Grabbing,
-            (None, true) => CursorIcon::Grab,
-            _ => CursorIcon::Default,
+    }
+
+    /// The one place the window cursor is set (egui only suggests one).
+    fn apply_cursor(&mut self) {
+        use crate::cursors::Wanted;
+        let wanted = match self.nav {
+            Some((Nav::Pan, _)) => Wanted::HandClosed,
+            Some((Nav::Rotate, _)) => Wanted::Rotate,
+            None if self.space_down && self.over_canvas => {
+                if self.shift_held() { Wanted::Rotate } else { Wanted::Hand }
+            }
+            None if self.over_canvas || self.is_drawing => Wanted::Hidden,
+            None => self.gpu.as_ref().map_or(Wanted::System(CursorIcon::Default),
+                |g| crate::cursors::from_egui(g.egui_cursor())),
         };
-        w.set_cursor(icon);
+        let (Some(window), Some(cursors)) = (&self.window, &mut self.cursors) else { return };
+        cursors.apply(window, wanted);
     }
 
     /// Win32 window handle, for the monitor profile lookup.
@@ -603,6 +615,8 @@ impl App {
         }
         self.activity.main_time += t0.elapsed();
         self.last_frame = Some(Instant::now());
+        // egui's cursor wish over its widgets is known now.
+        self.apply_cursor();
 
         if (self.color_managed, self.perceptual) != (cm_before, perceptual_before) {
             self.apply_color_management();
@@ -754,6 +768,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
         window.request_redraw();
         self.window = Some(window);
+        self.cursors = Some(crate::cursors::Cursors::new(event_loop));
         self.gpu    = Some(gpu);
         self.refresh_display_profile();
     }
@@ -814,6 +829,7 @@ impl ApplicationHandler<AppEvent> for App {
                 // has focus, so it can't get stuck down).
                 if key.logical_key == Key::Named(NamedKey::Shift) {
                     self.shift_down = key.state == ElementState::Pressed;
+                    if self.space_down { self.update_cursor_icon(); }
                 }
                 if key.logical_key == Key::Named(NamedKey::Space) {
                     let down = key.state == ElementState::Pressed;
@@ -895,9 +911,13 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
 
-            WindowEvent::CursorEntered { .. } => self.cursor_in_window = true,
+            WindowEvent::CursorEntered { .. } => {
+                self.cursor_in_window = true;
+                if let Some(c) = &mut self.cursors { c.invalidate(); }
+            }
             WindowEvent::CursorLeft { .. } => {
                 self.cursor_in_window = false;
+                if let Some(c) = &mut self.cursors { c.invalidate(); }
                 self.update_brush_cursor();
                 self.request_redraw();
             }
@@ -908,7 +928,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.over_canvas = self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(self.cursor));
                 self.activity.cursor_moves += 1;
                 // The outline moves with the cursor: a frame is needed.
-                if self.over_canvas || self.os_cursor_hidden {
+                if self.over_canvas || self.outline_shown {
                     self.update_brush_cursor();
                     self.request_canvas_frame();
                 }

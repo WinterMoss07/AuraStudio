@@ -1,4 +1,5 @@
 mod app;
+mod cursors;
 mod paint_thread;
 mod projection;
 
