@@ -51,8 +51,7 @@ impl LayersState {
                 let sy = (y * h) / th;
                 for x in 0..tw {
                     let sx = (x * w) / tw;
-                    let i = (sy * w + sx) * 4;
-                    rgba.extend_from_slice(&layer.pixels[i..i + 4]);
+                    rgba.extend_from_slice(&layer.tiles.pixel(sx as u32, sy as u32));
                 }
             }
             let image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &rgba);

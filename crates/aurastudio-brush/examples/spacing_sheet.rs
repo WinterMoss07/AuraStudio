@@ -2,24 +2,17 @@
 // spacing must not show inside soft strokes (beads / ripples).
 // Usage: cargo run --release -p aurastudio-brush --example spacing_sheet -- out.png
 use aurastudio_brush::{Brush, DabEngine};
-use aurastudio_canvas::PaintSurface;
 
 const W: u32 = 1400;
 const H: u32 = 1300;
 
-struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8> }
-impl PaintSurface for S {
-    fn width(&self) -> u32 { W }
-    fn height(&self) -> u32 { H }
-    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) { (&mut self.px, &self.base, &mut self.mask) }
-}
+use aurastudio_canvas::FlatSurface as S;
 
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "spacing.png".into());
-    let white = vec![255u8; (W * H * 4) as usize];
-    let mut s = S { px: white.clone(), base: white, mask: vec![0; (W * H) as usize] };
+    let mut s = S::new(W, H, [255; 4]);
     for (k, hardness) in [0.0f32, 0.5, 0.8, 1.0].iter().enumerate() {
-        s.base.copy_from_slice(&s.px);
+        s.base.copy_from_slice(&s.pixels);
         s.mask.fill(0);
         let mut b = Brush::new();
         b.radius = if std::env::var("SHEET_LOOP").is_ok() { 50 } else { 140 };
@@ -47,5 +40,5 @@ fn main() {
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), W, H);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    enc.write_header().unwrap().write_image_data(&s.px).unwrap();
+    enc.write_header().unwrap().write_image_data(&s.pixels).unwrap();
 }

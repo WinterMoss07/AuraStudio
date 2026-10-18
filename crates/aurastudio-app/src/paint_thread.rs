@@ -533,8 +533,7 @@ mod tests {
     fn pixel(doc: &SharedDoc, id: u64, x: u32, y: u32) -> [u8; 4] {
         let d = doc.lock().unwrap();
         let Some(Node::Layer(l)) = d.layers.node(id) else { panic!() };
-        let i = ((y * d.layers.width + x) * 4) as usize;
-        [l.pixels[i], l.pixels[i + 1], l.pixels[i + 2], l.pixels[i + 3]]
+        l.tiles.pixel(x, y)
     }
 
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
@@ -645,7 +644,7 @@ mod tests {
         let d = doc.lock().unwrap();
         // Only the background is left, untouched.
         let Some(Node::Layer(bg)) = d.layers.node(1) else { panic!() };
-        assert!(bg.pixels.chunks(4).all(|p| p == [255, 255, 255, 255]));
+        assert!(bg.tiles.to_rgba().chunks(4).all(|p| p == [255, 255, 255, 255]));
     }
 
     #[test]
@@ -710,8 +709,7 @@ mod tests {
         assert_eq!(revision, doc.lock().unwrap().revision());
         let opened = aurastudio_file::open(&path, DocId(9), 4096).unwrap().doc;
         let Some(Node::Layer(l)) = opened.layers.node(id) else { panic!() };
-        let i = ((32 * 64 + 30) * 4) as usize;
-        assert_eq!(&l.pixels[i..i + 4], &[0, 0, 0, 255]);
+        assert_eq!(l.tiles.pixel(30, 32), [0, 0, 0, 255]);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -725,7 +723,7 @@ mod tests {
         drop(pt);
         let d = doc.lock().unwrap();
         let Some(Node::Layer(l)) = d.layers.node(id) else { panic!() };
-        assert!(l.pixels.chunks(4).all(|p| p[3] == 0));
+        assert_eq!(l.tiles.stored(), 0);
         assert_eq!(d.history().undo_len(), 0);
     }
 

@@ -4,10 +4,15 @@
 //! tracked by id, so reordering or moving in and out of folders never
 //! changes which layer you paint on.
 
-use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
-use aurastudio_canvas::{BlendMode, PaintSurface, Rect};
+mod tiles;
 
-/// One paint layer: RGBA8, straight alpha, `width * height * 4` bytes.
+use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
+use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
+
+pub use tiles::{new_tile, Tile, Tiles, TILE_BYTES};
+
+/// One paint layer: RGBA8, straight alpha, stored in tiles (only where
+/// it differs from its fill color).
 pub struct Layer {
     pub id:      u64,
     pub name:    String,
@@ -16,7 +21,7 @@ pub struct Layer {
     pub blend:   BlendMode,
     /// A locked layer can't be painted on or cleared.
     pub locked:  bool,
-    pub pixels:  Vec<u8>,
+    pub tiles:   Tiles,
     /// The background layer is opaque white; clearing it resets it to
     /// white instead of transparent.
     pub background: bool,
@@ -106,7 +111,6 @@ fn clear_pixel(background: bool) -> [u8; 4] {
 
 impl Layer {
     pub fn new(width: u32, height: u32, background: bool) -> Self {
-        let pixels = clear_pixel(background).repeat(width as usize * height as usize);
         Self {
             id: 0,
             name: "Layer".into(),
@@ -114,14 +118,13 @@ impl Layer {
             opacity: 1.0,
             blend: BlendMode::Normal,
             locked: false,
-            pixels,
+            tiles: Tiles::new(width, height, clear_pixel(background)),
             background,
         }
     }
 
     pub fn clear(&mut self) {
-        let px = clear_pixel(self.background);
-        for p in self.pixels.chunks_exact_mut(4) { p.copy_from_slice(&px); }
+        self.tiles.clear();
     }
 }
 
@@ -135,63 +138,56 @@ pub struct Row {
     pub locked_by_parent: bool,
 }
 
-/// Side of the squares the stroke snapshot is filled by.
-const STROKE_TILE: u32 = 64;
+/// Coverage of one tile in the stroke mask (one byte per pixel).
+type MaskTile = Box<[u8; (TILE * TILE) as usize]>;
 
-/// Per-stroke buffers of the layer being painted: what the layer was
-/// before the stroke, and how much the stroke covers each pixel.
+/// Per-stroke buffers of the layer being painted, by tile: what the layer
+/// was before the stroke, and how much the stroke covers each pixel.
 ///
-/// Allocated zeroed when a stroke begins (the OS hands out zero pages on
-/// first touch: nothing is copied or cleared up front) and freed when it
-/// ends. The snapshot is filled tile by tile, the first time the brush
-/// reaches a tile. Before, every stroke started by copying the whole layer
-/// (16 MB at 2048 px, 35 MB on an A4 at 300 dpi) and the buffers stayed
-/// allocated all the time.
+/// A tile gets them the first time the brush reaches it, and they go
+/// when the stroke ends: a stroke costs memory only where it goes.
 #[derive(Default)]
 struct StrokeBuffers {
     layer: u64,
-    base:  Vec<u8>,
-    mask:  Vec<u8>,
-    /// Tiles whose snapshot is filled, row by row (STROKE_TILE squares).
-    ready: Vec<bool>,
+    base:  Vec<Option<Tile>>,
+    mask:  Vec<Option<MaskTile>>,
 }
 
 /// A paint layer seen as a paintable surface for the brush engines.
 pub struct LayerSurface<'a> {
-    pixels: &'a mut [u8],
-    base:   &'a mut [u8],
-    mask:   &'a mut [u8],
-    ready:  &'a mut [bool],
-    width:  u32,
-    height: u32,
+    pixels: &'a mut Tiles,
+    base:   &'a mut [Option<Tile>],
+    mask:   &'a mut [Option<MaskTile>],
 }
 
 impl PaintSurface for LayerSurface<'_> {
-    fn width(&self)  -> u32 { self.width }
-    fn height(&self) -> u32 { self.height }
-    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) {
-        (self.pixels, self.base, self.mask)
-    }
+    fn width(&self)  -> u32 { self.pixels.width() }
+    fn height(&self) -> u32 { self.pixels.height() }
 
     fn prepare(&mut self, rect: Rect) {
-        let (w, h) = (self.width, self.height);
-        let tiles_x = w.div_ceil(STROKE_TILE);
-        let (x0, y0) = (rect.0.min(w) / STROKE_TILE, rect.1.min(h) / STROKE_TILE);
-        let (x1, y1) = (rect.2.min(w).div_ceil(STROKE_TILE), rect.3.min(h).div_ceil(STROKE_TILE));
-        for ty in y0..y1 {
-            for tx in x0..x1 {
-                let t = (ty * tiles_x + tx) as usize;
-                if self.ready[t] { continue; }
-                self.ready[t] = true;
+        let (w, h) = (self.pixels.width(), self.pixels.height());
+        for ty in rect.1.min(h) / TILE..rect.3.min(h).div_ceil(TILE) {
+            for tx in rect.0.min(w) / TILE..rect.2.min(w).div_ceil(TILE) {
+                let i = self.pixels.index(tx, ty);
+                if self.base[i].is_some() { continue; }
                 // Not painted yet in this stroke: the layer is still as it
                 // was before it.
-                let (px0, px1) = ((tx * STROKE_TILE) as usize * 4, ((tx + 1) * STROKE_TILE).min(w) as usize * 4);
-                for y in ty * STROKE_TILE..((ty + 1) * STROKE_TILE).min(h) {
-                    let row = y as usize * w as usize * 4;
-                    self.base[row + px0..row + px1].copy_from_slice(&self.pixels[row + px0..row + px1]);
-                }
+                self.base[i] = Some(self.pixels.tile_mut(tx, ty).clone());
+                self.mask[i] = Some(Box::new([0; (TILE * TILE) as usize]));
             }
         }
+    }
+
+    fn span_mut(&mut self, x: u32, y: u32, len: usize) -> (&mut [u8], &[u8], &mut [u8]) {
+        debug_assert!(len > 0 && (x % TILE) as usize + len <= TILE as usize, "run across a tile");
+        let (tx, ty) = (x / TILE, y / TILE);
+        let i = self.pixels.index(tx, ty);
+        if self.base[i].is_none() { self.prepare((x, y, x + 1, y + 1)); }
+        let o = ((y % TILE) * TILE + x % TILE) as usize;
+        let px = self.pixels.tile_mut(tx, ty);
+        let base = self.base[i].as_ref().unwrap();
+        let mask = self.mask[i].as_mut().unwrap();
+        (&mut px[o * 4..(o + len) * 4], &base[o * 4..(o + len) * 4], &mut mask[o..o + len])
     }
 }
 
@@ -297,23 +293,22 @@ impl LayerStack {
     /// there must be at least one paint layer. An unknown active id falls
     /// back to the topmost layer.
     pub fn from_parts(width: u32, height: u32, root: Vec<Node>, active: u64) -> Result<Self, String> {
-        fn walk(nodes: &[Node], len: usize, ids: &mut std::collections::HashSet<u64>) -> Result<(), String> {
+        fn walk(nodes: &[Node], size: (u32, u32), ids: &mut std::collections::HashSet<u64>) -> Result<(), String> {
             for n in nodes {
                 if n.id() == 0 || !ids.insert(n.id()) { return Err(format!("duplicate or zero layer id {}", n.id())); }
                 match n {
-                    Node::Layer(l) if l.pixels.len() != len => {
-                        return Err(format!("layer {} has {} bytes, expected {len}", l.id, l.pixels.len()));
+                    Node::Layer(l) if (l.tiles.width(), l.tiles.height()) != size => {
+                        return Err(format!("layer {} is {}x{}, not the canvas size", l.id, l.tiles.width(), l.tiles.height()));
                     }
                     Node::Layer(_) => {}
-                    Node::Folder(f) => walk(&f.children, len, ids)?,
+                    Node::Folder(f) => walk(&f.children, size, ids)?,
                 }
             }
             Ok(())
         }
         if width == 0 || height == 0 { return Err("empty canvas".into()); }
-        let len = width as usize * height as usize * 4;
         let mut ids = std::collections::HashSet::new();
-        walk(&root, len, &mut ids)?;
+        walk(&root, (width, height), &mut ids)?;
         if count_layers(&root) == 0 { return Err("no paint layer".into()); }
         let next_id = ids.iter().max().copied().unwrap_or(0) + 1;
         let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id };
@@ -427,7 +422,12 @@ impl LayerStack {
                 opacity: l.opacity,
                 blend: l.blend,
                 locked: l.locked,
-                pixels: l.pixels.clone(),
+                // A copy of the Paper is a plain layer of white pixels.
+                tiles: if l.background {
+                    Tiles::from_rgba(l.tiles.width(), l.tiles.height(), &l.tiles.to_rgba(), clear_pixel(false))
+                } else {
+                    l.tiles.clone()
+                },
                 background: false,
             }),
             Node::Folder(f) => {
@@ -547,41 +547,47 @@ impl LayerStack {
     /// painted on another thread, possibly a little after the pen, and the
     /// user may select or delete another layer meanwhile.
     pub fn begin_stroke(&mut self, id: u64) -> bool {
-        // Borrow `root` and `stroke_base` as separate fields.
         if !matches!(node_in(&self.root, id), Some(Node::Layer(_))) { return false; }
-        let n = self.width as usize * self.height as usize;
-        let tiles = (self.width.div_ceil(STROKE_TILE) * self.height.div_ceil(STROKE_TILE)) as usize;
-        self.stroke = StrokeBuffers { layer: id, base: vec![0; n * 4], mask: vec![0; n], ready: vec![false; tiles] };
+        let tiles = (self.width.div_ceil(TILE) * self.height.div_ceil(TILE)) as usize;
+        self.stroke = StrokeBuffers {
+            layer: id,
+            base: (0..tiles).map(|_| None).collect(),
+            mask: (0..tiles).map(|_| None).collect(),
+        };
         true
     }
 
     /// The stroke is over (recorded for undo, or abandoned): free its
-    /// buffers.
+    /// buffers, and the tiles it left all fill color (erased).
     pub fn end_stroke(&mut self) {
-        self.stroke = StrokeBuffers::default();
+        let s = std::mem::take(&mut self.stroke);
+        let Some(Node::Layer(l)) = self.node_mut(s.layer) else { return };
+        let cols = l.tiles.cols();
+        for (i, b) in s.base.iter().enumerate() {
+            if b.is_some() { l.tiles.drop_if_fill(i as u32 % cols, i as u32 / cols); }
+        }
     }
 
     /// Pixels of `rect` in the stroke's layer as it was when the stroke
     /// began (the undo data of the stroke). RGBA rows, tightly packed.
     pub fn stroke_base_rect(&self, rect: Rect) -> Vec<u8> {
         let s = &self.stroke;
-        let Some(Node::Layer(l)) = node_in(&self.root, s.layer) else { return copy_rect(&s.base, self.width, rect) };
-        if s.ready.is_empty() { return copy_rect(&l.pixels, self.width, rect); }
-        // Tiles the stroke never reached were never copied: the layer
-        // there is still as it was.
-        let (w, tiles_x) = (self.width as usize, self.width.div_ceil(STROKE_TILE) as usize);
+        let Some(Node::Layer(l)) = node_in(&self.root, s.layer) else { return Vec::new() };
+        let t = &l.tiles;
+        let fill = t.fill();
         let mut out = Vec::with_capacity((rect.2 - rect.0) as usize * (rect.3 - rect.1) as usize * 4);
         for y in rect.1..rect.3 {
-            let mut x = rect.0;
-            while x < rect.2 {
-                let tx = x / STROKE_TILE;
-                let end = ((tx + 1) * STROKE_TILE).min(rect.2);
-                let t = (y / STROKE_TILE) as usize * tiles_x + tx as usize;
-                let src = if s.ready[t] { &s.base } else { &l.pixels };
-                let row = y as usize * w;
-                out.extend_from_slice(&src[(row + x as usize) * 4..(row + end as usize) * 4]);
-                x = end;
-            }
+            t.for_row(y, rect.0, rect.2, |x, n, px| {
+                // Tiles the stroke reached have their snapshot; the others
+                // are still as they were.
+                let i = t.index(x / TILE, y / TILE);
+                let o = (((y % TILE) * TILE + x % TILE) * 4) as usize;
+                match (s.base.get(i).and_then(|b| b.as_ref()), px) {
+                    (Some(b), _) => out.extend_from_slice(&b[o..o + n * 4]),
+                    (None, Some(px)) => out.extend_from_slice(px),
+                    (None, None) => for _ in 0..n { out.extend_from_slice(&fill); },
+                }
+            });
         }
         out
     }
@@ -589,7 +595,7 @@ impl LayerStack {
     /// Pixels of `rect` in paint layer `id`, RGBA rows, tightly packed.
     pub fn layer_rect(&self, id: u64, rect: Rect) -> Option<Vec<u8>> {
         match self.node(id)? {
-            Node::Layer(l) => Some(copy_rect(&l.pixels, self.width, rect)),
+            Node::Layer(l) => Some(l.tiles.read_rect(rect)),
             Node::Folder(_) => None,
         }
     }
@@ -597,14 +603,10 @@ impl LayerStack {
     /// Write `data` (from layer_rect / stroke_base_rect) back into `rect`
     /// of paint layer `id`. False if the layer is gone or the size is off.
     pub fn set_layer_rect(&mut self, id: u64, rect: Rect, data: &[u8]) -> bool {
-        let w = self.width;
-        let (rw, rh) = ((rect.2 - rect.0) as usize, (rect.3 - rect.1) as usize);
+        let (rw, rh) = ((rect.2.saturating_sub(rect.0)) as usize, (rect.3.saturating_sub(rect.1)) as usize);
         if rect.2 > self.width || rect.3 > self.height || data.len() != rw * rh * 4 { return false; }
         let Some(Node::Layer(l)) = self.node_mut(id) else { return false };
-        for (row, src) in data.chunks_exact(rw * 4).enumerate() {
-            let start = ((rect.1 as usize + row) * w as usize + rect.0 as usize) * 4;
-            l.pixels[start..start + rw * 4].copy_from_slice(src);
-        }
+        l.tiles.write_rect(rect, data);
         true
     }
 
@@ -612,19 +614,15 @@ impl LayerStack {
     /// begin_stroke; None if it is gone, a folder, or not the layer the
     /// stroke began on.
     pub fn layer_surface(&mut self, id: u64) -> Option<LayerSurface<'_>> {
-        let (w, h) = (self.width, self.height);
         let path = self.path(id)?;
         let (last, parent) = path.split_last()?;
         let Node::Layer(l) = &mut siblings_mut(&mut self.root, parent)[*last] else { return None };
         // Only the layer the stroke began on has stroke buffers.
-        if self.stroke.layer != id || self.stroke.ready.is_empty() { return None; }
+        if self.stroke.layer != id || self.stroke.base.is_empty() { return None; }
         Some(LayerSurface {
-            pixels: &mut l.pixels,
+            pixels: &mut l.tiles,
             base:   &mut self.stroke.base,
             mask:   &mut self.stroke.mask,
-            ready:  &mut self.stroke.ready,
-            width:  w,
-            height: h,
         })
     }
 
@@ -676,33 +674,16 @@ impl LayerStack {
                 }
             }
         }
-        let (ow, oh) = (self.width as i64, self.height as i64);
-        let (nw, nh) = (width as i64, height as i64);
-        // Position of the old canvas's top-left corner in the new one.
-        let (dx, dy) = ((nw - ow) / 2, (nh - oh) / 2);
-        // Overlap, in old-canvas coordinates.
-        let sx0 = (-dx).max(0);
-        let sy0 = (-dy).max(0);
-        let sx1 = (nw - dx).min(ow);
-        let sy1 = (nh - dy).min(oh);
-
-        walk(&mut self.root, &mut |layer: &mut Layer| {
-            let mut out = clear_pixel(layer.background).repeat(width as usize * height as usize);
-            if sx0 < sx1 {
-                for sy in sy0..sy1 {
-                    let src = ((sy * ow + sx0) * 4) as usize..((sy * ow + sx1) * 4) as usize;
-                    let ny = sy + dy;
-                    let dst_start = ((ny * nw + sx0 + dx) * 4) as usize;
-                    out[dst_start..dst_start + src.len()].copy_from_slice(&layer.pixels[src]);
-                }
-            }
-            layer.pixels = out;
-        });
-
-        self.width  = width;
-        self.height = height;
         // A stroke in progress can't go on at the new size.
         self.end_stroke();
+        // Position of the old canvas's top-left corner in the new one.
+        let dx = (width as i64 - self.width as i64) / 2;
+        let dy = (height as i64 - self.height as i64) / 2;
+        walk(&mut self.root, &mut |layer: &mut Layer| {
+            layer.tiles = layer.tiles.resized(width, height, dx, dy);
+        });
+        self.width  = width;
+        self.height = height;
     }
 
     /// Composite every visible layer into `out` (`width * height * 4`).
@@ -733,7 +714,7 @@ impl LayerStack {
             let dst = &mut out[start..start + n * 4];
             // White behind everything.
             dst.fill(255);
-            composite_row_opaque(&self.root, self.width, y, x0, dst, 1.0, &mut group);
+            composite_row_opaque(&self.root, y, x0, dst, 1.0, &mut group);
         }
     }
 }
@@ -742,27 +723,36 @@ impl LayerStack {
 /// row `y` from column `x0`. `opacity_scale` carries pass-through folder
 /// opacity down to the children.
 fn composite_row_opaque(
-    nodes: &[Node], width: u32, y: u32, x0: u32, dst: &mut [u8], opacity_scale: f32, group: &mut Vec<Premul>,
+    nodes: &[Node], y: u32, x0: u32, dst: &mut [u8], opacity_scale: f32, group: &mut Vec<Premul>,
 ) {
     let n = dst.len() / 4;
     for node in nodes {
         if !node.visible() || node.opacity() <= 0.0 { continue; }
         match node {
             Node::Layer(l) => {
-                let start = (y as usize * width as usize + x0 as usize) * 4;
-                let src = &l.pixels[start..start + n * 4];
-                blend_layer_opaque(dst, src, l.opacity * opacity_scale, l.blend);
+                // Tile by tile; nothing to do where an empty layer has no
+                // tiles (an empty layer costs no time here either).
+                let (op, fill) = (l.opacity * opacity_scale, l.tiles.fill());
+                let run = fill_run(fill);
+                l.tiles.for_row(y, x0, x0 + n as u32, |x, len, px| {
+                    let d = &mut dst[(x - x0) as usize * 4..((x - x0) as usize + len) * 4];
+                    match px {
+                        Some(src) => blend_layer_opaque(d, src, op, l.blend),
+                        None if fill[3] == 0 => {}
+                        None => blend_layer_opaque(d, &run[..len * 4], op, l.blend),
+                    }
+                });
             }
             Node::Folder(f) => match f.blend {
                 FolderBlend::PassThrough => {
-                    composite_row_opaque(&f.children, width, y, x0, dst, opacity_scale * f.opacity, group);
+                    composite_row_opaque(&f.children, y, x0, dst, opacity_scale * f.opacity, group);
                 }
                 FolderBlend::Isolated(mode) => {
                     // Children merged on their own (transparent start, so
                     // the general premultiplied path), then blended down.
                     group.clear();
                     group.resize(n, [0.0; 4]);
-                    composite_row(&f.children, width, y, x0, group, 1.0);
+                    composite_row(&f.children, y, x0, group, 1.0);
                     let op = f.opacity * opacity_scale;
                     for (d, g) in dst.chunks_exact_mut(4).zip(group.iter()) {
                         if g[3] <= 0.0 { continue; }
@@ -820,28 +810,35 @@ fn blend_px_opaque(d: &mut [u8], cs: [f32; 3], a: f32, mode: BlendMode) {
 /// Composite `nodes` (bottom to top) onto `row` (premultiplied), for canvas
 /// row `y` starting at column `x0`. `opacity_scale` carries pass-through
 /// folder opacity down to the children.
-fn composite_row(nodes: &[Node], width: u32, y: u32, x0: u32, row: &mut [Premul], opacity_scale: f32) {
+fn composite_row(nodes: &[Node], y: u32, x0: u32, row: &mut [Premul], opacity_scale: f32) {
     for node in nodes {
         if !node.visible() || node.opacity() <= 0.0 { continue; }
         match node {
             Node::Layer(l) => {
-                let op = l.opacity * opacity_scale;
-                let start = (y as usize * width as usize + x0 as usize) * 4;
-                let src = &l.pixels[start..start + row.len() * 4];
-                for (dst, s) in row.iter_mut().zip(src.chunks_exact(4)) {
-                    if s[3] == 0 { continue; }
-                    let a = s[3] as f32 / 255.0 * op;
-                    let cs = [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0];
-                    blend_over(dst, cs, a, l.blend);
-                }
+                let (op, fill) = (l.opacity * opacity_scale, l.tiles.fill());
+                let run = fill_run(fill);
+                l.tiles.for_row(y, x0, x0 + row.len() as u32, |x, len, px| {
+                    let src = match px {
+                        Some(src) => src,
+                        None if fill[3] == 0 => return,
+                        None => &run[..len * 4],
+                    };
+                    let i = (x - x0) as usize;
+                    for (dst, s) in row[i..i + len].iter_mut().zip(src.chunks_exact(4)) {
+                        if s[3] == 0 { continue; }
+                        let a = s[3] as f32 / 255.0 * op;
+                        let cs = [s[0] as f32 / 255.0, s[1] as f32 / 255.0, s[2] as f32 / 255.0];
+                        blend_over(dst, cs, a, l.blend);
+                    }
+                });
             }
             Node::Folder(f) => match f.blend {
                 FolderBlend::PassThrough => {
-                    composite_row(&f.children, width, y, x0, row, opacity_scale * f.opacity);
+                    composite_row(&f.children, y, x0, row, opacity_scale * f.opacity);
                 }
                 FolderBlend::Isolated(mode) => {
                     let mut group: Vec<Premul> = vec![[0.0; 4]; row.len()];
-                    composite_row(&f.children, width, y, x0, &mut group, 1.0);
+                    composite_row(&f.children, y, x0, &mut group, 1.0);
                     let op = f.opacity * opacity_scale;
                     for (dst, g) in row.iter_mut().zip(&group) {
                         if g[3] <= 0.0 { continue; }
@@ -854,15 +851,11 @@ fn composite_row(nodes: &[Node], width: u32, y: u32, x0: u32, row: &mut [Premul]
     }
 }
 
-/// Copy `rect` out of a `width`-wide RGBA buffer, rows tightly packed.
-fn copy_rect(src: &[u8], width: u32, rect: Rect) -> Vec<u8> {
-    let rw = (rect.2 - rect.0) as usize * 4;
-    let mut out = Vec::with_capacity(rw * (rect.3 - rect.1) as usize);
-    for y in rect.1..rect.3 {
-        let start = (y as usize * width as usize + rect.0 as usize) * 4;
-        out.extend_from_slice(&src[start..start + rw]);
-    }
-    out
+/// One tile row of a fill color (blended where a layer has no tile).
+fn fill_run(fill: [u8; 4]) -> [u8; (TILE * 4) as usize] {
+    let mut run = [0u8; (TILE * 4) as usize];
+    for p in run.chunks_exact_mut(4) { p.copy_from_slice(&fill); }
+    run
 }
 
 #[cfg(test)]
@@ -870,17 +863,15 @@ mod tests {
     use super::*;
 
     fn layer_px(stack: &LayerStack, id: u64, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * stack.width + x) * 4) as usize;
         match stack.node(id).unwrap() {
-            Node::Layer(l) => l.pixels[i..i + 4].try_into().unwrap(),
+            Node::Layer(l) => l.tiles.pixel(x, y),
             _ => panic!("not a layer"),
         }
     }
 
     fn set_px(stack: &mut LayerStack, id: u64, rgba: [u8; 4]) {
-        if let Some(Node::Layer(l)) = stack.node_mut(id) {
-            for p in l.pixels.chunks_exact_mut(4) { p.copy_from_slice(&rgba); }
-        }
+        let (w, h) = (stack.width, stack.height);
+        assert!(stack.set_layer_rect(id, (0, 0, w, h), &rgba.repeat((w * h) as usize)));
     }
 
     fn composite(stack: &LayerStack) -> [u8; 4] {
@@ -1051,10 +1042,7 @@ mod tests {
         let mut s = LayerStack::new(4, 4);
         s.add_folder("F");
         let l = s.add_layer("L");
-        if let Some(Node::Layer(layer)) = s.node_mut(l) {
-            let i = (4 + 1) * 4;
-            layer.pixels[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
-        }
+        assert!(s.set_layer_rect(l, (1, 1, 2, 2), &[0, 0, 0, 255]));
         s.resize(8, 8);
         assert_eq!(layer_px(&s, l, 3, 3), [0, 0, 0, 255]);
         assert_eq!(layer_px(&s, l, 0, 0), [255, 255, 255, 0]);
@@ -1074,18 +1062,41 @@ mod tests {
             let mut surf = s.layer_surface(id).unwrap();
             for r in [(0, 0, 10, 200), (0, 190, 200, 200)] {
                 surf.prepare(r);
-                let (px, _, _) = surf.surfaces_mut();
                 for y in r.1..r.3 {
                     for x in r.0..r.2 {
-                        let i = ((y * 256 + x) * 4) as usize;
-                        px[i..i + 4].copy_from_slice(&[255, 0, 0, 255]);
+                        let (px, _, _) = surf.span_mut(x, y, 1);
+                        px.copy_from_slice(&[255, 0, 0, 255]);
                     }
                 }
             }
         }
         let before = s.stroke_base_rect((0, 0, 200, 200));
         assert!(before.chunks_exact(4).all(|p| p == [255, 255, 255, 0]), "undo data is not the original layer");
+        let Some(Node::Layer(l)) = s.node(id) else { panic!() };
+        // Only the tiles the L went through exist: 4 down the left column,
+        // and its foot (y 190..200 crosses 192) 2 rows × 3 more across;
+        // not the 16 of its bounding box.
+        assert_eq!(l.tiles.stored(), 10);
         s.end_stroke();
         assert!(s.layer_surface(id).is_none(), "buffers kept after the stroke");
+    }
+
+    #[test]
+    fn empty_layers_take_no_memory_and_erased_tiles_go() {
+        let mut s = LayerStack::new_document(2480, 3508);
+        let id = s.add_layer("ink");
+        let total: usize = s.layer_ids().iter().map(|&i| match s.node(i) { Some(Node::Layer(l)) => l.tiles.bytes(), _ => 0 }).sum();
+        assert_eq!(total, 0, "Paper, Layer 1 and an empty layer hold no pixels");
+        // Paint a dot, then erase it within a stroke: the tile goes away.
+        assert!(s.begin_stroke(id));
+        {
+            let mut surf = s.layer_surface(id).unwrap();
+            surf.prepare((100, 100, 101, 101));
+            surf.span_mut(100, 100, 1).0.copy_from_slice(&[0, 0, 0, 255]);
+            surf.span_mut(100, 100, 1).0.copy_from_slice(&[255, 255, 255, 0]);
+        }
+        s.end_stroke();
+        let Some(Node::Layer(l)) = s.node(id) else { panic!() };
+        assert_eq!(l.tiles.stored(), 0);
     }
 }

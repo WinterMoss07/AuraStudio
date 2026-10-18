@@ -22,6 +22,9 @@ use crate::Brush;
 
 const ONE: u32 = 1 << 15;
 const TS: i32 = TILE_SIZE as i32;
+// libmypaint tiles line up with the layer tiles: a libmypaint tile row is
+// one run of a layer tile.
+const _: () = assert!(TILE_SIZE as u32 == aurastudio_canvas::TILE);
 
 pub struct MyPaintEngine {
     /// The preset's brush, with color / size / opacity bases set from
@@ -141,17 +144,15 @@ impl<S: PaintSurface> TileCache<'_, S> {
         self.tiles.entry((tx, ty)).or_insert_with(|| {
             let (x0, y0) = ((tx * TS).clamp(0, w as i32) as u32, (ty * TS).clamp(0, h as i32) as u32);
             let (x1, y1) = ((tx * TS + TS).clamp(0, w as i32) as u32, (ty * TS + TS).clamp(0, h as i32) as u32);
-            surface.prepare((x0, y0, x1, y1));
-            let (_, base, _) = surface.surfaces_mut();
             let mut tile: Box<TilePixels> = Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]);
-            for (ly, row) in tile.iter_mut().enumerate() {
-                let y = ty * TS + ly as i32;
-                if y < 0 || y >= h as i32 { continue; }
-                for (lx, px) in row.iter_mut().enumerate() {
-                    let x = tx * TS + lx as i32;
-                    if x < 0 || x >= w as i32 { continue; }
-                    let i = (y as usize * w as usize + x as usize) * 4;
-                    *px = to_fix15([base[i], base[i + 1], base[i + 2], base[i + 3]]);
+            if x0 >= x1 || y0 >= y1 { return tile; }
+            surface.prepare((x0, y0, x1, y1));
+            let off = (x0 as i32 - tx * TS) as usize;
+            for y in y0..y1 {
+                let (_, base, _) = surface.span_mut(x0, y, (x1 - x0) as usize);
+                let row = &mut tile[(y as i32 - ty * TS) as usize][off..];
+                for (px, b) in row.iter_mut().zip(base.chunks_exact(4)) {
+                    *px = to_fix15([b[0], b[1], b[2], b[3]]);
                 }
             }
             tile
@@ -213,7 +214,6 @@ fn from_fix15(p: [u16; 4]) -> [u8; 4] {
 /// Copy the changed tiles into the layer pixels; returns their bounds.
 fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dirty: &HashSet<(i32, i32)>, surface: &mut S) -> Option<Rect> {
     let (w, h) = (surface.width(), surface.height());
-    let (pixels, _, _) = surface.surfaces_mut();
     let mut out: Option<Rect> = None;
     for &(tx, ty) in dirty {
         let Some(tile) = tiles.get(&(tx, ty)) else { continue };
@@ -223,10 +223,10 @@ fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dir
         let y1 = (ty * TS + TS).min(h as i32);
         if x0 >= x1 || y0 >= y1 { continue; }
         for y in y0..y1 {
-            let row = &tile[(y - ty * TS) as usize];
-            for x in x0..x1 {
-                let i = (y as usize * w as usize + x as usize) * 4;
-                pixels[i..i + 4].copy_from_slice(&from_fix15(row[(x - tx * TS) as usize]));
+            let row = &tile[(y - ty * TS) as usize][(x0 - tx * TS) as usize..];
+            let (pixels, _, _) = surface.span_mut(x0 as u32, y as u32, (x1 - x0) as usize);
+            for (p, &v) in pixels.chunks_exact_mut(4).zip(row) {
+                p.copy_from_slice(&from_fix15(v));
             }
         }
         let r = (x0 as u32, y0 as u32, x1 as u32, y1 as u32);
@@ -245,16 +245,10 @@ mod tests {
     const W: u32 = 256;
     const H: u32 = 128;
 
-    struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8> }
-    impl PaintSurface for S {
-        fn width(&self) -> u32 { W }
-        fn height(&self) -> u32 { H }
-        fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) { (&mut self.px, &self.base, &mut self.mask) }
-    }
+    use aurastudio_canvas::FlatSurface as S;
 
     fn surface(rgba: [u8; 4]) -> S {
-        let px = rgba.repeat((W * H) as usize);
-        S { px: px.clone(), base: px, mask: vec![0; (W * H) as usize] }
+        S::new(W, H, rgba)
     }
 
     fn stroke(e: &mut MyPaintEngine, s: &mut S) {
@@ -294,16 +288,16 @@ mod tests {
         let mut s = surface([255, 255, 255, 255]);
         stroke(&mut e, &mut s);
         let i = ((64 * W + 100) * 4) as usize;
-        assert!(s.px[i] < 40, "not painted: {:?}", &s.px[i..i + 4]);
+        assert!(s.pixels[i] < 40, "not painted: {:?}", &s.pixels[i..i + 4]);
 
         // Same brush as an eraser, on the painted layer: back to transparent.
         let mut eraser = preset;
         eraser.get_mut(BrushSetting::Eraser).base_value = 1.0;
         let mut e = MyPaintEngine::new(eraser);
         e.sync_from(&b);
-        s.base.copy_from_slice(&s.px);
+        s.base.copy_from_slice(&s.pixels);
         stroke(&mut e, &mut s);
-        assert!(s.px[i + 3] < 30, "not erased: {:?}", &s.px[i..i + 4]);
+        assert!(s.pixels[i + 3] < 30, "not erased: {:?}", &s.pixels[i..i + 4]);
     }
 
     /// Zoomed out, a stroke can leave the canvas by a huge distance. Only
@@ -327,6 +321,6 @@ mod tests {
         assert!(e.tiles.len() <= canvas_tiles, "{} tiles kept", e.tiles.len());
         e.end_stroke(&mut s);
         let i = ((64 * W + 100) * 4) as usize;
-        assert!(s.px[i] < 128, "start of the stroke not painted: {:?}", &s.px[i..i + 4]);
+        assert!(s.pixels[i] < 128, "start of the stroke not painted: {:?}", &s.pixels[i..i + 4]);
     }
 }

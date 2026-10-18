@@ -212,8 +212,7 @@ mod tests {
 
     fn px(doc: &Document, id: u64, x: u32, y: u32) -> [u8; 4] {
         let Some(Node::Layer(l)) = doc.layers.node(id) else { panic!() };
-        let i = ((y * doc.layers.width + x) * 4) as usize;
-        [l.pixels[i], l.pixels[i + 1], l.pixels[i + 2], l.pixels[i + 3]]
+        l.tiles.pixel(x, y)
     }
 
     #[test]

@@ -27,7 +27,7 @@
 //! Dab shape: opaque out to `radius × hardness`, then a smoothstep fade to
 //! the edge (1 px of anti-aliasing at 100 %).
 
-use aurastudio_canvas::{blend::unit_to_u8, PaintSurface, Rect};
+use aurastudio_canvas::{blend::unit_to_u8, tile_run, PaintSurface, Rect};
 
 use crate::raster::{changed_span, min_u8, write_pixels, CHUNK, IOTA};
 
@@ -140,8 +140,6 @@ impl DabEngine {
         let x1 = ((cx + reach).ceil() as i32 + 1).min(w);
         if x0 >= x1 { return None; }
         surface.prepare((x0 as u32, y0 as u32, x1 as u32, y1 as u32));
-        let sw = w as usize;
-        let (pixels, base, mask) = surface.surfaces_mut();
         let (color, blend) = (self.brush.color, self.brush.blend);
         let (mut wx0, mut wy0, mut wx1, mut wy1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
 
@@ -153,17 +151,15 @@ impl DabEngine {
             let xa = ((cx - half).floor() as i32).max(0);
             let xb = ((cx + half).ceil() as i32 + 1).min(w);
             if xa >= xb { continue; }
-            let row = py as usize * sw;
             let dy2 = dy * dy;
             let (mut row_x0, mut row_x1) = (i32::MAX, i32::MIN);
-            // In chunks: first the new coverage of the whole chunk (plain
-            // arithmetic the compiler vectorizes), then the layer pixels
-            // only where it changed.
+            // In chunks (never across a layer tile): first the new
+            // coverage of the whole chunk (plain arithmetic the compiler
+            // vectorizes), then the layer pixels only where it changed.
             let mut x = xa;
             while x < xb {
-                let n = ((xb - x) as usize).min(CHUNK);
-                let i0 = row + x as usize;
-                let mrow = &mut mask[i0..i0 + n];
+                let n = tile_run(x as u32, ((xb - x) as usize).min(CHUNK));
+                let (prow, brow, mrow) = surface.span_mut(x as u32, py as u32, n);
                 // Already at this dab's opacity (the middle of a stroke at
                 // steady pressure): nothing to do.
                 if min_u8(mrow) >= target {
@@ -210,8 +206,6 @@ impl DabEngine {
                         *nv = cur + ((gap * sh + 128) >> 8) as u8;
                     }
                 }
-                let prow = &mut pixels[i0 * 4..(i0 + n) * 4];
-                let brow = &base[i0 * 4..(i0 + n) * 4];
                 let Some((c0, c1)) = changed_span(mrow, new) else {
                     x += n as i32;
                     continue;
@@ -269,19 +263,13 @@ mod tests {
 
     const N: u32 = 256;
 
-    struct T { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8> }
-    impl PaintSurface for T {
-        fn width(&self) -> u32 { N }
-        fn height(&self) -> u32 { N }
-        fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) { (&mut self.px, &self.base, &mut self.mask) }
-    }
+    use aurastudio_canvas::FlatSurface as T;
 
     fn white() -> T {
-        let px = vec![255u8; (N * N * 4) as usize];
-        T { px: px.clone(), base: px, mask: vec![0; (N * N) as usize] }
+        T::new(N, N, [255; 4])
     }
 
-    fn red_at(s: &T, x: u32, y: u32) -> u8 { s.px[((y * N + x) * 4) as usize] }
+    fn red_at(s: &T, x: u32, y: u32) -> u8 { s.pixels[((y * N + x) * 4) as usize] }
 
     fn engine(radius: u32, hardness: f32) -> DabEngine {
         let mut b = Brush::new();

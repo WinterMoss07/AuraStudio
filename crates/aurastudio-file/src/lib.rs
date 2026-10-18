@@ -9,8 +9,9 @@
 //! - `document.json`: canvas size, resolution, active layer, the layer
 //!   tree (names, folders, opacity, blend, visibility, locks) and the
 //!   undo / redo steps;
-//! - `layers/<id>.lz4`: each layer's RGBA pixels, LZ4-compressed (fast both
-//!   ways, and a mostly empty layer shrinks to almost nothing);
+//! - `layers/<id>.tiles`: each layer's painted tiles (64 × 64 RGBA), each
+//!   LZ4-compressed (fast both ways); an empty layer has none. Format 1
+//!   (before tiled layers) held `layers/<id>.lz4`, every pixel: still read;
 //! - `history/undo-<n>.lz4`, `history/redo-<n>.lz4`: the newest undo steps,
 //!   as the history keeps them in memory;
 //! - `preview.png`: the merged image, at most 512 px, for file browsers and
@@ -24,14 +25,16 @@ use std::path::{Path, PathBuf};
 
 use aurastudio_canvas::BlendMode;
 use aurastudio_document::{DocId, Document, History, SavedStep, DEFAULT_BUDGET};
-use aurastudio_layers::{Folder, FolderBlend, Layer, LayerStack, Node};
+use aurastudio_canvas::TILE;
+use aurastudio_layers::{Folder, FolderBlend, Layer, LayerStack, Node, Tiles, TILE_BYTES};
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 
 /// File extension of AuraStudio documents.
 pub const EXTENSION: &str = "aurs";
 /// Version written in new files; files from a newer version are refused.
-pub const FORMAT_VERSION: u32 = 1;
+/// 2: layers saved as tiles.
+pub const FORMAT_VERSION: u32 = 2;
 /// Undo steps kept in a saved file (the newest ones).
 pub const SAVED_UNDO_STEPS: usize = 50;
 /// Image formats Open can read, by extension.
@@ -101,7 +104,7 @@ fn blend_from(name: &str) -> BlendMode {
 /// on another thread while painting goes on.
 pub struct Snapshot {
     json:     DocJson,
-    /// (layer id, LZ4 pixels)
+    /// (layer id, its tiles: see `pack_tiles`)
     layers:   Vec<(u64, Vec<u8>)>,
     undo:     Vec<Vec<u8>>,
     redo:     Vec<Vec<u8>>,
@@ -118,7 +121,7 @@ pub fn snapshot(doc: &Document, merged: Option<&[u8]>, origin: Option<&Path>) ->
     fn walk(nodes: &[Node], blobs: &mut Vec<(u64, Vec<u8>)>) -> Vec<NodeJson> {
         nodes.iter().map(|n| match n {
             Node::Layer(l) => {
-                blobs.push((l.id, lz4_flex::compress_prepend_size(&l.pixels)));
+                blobs.push((l.id, pack_tiles(&l.tiles)));
                 NodeJson::Layer {
                     id: l.id, name: l.name.clone(), visible: l.visible, opacity: l.opacity,
                     blend: l.blend.name().into(), locked: l.locked, background: l.background,
@@ -180,7 +183,7 @@ pub fn write<W: Write + Seek>(snap: &Snapshot, out: W) -> io::Result<()> {
         zip.write_all(&png)?;
     }
     for (id, data) in &snap.layers {
-        zip.start_file(format!("layers/{id}.lz4"), stored).map_err(err)?;
+        zip.start_file(format!("layers/{id}.tiles"), stored).map_err(err)?;
         zip.write_all(data)?;
     }
     for (kind, steps) in [("undo", &snap.undo), ("redo", &snap.redo)] {
@@ -238,26 +241,36 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
         return Err(format!("canvas {w} × {h} px is bigger than this GPU allows ({max_side} px)"));
     }
     let len = w as usize * h as usize * 4;
+    let version = json.version;
 
-    fn build<R: Read + Seek>(nodes: Vec<NodeJson>, zip: &mut zip::ZipArchive<R>, len: usize) -> Result<Vec<Node>, String> {
+    fn build<R: Read + Seek>(nodes: Vec<NodeJson>, zip: &mut zip::ZipArchive<R>, size: (u32, u32), version: u32)
+        -> Result<Vec<Node>, String>
+    {
+        let len = size.0 as usize * size.1 as usize * 4;
         nodes.into_iter().map(|n| Ok(match n {
             NodeJson::Layer { id, name, visible, opacity, blend, locked, background } => {
-                let blob = read_entry(zip, &format!("layers/{id}.lz4"), len as u64 + 1024)?;
-                Node::Layer(Layer {
-                    id, name, visible, opacity: opacity.clamp(0.0, 1.0), blend: blend_from(&blend), locked,
-                    pixels: unpack(&blob, len).ok_or_else(|| format!("damaged file (layer {id})"))?,
-                    background,
-                })
+                let mut layer = Layer::new(size.0, size.1, background);
+                let damaged = || format!("damaged file (layer {id})");
+                if version >= 2 {
+                    let tiles_max = (size.0.div_ceil(TILE) * size.1.div_ceil(TILE)) as u64 * (TILE_BYTES as u64 + 64) + 4;
+                    let blob = read_entry(zip, &format!("layers/{id}.tiles"), tiles_max)?;
+                    unpack_tiles(&blob, &mut layer.tiles).ok_or_else(damaged)?;
+                } else {
+                    let blob = read_entry(zip, &format!("layers/{id}.lz4"), len as u64 + 1024)?;
+                    let rgba = unpack(&blob, len).ok_or_else(damaged)?;
+                    layer.tiles = Tiles::from_rgba(size.0, size.1, &rgba, layer.tiles.fill());
+                }
+                Node::Layer(Layer { id, name, visible, opacity: opacity.clamp(0.0, 1.0), blend: blend_from(&blend), locked, ..layer })
             }
             NodeJson::Folder { id, name, visible, opacity, blend, locked, collapsed, children } => Node::Folder(Folder {
                 id, name, visible, opacity: opacity.clamp(0.0, 1.0),
                 blend: if blend == PASS_THROUGH { FolderBlend::PassThrough } else { FolderBlend::Isolated(blend_from(&blend)) },
                 locked, collapsed,
-                children: build(children, zip, len)?,
+                children: build(children, zip, size, version)?,
             }),
         })).collect()
     }
-    let root = build(json.layers, &mut zip, len)?;
+    let root = build(json.layers, &mut zip, (w, h), version)?;
     let layers = LayerStack::from_parts(w, h, root, json.active).map_err(|e| format!("damaged file ({e})"))?;
 
     // History: a step that can't be read is dropped, the document still
@@ -303,6 +316,42 @@ fn read_entry<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str, limit: u
     Ok(out)
 }
 
+/// A layer's stored tiles: their count (u32), then for each its column
+/// and row (u32 each) and its pixels, LZ4 with their size first.
+fn pack_tiles(tiles: &Tiles) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(tiles.stored() as u32).to_le_bytes());
+    for (tx, ty, t) in tiles.iter() {
+        out.extend_from_slice(&tx.to_le_bytes());
+        out.extend_from_slice(&ty.to_le_bytes());
+        let packed = lz4_flex::compress_prepend_size(&t[..]);
+        out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&packed);
+    }
+    out
+}
+
+/// Read `pack_tiles` data into `tiles` (None if damaged).
+fn unpack_tiles(blob: &[u8], tiles: &mut Tiles) -> Option<()> {
+    let mut at = 0usize;
+    let u32_at = |at: &mut usize| -> Option<u32> {
+        let v = u32::from_le_bytes(blob.get(*at..*at + 4)?.try_into().ok()?);
+        *at += 4;
+        Some(v)
+    };
+    let count = u32_at(&mut at)?;
+    let max = tiles.width().div_ceil(TILE) * tiles.height().div_ceil(TILE);
+    if count > max { return None; }
+    for _ in 0..count {
+        let (tx, ty, n) = (u32_at(&mut at)?, u32_at(&mut at)?, u32_at(&mut at)? as usize);
+        if tx >= tiles.width().div_ceil(TILE) || ty >= tiles.height().div_ceil(TILE) { return None; }
+        let data = unpack(blob.get(at..at.checked_add(n)?)?, TILE_BYTES)?;
+        at += n;
+        tiles.set_tile(tx, ty, Some(data.into_boxed_slice().try_into().ok()?));
+    }
+    (at == blob.len()).then_some(())
+}
+
 /// LZ4 data with its size first, expected to unpack to exactly `len`
 /// bytes.
 fn unpack(blob: &[u8], len: usize) -> Option<Vec<u8>> {
@@ -339,7 +388,7 @@ pub fn import_image(path: &Path, id: DocId, max_side: u32) -> Result<Document, S
     let mut doc = Document::new(id, &name, w, h);
     let layer = doc.layers.active_id();
     if let Some(Node::Layer(l)) = doc.layers.node_mut(layer) {
-        l.pixels = img.into_raw();
+        l.tiles = Tiles::from_rgba(w, h, img.as_raw(), l.tiles.fill());
         l.name = name;
     }
     Ok(doc)
@@ -432,7 +481,7 @@ mod tests {
 
     fn pixels(doc: &Document, id: u64) -> Vec<u8> {
         let Some(Node::Layer(l)) = doc.layers.node(id) else { panic!() };
-        l.pixels.clone()
+        l.tiles.to_rgba()
     }
 
     #[test]

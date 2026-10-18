@@ -299,7 +299,7 @@ fn fuzz() {
                 for id in d.layers.layer_ids() {
                     let (Some(aurastudio_layers::Node::Layer(a)), Some(aurastudio_layers::Node::Layer(b))) =
                         (d.layers.node(id), back.layers.node(id)) else { panic!("layer {id} lost") };
-                    assert!(a.pixels == b.pixels && a.name == b.name && a.locked == b.locked, "layer {id} differs");
+                    assert!(a.tiles == b.tiles && a.name == b.name && a.locked == b.locked, "layer {id} differs");
                 }
                 ops += 1;
             }
@@ -383,4 +383,27 @@ fn rss_mb() -> u64 {
     std::fs::read_to_string("/proc/self/statm").ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
         .map_or(0, |pages| pages * 4096 / (1 << 20))
+}
+
+/// Resident memory of a new document at print sizes: what each part costs.
+///     cargo test --release -p aurastudio memory_per_preset -- --ignored --nocapture
+#[test]
+#[ignore]
+fn memory_per_preset() {
+    for (name, w, h) in [("A4 300 dpi", 2480u32, 3508u32), ("B4 600 dpi", 6071, 8598)] {
+        let base = rss_mb();
+        let mut doc = Document::new(DocId(1), name, w, h);
+        let after_doc = rss_mb();
+        let mut p = Projection::new(w, h);
+        doc.layers.composite_into(&mut p.pixels);
+        let after_proj = rss_mb();
+        doc.layers.add_layer("Layer 2");
+        let after_layer = rss_mb();
+        let id = doc.layers.active_id();
+        doc.layers.begin_stroke(id);
+        let after_stroke = rss_mb();
+        println!("{name}: document (Paper + Layer 1) {} MB, projection {} MB, +1 empty layer {} MB, stroke buffers {} MB",
+            after_doc - base, after_proj - after_doc, after_layer - after_proj, after_stroke - after_layer);
+        drop((doc, p));
+    }
 }

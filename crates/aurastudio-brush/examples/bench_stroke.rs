@@ -3,14 +3,8 @@
 // Usage: cargo run --release -p aurastudio-brush --example bench_stroke
 use std::time::{Duration, Instant};
 use aurastudio_brush::{Brush, DabEngine};
-use aurastudio_canvas::PaintSurface;
 
-struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8>, w: u32, h: u32 }
-impl PaintSurface for S {
-    fn width(&self) -> u32 { self.w }
-    fn height(&self) -> u32 { self.h }
-    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) { (&mut self.px, &self.base, &mut self.mask) }
-}
+use aurastudio_canvas::FlatSurface as S;
 
 fn main() {
     let (w, h) = (2048u32, 2048u32);
@@ -25,8 +19,7 @@ fn main() {
     for radius in [10u32, 50, 130, 250, 500] {
         if only_r.is_some_and(|r| r != radius) { continue; }
         {
-            let white = vec![255u8; (w * h * 4) as usize];
-            let mut s = S { px: white.clone(), base: white, mask: vec![0; (w * h) as usize], w, h };
+            let mut s = S::new(w, h, [255; 4]);
             // Touch every page first: a fresh buffer costs a page fault on
             // first write, which made timings depend on what ran before. The
             // app reuses its buffers, so warm memory is what it sees.

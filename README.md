@@ -96,6 +96,13 @@ UI stays quiet so the painting gets the room.
   stroke, never split: see `paint_thread.rs`); the UI thread only reads the
   pen and shows results. Undo / redo / clear go through the same queue, so
   Ctrl+Z right after lifting the pen undoes that very stroke.
+- **Tiled layers** (like Krita / CSP): layers are stored in 64 × 64 tiles,
+  and only tiles that differ from the layer's fill color (transparent, or
+  white for the Paper) exist. An empty layer costs no memory and no
+  compositing time; the stroke snapshot and coverage are kept per tile
+  too, only where the brush goes. New A4 300 dpi document: the layers take
+  0 MB (33 MB each before), the projection 33 MB; B4 600 dpi: 0 MB of
+  layers, 199 MB of projection. `.aurs` files store the painted tiles only.
 - **Strokes leaving the canvas** pause there like a lifted pen and resume
   where they come back: zoomed out, the pen can travel hundreds of
   thousands of canvas pixels off the canvas, and computing invisible dabs
