@@ -1,5 +1,5 @@
 mod view;
-pub use view::{wrap_angle, CanvasView, FIT_MARGIN};
+pub use view::{wrap_angle, CanvasView};
 
 use std::sync::Arc;
 use wgpu::*;
@@ -364,13 +364,13 @@ impl GpuState {
         }
     }
 
-    /// Show the brush outline at `center` (physical window pixels) with
-    /// `radius` in screen pixels, or hide it.
     /// Cursor egui wants over its widgets (from the last UI frame).
     pub fn egui_cursor(&self) -> egui::CursorIcon {
         self.egui_cursor
     }
 
+    /// Show the brush outline at `center` (physical window pixels) with
+    /// `radius` in screen pixels, or hide it.
     pub fn set_brush_cursor(&mut self, cursor: Option<((f32, f32), f32)>) {
         self.brush_cursor = cursor;
     }
@@ -478,11 +478,7 @@ impl GpuState {
         self.surface.configure(&self.device, &self.config);
         // Recomputed from the egui layout on the next frame; until then,
         // the whole window.
-        self.set_viewport([0.0, 0.0, size.width as f32, size.height as f32]);
-    }
-
-    fn set_viewport(&mut self, vp: [f32; 4]) {
-        self.viewport = vp;
+        self.viewport = [0.0, 0.0, size.width as f32, size.height as f32];
     }
 
     /// Upload the view transform and color management switch for this
@@ -577,7 +573,7 @@ impl GpuState {
                     let y0 = (r.min.y * ppp).round().clamp(0.0, wh);
                     let x1 = (r.max.x * ppp).round().clamp(x0, ww);
                     let y1 = (r.max.y * ppp).round().clamp(y0, wh);
-                    self.set_viewport([x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)]);
+                    self.viewport = [x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)];
                 }
 
                 let tris = self.egui_ctx.tessellate(full_output.shapes, ppp);
@@ -597,13 +593,16 @@ impl GpuState {
 
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
-            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
-                self.last_ui = Some((tris, ppp));
-                return;
-            }
             Err(e) => {
-                log::error!("Surface error: {e:?}");
+                if matches!(e, SurfaceError::Lost | SurfaceError::Outdated) {
+                    self.surface.configure(&self.device, &self.config);
+                } else {
+                    log::error!("Surface error: {e:?}");
+                }
+                // No frame this time: textures egui dropped are still freed.
+                for id in &textures_free {
+                    self.egui_renderer.free_texture(id);
+                }
                 self.last_ui = Some((tris, ppp));
                 return;
             }

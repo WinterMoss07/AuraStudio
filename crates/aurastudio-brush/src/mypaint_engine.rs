@@ -30,6 +30,11 @@ pub struct MyPaintEngine {
     state: BrushState,
     /// Working tiles of the current stroke, loaded from the layer.
     tiles: HashMap<(i32, i32), Box<TilePixels>>,
+    /// Shared stand-in for every tile outside the canvas: dabs there are
+    /// drawn into it and thrown away. Storing a tile per off-canvas spot
+    /// ran out of memory (zoomed out, a stroke leaving the canvas spans
+    /// millions of tiles).
+    scratch: Box<TilePixels>,
     /// Pen time of the previous sample, seconds.
     last_time: Option<f64>,
     /// Upper bound of the dab radius, for preloading the tiles a dab or a
@@ -39,7 +44,8 @@ pub struct MyPaintEngine {
 
 impl MyPaintEngine {
     pub fn new(brush: hokusai::Brush) -> Self {
-        Self { brush, state: BrushState::default(), tiles: HashMap::new(), last_time: None, reach: 64.0 }
+        Self { brush, state: BrushState::default(), tiles: HashMap::new(),
+            scratch: Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]), last_time: None, reach: 64.0 }
     }
 
     /// Size (diameter, px) and opacity the .myb file was made with, to show
@@ -72,8 +78,14 @@ impl MyPaintEngine {
     }
 
     pub fn begin_stroke(&mut self) {
-        self.state = BrushState::default();
         self.tiles.clear();
+        self.resume();
+    }
+
+    /// Start following the pen afresh within the same stroke (after
+    /// `lift`): the tiles already painted are kept.
+    pub fn resume(&mut self) {
+        self.state = BrushState::default();
         self.last_time = None;
     }
 
@@ -84,7 +96,7 @@ impl MyPaintEngine {
         // Tiles a dab or a smudge sample may touch around the pen must be
         // loaded first: libmypaint reads them through tile_lookup, which
         // can't load anything.
-        let mut tiles = TileCache { tiles: &mut self.tiles, surface, dirty: HashSet::new() };
+        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new() };
         // From the brush's smoothed position (dabs are placed between it and
         // the pen) to the pen, with the margin of the biggest dab so far.
         let prev = if self.state.started { (self.state.actual_x, self.state.actual_y) } else { (x, y) };
@@ -97,12 +109,19 @@ impl MyPaintEngine {
 
     /// End of stroke: let libmypaint finish its smoothed path.
     pub fn end_stroke<S: PaintSurface>(&mut self, surface: &mut S) -> Option<Rect> {
-        let mut tiles = TileCache { tiles: &mut self.tiles, surface, dirty: HashSet::new() };
-        self.brush.finish_stroke(&mut self.state, &mut tiles);
-        let dirty = std::mem::take(&mut tiles.dirty);
-        let rect = write_back(&self.tiles, &dirty, surface);
+        let rect = self.lift(surface);
         self.tiles.clear();
         rect
+    }
+
+    /// Pen lifted within the stroke (it left the canvas): finish the
+    /// smoothed path, keep the tiles for `resume`. Reloading them from the
+    /// layer as it was before the stroke would erase what was painted.
+    pub fn lift<S: PaintSurface>(&mut self, surface: &mut S) -> Option<Rect> {
+        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new() };
+        self.brush.finish_stroke(&mut self.state, &mut tiles);
+        let dirty = std::mem::take(&mut tiles.dirty);
+        write_back(&self.tiles, &dirty, surface)
     }
 }
 
@@ -110,6 +129,7 @@ impl MyPaintEngine {
 /// layer as it was before the stroke the first time it is needed.
 struct TileCache<'a, S: PaintSurface> {
     tiles:   &'a mut HashMap<(i32, i32), Box<TilePixels>>,
+    scratch: &'a mut Box<TilePixels>,
     surface: &'a mut S,
     dirty:   HashSet<(i32, i32)>,
 }
@@ -138,10 +158,19 @@ impl<S: PaintSurface> TileCache<'_, S> {
         })
     }
 
+    /// Tile (tx, ty) covers some canvas pixels.
+    fn on_canvas(&self, tx: i32, ty: i32) -> bool {
+        let (w, h) = (self.surface.width() as i32, self.surface.height() as i32);
+        tx >= 0 && ty >= 0 && tx * TS < w && ty * TS < h
+    }
+
+    /// Load the canvas tiles in this area (the rest is off the canvas).
     fn preload(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
-        let t = |v: f32| (v.floor() as i32).div_euclid(TS);
-        for ty in t(y0)..=t(y1) {
-            for tx in t(x0)..=t(x1) {
+        let (w, h) = (self.surface.width() as f32, self.surface.height() as f32);
+        let t = |v: f32, max: f32| (v.clamp(0.0, max - 1.0).floor() as i32).div_euclid(TS);
+        if x1 < 0.0 || y1 < 0.0 || x0 >= w || y0 >= h { return; }
+        for ty in t(y0, h)..=t(y1, h) {
+            for tx in t(x0, w)..=t(x1, w) {
                 self.load(tx, ty);
             }
         }
@@ -150,6 +179,7 @@ impl<S: PaintSurface> TileCache<'_, S> {
 
 impl<S: PaintSurface> TiledSurface for TileCache<'_, S> {
     fn tile_request_start(&mut self, tx: i32, ty: i32) -> &mut TilePixels {
+        if !self.on_canvas(tx, ty) { return self.scratch; }
         self.dirty.insert((tx, ty));
         self.load(tx, ty)
     }
@@ -274,5 +304,29 @@ mod tests {
         s.base.copy_from_slice(&s.px);
         stroke(&mut e, &mut s);
         assert!(s.px[i + 3] < 30, "not erased: {:?}", &s.px[i..i + 4]);
+    }
+
+    /// Zoomed out, a stroke can leave the canvas by a huge distance. Only
+    /// canvas tiles may be kept (a tile per off-canvas spot ran out of
+    /// memory), and the part on the canvas is still painted.
+    #[test]
+    fn stroke_far_off_the_canvas_keeps_only_canvas_tiles() {
+        let json = r#"{"version": 3, "settings": {
+            "radius_logarithmic": {"base_value": 2.0, "inputs": {}},
+            "opaque": {"base_value": 1.0, "inputs": {}},
+            "dabs_per_actual_radius": {"base_value": 2.0, "inputs": {}}
+        }}"#;
+        let mut e = MyPaintEngine::new(hokusai::myb::from_str(json).expect("parse"));
+        e.sync_from(&Brush::new());
+        let mut s = surface([255, 255, 255, 255]);
+        e.begin_stroke();
+        e.stroke_to(&mut s, 100.0, 64.0, 1.0, 0.0);
+        e.stroke_to(&mut s, 200_000.0, -150_000.0, 1.0, 0.01);
+        e.stroke_to(&mut s, -90_000.0, 300_000.0, 1.0, 0.02);
+        let canvas_tiles = (W.div_ceil(TS as u32) * H.div_ceil(TS as u32)) as usize;
+        assert!(e.tiles.len() <= canvas_tiles, "{} tiles kept", e.tiles.len());
+        e.end_stroke(&mut s);
+        let i = ((64 * W + 100) * 4) as usize;
+        assert!(s.px[i] < 128, "start of the stroke not painted: {:?}", &s.px[i..i + 4]);
     }
 }

@@ -1,0 +1,370 @@
+//! Crash hunt: random sequences of what a user can do, run headless.
+//!
+//! The real UI (egui, every docker, the dock area) gets random pointer
+//! clicks, drags, wheel and keys; its actions are applied the way the app
+//! applies them (recomposite, resize, undo / redo / clear through the paint
+//! thread). Strokes with random brushes, MyPaint presets, sizes and
+//! positions (far off canvas too) run on the real paint thread, at the same
+//! time as the UI, like in the app. The view gets random zoom / rotation /
+//! pan. Any panic, on any thread, fails the run.
+//!
+//!     FUZZ_STEPS=1000000 FUZZ_SEED=7 cargo test --release -p aurastudio fuzz -- --ignored --nocapture
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use aurastudio_brush::Brush;
+use aurastudio_brushes::Library;
+use aurastudio_document::{DocId, Document, SharedDoc};
+use aurastudio_gpu::CanvasView;
+use aurastudio_ui::{Actions, BlendMode, Model, UiState, ViewCmd};
+use egui::{pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
+
+use crate::paint_thread::{Cmd, PaintThread};
+use crate::projection::Projection;
+
+const VIEW_CMDS: [ViewCmd; 7] = [
+    ViewCmd::ZoomIn, ViewCmd::ZoomOut, ViewCmd::ActualSize, ViewCmd::Fit,
+    ViewCmd::RotateLeft, ViewCmd::RotateRight, ViewCmd::ResetRotation,
+];
+
+static PANICKED: AtomicBool = AtomicBool::new(false);
+
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        // xorshift64*
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+    fn below(&mut self, n: u64) -> u64 { self.next() % n.max(1) }
+    fn f(&mut self) -> f32 { (self.next() >> 40) as f32 / (1u64 << 24) as f32 }
+    fn range(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * self.f() }
+    fn chance(&mut self, p: f32) -> bool { self.f() < p }
+}
+
+const SCREEN: Rect = Rect { min: Pos2 { x: 0.0, y: 0.0 }, max: Pos2 { x: 1440.0, y: 900.0 } };
+
+/// A pointer position, mostly where the UI is (bars on top, dock column on
+/// the right), sometimes anywhere.
+fn ui_pos(r: &mut Rng) -> Pos2 {
+    match r.below(10) {
+        0..=5 => pos2(r.range(1100.0, 1440.0), r.range(0.0, 900.0)),
+        6..=7 => pos2(r.range(0.0, 1440.0), r.range(0.0, 70.0)),
+        _ => pos2(r.range(-20.0, 1460.0), r.range(-20.0, 920.0)),
+    }
+}
+
+fn key(k: Key, mods: Modifiers) -> [Event; 2] {
+    [
+        Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: mods },
+        Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers: mods },
+    ]
+}
+
+/// Random input events for one UI frame.
+fn ui_events(r: &mut Rng, pointer: &mut Pos2, held: &mut Option<PointerButton>) -> Vec<Event> {
+    let mut ev = Vec::new();
+    let mods = if r.chance(0.1) { Modifiers::CTRL } else if r.chance(0.05) { Modifiers::SHIFT } else { Modifiers::NONE };
+    match r.below(20) {
+        // Press somewhere (left mostly, right opens the slider fields).
+        0..=4 if held.is_none() => {
+            *pointer = ui_pos(r);
+            let button = if r.chance(0.15) { PointerButton::Secondary } else { PointerButton::Primary };
+            ev.push(Event::PointerMoved(*pointer));
+            ev.push(Event::PointerButton { pos: *pointer, button, pressed: true, modifiers: mods });
+            *held = Some(button);
+        }
+        // Drag a bit (sliders, separators, dock tabs, floating docks).
+        0..=9 => {
+            let step = if r.chance(0.2) { 300.0 } else { 30.0 };
+            *pointer += vec2(r.range(-step, step), r.range(-step, step));
+            ev.push(Event::PointerMoved(*pointer));
+        }
+        // Release.
+        10..=12 => {
+            if let Some(button) = held.take() {
+                ev.push(Event::PointerButton { pos: *pointer, button, pressed: false, modifiers: mods });
+            }
+        }
+        // Click (press + release in the same frame), sometimes a double one.
+        13..=14 => {
+            *pointer = ui_pos(r);
+            ev.push(Event::PointerMoved(*pointer));
+            for _ in 0..if r.chance(0.2) { 2 } else { 1 } {
+                ev.push(Event::PointerButton { pos: *pointer, button: PointerButton::Primary, pressed: true, modifiers: mods });
+                ev.push(Event::PointerButton { pos: *pointer, button: PointerButton::Primary, pressed: false, modifiers: mods });
+            }
+        }
+        15 => ev.push(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, r.range(-5.0, 5.0)),
+            modifiers: mods,
+        }),
+        // Typing: digits, text, Enter, Escape, Delete, Tab...
+        16 => ev.push(Event::Text(["7", "1000", "-3", "abc", "0", "99999", "é"][r.below(7) as usize].into())),
+        _ => {
+            let k = [Key::Enter, Key::Escape, Key::Delete, Key::Backspace, Key::Tab, Key::ArrowUp, Key::Z, Key::A]
+                [r.below(8) as usize];
+            ev.extend(key(k, mods));
+        }
+    }
+    if r.chance(0.01) { ev.push(Event::PointerGone); }
+    ev
+}
+
+fn random_brush(r: &mut Rng, base: &Brush) -> Brush {
+    let mut b = base.clone();
+    b.radius = match r.below(10) { 0..=2 => 1, 3..=5 => r.below(8) as u32 + 1, 6..=8 => r.below(60) as u32 + 1, _ => r.below(500) as u32 + 1 };
+    b.opacity = if r.chance(0.1) { 0.0 } else { r.f() };
+    b.hardness = if r.chance(0.2) { [0.0, 1.0][r.below(2) as usize] } else { r.f() };
+    b.blend = BlendMode::ALL[r.below(BlendMode::ALL.len() as u64) as usize];
+    b.color = [r.below(256) as u8, r.below(256) as u8, r.below(256) as u8];
+    b
+}
+
+/// Send one random stroke to the paint thread.
+fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (u32, u32), finish: bool) {
+    let preset = &lib.presets[r.below(lib.presets.len() as u64) as usize];
+    let brush = random_brush(r, &preset.settings);
+    pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: preset.engine.clone() });
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    let far = r.chance(0.1);
+    let mut t = 0.0f64;
+    let (mut x, mut y) = (r.range(-50.0, w + 50.0), r.range(-50.0, h + 50.0));
+    for _ in 0..r.below(40) {
+        if far {
+            x = r.range(-1e6, 1e6);
+            y = r.range(-1e6, 1e6);
+        } else {
+            x += r.range(-60.0, 60.0);
+            y += r.range(-60.0, 60.0);
+        }
+        // Pen time mostly rising, sometimes repeated or going back.
+        t += if r.chance(0.05) { -0.01 } else if r.chance(0.05) { 0.0 } else { r.range(0.001, 0.02) as f64 };
+        let pressure = match r.below(5) { 0 => 0.0, 1 => 1.0, _ => r.f() };
+        pt.send(Cmd::Sample { x, y, pressure, time: t });
+    }
+    if finish { pt.send(Cmd::End); }
+}
+
+#[test]
+#[ignore]
+fn fuzz() {
+    let steps: u64 = std::env::var("FUZZ_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000);
+    let seed: u64 = std::env::var("FUZZ_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        PANICKED.store(true, Ordering::SeqCst);
+        default_hook(info);
+    }));
+
+    let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut lib = Library::load();
+    let mut size = (r.below(300) as u32 + 1, r.below(300) as u32 + 1);
+    let doc: SharedDoc = Arc::new(Mutex::new(Document::new(DocId(1), "fuzz", size.0, size.1)));
+    let projection = Arc::new(Mutex::new(Projection::new(size.0, size.1)));
+    let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
+
+    let ctx = egui::Context::default();
+    let mut ui = UiState::new();
+    let mut brush = lib.presets[0].settings.clone();
+    let mut preset = 0usize;
+    let mut canvas_edit = size;
+    let (mut cm, mut perceptual) = (true, true);
+    let mut view = CanvasView::default();
+    let area = [0.0, 70.0, 1100.0, 830.0];
+    let mut pointer = pos2(700.0, 400.0);
+    let mut held = None;
+    let mut stroke_open = false;
+    let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
+    let t0 = Instant::now();
+    let trace = std::env::var("FUZZ_TRACE").is_ok();
+
+    for step in 0..steps {
+        if PANICKED.load(Ordering::SeqCst) { break; }
+        let kind = r.below(100);
+        let step_start = Instant::now();
+        if trace { eprintln!("step {step} kind {kind} size {size:?} rss {} MB", rss_mb()); }
+        match kind {
+            // The UI, with random input.
+            0..=69 => {
+                let Ok(mut d) = doc.try_lock() else { continue };
+                let input = RawInput {
+                    screen_rect: Some(SCREEN),
+                    events: ui_events(&mut r, &mut pointer, &mut held),
+                    time: Some(step as f64 * 0.016),
+                    ..Default::default()
+                };
+                let (can_undo, can_redo) = (d.history().undo_len() > 0, d.history().redo_len() > 0);
+                let mut actions = Actions::default();
+                let mut p = preset;
+                let _ = ctx.run(input, |ctx| {
+                    let mut model = Model {
+                        brush: &mut brush,
+                        presets: &lib.presets,
+                        preset: &mut p,
+                        layers: &mut d.layers,
+                        can_undo,
+                        can_redo,
+                        view_zoom: view.zoom,
+                        view_angle: view.angle.to_degrees(),
+                        color_managed: &mut cm,
+                        perceptual: &mut perceptual,
+                        display_profile: None,
+                        canvas_edit: &mut canvas_edit,
+                        max_canvas: 4096,
+                    };
+                    aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
+                });
+                ui_frames += 1;
+                // As App::select_preset.
+                if p != preset && p < lib.presets.len() {
+                    let color = brush.color;
+                    lib.presets[preset].settings = brush.clone();
+                    brush = lib.presets[p].settings.clone();
+                    brush.color = color;
+                    preset = p;
+                }
+                // As the end of App::render_frame.
+                if let Some(cmd) = actions.view { apply_view(&mut view, cmd, size, area); }
+                drop(d);
+                if !stroke_open {
+                    if actions.undo { pt.send(Cmd::Undo(Arc::clone(&doc))); }
+                    if actions.redo { pt.send(Cmd::Redo(Arc::clone(&doc))); }
+                    if actions.clear_layer { pt.send(Cmd::Clear(Arc::clone(&doc))); }
+                }
+                if actions.resize_to.is_some() || actions.recomposite {
+                    let mut d = doc.lock().unwrap();
+                    let mut p = projection.lock().unwrap();
+                    if let Some((w, h)) = actions.resize_to {
+                        d.resize(w, h);
+                        p.resize(w, h);
+                        size = (w, h);
+                        ui.invalidate_all_thumbnails();
+                    }
+                    d.layers.composite_into(&mut p.pixels);
+                    p.add_dirty((0, 0, size.0, size.1));
+                }
+            }
+            // Strokes (sometimes left open, like a lost pen-up).
+            70..=84 => {
+                if stroke_open && r.chance(0.7) {
+                    pt.send(Cmd::End);
+                    stroke_open = false;
+                } else {
+                    let finish = r.chance(0.9);
+                    stroke(&mut r, &pt, &doc, &lib, size, finish);
+                    stroke_open = !finish;
+                    strokes += 1;
+                }
+            }
+            // Shortcuts, also sent mid-stroke (the paint thread refuses).
+            85..=91 => {
+                let d = Arc::clone(&doc);
+                pt.send(match r.below(3) { 0 => Cmd::Undo(d), 1 => Cmd::Redo(d), _ => Cmd::Clear(d) });
+                ops += 1;
+            }
+            // Layer changes while the paint thread may be painting.
+            92..=95 => {
+                let mut d = doc.lock().unwrap();
+                let ids = d.layers.layer_ids();
+                match r.below(7) {
+                    0 => { d.layers.add_layer("L"); }
+                    1 => { d.layers.add_folder("F"); }
+                    2 => { d.layers.remove_active(); }
+                    3 => { d.layers.duplicate_active(); }
+                    4 => d.layers.move_active(r.chance(0.5)),
+                    5 => if let Some(&id) = ids.get(r.below(ids.len() as u64) as usize) { d.layers.set_active(id) },
+                    _ => if let Some(&id) = ids.get(r.below(ids.len() as u64) as usize) {
+                        if let Some(n) = d.layers.node_mut(id) { *n.locked_mut() ^= true; }
+                    },
+                }
+                ops += 1;
+            }
+            // Canvas resize (rare, big ones rarer).
+            96 => {
+                let (w, h) = if r.chance(0.05) {
+                    (r.below(3000) as u32 + 1, r.below(3000) as u32 + 1)
+                } else {
+                    (r.below(400) as u32 + 1, r.below(400) as u32 + 1)
+                };
+                let mut d = doc.lock().unwrap();
+                let mut p = projection.lock().unwrap();
+                d.resize(w, h);
+                p.resize(w, h);
+                size = (w, h);
+                d.layers.composite_into(&mut p.pixels);
+                ui.invalidate_all_thumbnails();
+                ops += 1;
+            }
+            // View: zoom, rotate, pan, fit, like the shortcuts and drags.
+            _ => {
+                let pivot = (r.range(-500.0, 2000.0), r.range(-500.0, 1500.0));
+                match r.below(4) {
+                    0 => view.zoom_at(r.range(0.01, 50.0), pivot, size, area),
+                    1 => view.rotate_at(r.range(-10.0, 10.0), view.rotation_pivot(size, area), size, area),
+                    2 => view.pan_by(r.range(-1e5, 1e5), r.range(-1e5, 1e5)),
+                    _ => apply_view(&mut view, VIEW_CMDS[r.below(VIEW_CMDS.len() as u64) as usize], size, area),
+                }
+                view.update_fit(size, area);
+                let p = view.screen_to_canvas(pivot, size, area);
+                assert!(view.zoom.is_finite() && view.angle.is_finite() && p.0.is_finite() && p.1.is_finite(),
+                    "view went non-finite: {view:?}");
+            }
+        }
+        if step_start.elapsed().as_secs_f64() > 2.0 {
+            println!("SLOW step {step} (kind {kind}): {:.1} s, canvas {size:?}", step_start.elapsed().as_secs_f64());
+            slow += 1;
+        }
+        // Keep the run inside this machine's RAM: duplicating folders over
+        // and over grows the document exponentially.
+        if let Ok(mut d) = doc.try_lock() {
+            let bytes = d.layers.layer_count() as u64 * size.0 as u64 * size.1 as u64 * 4;
+            if bytes > 400 << 20 || d.layers.layer_count() > 60 {
+                *d = Document::new(DocId(1), "fuzz", 200, 200);
+                size = (200, 200);
+                *projection.lock().unwrap() = Projection::new(200, 200);
+                ui.invalidate_all_thumbnails();
+                resets += 1;
+            }
+        }
+        if step % progress == 0 && step > 0 {
+            println!("{step} steps, {:.0} s, {} MB", t0.elapsed().as_secs_f64(), rss_mb());
+        }
+    }
+    if stroke_open { pt.send(Cmd::End); }
+    drop(pt); // joins the paint thread: everything queued is processed
+    println!("fuzz seed {seed}: {steps} steps in {:.1} s | {ui_frames} UI frames, {strokes} strokes, {ops} other ops, {resets} memory resets, {slow} slow steps | layers {}",
+        t0.elapsed().as_secs_f64(), doc.lock().map(|d| d.layers.layer_count()).unwrap_or(0));
+    assert!(!PANICKED.load(Ordering::SeqCst), "a panic happened (see above)");
+    assert!(!doc.is_poisoned() && !projection.is_poisoned());
+}
+
+/// As App::view_cmd, on a bare view.
+fn apply_view(v: &mut CanvasView, cmd: ViewCmd, c: (u32, u32), a: [f32; 4]) {
+    let center = (a[0] + a[2] / 2.0, a[1] + a[3] / 2.0);
+    let turn = v.rotation_pivot(c, a);
+    let step = 15f32.to_radians();
+    match cmd {
+        ViewCmd::ZoomIn => v.zoom_at(1.25, center, c, a),
+        ViewCmd::ZoomOut => v.zoom_at(0.8, center, c, a),
+        ViewCmd::ActualSize => v.set_zoom(1.0, center, c, a),
+        ViewCmd::Fit => v.fit_to_area(),
+        ViewCmd::RotateLeft => v.rotate_at(-step, turn, c, a),
+        ViewCmd::RotateRight => v.rotate_at(step, turn, c, a),
+        ViewCmd::ResetRotation => v.rotate_at(-v.angle, turn, c, a),
+    }
+}
+
+/// Resident memory of this process, in MB (Linux; 0 elsewhere).
+fn rss_mb() -> u64 {
+    std::fs::read_to_string("/proc/self/statm").ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map_or(0, |pages| pages * 4096 / (1 << 20))
+}

@@ -161,7 +161,10 @@ impl Library {
         for f in myb_files(path) {
             let Some(stem) = f.file_stem() else { continue };
             let target = dest.join(f.file_name().unwrap());
-            if std::fs::copy(&f, &target).is_ok() {
+            // Already in the library folder (imported from there): copying a
+            // file onto itself would empty it.
+            let same = f.canonicalize().ok().zip(target.canonicalize().ok()).is_some_and(|(a, b)| a == b);
+            if same || std::fs::copy(&f, &target).is_ok() {
                 copied += 1;
                 let prev = f.with_file_name(format!("{}_prev.png", stem.to_string_lossy()));
                 if prev.is_file() {

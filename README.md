@@ -81,6 +81,14 @@ UI stays quiet so the painting gets the room.
   stroke, never split: see `paint_thread.rs`); the UI thread only reads the
   pen and shows results. Undo / redo / clear go through the same queue, so
   Ctrl+Z right after lifting the pen undoes that very stroke.
+- **Strokes leaving the canvas** pause there like a lifted pen and resume
+  where they come back: zoomed out, the pen can travel hundreds of
+  thousands of canvas pixels off the canvas, and computing invisible dabs
+  there froze the paint thread (or ran out of memory with MyPaint brushes).
+- **Crash hunt** — `fuzz.rs` throws random clicks, drags, keys, strokes,
+  undo / redo, layer changes, resizes and view moves at the real UI and
+  paint thread, headless (`FUZZ_STEPS=1000000 cargo test --release -p
+  aurastudio fuzz -- --ignored`).
 - **Projection off the UI thread** (Krita's model): the paint thread merges
   the changed areas into the projection; the UI thread only copies the
   changed rectangles to the GPU. Changed areas travel as a list of rectangles,

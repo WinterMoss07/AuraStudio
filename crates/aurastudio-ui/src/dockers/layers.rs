@@ -132,6 +132,11 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         });
     });
 
+    // A layer being renamed may have been deleted meanwhile.
+    if st.renaming.as_ref().is_some_and(|(id, _, _)| m.layers.node(*id).is_none()) {
+        st.renaming = None;
+    }
+
     let list_h = ui.available_height().max(ROW_H);
     let mut event = None;
     Frame::none().fill(theme::SURFACE).rounding(6.0).show(ui, |ui| {

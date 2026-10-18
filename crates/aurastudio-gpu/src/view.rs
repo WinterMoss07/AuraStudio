@@ -13,7 +13,7 @@
 pub const MIN_ZOOM: f32 = 0.01;
 pub const MAX_ZOOM: f32 = 64.0;
 /// Free space kept around the canvas when fitting it to the window.
-pub const FIT_MARGIN: f32 = 24.0;
+const FIT_MARGIN: f32 = 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasView {
@@ -96,17 +96,18 @@ impl CanvasView {
     }
 
     /// Multiply the zoom by `factor`, around the screen point `pivot`.
-    /// Pivot for turning the view: the picture's own center while all of
-    /// it is in view (it spins in place), else the middle of the canvas
-    /// area (zoomed in: turn around what is being looked at).
+    /// Pivot for turning the view. Zoomed out so far that the whole
+    /// picture would fit in the area (zoom at or below "Fit to window"):
+    /// its own center, wherever it was moved, so it spins in place. Zoomed
+    /// in further: the middle of the area, around what is being looked at.
+    /// Depends on the zoom only, never on the position: nudging the picture
+    /// a few pixels never changes the pivot.
     pub fn rotation_pivot(&self, canvas: (u32, u32), area: Area) -> (f32, f32) {
-        let (w, h) = (canvas.0 as f32, canvas.1 as f32);
-        let [x, y, aw, ah] = area;
-        let all_in = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].iter().all(|&p| {
-            let (sx, sy) = self.canvas_to_screen(p, canvas, area);
-            sx >= x - 1.0 && sx <= x + aw + 1.0 && sy >= y - 1.0 && sy <= y + ah + 1.0
-        });
-        if all_in { self.canvas_to_screen((w / 2.0, h / 2.0), canvas, area) } else { center(area) }
+        if self.zoom <= self.fit_zoom(canvas, area) * 1.001 {
+            self.canvas_to_screen((canvas.0 as f32 / 2.0, canvas.1 as f32 / 2.0), canvas, area)
+        } else {
+            center(area)
+        }
     }
 
     pub fn zoom_at(&mut self, factor: f32, pivot: (f32, f32), canvas: (u32, u32), area: Area) {
@@ -175,17 +176,22 @@ mod tests {
     }
 
     #[test]
-    fn rotation_turns_around_the_picture_when_it_is_all_in_view() {
+    fn rotation_pivot_depends_on_zoom_not_position() {
         let mut v = CanvasView::default();
         v.update_fit(CANVAS, AREA);
         v.fit = false;
-        // Picture moved aside, still entirely visible: its own center.
+        // Zoomed out, picture pushed half out of the area: still its own
+        // center.
         v.zoom_at(0.5, (200.0, 200.0), CANVAS, AREA);
+        v.pan_by(-700.0, 0.0);
         let mid = v.canvas_to_screen((1000.0, 500.0), CANVAS, AREA);
         assert!(close(v.rotation_pivot(CANVAS, AREA), mid));
         assert!(!close(mid, center(AREA)));
-        // Zoomed in past the edges: the middle of the area.
-        v.zoom_at(8.0, (300.0, 300.0), CANVAS, AREA);
+        // Zoomed in past "fit", even with the picture centered: the middle
+        // of the area.
+        v.zoom_at(4.0, (300.0, 300.0), CANVAS, AREA);
+        v.pan = (0.0, 0.0);
+        v.pan_by(5.0, 0.0);
         assert!(close(v.rotation_pivot(CANVAS, AREA), center(AREA)));
     }
 

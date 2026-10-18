@@ -13,6 +13,11 @@ members = [
     "crates/aurastudio-app",
 ]
 
+# egui 0.30 with one upstream crash fix (vendor/egui/src/memory/mod.rs,
+# compare_order). Drop this once egui is upgraded to 0.31 or later.
+[patch.crates-io]
+egui = { path = "vendor/egui" }
+
 [profile.release]
 opt-level     = 3
 lto           = true

@@ -1,5 +1,7 @@
 mod app;
 mod cursors;
+#[cfg(test)]
+mod fuzz;
 mod paint_thread;
 mod projection;
 

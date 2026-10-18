@@ -92,16 +92,19 @@ impl DabEngine {
             merge(&mut dirty, self.dab(surface, x, y, p));
             return dirty;
         };
-        let (dx, dy) = (x - lx, y - ly);
+        // In f64: far off the canvas (zoomed out), f32 steps of one
+        // spacing could stop advancing a huge distance, and never end.
+        let (dx, dy) = ((x - lx) as f64, (y - ly) as f64);
         let len = (dx * dx + dy * dy).sqrt();
-        let mut done = 0.0;
-        while len - done >= self.to_next {
-            done += self.to_next;
+        let mut done = 0.0f64;
+        while len - done >= self.to_next as f64 {
+            done += self.to_next as f64;
             let t = done / len;
-            merge(&mut dirty, self.dab(surface, lx + dx * t, ly + dy * t, lp + (p - lp) * t));
+            let (px, py) = (lx as f64 + dx * t, ly as f64 + dy * t);
+            merge(&mut dirty, self.dab(surface, px as f32, py as f32, lp + (p - lp) * t as f32));
             self.to_next = self.spacing;
         }
-        self.to_next -= len - done;
+        self.to_next -= (len - done) as f32;
         self.last = Some((x, y, p));
         dirty
     }
@@ -245,6 +248,24 @@ fn merge(acc: &mut Option<Rect>, r: Option<Rect>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Zoomed out, samples can land millions of pixels off the canvas: the
+    /// path must still end (f32 steps stopped advancing there) and paint
+    /// its part on the canvas.
+    #[test]
+    fn huge_jumps_off_the_canvas_end() {
+        let mut e = DabEngine::new();
+        let mut b = Brush::new();
+        b.radius = 1;
+        e.sync_from(&b);
+        let mut s = white();
+        e.begin_stroke();
+        e.stroke_to(&mut s, 10.0, 10.0, 1.0);
+        e.stroke_to(&mut s, 3.0e7, -2.0e7, 1.0);
+        e.stroke_to(&mut s, 30.0, 30.0, 1.0);
+        e.end_stroke(&mut s);
+        assert!(red_at(&s, 10, 10) < 128 && red_at(&s, 30, 30) < 128);
+    }
 
     const N: u32 = 256;
 

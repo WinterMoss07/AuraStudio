@@ -25,9 +25,9 @@ use crate::projection::{Projection, SharedProjection};
 const UI_FRAME: Duration = Duration::from_micros(16_667);
 
 /// Canvas size at startup; changed afterwards from the Canvas docker.
+const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
 /// Zoom drag speed: the zoom is multiplied by e^(ZOOM_DRAG * dx px).
 const ZOOM_DRAG: f32 = 0.007;
-const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
 
 /// View navigation drag in progress.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,8 +92,10 @@ pub struct App {
     shift_down: bool,
     /// A Ctrl key is held (same reason).
     ctrl_down:  bool,
-    /// View drag in progress, with the last cursor position.
+    /// View drag in progress, with the last cursor position, and the
+    /// button that started it (only its release ends the drag).
     nav:        Option<(Nav, (f32, f32))>,
+    nav_button: MouseButton,
     /// Fixed point of the zoom / rotation drag (window pixels).
     nav_pivot:  (f32, f32),
     /// Set once the native pen sent samples during the current stroke:
@@ -189,6 +191,7 @@ impl App {
             ctrl_down:  false,
             nav_pivot:  (0.0, 0.0),
             nav:        None,
+            nav_button: MouseButton::Left,
             pen_active: false,
             cursor:     (0.0, 0.0),
             over_canvas: false,
@@ -225,12 +228,13 @@ impl App {
 
     /// Start panning / rotating / zooming the view with a drag from the
     /// cursor.
-    fn begin_nav(&mut self) {
+    fn begin_nav(&mut self, button: MouseButton) {
         let mode = self.nav_mode();
         log::info!("view drag: {mode:?}");
         self.nav = Some((mode, self.cursor));
+        self.nav_button = button;
         self.set_nav_pivot(mode);
-        self.update_cursor_icon();
+        self.update_cursor();
     }
 
     /// Fixed point of a zoom or rotation drag, chosen when it starts (or
@@ -247,7 +251,7 @@ impl App {
 
     fn end_nav(&mut self) {
         self.nav = None;
-        self.update_cursor_icon();
+        self.update_cursor();
     }
 
     /// Shift is down, from the modifier state or the Shift keys
@@ -269,7 +273,7 @@ impl App {
         let mode = self.nav_mode();
         if mode != prev_mode {
             self.set_nav_pivot(mode);
-            self.update_cursor_icon();
+            self.update_cursor();
         }
         let pivot = self.nav_pivot;
         let Some(gpu) = &mut self.gpu else { return };
@@ -293,19 +297,19 @@ impl App {
     /// Brush outline under the cursor over the canvas (Krita style), in
     /// place of the OS arrow; the arrow / hand comes back over the dockers
     /// and while navigating.
-    fn update_brush_cursor(&mut self) {
+    fn update_outline(&mut self) {
         let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none();
         self.outline_shown = show;
         if let Some(gpu) = &mut self.gpu {
             let outline = show.then(|| (self.cursor, self.brush.radius as f32 * gpu.zoom()));
             gpu.set_brush_cursor(outline);
         }
-        self.apply_cursor();
     }
 
-    /// Space / Shift / view drag changed: outline and cursor follow.
-    fn update_cursor_icon(&mut self) {
-        self.update_brush_cursor();
+    /// Pointer, keys or view drag changed: outline and cursor follow.
+    fn update_cursor(&mut self) {
+        self.update_outline();
+        self.apply_cursor();
     }
 
     /// The one place the window cursor is set (egui only suggests one).
@@ -403,6 +407,7 @@ impl App {
             ImportBrushes::Files => dialog.add_filter("MyPaint brush", &["myb"]).pick_files().unwrap_or_default(),
             ImportBrushes::Folder => dialog.pick_folder().into_iter().collect(),
         };
+        if paths.is_empty() { return; }
         let mut added = 0;
         let mut error = None;
         for p in &paths {
@@ -411,7 +416,6 @@ impl App {
                 Err(e) => error = Some(e),
             }
         }
-        if paths.is_empty() { return; }
         match (added, error) {
             (0, Some(e)) => self.ui.notify(&format!("Import failed: {e}")),
             (n, _) => self.ui.notify(&format!("{n} brush(es) imported")),
@@ -531,7 +535,7 @@ impl App {
         if self.is_drawing {
             self.end_stroke();
         }
-        self.update_cursor_icon();
+        self.update_cursor();
         self.request_redraw();
     }
 
@@ -577,7 +581,7 @@ impl App {
     }
 
     fn render_frame(&mut self) {
-        self.update_brush_cursor();
+        self.update_outline();
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
@@ -833,6 +837,10 @@ impl ApplicationHandler<AppEvent> for App {
         let ui_needs_frame = self.gpu.as_mut()
             .map(|gpu| gpu.egui_handle_event(&event))
             .unwrap_or(false);
+        // The hit test below uses the new position.
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            self.cursor = (position.x as f32, position.y as f32);
+        }
         let over_canvas = self.gpu.as_ref()
             .map(|gpu| gpu.is_canvas_at(self.cursor))
             .unwrap_or(false);
@@ -873,17 +881,17 @@ impl ApplicationHandler<AppEvent> for App {
                 // has focus, so it can't get stuck down).
                 if key.logical_key == Key::Named(NamedKey::Shift) {
                     self.shift_down = key.state == ElementState::Pressed;
-                    if self.space_down { self.update_cursor_icon(); }
+                    if self.space_down { self.update_cursor(); }
                 }
                 if key.logical_key == Key::Named(NamedKey::Control) {
                     self.ctrl_down = key.state == ElementState::Pressed;
-                    if self.space_down { self.update_cursor_icon(); }
+                    if self.space_down { self.update_cursor(); }
                 }
                 if key.logical_key == Key::Named(NamedKey::Space) {
                     let down = key.state == ElementState::Pressed;
                     if down != self.space_down {
                         self.space_down = down;
-                        self.update_cursor_icon();
+                        self.update_cursor();
                     }
                 }
                 // Typing in a docker field (e.g. canvas width) must not
@@ -926,13 +934,13 @@ impl ApplicationHandler<AppEvent> for App {
                     } else if over_canvas && self.space_down {
                         // Space + drag: pan; Shift + Space + drag: rotate;
                         // Ctrl + Space + drag: zoom (Krita / CSP).
-                        self.begin_nav();
+                        self.begin_nav(MouseButton::Left);
                     } else if over_canvas {
                         self.pressure   = 1.0;
                         self.begin_stroke();
                     }
                 } else if self.nav.is_some() {
-                    self.end_nav();
+                    if self.nav_button == MouseButton::Left { self.end_nav(); }
                 } else if self.is_drawing {
                     self.end_stroke();
                 }
@@ -941,9 +949,9 @@ impl ApplicationHandler<AppEvent> for App {
             // Middle drag: pan, Shift + middle drag: rotate, Ctrl + middle
             // drag: zoom.
             WindowEvent::MouseInput { button: MouseButton::Middle, state, .. } => {
-                if state.is_pressed() && over_canvas && !self.is_drawing {
-                    self.begin_nav();
-                } else if !state.is_pressed() && self.nav.is_some() {
+                if state.is_pressed() && over_canvas && !self.is_drawing && self.nav.is_none() {
+                    self.begin_nav(MouseButton::Middle);
+                } else if !state.is_pressed() && self.nav.is_some() && self.nav_button == MouseButton::Middle {
                     self.end_nav();
                 }
             }
@@ -968,18 +976,16 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::CursorLeft { .. } => {
                 self.cursor_in_window = false;
                 if let Some(c) = &mut self.cursors { c.invalidate(); }
-                self.update_brush_cursor();
+                self.update_cursor();
                 self.request_redraw();
             }
 
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as f32, position.y as f32);
+            WindowEvent::CursorMoved { .. } => {
                 self.cursor_in_window = true;
-                self.over_canvas = self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(self.cursor));
                 self.activity.cursor_moves += 1;
                 // The outline moves with the cursor: a frame is needed.
                 if self.over_canvas || self.outline_shown {
-                    self.update_brush_cursor();
+                    self.update_cursor();
                     self.request_canvas_frame();
                 }
                 if self.nav.is_some() {

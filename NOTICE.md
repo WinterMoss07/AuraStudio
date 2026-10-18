@@ -28,3 +28,14 @@ Cerviño (tanda), Guillaume Loussarévian (kaerhon_v1), Brien Dieterle
 
 Brush dynamics and dab rendering for MyPaint brushes use the `hokusai`
 crates (a Rust port of libmypaint), as a regular crates.io dependency.
+
+## vendor/egui — egui 0.30.0, patched
+
+Copy of `egui` 0.30.0 (https://github.com/emilk/egui), © Emil Ernerfeldt
+and the egui contributors, licensed under MIT OR Apache-2.0. Two changes:
+`Areas::compare_order` takes the upstream fix from egui 0.31 (the 0.30
+version is not a total order and made the standard sort panic, found by our
+fuzz test), and float literals the compiler would infer as `f32` are written
+`_f32` (a warning that becomes an error in future Rust). Used through
+`[patch.crates-io]` in the workspace `Cargo.toml`; to drop once egui is
+upgraded.
