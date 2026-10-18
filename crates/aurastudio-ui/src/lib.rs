@@ -169,7 +169,8 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         .show_separator_line(false)
         .default_width(300.0)
         .width_range(240.0..=600.0)
-        .frame(Frame::none().fill(theme::PANEL))
+        // A little room on the left: the tabs no longer touch the canvas.
+        .frame(Frame::none().fill(theme::PANEL).inner_margin(egui::Margin { left: 6.0, ..Default::default() }))
         .show(ctx, |ui| {
             let style = theme::dock_style(ui.style());
             let mut viewer = dockers::Viewer {

@@ -331,7 +331,7 @@ pub struct Fill<'a> {
 /// Krita-style slider: a rounded bar filled with the accent up to the
 /// value, with the label and value written inside (no separate number box
 /// that grows with the digits). Click or drag anywhere sets the value;
-/// double-click types one in. `log`: logarithmic scale (brush size).
+/// right-click types one in. `log`: logarithmic scale (brush size).
 /// Returns the new value when the user changed it.
 pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f32) -> Option<f32> {
     let Fill { label, range, log, format } = spec;
@@ -369,21 +369,17 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
         return None;
     }
 
-    // The first click of a double-click already moved the value: remember
-    // it from before each press, to put it back.
-    let before_id = id.with("before_press");
-    if resp.double_clicked() {
-        // Empty, the current value as a hint: typing replaces it.
+    if resp.secondary_clicked() {
+        // Right-click types a value (left click and drag only ever set
+        // it): empty, the current value as a hint, typing replaces it.
         ui.data_mut(|d| d.insert_temp(editing_id, (String::new(), false)));
-        return ui.data(|d| d.get_temp::<f32>(before_id)).filter(|v| (v - value).abs() >= 0.5);
-    }
-    if resp.hovered() && ui.input(|i| i.pointer.any_pressed()) {
-        ui.data_mut(|d| d.insert_temp(before_id, value));
     }
 
     let mut new = None;
     // (clicked: press and release can land in the same frame.)
-    if resp.is_pointer_button_down_on() || resp.dragged() || resp.clicked() {
+    // Left button only: the right one opens the text field.
+    let primary_down = resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down());
+    if primary_down || resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
             let t = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
             let v = from_t(t).round().clamp(lo, hi);

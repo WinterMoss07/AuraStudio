@@ -278,6 +278,20 @@ impl LayerStack {
         }
     }
 
+    /// A new document's layers (CSP): a locked white "Paper" at the
+    /// bottom, so it can't be painted on by mistake, and an empty
+    /// "Layer 1" above it, active.
+    pub fn new_document(width: u32, height: u32) -> Self {
+        let mut s = Self::new(width, height);
+        if let Some(Node::Layer(paper)) = s.root.first_mut() {
+            paper.name = "Paper".into();
+            paper.locked = true;
+        }
+        let id = s.add_layer("Layer 1");
+        s.set_active(id);
+        s
+    }
+
     fn new_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -848,6 +862,16 @@ mod tests {
 
     fn names_top_down(stack: &LayerStack) -> Vec<String> {
         stack.rows().iter().map(|r| format!("{}{}", "  ".repeat(r.depth), stack.node(r.id).unwrap().name())).collect()
+    }
+
+    #[test]
+    fn new_document_has_locked_paper_and_layer_1() {
+        let s = LayerStack::new_document(2, 2);
+        assert_eq!(names_top_down(&s), ["Layer 1", "Paper"]);
+        assert!(s.can_paint());
+        let paper = s.rows().last().unwrap().id;
+        assert!(s.is_locked(paper));
+        assert_eq!(composite(&s), [255, 255, 255, 255]);
     }
 
     #[test]

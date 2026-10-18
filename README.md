@@ -46,6 +46,8 @@ UI stays quiet so the painting gets the room.
   and showed the four-arrow cross instead.
 
 ### Layers & document
+- New documents start like CSP: a locked white **Paper** layer and an
+  empty **Layer 1** above it, active.
 - Layer tree with **folders** (Pass Through or isolated with a blend mode),
   visibility, opacity, **lock** (inherited by folder content), duplicate,
   reorder in / out of folders, rename (double-click).
@@ -69,7 +71,7 @@ UI stays quiet so the painting gets the room.
 - Neutral dark theme with one blue accent. Menu bar, tool options bar and
   docks are one seamless surface (no borders, no gaps); only the canvas is
   rounded, set right against the bar and the docks. Sliders fill with the
-  accent and show their label and value inside (double-click to type a
+  accent and show their label and value inside (right-click to type a
   value, click elsewhere or Escape to leave). Dock column: Color (RGB / HSV
   gradient sliders, hex field), Tool options, Brushes, Layers, Canvas. Docks
   can be rearranged, resized and detached.

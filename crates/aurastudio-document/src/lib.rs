@@ -40,7 +40,7 @@ impl Document {
         Self {
             id,
             name: name.to_owned(),
-            layers: LayerStack::new(width, height),
+            layers: LayerStack::new_document(width, height),
             history: History::new(DEFAULT_BUDGET),
         }
     }
