@@ -306,6 +306,32 @@ pub fn peek_origin(path: &Path) -> Option<PathBuf> {
     json.origin
 }
 
+/// Can Open read this file (by its extension)?
+pub fn can_open(path: &Path) -> bool {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    ext == EXTENSION || IMAGE_EXTENSIONS.contains(&ext.as_str())
+}
+
+/// Small picture of a file for the start screen, at most `max` px: the
+/// preview inside an .aurs file, or the image itself shrunk.
+pub fn thumbnail(path: &Path, max: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let img = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION)) {
+        let file = std::fs::File::open(path).ok()?;
+        let mut zip = zip::ZipArchive::new(io::BufReader::new(file)).ok()?;
+        let png = read_entry(&mut zip, "preview.png", 16 << 20).ok()?;
+        image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?
+    } else {
+        let mut reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(1 << 30);
+        reader.limits(limits);
+        reader.decode().ok()?
+    };
+    let img = img.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(downscale(img.as_raw(), w, h, max))
+}
+
 /// Bytes of one archive entry, at most `limit` (a damaged size can't make
 /// it allocate more).
 fn read_entry<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str, limit: u64) -> Result<Vec<u8>, String> {

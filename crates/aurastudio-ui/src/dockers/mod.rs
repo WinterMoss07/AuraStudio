@@ -58,6 +58,9 @@ impl TabViewer for Viewer<'_, '_> {
             Tab::Color       => color::show(ui, self.color, self.m),
             Tab::ToolOptions => tool_options::show(ui, self.m),
             Tab::Brushes     => brushes::show(ui, self.brushes, self.m, self.a),
+            Tab::Layers | Tab::Canvas if self.m.home => {
+                ui.label(egui::RichText::new("No document").color(crate::theme::TEXT_WEAK));
+            }
             Tab::Layers      => layers::show(ui, self.layers, self.notice, self.m, self.a),
             Tab::Canvas      => canvas::show(ui, self.m, self.a),
         }).response.rect;

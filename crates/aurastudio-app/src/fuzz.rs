@@ -219,6 +219,7 @@ fn fuzz() {
                         display_profile: None,
                         canvas_edit: &mut canvas_edit,
                         max_canvas: 4096,
+                        home: false,
                     };
                     aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
                 });

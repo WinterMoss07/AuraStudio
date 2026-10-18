@@ -14,6 +14,7 @@ pub mod theme;
 mod bars;
 mod dock_layout;
 mod dockers;
+mod home;
 mod widgets;
 
 use std::time::{Duration, Instant};
@@ -26,6 +27,7 @@ use egui_dock::{DockArea, DockState};
 
 pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
+pub use home::{NewDoc, RecentFile};
 pub use widgets::set_display_transform;
 
 /// Brush size range, as a diameter in pixels.
@@ -53,6 +55,9 @@ pub struct Model<'a> {
     pub color_managed:      &'a mut bool,
     pub perceptual:         &'a mut bool,
     pub display_profile:    Option<&'a str>,
+    /// No document open: the start screen shows in place of the canvas
+    /// (the layer stack lent is an empty placeholder).
+    pub home:               bool,
 }
 
 /// View commands from the View menu (the app also binds them to keys).
@@ -79,10 +84,16 @@ pub struct Actions {
     pub file:        Option<FileCmd>,
     /// Answer to the dialog shown (see UiState::show_dialog).
     pub dialog:      Option<DialogChoice>,
+    /// The New dialog was confirmed.
+    pub new_doc:     Option<NewDoc>,
+    /// A recent file was clicked.
+    pub open_path:   Option<std::path::PathBuf>,
+    /// "Remove from list" on a recent file.
+    pub forget_recent: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FileCmd { New, Open, Save, SaveAs, Export }
+pub enum FileCmd { New, Open, Save, SaveAs, Export, Close }
 
 /// A question the app asks, shown over everything until answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,6 +144,8 @@ pub struct UiState {
     brushes:       dockers::brushes::BrushesState,
     dock_layout:   dock_layout::DockLayout,
     dialog:        Option<Dialog>,
+    new_form:      Option<home::NewForm>,
+    recent:        Vec<RecentFile>,
 }
 
 impl Default for UiState {
@@ -151,7 +164,24 @@ impl UiState {
             brushes:       Default::default(),
             dock_layout:   Default::default(),
             dialog:        None,
+            new_form:      None,
+            recent:        Vec::new(),
         }
+    }
+
+    /// Show the New document dialog.
+    pub fn open_new_dialog(&mut self) {
+        self.new_form = Some(home::NewForm::new());
+    }
+
+    /// Recent files of the start screen (thumbnails come later, see
+    /// set_recent_thumbnail).
+    pub fn set_recent(&mut self, recent: Vec<RecentFile>) {
+        self.recent = recent;
+    }
+
+    pub fn set_recent_thumbnail(&mut self, path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
+        home::set_thumbnail(&mut self.recent, path, w, h, rgba);
     }
 
     /// Ask the user; the answer comes back in `Actions::dialog`.
@@ -161,7 +191,7 @@ impl UiState {
 
     /// A dialog is waiting for an answer (the canvas ignores the pen).
     pub fn has_dialog(&self) -> bool {
-        self.dialog.is_some()
+        self.dialog.is_some() || self.new_form.is_some()
     }
 
     /// The pixels of this layer changed: rebuild its thumbnail.
@@ -229,6 +259,14 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         });
 
     canvas_card(ctx);
+    if model.home {
+        if let Some(area) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(CANVAS_RECT_ID))) {
+            home::start_screen(ctx, area, &mut state.recent, actions);
+        }
+    }
+    if let Some(form) = &mut state.new_form {
+        if !home::new_dialog(ctx, form, model.max_canvas, actions) { state.new_form = None; }
+    }
     dialog(ctx, state, actions);
 }
 

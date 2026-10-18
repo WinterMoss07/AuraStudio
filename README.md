@@ -53,6 +53,14 @@ UI stays quiet so the painting gets the room.
   (after the strokes before it) and writes on its own thread, through a
   temporary file: a crash mid-save never breaks the previous file. Damaged
   files give an error, never a crash.
+- **Start screen** (like Procreate / PhotoCraft): the docks are loaded and
+  the canvas area shows New, Open and the recent files with thumbnails
+  (the preview inside .aurs files). Ctrl+W closes the document back to
+  it. Drop an image or an .aurs file on the window to open it.
+- **New document** (Ctrl+N): presets for paper (A5, A4, A3, Letter), manga
+  (B4 manuscript, B5, A4 at 600 dpi), comics (US page with bleed, art
+  board, BD album page) and screen (square, HD, 4K, webtoon, Instagram),
+  or any size in px, mm, cm or inches at any resolution.
 - **Open images** (PNG, JPG, WebP, BMP, TIFF, GIF) as a new document, the
   picture over the locked Paper; **export** the merged image to PNG / JPG.
 - **Autosave and recovery**: unsaved work goes to a recovery file 5 minutes

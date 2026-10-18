@@ -21,13 +21,16 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
 
                 ui.menu_button("File", |ui| {
                     for (label, key, cmd) in [
-                        ("New", "Ctrl+N", FileCmd::New),
+                        ("New…", "Ctrl+N", FileCmd::New),
                         ("Open…", "Ctrl+O", FileCmd::Open),
                         ("Save", "Ctrl+S", FileCmd::Save),
                         ("Save As…", "Ctrl+Shift+S", FileCmd::SaveAs),
                         ("Export…", "Ctrl+Shift+E", FileCmd::Export),
+                        ("Close", "Ctrl+W", FileCmd::Close),
                     ] {
-                        if ui.add(egui::Button::new(label).shortcut_text(key)).clicked() {
+                        // Only New and Open without a document.
+                        let enabled = !m.home || matches!(cmd, FileCmd::New | FileCmd::Open);
+                        if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(key)).clicked() {
                             a.file = Some(cmd);
                             ui.close_menu();
                         }
@@ -43,7 +46,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("Layer", |ui| {
+                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Layer", |ui| {
                     if ui.button("New layer").clicked() { layers::new_layer(m, a); ui.close_menu(); }
                     if ui.button("New folder").clicked() { layers::new_folder(m, a); ui.close_menu(); }
                     if ui.button("Duplicate").clicked() {
@@ -60,13 +63,13 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         layers::delete_layer(&mut state.notice, m, a);
                         ui.close_menu();
                     }
-                });
-                ui.menu_button("Canvas", |ui| {
+                }));
+                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Canvas", |ui| {
                     if ui.button("Canvas size…").clicked() {
                         state.focus_tab = Some(Tab::Canvas);
                         ui.close_menu();
                     }
-                });
+                }));
                 ui.menu_button("View", |ui| {
                     for (label, key, cmd) in [
                         ("Zoom in", "+", ViewCmd::ZoomIn),
@@ -103,6 +106,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if m.home { return; }
                     let n = m.layers.layer_count();
                     // Angle shown only when the canvas is turned.
                     let angle = if m.view_angle.abs() >= 0.05 { format!("  ·  {:.0}°", m.view_angle) } else { String::new() };

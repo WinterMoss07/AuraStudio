@@ -26,8 +26,10 @@ use crate::projection::{Projection, SharedProjection};
 /// Shortest time between two frames that only update the UI.
 const UI_FRAME: Duration = Duration::from_micros(16_667);
 
-/// Canvas size at startup; changed afterwards from the Canvas docker.
-const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
+/// Size of the empty stand-in document while the start screen shows.
+const PLACEHOLDER: (u32, u32) = (1, 1);
+/// Files listed on the start screen.
+const MAX_RECENT: usize = 12;
 /// Zoom drag speed: the zoom is multiplied by e^(ZOOM_DRAG * dx px).
 const ZOOM_DRAG: f32 = 0.007;
 /// Unsaved work is saved to the recovery file this long after it changed
@@ -40,12 +42,30 @@ fn autosave_after() -> Duration {
 /// Something that would close the current document: done right away, or
 /// after asking to save it.
 #[derive(Clone, Debug)]
-enum Pending { New, Open(PathBuf), Quit }
+enum Pending { Create(aurastudio_ui::NewDoc), Open(PathBuf), Close, Quit }
 
 /// Where unsaved work is saved automatically (one file: AuraStudio has one
 /// document open at a time for now).
 fn recovery_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(format!("autosave.{EXTENSION}")))
+}
+
+/// The list of recently used files, one path per line.
+fn recent_list_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("AuraStudio").join("recent.txt"))
+}
+
+fn load_recent() -> Vec<PathBuf> {
+    recent_list_path().and_then(|p| std::fs::read_to_string(p).ok()).map_or_else(Vec::new, |s| {
+        s.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).take(MAX_RECENT).collect()
+    })
+}
+
+fn save_recent(list: &[PathBuf]) {
+    let Some(path) = recent_list_path() else { return };
+    if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+    let text: String = list.iter().map(|p| format!("{}\n", p.display())).collect();
+    if let Err(e) = std::fs::write(&path, text) { log::warn!("recent files: {e}"); }
 }
 
 fn has_extension(path: &Path, ext: &str) -> bool {
@@ -80,6 +100,8 @@ pub enum AppEvent {
     /// Message for the options bar, from the paint thread.
     Notice(&'static str),
     Message(String),
+    /// A start screen thumbnail was decoded.
+    Thumbnail { path: PathBuf, w: u32, h: u32, rgba: Vec<u8> },
     /// A save finished (see paint_thread::Event::Saved).
     Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
 }
@@ -115,6 +137,11 @@ pub struct App {
     title: String,
     /// Close once about_to_wait runs.
     quit: bool,
+    /// No document open: the start screen shows (`doc` is an empty
+    /// stand-in).
+    home: bool,
+    /// Recently opened / saved files, newest first.
+    recent: Vec<PathBuf>,
     /// The document shown, shared with the paint thread.
     doc:    SharedDoc,
     paint:  PaintThread,
@@ -202,8 +229,8 @@ impl App {
         let library = Library::load();
         log::info!("brushes: {} presets ({} groups)", library.presets.len(), library.groups().len());
         let mut workspace = Workspace::new();
-        let doc = workspace.new_document("Untitled", DEFAULT_CANVAS.0, DEFAULT_CANVAS.1);
-        let projection = Arc::new(std::sync::Mutex::new(Projection::new(DEFAULT_CANVAS.0, DEFAULT_CANVAS.1)));
+        let doc = workspace.new_document("", PLACEHOLDER.0, PLACEHOLDER.1);
+        let projection = Arc::new(std::sync::Mutex::new(Projection::new(PLACEHOLDER.0, PLACEHOLDER.1)));
         let worker_proxy = proxy.clone();
         let paint = PaintThread::spawn(Arc::clone(&projection), move |e| {
             let _ = worker_proxy.send_event(match e {
@@ -231,10 +258,12 @@ impl App {
             autosaved_revision: 0,
             title: String::new(),
             quit: false,
+            home: true,
+            recent: load_recent(),
             doc,
             paint,
             projection,
-            canvas_edit: DEFAULT_CANVAS,
+            canvas_edit: PLACEHOLDER,
             ui:          UiState::new(),
 
             is_drawing: false,
@@ -663,6 +692,7 @@ impl App {
         let preset_before = self.preset;
         let mut preset = self.preset;
         let canvas_edit = &mut self.canvas_edit;
+        let home = self.home;
         let mut actions = Actions::default();
         // Never wait for the brush: if the paint thread holds the document
         // (mid-stroke), redraw the canvas with the last UI as it was, and
@@ -690,6 +720,7 @@ impl App {
                 display_profile,
                 canvas_edit,
                 max_canvas,
+                home,
             };
             aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions);
             }),
@@ -729,6 +760,13 @@ impl App {
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
         if let Some(choice) = actions.dialog { self.on_dialog(choice); }
         if let Some(cmd) = actions.file { self.file_cmd(cmd); }
+        if let Some(spec) = actions.new_doc { self.request(Pending::Create(spec)); }
+        if let Some(path) = actions.open_path { self.request(Pending::Open(path)); }
+        if let Some(path) = actions.forget_recent {
+            self.recent.retain(|p| *p != path);
+            save_recent(&self.recent);
+            self.refresh_home();
+        }
         if actions.modified || actions.recomposite {
             if let Ok(mut d) = self.doc.try_lock() { d.touch(); }
         }
@@ -773,12 +811,16 @@ impl App {
     fn file_cmd(&mut self, cmd: FileCmd) {
         if self.is_drawing || self.ui.has_dialog() { return; }
         match cmd {
-            FileCmd::New => self.request(Pending::New),
+            FileCmd::New => self.ui.open_new_dialog(),
             FileCmd::Open => self.open_dialog(),
+            // Nothing to save or close on the start screen.
+            _ if self.home => {}
             FileCmd::Save => self.save(false, None),
             FileCmd::SaveAs => self.save(true, None),
             FileCmd::Export => self.export(),
+            FileCmd::Close => self.request(Pending::Close),
         }
+        self.request_redraw();
     }
 
     /// Do `action`, first asking to save unsaved changes.
@@ -798,11 +840,21 @@ impl App {
 
     fn perform(&mut self, action: Pending) {
         match action {
-            Pending::New => {
+            Pending::Create(spec) => {
                 let id = self.workspace.reserve_id();
-                self.install(Document::new(id, "Untitled", DEFAULT_CANVAS.0, DEFAULT_CANVAS.1));
+                let mut doc = Document::new(id, &spec.name, spec.width, spec.height);
+                doc.dpi = spec.dpi;
+                log::info!("new document: {} × {} px, {} dpi", spec.width, spec.height, spec.dpi);
+                self.install(doc);
+                self.home = false;
             }
             Pending::Open(path) => self.open_path(&path),
+            Pending::Close => {
+                let id = self.workspace.reserve_id();
+                self.install(Document::new(id, "", PLACEHOLDER.0, PLACEHOLDER.1));
+                self.home = true;
+                self.refresh_home();
+            }
             Pending::Quit => {
                 // Leaving on purpose: no work to recover next time.
                 if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); }
@@ -853,6 +905,8 @@ impl App {
             Ok(doc) => {
                 log::info!("opened {} in {:.0} ms", path.display(), t.elapsed().as_secs_f64() * 1000.0);
                 self.install(doc);
+                self.home = false;
+                self.add_recent(path);
             }
             Err(e) => {
                 log::warn!("open {}: {e}", path.display());
@@ -928,6 +982,7 @@ impl App {
                 // The work is safe in its own file now.
                 if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); }
                 self.autosaved_revision = revision;
+                self.add_recent(&path);
                 self.ui.notify(&format!("Saved {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
                 if let Some(action) = self.after_save.take() { self.perform(action); }
             }
@@ -1028,10 +1083,44 @@ impl App {
         }
     }
 
+    /// Put `path` first in the recent files.
+    fn add_recent(&mut self, path: &Path) {
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.recent.retain(|p| *p != path);
+        self.recent.insert(0, path);
+        self.recent.truncate(MAX_RECENT);
+        save_recent(&self.recent);
+    }
+
+    /// Recent files on the start screen; their thumbnails are decoded on a
+    /// thread and arrive one by one.
+    fn refresh_home(&mut self) {
+        self.recent.retain(|p| p.is_file());
+        let list = self.recent.iter().map(|p| {
+            let ext = p.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+            let when = std::fs::metadata(p).and_then(|m| m.modified()).map_or_else(|_| String::new(), ago);
+            aurastudio_ui::RecentFile::new(p.clone(), aurastudio_file::doc_name(p), format!("{ext} · {when}"))
+        }).collect();
+        self.ui.set_recent(list);
+        let (paths, proxy) = (self.recent.clone(), self.proxy.clone());
+        std::thread::spawn(move || {
+            for path in paths {
+                if let Some((w, h, rgba)) = aurastudio_file::thumbnail(&path, 280) {
+                    let _ = proxy.send_event(AppEvent::Thumbnail { path, w, h, rgba });
+                }
+            }
+        });
+        self.request_redraw();
+    }
+
     /// "name* — AuraStudio" (the star: unsaved changes).
     fn update_title(&mut self) {
         let Ok(d) = self.doc.try_lock() else { return };
-        let title = format!("{}{} — AuraStudio", d.name, if d.is_modified() { "*" } else { "" });
+        let title = if self.home {
+            "AuraStudio".to_string()
+        } else {
+            format!("{}{} — AuraStudio", d.name, if d.is_modified() { "*" } else { "" })
+        };
         drop(d);
         if title != self.title {
             if let Some(w) = &self.window { w.set_title(&title); }
@@ -1082,6 +1171,10 @@ impl ApplicationHandler<AppEvent> for App {
                 self.request_redraw();
             }
             AppEvent::Saved { doc, path, revision, auto, result } => self.on_saved(doc, path, revision, auto, result),
+            AppEvent::Thumbnail { path, w, h, rgba } => {
+                self.ui.set_recent_thumbnail(&path, w, h, &rgba);
+                self.request_redraw();
+            }
         }
     }
 
@@ -1168,6 +1261,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.cursors = Some(crate::cursors::Cursors::new(event_loop));
         self.gpu    = Some(gpu);
         self.refresh_display_profile();
+        self.refresh_home();
         self.offer_recovery();
     }
 
@@ -1224,6 +1318,17 @@ impl ApplicationHandler<AppEvent> for App {
 
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
 
+            // A file dropped on the window: opened like with Open.
+            WindowEvent::DroppedFile(path) => {
+                if self.ui.has_dialog() || self.is_drawing { return; }
+                if aurastudio_file::can_open(&path) {
+                    self.request(Pending::Open(path));
+                } else {
+                    self.ui.notify(&format!("Can't open {}: not an image or .aurs file", aurastudio_file::doc_name(&path)));
+                    self.request_redraw();
+                }
+            }
+
             WindowEvent::Focused(false) => self.reset_input(),
 
             // The window may now be on another monitor (other profile).
@@ -1255,9 +1360,10 @@ impl ApplicationHandler<AppEvent> for App {
                 let shift = self.modifiers.shift_key();
                 if self.ui.has_dialog() { return; }
                 match key.logical_key.as_ref() {
-                    Key::Character(c) if ctrl && !key.repeat && ["n", "o", "s", "e"].iter().any(|k| c.eq_ignore_ascii_case(k)) => {
+                    Key::Character(c) if ctrl && !key.repeat && ["n", "o", "s", "e", "w"].iter().any(|k| c.eq_ignore_ascii_case(k)) => {
                         let cmd = match c.to_ascii_lowercase().as_str() {
                             "n" => Some(FileCmd::New),
+                            "w" => Some(FileCmd::Close),
                             "o" => Some(FileCmd::Open),
                             "s" if shift => Some(FileCmd::SaveAs),
                             "s" => Some(FileCmd::Save),
@@ -1266,6 +1372,8 @@ impl ApplicationHandler<AppEvent> for App {
                         };
                         if let Some(cmd) = cmd { self.file_cmd(cmd); }
                     }
+                    // The start screen has nothing to edit or move.
+                    _ if self.home => {}
                     Key::Named(NamedKey::Delete) if !key.repeat => self.clear_active_layer(),
                     // Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo (Krita, CSP,
                     // Photoshop). Holding the keys repeats, like everywhere.
