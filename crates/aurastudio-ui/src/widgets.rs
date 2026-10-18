@@ -319,19 +319,112 @@ pub fn paint_lock(p: &egui::Painter, c: Pos2, locked: bool, col: Color32) {
 
 // --- Brush controls (options bar + Tool options dock) ---------------------
 
+/// What a fill slider shows and edits.
+pub struct Fill<'a> {
+    pub label:  &'a str,
+    pub range:  std::ops::RangeInclusive<f32>,
+    /// Logarithmic scale (brush size).
+    pub log:    bool,
+    pub format: &'a dyn Fn(f32) -> String,
+}
+
+/// Krita-style slider: a rounded bar filled with the accent up to the
+/// value, with the label and value written inside (no separate number box
+/// that grows with the digits). Click or drag anywhere sets the value;
+/// double-click types one in. `log`: logarithmic scale (brush size).
+/// Returns the new value when the user changed it.
+pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f32) -> Option<f32> {
+    let Fill { label, range, log, format } = spec;
+    let (lo, hi) = (*range.start(), *range.end());
+    let to_t = |v: f32| if log { (v.max(lo) / lo).ln() / (hi / lo).ln() } else { (v - lo) / (hi - lo) };
+    let from_t = |t: f32| if log { lo * (hi / lo).powf(t) } else { lo + t * (hi - lo) };
+
+    let id = ui.id().with(("fill_slider", id_salt));
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click_and_drag());
+    let editing_id = id.with("editing");
+    let editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+
+    if let Some(mut text) = editing {
+        ui.painter().rect(rect, 6.0, theme::WIDGET, Stroke::new(1.0_f32, theme::ACCENT));
+        let edit = ui.put(rect, egui::TextEdit::singleline(&mut text)
+            .frame(false)
+            .hint_text(format(value))
+            .horizontal_align(egui::Align::Center)
+            .vertical_align(egui::Align::Center));
+        edit.request_focus();
+        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if edit.lost_focus() || enter || escape {
+            ui.data_mut(|d| d.remove::<String>(editing_id));
+            if escape { return None; }
+            let digits: String = text.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+            return digits.parse::<f32>().ok().map(|v| v.clamp(lo, hi));
+        }
+        ui.data_mut(|d| d.insert_temp(editing_id, text));
+        return None;
+    }
+
+    if resp.double_clicked() {
+        // Empty, the current value as a hint: typing replaces it.
+        ui.data_mut(|d| d.insert_temp(editing_id, String::new()));
+    }
+
+    let mut new = None;
+    // (clicked: press and release can land in the same frame.)
+    if resp.is_pointer_button_down_on() || resp.dragged() || resp.clicked() {
+        if let Some(p) = resp.interact_pointer_pos() {
+            let t = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let v = from_t(t).round().clamp(lo, hi);
+            if (v - value).abs() >= 0.5 { new = Some(v); }
+        }
+    }
+
+    let shown = new.unwrap_or(value);
+    let t = to_t(shown).clamp(0.0, 1.0);
+    let painter = ui.painter_at(rect);
+    let r = 6.0;
+    let bg = if resp.hovered() || resp.dragged() { theme::WIDGET_HOVER } else { theme::WIDGET };
+    painter.rect_filled(rect, r, bg);
+    if t > 0.0 {
+        // The fill keeps the bar's rounded left end; its right end is
+        // square while the bar isn't full.
+        let fill = Rect::from_min_max(rect.min, pos2(rect.left() + (rect.width() * t).max(2.0 * r), rect.bottom()));
+        let right = if t >= 0.999 { r } else { 0.0 };
+        painter.rect_filled(fill, egui::Rounding { nw: r, sw: r, ne: right, se: right }, theme::ACCENT);
+    }
+    let font = egui::FontId::proportional(12.5);
+    painter.text(pos2(rect.left() + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, label, font.clone(),
+        Color32::from_white_alpha(215));
+    painter.text(pos2(rect.right() - 9.0, rect.center().y), egui::Align2::RIGHT_CENTER, format(shown), font,
+        theme::TEXT);
+    new
+}
+
+/// A 0..100 % slider.
+pub fn percent(label: &str) -> Fill<'_> {
+    Fill { label, range: 0.0..=100.0, log: false, format: &|v| format!("{v:.0} %") }
+}
+
 /// Brush size as a diameter, logarithmic so 1..1000 px stays precise.
-pub fn size_slider(ui: &mut Ui, brush: &mut aurastudio_brush::Brush) {
-    let max = crate::MAX_BRUSH_SIZE;
-    let mut d = (brush.radius * 2).clamp(1, max);
-    if ui.add(egui::Slider::new(&mut d, 1..=max).logarithmic(true).suffix(" px")).changed() {
-        brush.radius = (d / 2).max(1);
+pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
+    let max = crate::MAX_BRUSH_SIZE as f32;
+    let d = (brush.radius * 2).clamp(1, max as u32) as f32;
+    if let Some(v) = fill_slider(ui, id, Fill { label: "Size", range: 1.0..=max, log: true, format: &|v| format!("{v:.0} px") }, d, width) {
+        brush.radius = ((v as u32) / 2).max(1);
     }
 }
 
-pub fn opacity_slider(ui: &mut Ui, brush: &mut aurastudio_brush::Brush) {
-    let mut o = (brush.opacity * 100.0).round() as u32;
-    if ui.add(egui::Slider::new(&mut o, 0..=100).suffix(" %")).changed() {
-        brush.opacity = o as f32 / 100.0;
+pub fn opacity_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
+    let o = (brush.opacity * 100.0).round();
+    if let Some(v) = fill_slider(ui, id, percent("Opacity"), o, width) {
+        brush.opacity = v / 100.0;
+    }
+}
+
+pub fn hardness_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
+    let h = (brush.hardness * 100.0).round();
+    if let Some(v) = fill_slider(ui, id, percent("Hardness"), h, width) {
+        brush.hardness = v / 100.0;
     }
 }
 

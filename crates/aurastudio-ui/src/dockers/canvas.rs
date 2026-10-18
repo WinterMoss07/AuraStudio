@@ -37,7 +37,7 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     ui.add_space(4.0);
 
     let unchanged = *m.canvas_edit == (m.layers.width, m.layers.height);
-    let button = egui::Button::new(RichText::new("Resize canvas").color(Color32::WHITE)).fill(theme::ACCENT_DIM);
+    let button = egui::Button::new(RichText::new("Resize canvas").color(Color32::WHITE)).fill(theme::ACCENT);
     if ui.add_enabled(!unchanged, button).clicked() {
         a.resize_to = Some(*m.canvas_edit);
     }

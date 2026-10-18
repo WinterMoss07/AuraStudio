@@ -41,6 +41,9 @@ UI stays quiet so the painting gets the room.
 - **Brush outline cursor** — the OS arrow is replaced by an outline the size
   of the brush at the current zoom (crosshair when tiny), drawn on the GPU so
   it follows the pen even while the UI is busy.
+- **Navigation cursors** — open hand (Space), closed hand (panning) and a
+  circle of arrows (rotating), drawn by the app: Windows has no hand cursor
+  and showed the four-arrow cross instead.
 
 ### Layers & document
 - Layer tree with **folders** (Pass Through or isolated with a blend mode),
@@ -63,9 +66,12 @@ UI stays quiet so the painting gets the room.
   The UI itself is not converted.
 
 ### Interface (egui + egui_dock)
-- Neutral dark theme (strictly R = G = B grays), Photoshop-like tool options
-  bar, CSP-like dock column: Color (RGB / HSV gradient sliders, hex field),
-  Tool options, Brushes, Layers, Canvas. Docks can be rearranged, resized and
+- Neutral dark theme with one blue accent; docks, tool options bar and
+  canvas are rounded cards floating on the backdrop, no borders between
+  them. Sliders fill with the accent and show their label and value inside
+  (double-click to type a value). Dock column: Chroma (RGB / HSV gradient
+  sliders, hex field), Tweaks (tool options), Bristles (brushes), Stack
+  (layers), Paper (canvas size). Docks can be rearranged, resized and
   detached.
 
 ### Performance architecture
@@ -166,8 +172,6 @@ See `NOTICE.md` for third-party code and assets.
       the next launch.
 
 **Missing / planned**
-- [ ] Tool options: the value boxes grow with their number (999 vs 1000) and
-      stretch the sliders; brush size is capped at 999 px meanwhile.
 - [ ] Save / open documents (own format, PNG / PSD / ORA export).
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and
       canvas resize (history is cleared today).

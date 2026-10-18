@@ -86,7 +86,7 @@ fn brush_tile(ui: &mut Ui, st: &mut BrushesState, p: &Preset, index: usize, sele
     let painter = ui.painter_at(rect);
     let img = Rect::from_min_size(rect.min, vec2(TILE, TILE));
 
-    let bg = if selected { theme::ACCENT_DIM } else if resp.hovered() { theme::WIDGET } else { theme::SURFACE };
+    let bg = if selected { theme::ACCENT } else if resp.hovered() { theme::WIDGET } else { theme::SURFACE };
     painter.rect_filled(img, 5.0, bg);
 
     let tex = st.previews.entry(index).or_insert_with(|| {

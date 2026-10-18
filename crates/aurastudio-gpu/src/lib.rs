@@ -542,7 +542,10 @@ impl GpuState {
                 let mut free_rect = None;
                 let full_output = self.egui_ctx.run(raw_input, |ctx| {
                     if let Some(f) = ui_fn.take() { f(ctx); }
-                    free_rect = Some(ctx.available_rect());
+                    // The canvas card the UI laid out, or what's left of
+                    // the window.
+                    free_rect = Some(ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("aurastudio_canvas_rect")))
+                        .unwrap_or_else(|| ctx.available_rect()));
                 });
                 // When egui wants its next frame: right away (layout not
                 // settled, a click changed something) or later (tooltip,

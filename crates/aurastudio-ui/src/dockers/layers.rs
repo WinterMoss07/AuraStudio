@@ -92,14 +92,18 @@ pub fn delete_layer(notice: &mut Notice, m: &mut Model, a: &mut Actions) {
 
 pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
     // Active node settings (CSP / Krita): blend mode + opacity.
+    let full = ui.available_width();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        let left = ui.cursor().left();
         node_blend_combo(ui, m, a);
+        // The rest of the row (available_width overshoots in a row).
+        let w = (full - (ui.cursor().left() - left)).max(40.0);
         let node = m.layers.active_node_mut();
-        let mut pct = (node.opacity() * 100.0).round() as u32;
-        ui.spacing_mut().slider_width = (ui.available_width() - 58.0).max(40.0);
-        if ui.add(egui::Slider::new(&mut pct, 0..=100).suffix(" %")).on_hover_text("Layer opacity").changed() {
-            *node.opacity_mut() = pct as f32 / 100.0;
+        let pct = (node.opacity() * 100.0).round();
+        if let Some(v) = crate::widgets::fill_slider(ui, "layer_opacity", crate::widgets::percent("Opacity"), pct, w)
+        {
+            *node.opacity_mut() = v / 100.0;
             a.recomposite = true;
         }
     });
@@ -199,7 +203,7 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
     let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click());
     let painter = ui.painter_at(rect);
 
-    let bg = if active { theme::ACCENT_DIM } else if resp.hovered() { theme::WIDGET } else { Color32::TRANSPARENT };
+    let bg = if active { theme::ACCENT } else if resp.hovered() { theme::WIDGET } else { Color32::TRANSPARENT };
     painter.rect_filled(rect.shrink2(vec2(2.0, 0.0)), 5.0, bg);
 
     // Eye, at the far left whatever the depth (CSP / Krita).
@@ -215,7 +219,7 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
     } else if resp.hovered() {
         theme::TEXT_WEAK.gamma_multiply(0.7)
     } else {
-        theme::TEXT_WEAK.gamma_multiply(0.35)
+        if active { Color32::from_white_alpha(110) } else { theme::TEXT_WEAK.gamma_multiply(0.35) }
     };
     paint_lock(&painter, lock.center(), locked || row.locked_by_parent, lock_col);
 
@@ -243,7 +247,7 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
             let r = Rect::from_center_size(b.center(), s * k);
             checker(&painter, r, 4.0);
             painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, if active { theme::ACCENT } else { theme::BORDER }));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }));
         }
         b
     };
@@ -256,7 +260,7 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
         egui::Align2::LEFT_CENTER,
         format!("{:.0} %  {}", opacity * 100.0, blend),
         egui::FontId::proportional(10.5),
-        theme::TEXT_WEAK,
+        if active { Color32::from_white_alpha(200) } else { theme::TEXT_WEAK },
     );
     let renaming = st.renaming.as_ref().is_some_and(|(rid, _, _)| *rid == row.id);
     if renaming {

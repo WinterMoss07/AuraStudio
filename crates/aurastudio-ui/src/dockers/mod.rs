@@ -43,11 +43,13 @@ impl TabViewer for Viewer<'_, '_> {
 
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
         match tab {
-            Tab::Color       => "Color",
-            Tab::ToolOptions => "Tool options",
-            Tab::Brushes     => "Brushes",
-            Tab::Layers      => "Layers",
-            Tab::Canvas      => "Canvas",
+            // Short and a little playful; what each one holds is obvious
+            // from its content.
+            Tab::Color       => "Chroma",
+            Tab::ToolOptions => "Tweaks",
+            Tab::Brushes     => "Bristles",
+            Tab::Layers      => "Stack",
+            Tab::Canvas      => "Paper",
         }.into()
     }
 

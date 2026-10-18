@@ -12,6 +12,8 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
         .exact_height(28.0)
         .frame(Frame::none().fill(theme::BACKDROP).inner_margin(Margin::symmetric(8.0, 0.0)))
         .show(ctx, |ui| {
+            // Flat menu titles: only hovered / open ones get a background.
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
             ui.horizontal_centered(|ui| {
                 ui.label(RichText::new("AuraStudio").strong().color(theme::TEXT));
                 ui.add_space(8.0);
@@ -99,30 +101,34 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
         });
 }
 
+/// Tool options bar: a rounded card under the menu bar, with the brush
+/// name and its size and opacity sliders (value written inside).
 pub fn options_bar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model) {
     egui::TopBottomPanel::top("options_bar")
-        .exact_height(34.0)
-        .frame(Frame::none().fill(theme::PANEL).inner_margin(Margin::symmetric(10.0, 0.0)))
+        .exact_height(36.0 + theme::GAP)
+        .frame(Frame::none().fill(theme::BACKDROP).inner_margin(Margin {
+            left: theme::GAP, right: theme::GAP, top: 0.0, bottom: theme::GAP,
+        }))
         .show(ctx, |ui| {
-            ui.horizontal_centered(|ui| {
-                let name = m.presets.get(*m.preset).map(|p| p.name.as_str()).unwrap_or("Brush");
-                ui.label(RichText::new(name).strong());
-                ui.separator();
+            Frame::none().fill(theme::PANEL).rounding(theme::CARD_ROUNDING)
+                .inner_margin(Margin::symmetric(10.0, 0.0))
+                .show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    ui.horizontal_centered(|ui| {
+                        let name = m.presets.get(*m.preset).map(|p| p.name.as_str()).unwrap_or("Brush");
+                        ui.label(RichText::new(name).strong());
+                        ui.add_space(10.0);
+                        size_slider(ui, "bar_size", m.brush, 190.0);
+                        ui.add_space(4.0);
+                        opacity_slider(ui, "bar_opacity", m.brush, 190.0);
 
-                ui.label(RichText::new("Size").color(theme::TEXT_WEAK));
-                ui.spacing_mut().slider_width = 150.0;
-                size_slider(ui, m.brush);
-                ui.add_space(6.0);
-
-                ui.label(RichText::new("Opacity").color(theme::TEXT_WEAK));
-                opacity_slider(ui, m.brush);
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if let Some((text, left)) = notice.current() {
-                        ui.label(RichText::new(text).color(theme::ACCENT));
-                        ui.ctx().request_repaint_after(left);
-                    }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if let Some((text, left)) = notice.current() {
+                                ui.label(RichText::new(text).color(theme::ACCENT));
+                                ui.ctx().request_repaint_after(left);
+                            }
+                        });
+                    });
                 });
-            });
         });
 }

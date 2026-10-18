@@ -1,17 +1,14 @@
-//! Tool options docker: settings of the selected brush. Each setting is a label above a full-width control, so the dock
-//! can be narrow without anything being cut off.
+//! Tool options docker ("Tweaks"): settings of the selected brush, as
+//! full-width sliders with their label and value inside, so the dock can
+//! be narrow without anything being cut off.
 
 use egui::{RichText, Ui};
 
-use crate::widgets::{blend_combo, opacity_slider, size_slider};
+use crate::widgets::{blend_combo, hardness_slider, opacity_slider, size_slider};
 use crate::dockers::brushes::engine_label;
 use crate::{theme, Model};
 
 pub fn show(ui: &mut Ui, m: &mut Model) {
-    let full = |ui: &mut Ui| {
-        // Slider = track + value box; keep the total inside the dock.
-        ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(40.0);
-    };
     let label = |ui: &mut Ui, t: &str| { ui.label(RichText::new(t).small().color(theme::TEXT_WEAK)); };
 
     // Which brush these settings belong to (each brush keeps its own).
@@ -19,26 +16,14 @@ pub fn show(ui: &mut Ui, m: &mut Model) {
     if let Some(p) = m.presets.get(*m.preset) {
         ui.label(RichText::new(&p.name).strong());
         ui.label(RichText::new(format!("{}  ·  {}", p.group, engine_label(&p.engine))).small().color(theme::TEXT_WEAK));
-        ui.add_space(2.0);
+        ui.add_space(4.0);
     }
 
-    label(ui, "Size");
-    full(ui);
-    size_slider(ui, m.brush);
-
-    label(ui, "Opacity");
-    full(ui);
-    opacity_slider(ui, m.brush);
-
-    label(ui, "Hardness");
-    full(ui);
-    let mut hard = (m.brush.hardness * 100.0).round() as u32;
-    if ui.add(egui::Slider::new(&mut hard, 0..=100).suffix(" %"))
-        .on_hover_text("100 % = crisp edge. Lower values fade the edge out toward the center.")
-        .changed()
-    {
-        m.brush.hardness = hard as f32 / 100.0;
-    }
+    // Full-width sliders, label and value inside.
+    let w = ui.available_width();
+    size_slider(ui, "dock_size", m.brush, w);
+    opacity_slider(ui, "dock_opacity", m.brush, w);
+    hardness_slider(ui, "dock_hardness", m.brush, w);
 
     if mypaint {
         // MyPaint brushes blend their dabs themselves (normal, eraser,
@@ -49,6 +34,7 @@ pub fn show(ui: &mut Ui, m: &mut Model) {
     }
 
     // Per-brush setting (CSP): each brush keeps its own blend mode.
+    ui.add_space(2.0);
     label(ui, "Blend mode");
     let w = ui.available_width();
     blend_combo(ui, "brush_blend_dock", &mut m.brush.blend, w);

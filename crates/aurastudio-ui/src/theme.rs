@@ -1,29 +1,38 @@
-//! AuraStudio dark theme: strictly neutral grays (R = G = B, so no gray is
-//! warmer or cooler than another), one soft
-//! gray-cyan accent, rounded corners, compact spacing. Minimal on purpose:
-//! the UI stays quiet and leaves the room to the painting.
+//! AuraStudio dark theme: neutral grays (R = G = B, give or take one
+//! level), one saturated blue for everything selected or filled (sliders,
+//! selected tab, layer and brush), and rounded cards floating on a darker
+//! backdrop instead of borders between the areas.
 
 use egui::{Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Visuals};
 
-/// Behind the canvas (also used as the GPU clear color).
-pub const BACKDROP:     Color32 = Color32::from_rgb(0x1e, 0x1e, 0x1e);
-/// Docks, toolbar, menu bar.
-pub const PANEL:        Color32 = Color32::from_rgb(0x2d, 0x2d, 0x2d);
-/// Inset areas inside a dock (layer list, tab bars).
-pub const SURFACE:      Color32 = Color32::from_rgb(0x26, 0x26, 0x26);
-pub const WIDGET:       Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3a);
-pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x46, 0x46, 0x46);
-pub const BORDER:       Color32 = Color32::from_rgb(0x3c, 0x3c, 0x3c);
-/// Selection accent: a soft, slightly grayed blue (halfway between the
-/// first blue and a cyan).
-pub const ACCENT:       Color32 = Color32::from_rgb(0x6d, 0x99, 0xda);
-pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x33, 0x45, 0x5e);
-pub const TEXT:         Color32 = Color32::from_rgb(0xe2, 0xe2, 0xe2);
-pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
+/// Window background: menu bar and the gaps between the cards.
+pub const BACKDROP:     Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
+/// Cards: docks and the tool options bar.
+pub const PANEL:        Color32 = Color32::from_rgb(0x1f, 0x1f, 0x20);
+/// Around the image, inside the canvas card (GPU clear color).
+pub const DESK:         Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2c);
+/// Inset areas inside a card (layer list).
+pub const SURFACE:      Color32 = Color32::from_rgb(0x1b, 0x1b, 0x1c);
+/// Widgets and list rows.
+pub const WIDGET:       Color32 = Color32::from_rgb(0x27, 0x27, 0x28);
+pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x32, 0x32, 0x34);
+pub const BORDER:       Color32 = Color32::from_rgb(0x2c, 0x2c, 0x2c);
+/// Selection and slider fill.
+pub const ACCENT:       Color32 = Color32::from_rgb(0x00, 0x70, 0xe7);
+/// The accent toned down (hovered separators, drop zones).
+pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x0e, 0x3c, 0x6e);
+pub const TEXT:         Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
+pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0xaf, 0xaf, 0xb3);
 
-/// BACKDROP as a 0..1 float color, for the GPU clear.
+/// Corner radius of the cards (docks, bar, canvas).
+pub const CARD_ROUNDING: f32 = 8.0;
+/// Gap between the cards.
+pub const GAP: f32 = 6.0;
+
+/// DESK as a 0..1 float color, for the GPU clear (the UI paints the
+/// backdrop around the canvas card itself).
 pub fn backdrop_rgb() -> [f64; 3] {
-    [BACKDROP.r() as f64 / 255.0, BACKDROP.g() as f64 / 255.0, BACKDROP.b() as f64 / 255.0]
+    [DESK.r() as f64 / 255.0, DESK.g() as f64 / 255.0, DESK.b() as f64 / 255.0]
 }
 
 pub fn apply(ctx: &egui::Context) {
@@ -62,8 +71,8 @@ pub fn apply(ctx: &egui::Context) {
     v.menu_rounding     = Rounding::same(8.0);
     v.window_shadow.color = Color32::from_black_alpha(90);
     v.popup_shadow.color  = Color32::from_black_alpha(90);
-    v.selection.bg_fill   = ACCENT_DIM;
-    v.selection.stroke    = Stroke::new(1.0_f32, ACCENT);
+    v.selection.bg_fill   = ACCENT;
+    v.selection.stroke    = Stroke::new(1.0_f32, TEXT);
     v.hyperlink_color     = ACCENT;
     v.override_text_color = Some(TEXT);
     v.slider_trailing_fill = true;
@@ -81,12 +90,12 @@ pub fn apply(ctx: &egui::Context) {
     w.inactive.rounding     = r;
     w.hovered.bg_fill       = WIDGET_HOVER;
     w.hovered.weak_bg_fill  = WIDGET_HOVER;
-    w.hovered.bg_stroke     = Stroke::new(1.0_f32, BORDER);
+    w.hovered.bg_stroke     = Stroke::NONE;
     w.hovered.fg_stroke     = Stroke::new(1.5_f32, TEXT);
     w.hovered.rounding      = r;
-    w.active.bg_fill        = ACCENT_DIM;
-    w.active.weak_bg_fill   = ACCENT_DIM;
-    w.active.bg_stroke      = Stroke::new(1.0_f32, ACCENT);
+    w.active.bg_fill        = ACCENT;
+    w.active.weak_bg_fill   = ACCENT;
+    w.active.bg_stroke      = Stroke::NONE;
     w.active.fg_stroke      = Stroke::new(2.0_f32, TEXT);
     w.active.rounding       = r;
     w.open.bg_fill          = WIDGET_HOVER;
@@ -96,15 +105,18 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// egui_dock look matching the theme: flat tab bars, the active tab lifted
-/// to the panel color, thin separators that light up when dragged.
+/// egui_dock look matching the theme: each dock is a rounded card (tab
+/// bar on top, body below, same color), the gaps between them are the
+/// separators; the selected tab is a lighter pill.
 pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     let mut d = egui_dock::Style::from_egui(style);
+    let r = CARD_ROUNDING;
     d.main_surface_border_stroke = Stroke::NONE;
-    d.tab_bar.bg_fill = BACKDROP;
-    d.tab_bar.height  = 28.0;
-    d.tab_bar.hline_color = BORDER;
-    d.separator.width = 2.0;
+    d.tab_bar.bg_fill = PANEL;
+    d.tab_bar.height  = 30.0;
+    d.tab_bar.hline_color = PANEL;
+    d.tab_bar.rounding = Rounding { nw: r, ne: r, sw: 0.0, se: 0.0 };
+    d.separator.width = GAP;
     // egui_dock's own limit (175 pt per side) is replaced by each
     // dock's minimum height, see dock_layout.
     d.separator.extra = 8.0;
@@ -113,19 +125,24 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     d.separator.color_dragged = ACCENT;
     d.tab.tab_body.bg_fill = PANEL;
     d.tab.tab_body.stroke  = Stroke::NONE;
+    d.tab.tab_body.rounding = Rounding { nw: 0.0, ne: 0.0, sw: r, se: r };
     d.tab.tab_body.inner_margin = Margin::same(8.0);
-    d.tab.active.bg_fill    = PANEL;
-    d.tab.active.text_color = TEXT;
-    d.tab.active.outline_color = PANEL;
-    d.tab.focused.bg_fill    = PANEL;
-    d.tab.focused.text_color = TEXT;
-    d.tab.focused.outline_color = PANEL;
-    d.tab.inactive.bg_fill    = BACKDROP;
-    d.tab.inactive.text_color = TEXT_WEAK;
-    d.tab.inactive.outline_color = BACKDROP;
-    d.tab.hovered.bg_fill    = WIDGET;
-    d.tab.hovered.text_color = TEXT;
-    d.tab.hovered.outline_color = WIDGET;
+    d.tab.hline_below_active_tab_name = false;
+    let pill = Rounding::same(6.0);
+    for (t, bg, text) in [
+        (&mut d.tab.active, WIDGET_HOVER, TEXT),
+        (&mut d.tab.focused, WIDGET_HOVER, TEXT),
+        (&mut d.tab.active_with_kb_focus, WIDGET_HOVER, TEXT),
+        (&mut d.tab.focused_with_kb_focus, WIDGET_HOVER, TEXT),
+        (&mut d.tab.inactive, PANEL, TEXT_WEAK.gamma_multiply(0.8)),
+        (&mut d.tab.inactive_with_kb_focus, PANEL, TEXT_WEAK.gamma_multiply(0.8)),
+        (&mut d.tab.hovered, WIDGET, TEXT),
+    ] {
+        t.bg_fill = bg;
+        t.text_color = text;
+        t.outline_color = bg;
+        t.rounding = pill;
+    }
     d.overlay.selection_color = ACCENT.linear_multiply(0.35);
     d
 }
