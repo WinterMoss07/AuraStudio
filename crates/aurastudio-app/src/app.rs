@@ -21,6 +21,9 @@ use aurastudio_ui::{Actions, ImportBrushes, Model, UiState, ViewCmd};
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
 
+/// Shortest time between two frames that only update the UI.
+const UI_FRAME: Duration = Duration::from_micros(16_667);
+
 /// Canvas size at startup; changed afterwards from the Canvas docker.
 const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
 
@@ -700,7 +703,18 @@ impl ApplicationHandler<AppEvent> for App {
         if std::mem::take(&mut self.redraw_wanted) {
             // At most one frame per display refresh (strokes have their own
             // pacing, see render_if_due).
-            let due = self.last_frame.map_or(now, |t| t + self.frame_interval);
+            // UI-only frames (a pen hovering over the docks moves the
+            // pointer all the time) at most 60 per second: hover effects
+            // don't need more. The canvas and the brush outline follow the
+            // display refresh, and so does the UI while something is
+            // dragged.
+            let dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
+            let interval = if self.ui_dirty && !dragging && self.nav.is_none() {
+                self.frame_interval.max(UI_FRAME)
+            } else {
+                self.frame_interval
+            };
+            let due = self.last_frame.map_or(now, |t| t + interval);
             if now >= due || self.is_drawing {
                 if let Some(w) = &self.window { w.request_redraw(); }
             } else {
@@ -966,8 +980,9 @@ struct Activity {
 
 impl Activity {
     const WINDOW: Duration = Duration::from_secs(5);
-    /// Frames per window above which the activity is logged (10 fps).
-    const BUSY_FRAMES: u32 = 50;
+    /// Main-thread time per window above which the activity is logged
+    /// (10 % of a core: a real problem, not the pointer moving).
+    const BUSY_TIME: Duration = Duration::from_millis(500);
 
     fn new() -> Self {
         Self {
@@ -978,7 +993,7 @@ impl Activity {
 
     fn report(&mut self, working: bool) {
         if self.since.elapsed() < Self::WINDOW { return; }
-        if !working && self.ui_frames + self.canvas_frames >= Self::BUSY_FRAMES {
+        if !working && self.main_time >= Self::BUSY_TIME {
             log::info!(
                 "activity (5 s, no stroke): {} UI frames, {} canvas-only frames, main thread {:.0} ms | \
                  {} window events ({} cursor moves), {} pen packets, {} UI timers, {} wake-ups",
