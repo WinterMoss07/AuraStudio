@@ -181,6 +181,10 @@ pub struct App {
     /// ignored, otherwise the stroke gets two slightly offset position
     /// streams (wavy / zigzag edges).
     pen_active: bool,
+    /// Where the button went down, painted as the stroke's first point
+    /// with the first mouse move (otherwise a mouse stroke started at its
+    /// first move, a few pixels off). Dropped if the pen sends its own.
+    press_point: Option<(f32, f32)>,
     /// Last known cursor position, physical window pixels.
     cursor:     (f32, f32),
     /// The cursor is over the canvas area (not a docker), from the last
@@ -281,6 +285,7 @@ impl App {
             nav:        None,
             nav_button: MouseButton::Left,
             pen_active: false,
+            press_point: None,
             cursor:     (0.0, 0.0),
             over_canvas: false,
             cursor_in_window: false,
@@ -578,6 +583,7 @@ impl App {
         self.is_drawing = true;
         self.pen_active = false;
         self.samples_sent = 0;
+        self.press_point = Some(self.cursor);
         self.frame_stats = Timing::default();
         self.paint.send(Cmd::Begin {
             doc:       Arc::clone(&self.doc),
@@ -588,6 +594,7 @@ impl App {
 
     fn end_stroke(&mut self) {
         // A click without moving sent nothing yet: paint one dot there.
+        self.press_point = None;
         if self.samples_sent == 0 {
             self.draw_at(self.cursor.0, self.cursor.1, None);
         }
@@ -633,6 +640,7 @@ impl App {
             self.activity.pen_packets += 1;
             if self.is_drawing {
                 self.pen_active = true;
+                self.press_point = None;
                 self.pressure   = s.pressure;
                 // The outline follows the pen's own samples (newer than
                 // the mouse events Windows derives from them).
@@ -670,12 +678,12 @@ impl App {
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
-        // Upload what the paint thread merged. Only a copy into wgpu's
-        // staging memory, under the projection's own lock.
+        // Upload what the paint thread merged (taken out under the
+        // projection's own lock, copied to the GPU after).
         if std::mem::take(&mut self.painted) {
-            let mut p = self.projection.lock().unwrap();
-            for r in p.take_dirty() {
-                gpu.upload_rect(&p.pixels, r);
+            let patches = self.projection.lock().unwrap().take_patches();
+            for (r, rgba) in &patches {
+                gpu.upload(*r, rgba);
             }
         }
 
@@ -779,20 +787,18 @@ impl App {
             // Layer visibility / opacity / order changed, or new size: merge
             // everything again (rare, never during a stroke).
             let mut doc = self.doc.lock().unwrap();
-            let mut p = self.projection.lock().unwrap();
             if let Some((w, h)) = actions.resize_to {
                 log::info!("canvas resize: {}x{} -> {w}x{h} (undo history cleared)", doc.layers.width, doc.layers.height);
                 doc.resize(w, h);
-                p.resize(w, h);
+                *self.projection.lock().unwrap() = Projection::new(w, h);
                 gpu.resize_canvas(w, h);
                 self.ui.invalidate_all_thumbnails();
             }
-            let (w, h) = (doc.layers.width, doc.layers.height);
-            doc.layers.composite_into(&mut p.pixels);
-            p.add_dirty((0, 0, w, h));
+            // Pieces the paint thread merged before are superseded (it
+            // can't merge more meanwhile: the document is locked here).
+            self.projection.lock().unwrap().clear();
+            upload_all(&doc.layers, gpu);
             self.layers_dirty = false;
-            self.painted = true;
-            // Uploaded with the next frame.
             want_frame = true;
         }
         if want_frame {
@@ -1009,13 +1015,16 @@ impl App {
         if !aurastudio_file::EXPORT_EXTENSIONS.iter().any(|e| has_extension(&path, e)) {
             path.set_extension("png");
         }
-        let (pixels, w, h) = {
-            let p = self.projection.lock().unwrap();
-            (p.pixels.clone(), p.width, p.height)
-        };
-        let proxy = self.proxy.clone();
+        // The whole merged image is only made now, for the file, on the
+        // export thread (the screen shows it from the GPU).
+        let (doc, proxy) = (Arc::clone(&self.doc), self.proxy.clone());
         self.ui.notify("Exporting…");
         std::thread::spawn(move || {
+            let (pixels, w, h) = {
+                let d = doc.lock().unwrap();
+                let (w, h) = (d.layers.width, d.layers.height);
+                (d.layers.composite_rect((0, 0, w, h)), w, h)
+            };
             let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let msg = match aurastudio_file::export_image(&pixels, w, h, &path) {
                 Ok(()) => format!("Exported {file}"),
@@ -1466,6 +1475,7 @@ impl ApplicationHandler<AppEvent> for App {
                 if self.nav.is_some() {
                     self.drag_nav();
                 } else if self.is_drawing && !self.pen_active {
+                    if let Some((x, y)) = self.press_point.take() { self.draw_at(x, y, None); }
                     self.draw_at(self.cursor.0, self.cursor.1, None);
                 }
             }
@@ -1511,6 +1521,20 @@ impl ApplicationHandler<AppEvent> for App {
 
             _ => {}
         }
+    }
+}
+
+/// Send the whole merged image to the GPU, in bands of rows: the full
+/// image never exists in RAM (a B4 page at 600 dpi is 200 MB).
+fn upload_all(layers: &aurastudio_layers::LayerStack, gpu: &mut GpuState) {
+    const BAND: u32 = 64;
+    let (w, h) = (layers.width, layers.height);
+    let mut band = vec![0u8; w as usize * BAND as usize * 4];
+    for y in (0..h).step_by(BAND as usize) {
+        let rect = (0, y, w, (y + BAND).min(h));
+        let rgba = &mut band[..w as usize * (rect.3 - y) as usize * 4];
+        layers.composite_rect_to(rect, rgba);
+        gpu.upload(rect, rgba);
     }
 }
 

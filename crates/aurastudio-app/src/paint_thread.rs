@@ -204,8 +204,7 @@ impl Worker {
                         // thread of its own.
                         let (snap, doc_id) = {
                             let d = doc.lock().unwrap();
-                            let p = self.projection.lock().unwrap();
-                            (aurastudio_file::snapshot(&d, Some(&p.pixels), origin.as_deref()), d.id())
+                            (aurastudio_file::snapshot(&d, origin.as_deref()), d.id())
                         };
                         let notify = Arc::clone(&self.notify);
                         let spawned = std::thread::Builder::new().name("save".into()).spawn(move || {
@@ -281,11 +280,14 @@ impl Worker {
         let rects = std::mem::take(&mut self.pending);
         let Some(doc) = self.doc.clone() else { return };
         let d = doc.lock().unwrap();
+        // Merged outside the projection lock: the UI thread never waits for
+        // the merge, only for the handover.
+        let (w, h) = (d.layers.width, d.layers.height);
+        let patches: Vec<_> = rects.into_iter().map(|r| (r, d.layers.composite_rect(r))).collect();
         let mut p = self.projection.lock().unwrap();
-        if (p.width, p.height) != (d.layers.width, d.layers.height) { return; }
-        for r in rects {
-            d.layers.composite_rect_into(&mut p.pixels, r);
-            p.add_dirty(r);
+        if (p.width, p.height) != (w, h) { return; }
+        for (r, rgba) in patches {
+            p.push((r.0, r.1, r.2.min(w), r.3.min(h)), rgba);
         }
     }
 
@@ -560,10 +562,11 @@ mod tests {
         assert_eq!(pixel(&doc, id, 30, 32), [0, 0, 0, 255]);
         // The projection got the merged result and its changed areas.
         drop(pt);
-        let mut p = projection.lock().unwrap();
-        assert!(!p.take_dirty().is_empty());
+        let patches = projection.lock().unwrap().take_patches();
+        let mut screen = vec![0u8; 64 * 64 * 4];
+        for (r, rgba) in &patches { blit(&mut screen, 64, *r, rgba); }
         let i = ((32 * 64 + 30) * 4) as usize;
-        assert_eq!(&p.pixels[i..i + 4], &[0, 0, 0, 255]);
+        assert_eq!(&screen[i..i + 4], &[0, 0, 0, 255]);
     }
 
     /// Undo sent right after End undoes that stroke (same queue), then redo
@@ -794,14 +797,20 @@ mod tests {
     /// GUI side of the benchmark: copy the finished rectangles (stands for the
     /// GPU upload, which copies them into wgpu's staging memory).
     fn gui_show_painted(projection: &SharedProjection, screen: &mut [u8]) {
-        let mut p = projection.lock().unwrap();
-        let w = p.width as usize;
-        for (x0, y0, x1, y1) in p.take_dirty() {
-            for y in y0 as usize..y1 as usize {
-                let a = (y * w + x0 as usize) * 4;
-                let b = (y * w + x1 as usize) * 4;
-                screen[a..b].copy_from_slice(&p.pixels[a..b]);
-            }
+        let (w, patches) = {
+            let mut p = projection.lock().unwrap();
+            (p.width, p.take_patches())
+        };
+        for (r, rgba) in &patches { blit(screen, w, *r, rgba); }
+    }
+
+    /// Copy a merged piece into a canvas-sized RGBA buffer (what the GPU
+    /// upload does with the texture).
+    fn blit(screen: &mut [u8], width: u32, r: aurastudio_canvas::Rect, rgba: &[u8]) {
+        let rw = (r.2 - r.0) as usize * 4;
+        for (y, row) in (r.1..r.3).zip(rgba.chunks_exact(rw)) {
+            let a = (y as usize * width as usize + r.0 as usize) * 4;
+            screen[a..a + rw].copy_from_slice(row);
         }
     }
 }

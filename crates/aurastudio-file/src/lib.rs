@@ -114,10 +114,9 @@ pub struct Snapshot {
     pub revision: u64,
 }
 
-/// Take a snapshot of `doc`. `merged` is the composite image as shown
-/// (canvas-sized RGBA), used for the preview. `origin`: for autosaves, the
-/// file the work belongs to.
-pub fn snapshot(doc: &Document, merged: Option<&[u8]>, origin: Option<&Path>) -> Snapshot {
+/// Take a snapshot of `doc`. `origin`: for autosaves, the file the work
+/// belongs to.
+pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
     fn walk(nodes: &[Node], blobs: &mut Vec<(u64, Vec<u8>)>) -> Vec<NodeJson> {
         nodes.iter().map(|n| match n {
             Node::Layer(l) => {
@@ -159,7 +158,7 @@ pub fn snapshot(doc: &Document, merged: Option<&[u8]>, origin: Option<&Path>) ->
         layers,
         undo: undo.into_iter().map(|s| s.data).collect(),
         redo: redo.into_iter().map(|s| s.data).collect(),
-        preview: merged.filter(|m| m.len() == w as usize * h as usize * 4).map(|m| downscale(m, w, h, PREVIEW_MAX)),
+        preview: Some(doc.layers.composite_preview(PREVIEW_MAX)),
         revision: doc.revision(),
     }
 }
@@ -499,8 +498,7 @@ mod tests {
 
     fn roundtrip(doc: &Document) -> Opened {
         let mut buf = io::Cursor::new(Vec::new());
-        let merged = vec![255u8; doc.layers.width as usize * doc.layers.height as usize * 4];
-        write(&snapshot(doc, Some(&merged), None), &mut buf).unwrap();
+        write(&snapshot(doc, None), &mut buf).unwrap();
         buf.set_position(0);
         read(buf, DocId(2), "t", 16384).unwrap()
     }
@@ -565,7 +563,7 @@ mod tests {
         // Too big for the GPU.
         let (doc, ..) = sample_doc();
         let mut buf = io::Cursor::new(Vec::new());
-        write(&snapshot(&doc, None, None), &mut buf).unwrap();
+        write(&snapshot(&doc, None), &mut buf).unwrap();
         buf.set_position(0);
         assert!(read(buf, DocId(1), "x", 64).is_err());
     }
@@ -576,7 +574,7 @@ mod tests {
     fn damaged_files_never_crash() {
         let (doc, ..) = sample_doc();
         let mut buf = io::Cursor::new(Vec::new());
-        write(&snapshot(&doc, None, None), &mut buf).unwrap();
+        write(&snapshot(&doc, None), &mut buf).unwrap();
         let good = buf.into_inner();
         let mut seed = 0x1234_5678_9abc_def1u64;
         let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
@@ -600,8 +598,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aurs-test-{}", std::process::id()));
         let path = dir.join("drawing.aurs");
         let (doc, ..) = sample_doc();
-        save(&snapshot(&doc, None, Some(Path::new("/x/orig.aurs"))), &path).unwrap();
-        save(&snapshot(&doc, None, None), &path).unwrap();
+        save(&snapshot(&doc, Some(Path::new("/x/orig.aurs"))), &path).unwrap();
+        save(&snapshot(&doc, None), &path).unwrap();
         let o = open(&path, DocId(3), 16384).unwrap();
         assert_eq!(o.doc.name, "drawing");
         assert_eq!(o.doc.path.as_deref(), Some(path.as_path()));

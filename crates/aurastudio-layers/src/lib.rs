@@ -688,34 +688,64 @@ impl LayerStack {
 
     /// Composite every visible layer into `out` (`width * height * 4`).
     pub fn composite_into(&self, out: &mut [u8]) {
-        self.composite_rect_into(out, (0, 0, self.width, self.height));
+        self.composite_rect_to((0, 0, self.width, self.height), out);
     }
 
-    /// Composite limited to `rect`, row by row, straight into `out`
-    /// (indexed as the full canvas).
+    /// The merged image of `rect` (clipped to the canvas), RGBA rows
+    /// tightly packed.
+    pub fn composite_rect(&self, rect: Rect) -> Vec<u8> {
+        let r = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
+        if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }
+        let mut out = vec![0u8; (r.2 - r.0) as usize * (r.3 - r.1) as usize * 4];
+        self.composite_rect_to(r, &mut out);
+        out
+    }
+
+    /// Composite of `rect` (inside the canvas) into `out`, its RGBA rows
+    /// tightly packed.
     ///
     /// The result is always opaque (white under everything), so the main
     /// path blends straight into the output bytes: Normal layers in integer
     /// math, other modes simplified for an opaque backdrop. No temporary
     /// row, no un-premultiply per pixel. Only isolated folders go through
-    /// the general premultiplied path. (Was ~27 ns/px, see
+    /// the general premultiplied path. (~5 ns/px, see
     /// examples/bench_composite.rs.)
-    pub fn composite_rect_into(&self, out: &mut [u8], rect: Rect) {
-        debug_assert_eq!(out.len(), self.width as usize * self.height as usize * 4);
-        let (x0, y0) = (rect.0, rect.1);
-        let x1 = rect.2.min(self.width);
-        let y1 = rect.3.min(self.height);
+    pub fn composite_rect_to(&self, rect: Rect, out: &mut [u8]) {
+        let (x0, y0, x1, y1) = rect;
         if x0 >= x1 || y0 >= y1 { return; }
         let n = (x1 - x0) as usize;
+        debug_assert_eq!(out.len(), n * (y1 - y0) as usize * 4);
         let mut group: Vec<Premul> = Vec::new();
-
-        for y in y0..y1 {
-            let start = (y as usize * self.width as usize + x0 as usize) * 4;
-            let dst = &mut out[start..start + n * 4];
+        for (y, dst) in (y0..y1).zip(out.chunks_exact_mut(n * 4)) {
             // White behind everything.
             dst.fill(255);
             composite_row_opaque(&self.root, y, x0, dst, 1.0, &mut group);
         }
+    }
+
+    /// Small merged image (at most `max` px), without merging the whole
+    /// canvas: one row in every few is merged, then shrunk across. For file
+    /// previews; a big canvas takes a few ms instead of a full merge.
+    pub fn composite_preview(&self, max: u32) -> (u32, u32, Vec<u8>) {
+        let (w, h) = (self.width, self.height);
+        let k = (max as f32 / w.max(h) as f32).min(1.0);
+        let (tw, th) = (((w as f32 * k).round() as u32).max(1), ((h as f32 * k).round() as u32).max(1));
+        let mut out = Vec::with_capacity(tw as usize * th as usize * 4);
+        let mut row = vec![0u8; w as usize * 4];
+        for ty in 0..th {
+            let y = ((ty as u64 * 2 + 1) * h as u64 / (th as u64 * 2)) as u32;
+            self.composite_rect_to((0, y, w, y + 1), &mut row);
+            for tx in 0..tw {
+                let (a, b) = (tx * w / tw, ((tx + 1) * w / tw).max(tx * w / tw + 1));
+                let mut sum = [0u32; 4];
+                for p in row[a as usize * 4..b as usize * 4].chunks_exact(4) {
+                    for c in 0..4 { sum[c] += p[c] as u32; }
+                }
+                let n = b - a;
+                out.extend(sum.map(|s| ((s + n / 2) / n) as u8));
+            }
+        }
+        (tw, th, out)
     }
 }
 
@@ -1079,6 +1109,26 @@ mod tests {
         assert_eq!(l.tiles.stored(), 10);
         s.end_stroke();
         assert!(s.layer_surface(id).is_none(), "buffers kept after the stroke");
+    }
+
+    #[test]
+    fn pieces_and_preview_match_the_whole_merge() {
+        let mut s = LayerStack::new_document(300, 200);
+        let id = s.active_id();
+        assert!(s.set_layer_rect(id, (50, 40, 250, 160), &[10, 20, 30, 255].repeat(200 * 120)));
+        let mut whole = vec![0u8; 300 * 200 * 4];
+        s.composite_into(&mut whole);
+        let piece = s.composite_rect((40, 30, 400, 100));
+        assert_eq!(piece.len(), 260 * 70 * 4, "clipped to the canvas");
+        for (row, y) in piece.chunks_exact(260 * 4).zip(30..100) {
+            let a = (y * 300 + 40) * 4;
+            assert_eq!(row, &whole[a..a + 260 * 4]);
+        }
+        let (w, h, px) = s.composite_preview(150);
+        assert_eq!((w, h), (150, 100));
+        // Middle: the painted color; corner: the white paper.
+        assert_eq!(&px[((50 * 150 + 75) * 4) as usize..][..4], &[10, 20, 30, 255]);
+        assert_eq!(&px[..4], &[255, 255, 255, 255]);
     }
 
     #[test]

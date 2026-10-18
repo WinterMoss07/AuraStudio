@@ -120,10 +120,13 @@ UI stays quiet so the painting gets the room.
   paint thread, headless (`FUZZ_STEPS=1000000 cargo test --release -p
   aurastudio fuzz -- --ignored`).
 - **Projection off the UI thread** (Krita's model): the paint thread merges
-  the changed areas into the projection; the UI thread only copies the
-  changed rectangles to the GPU. Changed areas travel as a list of rectangles,
-  never one growing bounding box. The UI never waits for the brush (it
-  redraws the canvas with the last UI when the document is busy).
+  only the changed areas, each into a small buffer, and queues them; the UI
+  thread copies them to the GPU texture and drops them. The whole merged
+  image exists only on the GPU, never a second copy in RAM (33 MB at A4
+  300 dpi, 200 MB at B4 600 dpi). A full refresh (layer hidden, file
+  opened) is merged and uploaded in bands of 64 rows; Export merges the
+  whole image only while it writes the file, and the file preview is
+  merged from a few rows only.
 - **1000 px brushes**: one dab every ~25 px of pen travel, not on
   every pen sample (benchmarks below).
 - **Idle = 0 % CPU**: frames are only drawn when something changes, at most

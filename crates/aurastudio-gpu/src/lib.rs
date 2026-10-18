@@ -492,13 +492,13 @@ impl GpuState {
         self.queue.write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
-    /// Copy `rect` of the composite image `pixels` (canvas-sized RGBA) to
-    /// the canvas texture. wgpu copies the rows straight from `pixels` into
-    /// its staging memory: no intermediate buffer.
-    pub fn upload_rect(&mut self, pixels: &[u8], rect: aurastudio_canvas::Rect) {
+    /// Copy merged pixels (`rgba`: the rows of `rect`, tightly packed) to
+    /// the canvas texture.
+    pub fn upload(&mut self, rect: aurastudio_canvas::Rect, rgba: &[u8]) {
         let (x0, y0, x1, y1) = rect;
-        let w = self.canvas.width;
-        if x1 <= x0 || y1 <= y0 || x1 > w || y1 > self.canvas.height { return; }
+        if x1 <= x0 || y1 <= y0 || x1 > self.canvas.width || y1 > self.canvas.height { return; }
+        let w = x1 - x0;
+        if rgba.len() != w as usize * (y1 - y0) as usize * 4 { return; }
         self.queue.write_texture(
             ImageCopyTexture {
                 texture:   &self.canvas.texture,
@@ -506,9 +506,9 @@ impl GpuState {
                 origin:    Origin3d { x: x0, y: y0, z: 0 },
                 aspect:    TextureAspect::All,
             },
-            pixels,
+            rgba,
             ImageDataLayout {
-                offset:         (y0 as u64 * w as u64 + x0 as u64) * 4,
+                offset:         0,
                 bytes_per_row:  Some(w * 4),
                 rows_per_image: Some(y1 - y0),
             },

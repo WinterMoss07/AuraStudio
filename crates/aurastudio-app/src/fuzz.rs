@@ -242,16 +242,17 @@ fn fuzz() {
                 }
                 if actions.resize_to.is_some() || actions.recomposite {
                     let mut d = doc.lock().unwrap();
-                    let mut p = projection.lock().unwrap();
                     if let Some((w, h)) = actions.resize_to {
                         d.resize(w, h);
-                        p.resize(w, h);
+                        *projection.lock().unwrap() = Projection::new(w, h);
                         size = (w, h);
                         ui.invalidate_all_thumbnails();
                     }
-                    d.layers.composite_into(&mut p.pixels);
-                    p.add_dirty((0, 0, size.0, size.1));
+                    projection.lock().unwrap().clear();
+                    merge_all_in_bands(&d.layers);
                 }
+                // As App::render_frame: the merged pieces go to the GPU.
+                check_patches(&projection);
             }
             // Strokes (sometimes left open, like a lost pen-up).
             70..=84 => {
@@ -292,7 +293,7 @@ fn fuzz() {
             96 if r.chance(0.3) => {
                 let d = doc.lock().unwrap();
                 let mut buf = std::io::Cursor::new(Vec::new());
-                aurastudio_file::write(&aurastudio_file::snapshot(&d, None, None), &mut buf).unwrap();
+                aurastudio_file::write(&aurastudio_file::snapshot(&d, None), &mut buf).unwrap();
                 buf.set_position(0);
                 let back = aurastudio_file::read(buf, DocId(2), "fuzz", 1 << 15).expect("saved file must open").doc;
                 assert_eq!(back.layers.layer_ids(), d.layers.layer_ids());
@@ -312,11 +313,10 @@ fn fuzz() {
                     (r.below(400) as u32 + 1, r.below(400) as u32 + 1)
                 };
                 let mut d = doc.lock().unwrap();
-                let mut p = projection.lock().unwrap();
                 d.resize(w, h);
-                p.resize(w, h);
+                *projection.lock().unwrap() = Projection::new(w, h);
                 size = (w, h);
-                d.layers.composite_into(&mut p.pixels);
+                merge_all_in_bands(&d.layers);
                 ui.invalidate_all_thumbnails();
                 ops += 1;
             }
@@ -363,6 +363,28 @@ fn fuzz() {
     assert!(!doc.is_poisoned() && !projection.is_poisoned());
 }
 
+/// As app::upload_all, without a GPU: the whole image merged band by band.
+fn merge_all_in_bands(layers: &aurastudio_layers::LayerStack) {
+    let (w, h) = (layers.width, layers.height);
+    let mut band = vec![0u8; w as usize * 64 * 4];
+    for y in (0..h).step_by(64) {
+        let rect = (0, y, w, (y + 64).min(h));
+        layers.composite_rect_to(rect, &mut band[..w as usize * (rect.3 - y) as usize * 4]);
+    }
+}
+
+/// Take the queued pieces as the UI thread does, checking each would fit
+/// the GPU texture (the upload drops a piece that doesn't: a hole on
+/// screen).
+fn check_patches(projection: &crate::projection::SharedProjection) {
+    let mut p = projection.lock().unwrap();
+    let (w, h) = (p.width, p.height);
+    for (r, rgba) in p.take_patches() {
+        assert!(r.0 < r.2 && r.1 < r.3 && r.2 <= w && r.3 <= h, "piece {r:?} outside {w}x{h}");
+        assert_eq!(rgba.len(), (r.2 - r.0) as usize * (r.3 - r.1) as usize * 4, "piece {r:?} has a wrong size");
+    }
+}
+
 /// As App::view_cmd, on a bare view.
 fn apply_view(v: &mut CanvasView, cmd: ViewCmd, c: (u32, u32), a: [f32; 4]) {
     let center = (a[0] + a[2] / 2.0, a[1] + a[3] / 2.0);
@@ -395,16 +417,15 @@ fn memory_per_preset() {
         let base = rss_mb();
         let mut doc = Document::new(DocId(1), name, w, h);
         let after_doc = rss_mb();
-        let mut p = Projection::new(w, h);
-        doc.layers.composite_into(&mut p.pixels);
+        merge_all_in_bands(&doc.layers);
         let after_proj = rss_mb();
         doc.layers.add_layer("Layer 2");
         let after_layer = rss_mb();
         let id = doc.layers.active_id();
         doc.layers.begin_stroke(id);
         let after_stroke = rss_mb();
-        println!("{name}: document (Paper + Layer 1) {} MB, projection {} MB, +1 empty layer {} MB, stroke buffers {} MB",
+        println!("{name}: document (Paper + Layer 1) {} MB, merged image in RAM {} MB, +1 empty layer {} MB, stroke buffers {} MB",
             after_doc - base, after_proj - after_doc, after_layer - after_proj, after_stroke - after_layer);
-        drop((doc, p));
+        drop(doc);
     }
 }

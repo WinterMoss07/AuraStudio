@@ -1,9 +1,12 @@
-//! The projection: all layers merged into one image, as shown on screen.
+//! What the paint thread hands to the screen: pieces of the merged image.
 //!
 //! Like Krita, the merge happens off the UI thread (here, on the paint
-//! thread right after painting); the UI thread only copies the changed
-//! rectangles to the GPU. The projection has its own small lock, separate
-//! from the document's, so neither thread waits long for the other.
+//! thread right after painting). Only the changed rectangles are merged,
+//! each into a small buffer of its own, and queued here; the UI thread
+//! copies them to the GPU texture and drops them. The whole merged image
+//! only exists on the GPU: no second copy in RAM (33 MB at A4 300 dpi,
+//! 200 MB at B4 600 dpi). It has its own small lock, separate from the
+//! document's, so neither thread waits long for the other.
 
 use std::sync::{Arc, Mutex};
 
@@ -14,40 +17,40 @@ use aurastudio_canvas::Rect;
 const MAX_RECTS: usize = 32;
 
 pub struct Projection {
-    /// RGBA, straight alpha, width * height * 4.
-    pub pixels: Vec<u8>,
     pub width:  u32,
     pub height: u32,
-    /// Areas changed since the UI last uploaded them.
-    dirty:      Vec<Rect>,
+    /// Merged pieces waiting for the GPU, oldest first: (area, RGBA rows
+    /// of it, tightly packed).
+    patches:    Vec<(Rect, Vec<u8>)>,
 }
 
 pub type SharedProjection = Arc<Mutex<Projection>>;
 
 impl Projection {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { pixels: vec![255; width as usize * height as usize * 4], width, height, dirty: Vec::new() }
+        Self { width, height, patches: Vec::new() }
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        *self = Self::new(width, height);
+    /// Queue a merged piece (newer pieces are uploaded after, over older
+    /// ones).
+    pub fn push(&mut self, rect: Rect, rgba: Vec<u8>) {
+        if rect.0 < rect.2 && rect.1 < rect.3 { self.patches.push((rect, rgba)); }
     }
 
-    /// Record a changed area. Kept as a list (Krita does the same): one
-    /// bounding box of a long diagonal stroke covers mostly untouched
-    /// pixels, and uploading / merging them was most of the old cost.
-    /// A rect that mostly overlaps an existing one is merged with it.
-    pub fn add_dirty(&mut self, r: Rect) {
-        add_rect(&mut self.dirty, r);
+    pub fn take_patches(&mut self) -> Vec<(Rect, Vec<u8>)> {
+        std::mem::take(&mut self.patches)
     }
 
-    pub fn take_dirty(&mut self) -> Vec<Rect> {
-        std::mem::take(&mut self.dirty)
+    /// Drop what is queued: the whole image is about to be sent again.
+    pub fn clear(&mut self) {
+        self.patches.clear();
     }
 }
 
 /// Add `r` to a list of changed areas, merging it into an existing one
-/// when that costs no more area than keeping both.
+/// when that costs no more area than keeping both. Kept as a list (Krita
+/// does the same): one bounding box of a long diagonal stroke covers mostly
+/// untouched pixels, and merging / uploading them was most of the old cost.
 pub fn add_rect(list: &mut Vec<Rect>, r: Rect) {
     if r.0 >= r.2 || r.1 >= r.3 { return; }
     for d in list.iter_mut() {
@@ -79,21 +82,30 @@ mod tests {
 
     #[test]
     fn overlapping_rects_merge_far_ones_stay_apart() {
-        let mut p = Projection::new(1000, 1000);
-        p.add_dirty((0, 0, 100, 100));
-        p.add_dirty((10, 10, 110, 110)); // mostly overlapping: merged
-        p.add_dirty((800, 800, 900, 900)); // far away: kept apart
-        let d = p.take_dirty();
-        assert_eq!(d, vec![(0, 0, 110, 110), (800, 800, 900, 900)]);
-        assert!(p.take_dirty().is_empty());
+        let mut list = Vec::new();
+        add_rect(&mut list, (0, 0, 100, 100));
+        add_rect(&mut list, (10, 10, 110, 110)); // mostly overlapping: merged
+        add_rect(&mut list, (800, 800, 900, 900)); // far away: kept apart
+        assert_eq!(list, vec![(0, 0, 110, 110), (800, 800, 900, 900)]);
     }
 
     #[test]
     fn too_many_rects_collapse_into_one() {
-        let mut p = Projection::new(4000, 10);
+        let mut list = Vec::new();
         for i in 0..(MAX_RECTS as u32 + 1) {
-            p.add_dirty((i * 100, 0, i * 100 + 10, 10));
+            add_rect(&mut list, (i * 100, 0, i * 100 + 10, 10));
         }
-        assert_eq!(p.take_dirty().len(), 1);
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn patches_come_out_in_order_once() {
+        let mut p = Projection::new(100, 100);
+        p.push((0, 0, 1, 1), vec![1; 4]);
+        p.push((0, 0, 0, 1), vec![]);
+        p.push((5, 5, 6, 6), vec![2; 4]);
+        let got = p.take_patches();
+        assert_eq!(got.iter().map(|(r, _)| *r).collect::<Vec<_>>(), vec![(0, 0, 1, 1), (5, 5, 6, 6)]);
+        assert!(p.take_patches().is_empty());
     }
 }
