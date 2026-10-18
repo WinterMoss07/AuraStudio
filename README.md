@@ -45,6 +45,21 @@ UI stays quiet so the painting gets the room.
   circle of arrows (rotating), drawn by the app: Windows has no hand cursor
   and showed the four-arrow cross instead.
 
+### Files
+- **`.aurs` documents** (File menu, Ctrl+S / Ctrl+Shift+S / Ctrl+O): a zip
+  archive holding the layer tree (folders, blend modes, opacity, locks),
+  each layer's pixels (LZ4), the canvas resolution, the newest 50 undo
+  steps and a small preview. Saving goes through the paint thread's queue
+  (after the strokes before it) and writes on its own thread, through a
+  temporary file: a crash mid-save never breaks the previous file. Damaged
+  files give an error, never a crash.
+- **Open images** (PNG, JPG, WebP, BMP, TIFF, GIF) as a new document, the
+  picture over the locked Paper; **export** the merged image to PNG / JPG.
+- **Autosave and recovery**: unsaved work goes to a recovery file 5 minutes
+  after it changed; after a crash, AuraStudio offers to recover it. Closing,
+  New and Open ask to save unsaved changes. The title shows `*` while
+  there are some.
+
 ### Layers & document
 - New documents start like CSP: a locked white **Paper** layer and an
   empty **Layer 1** above it, active.
@@ -160,6 +175,7 @@ cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png     
 | `aurastudio-color` | monitor ICC profile, sRGB → display transform (3D LUT) |
 | `aurastudio-gpu` | wgpu renderer: canvas, view transform, color LUT, brush outline, egui |
 | `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
+| `aurastudio-file` | `.aurs` format, image import / export |
 | `aurastudio-ui` | egui interface: bars, one file per docker, theme, widgets |
 | `aurastudio-app` | the application: event loop, paint thread, projection |
 

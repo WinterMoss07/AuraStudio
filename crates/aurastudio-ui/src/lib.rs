@@ -73,7 +73,28 @@ pub struct Actions {
     pub view:        Option<ViewCmd>,
     /// Open a file dialog to import MyPaint brushes.
     pub import_brushes: Option<ImportBrushes>,
+    /// The document changed without needing a recomposite (lock, rename).
+    pub modified:    bool,
+    /// File menu / shortcut.
+    pub file:        Option<FileCmd>,
+    /// Answer to the dialog shown (see UiState::show_dialog).
+    pub dialog:      Option<DialogChoice>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileCmd { New, Open, Save, SaveAs, Export }
+
+/// A question the app asks, shown over everything until answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Dialog {
+    /// Closing / replacing a document with unsaved changes.
+    UnsavedChanges { name: String },
+    /// An autosave from a session that didn't close normally was found.
+    Recover { name: String, saved: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogChoice { Save, Discard, Cancel, Recover }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportBrushes { Files, Folder }
@@ -111,6 +132,7 @@ pub struct UiState {
     layers:        dockers::layers::LayersState,
     brushes:       dockers::brushes::BrushesState,
     dock_layout:   dock_layout::DockLayout,
+    dialog:        Option<Dialog>,
 }
 
 impl Default for UiState {
@@ -128,7 +150,18 @@ impl UiState {
             layers:        Default::default(),
             brushes:       Default::default(),
             dock_layout:   Default::default(),
+            dialog:        None,
         }
+    }
+
+    /// Ask the user; the answer comes back in `Actions::dialog`.
+    pub fn show_dialog(&mut self, dialog: Dialog) {
+        self.dialog = Some(dialog);
+    }
+
+    /// A dialog is waiting for an answer (the canvas ignores the pen).
+    pub fn has_dialog(&self) -> bool {
+        self.dialog.is_some()
     }
 
     /// The pixels of this layer changed: rebuild its thumbnail.
@@ -196,6 +229,60 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         });
 
     canvas_card(ctx);
+    dialog(ctx, state, actions);
+}
+
+/// The open dialog, if any: modal, the rest of the UI is dimmed.
+fn dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
+    use egui::RichText;
+    let Some(d) = state.dialog.clone() else { return };
+    let mut choice = None;
+    let button = |ui: &mut egui::Ui, text: &str, primary: bool| {
+        let b = egui::Button::new(RichText::new(text).color(theme::TEXT)).min_size(egui::vec2(96.0, 28.0));
+        ui.add(if primary { b.fill(theme::ACCENT) } else { b })
+    };
+    let modal = egui::Modal::new(egui::Id::new("app_dialog"))
+        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            match &d {
+                Dialog::UnsavedChanges { name } => {
+                    ui.label(RichText::new(format!("Save changes to “{name}”?")).heading());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Your changes will be lost if you don't save them.").color(theme::TEXT_WEAK));
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if button(ui, "Don't save", false).clicked() { choice = Some(DialogChoice::Discard); }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if button(ui, "Save", true).clicked() { choice = Some(DialogChoice::Save); }
+                            if button(ui, "Cancel", false).clicked() { choice = Some(DialogChoice::Cancel); }
+                        });
+                    });
+                }
+                Dialog::Recover { name, saved } => {
+                    ui.label(RichText::new("Recover unsaved work?").heading());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!(
+                        "AuraStudio didn't close normally. An automatic save of “{name}” from {saved} was found."
+                    )).color(theme::TEXT_WEAK));
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if button(ui, "Discard", false).clicked() { choice = Some(DialogChoice::Discard); }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if button(ui, "Recover", true).clicked() { choice = Some(DialogChoice::Recover); }
+                        });
+                    });
+                }
+            }
+        });
+    // Escape / click outside: cancel (the recovery question stays).
+    if modal.should_close() && choice.is_none() && matches!(d, Dialog::UnsavedChanges { .. }) {
+        choice = Some(DialogChoice::Cancel);
+    }
+    if choice.is_some() {
+        state.dialog = None;
+        a.dialog = choice;
+    }
 }
 
 /// egui memory key of the canvas rect (points), read by the GPU crate to

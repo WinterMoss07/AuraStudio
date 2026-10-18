@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,8 +16,9 @@ use aurastudio_brushes::Library;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
-use aurastudio_document::{SharedDoc, Workspace};
-use aurastudio_ui::{Actions, ImportBrushes, Model, UiState, ViewCmd};
+use aurastudio_document::{Document, SharedDoc, Workspace};
+use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
+use aurastudio_ui::{Actions, Dialog, DialogChoice, FileCmd, ImportBrushes, Model, UiState, ViewCmd};
 
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
@@ -28,13 +30,46 @@ const UI_FRAME: Duration = Duration::from_micros(16_667);
 const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
 /// Zoom drag speed: the zoom is multiplied by e^(ZOOM_DRAG * dx px).
 const ZOOM_DRAG: f32 = 0.007;
+/// Unsaved work is saved to the recovery file this long after it changed
+/// (AURASTUDIO_AUTOSAVE_SECS overrides it, for testing).
+fn autosave_after() -> Duration {
+    let secs = std::env::var("AURASTUDIO_AUTOSAVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(5 * 60);
+    Duration::from_secs(secs)
+}
+
+/// Something that would close the current document: done right away, or
+/// after asking to save it.
+#[derive(Clone, Debug)]
+enum Pending { New, Open(PathBuf), Quit }
+
+/// Where unsaved work is saved automatically (one file: AuraStudio has one
+/// document open at a time for now).
+fn recovery_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(format!("autosave.{EXTENSION}")))
+}
+
+fn has_extension(path: &Path, ext: &str) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
+/// "5 minutes ago"...
+fn ago(t: std::time::SystemTime) -> String {
+    let s = t.elapsed().map_or(0, |d| d.as_secs());
+    let (n, unit) = match s {
+        0..=89 => return "a moment ago".into(),
+        90..=5399 => (s / 60, "minute"),
+        5400..=129_599 => (s / 3600, "hour"),
+        _ => (s / 86_400, "day"),
+    };
+    format!("{n} {unit}{} ago", if n > 1 { "s" } else { "" })
+}
 
 /// View navigation drag in progress.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Nav { Pan, Rotate, Zoom }
 
 /// Message posted to the event loop (by the app itself or the paint thread).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum AppEvent {
     /// Wake the loop so about_to_wait runs and requests the wanted frame.
     Wake,
@@ -44,6 +79,9 @@ pub enum AppEvent {
     LayerChanged(u64),
     /// Message for the options bar, from the paint thread.
     Notice(&'static str),
+    Message(String),
+    /// A save finished (see paint_thread::Event::Saved).
+    Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
 }
 
 pub struct App {
@@ -62,8 +100,21 @@ pub struct App {
 
     /// Every open document. One for now (no document tabs yet): it owns
     /// them, `doc` is the one shown.
-    #[allow(dead_code)]
     workspace: Workspace,
+    /// Waiting for the answer to "save changes?".
+    pending:    Option<Pending>,
+    /// Done once the save in progress succeeds.
+    after_save: Option<Pending>,
+    /// The recovery question is shown (its Discard deletes the autosave).
+    recovery_offered: bool,
+    /// When the next autosave is due (unsaved work since the last one).
+    autosave_at: Option<Instant>,
+    /// Document revision in the recovery file.
+    autosaved_revision: u64,
+    /// Window title shown ("name* — AuraStudio").
+    title: String,
+    /// Close once about_to_wait runs.
+    quit: bool,
     /// The document shown, shared with the paint thread.
     doc:    SharedDoc,
     paint:  PaintThread,
@@ -159,6 +210,7 @@ impl App {
                 paint_thread::Event::Painted => AppEvent::Painted,
                 paint_thread::Event::LayerChanged { layer_id } => AppEvent::LayerChanged(layer_id),
                 paint_thread::Event::Notice(text) => AppEvent::Notice(text),
+                paint_thread::Event::Saved { doc, path, revision, auto, result } => AppEvent::Saved { doc, path, revision, auto, result },
             });
         });
         Self {
@@ -172,6 +224,13 @@ impl App {
             preset:      0,
 
             workspace,
+            pending: None,
+            after_save: None,
+            recovery_offered: false,
+            autosave_at: None,
+            autosaved_revision: 0,
+            title: String::new(),
+            quit: false,
             doc,
             paint,
             projection,
@@ -462,10 +521,7 @@ impl App {
 
     /// Sleep until the next OS event, or until egui's delayed repaint.
     fn schedule(&self, event_loop: &ActiveEventLoop) {
-        let wake = match (self.repaint_at, self.deferred_frame) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let wake = [self.repaint_at, self.deferred_frame, self.autosave_at].into_iter().flatten().min();
         event_loop.set_control_flow(match wake {
             Some(t) => ControlFlow::WaitUntil(t),
             None    => ControlFlow::Wait,
@@ -671,6 +727,11 @@ impl App {
         }
         if preset != preset_before { self.select_preset(preset); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
+        if let Some(choice) = actions.dialog { self.on_dialog(choice); }
+        if let Some(cmd) = actions.file { self.file_cmd(cmd); }
+        if actions.modified || actions.recomposite {
+            if let Ok(mut d) = self.doc.try_lock() { d.touch(); }
+        }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         if actions.undo { self.undo(); }
         if actions.redo { self.redo(); }
@@ -698,6 +759,283 @@ impl App {
         }
         if want_frame {
             self.request_redraw();
+        }
+    }
+
+    // --- Files -------------------------------------------------------------
+
+    /// Biggest canvas side the GPU takes (before the window exists: a
+    /// common limit).
+    fn max_canvas(&self) -> u32 {
+        self.gpu.as_ref().map_or(16384, |g| g.max_canvas_size())
+    }
+
+    fn file_cmd(&mut self, cmd: FileCmd) {
+        if self.is_drawing || self.ui.has_dialog() { return; }
+        match cmd {
+            FileCmd::New => self.request(Pending::New),
+            FileCmd::Open => self.open_dialog(),
+            FileCmd::Save => self.save(false, None),
+            FileCmd::SaveAs => self.save(true, None),
+            FileCmd::Export => self.export(),
+        }
+    }
+
+    /// Do `action`, first asking to save unsaved changes.
+    fn request(&mut self, action: Pending) {
+        let (modified, name) = {
+            let d = self.doc.lock().unwrap();
+            (d.is_modified(), d.name.clone())
+        };
+        if modified {
+            self.pending = Some(action);
+            self.ui.show_dialog(Dialog::UnsavedChanges { name });
+            self.request_redraw();
+        } else {
+            self.perform(action);
+        }
+    }
+
+    fn perform(&mut self, action: Pending) {
+        match action {
+            Pending::New => {
+                let id = self.workspace.reserve_id();
+                self.install(Document::new(id, "Untitled", DEFAULT_CANVAS.0, DEFAULT_CANVAS.1));
+            }
+            Pending::Open(path) => self.open_path(&path),
+            Pending::Quit => {
+                // Leaving on purpose: no work to recover next time.
+                if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); }
+                self.quit = true;
+                let _ = self.proxy.send_event(AppEvent::Wake);
+            }
+        }
+    }
+
+    fn on_dialog(&mut self, choice: DialogChoice) {
+        if std::mem::take(&mut self.recovery_offered) {
+            match choice {
+                DialogChoice::Recover => self.recover(),
+                _ => if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); },
+            }
+            return;
+        }
+        let Some(action) = self.pending.take() else { return };
+        match choice {
+            DialogChoice::Save => self.save(false, Some(action)),
+            DialogChoice::Discard => self.perform(action),
+            DialogChoice::Cancel | DialogChoice::Recover => {}
+        }
+    }
+
+    fn open_dialog(&mut self) {
+        let mut all = vec![EXTENSION];
+        all.extend(IMAGE_EXTENSIONS);
+        let picked = rfd::FileDialog::new()
+            .set_title("Open")
+            .add_filter("AuraStudio documents and images", &all)
+            .add_filter("AuraStudio document", &[EXTENSION])
+            .add_filter("Images", &IMAGE_EXTENSIONS)
+            .pick_file();
+        if let Some(path) = picked { self.request(Pending::Open(path)); }
+    }
+
+    /// Open an .aurs document, or an image as a new document.
+    fn open_path(&mut self, path: &Path) {
+        let (id, max) = (self.workspace.reserve_id(), self.max_canvas());
+        let t = Instant::now();
+        let opened = if has_extension(path, EXTENSION) {
+            aurastudio_file::open(path, id, max).map(|o| o.doc)
+        } else {
+            aurastudio_file::import_image(path, id, max)
+        };
+        match opened {
+            Ok(doc) => {
+                log::info!("opened {} in {:.0} ms", path.display(), t.elapsed().as_secs_f64() * 1000.0);
+                self.install(doc);
+            }
+            Err(e) => {
+                log::warn!("open {}: {e}", path.display());
+                self.ui.notify(&format!("Can't open {}: {e}", aurastudio_file::doc_name(path)));
+                self.request_redraw();
+            }
+        }
+    }
+
+    /// Show `doc` in place of the current document.
+    fn install(&mut self, doc: Document) {
+        let (w, h) = (doc.layers.width, doc.layers.height);
+        let old = self.doc.lock().unwrap().id();
+        self.autosaved_revision = doc.revision();
+        self.autosave_at = None;
+        self.doc = self.workspace.add(doc);
+        self.workspace.close(old);
+        *self.projection.lock().unwrap() = Projection::new(w, h);
+        if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
+        self.canvas_edit = (w, h);
+        self.ui.invalidate_all_thumbnails();
+        self.layers_dirty = true;
+        self.request_redraw();
+    }
+
+    /// Ctrl+S (`save_as`: Ctrl+Shift+S, or no .aurs file yet: ask where).
+    /// `then`: done once saved.
+    fn save(&mut self, save_as: bool, then: Option<Pending>) {
+        let (path, name) = {
+            let d = self.doc.lock().unwrap();
+            (d.path.clone(), d.name.clone())
+        };
+        let path = match path.filter(|p| !save_as && has_extension(p, EXTENSION)) {
+            Some(p) => p,
+            None => {
+                let picked = rfd::FileDialog::new()
+                    .set_title("Save")
+                    .add_filter("AuraStudio document", &[EXTENSION])
+                    .set_file_name(format!("{name}.{EXTENSION}"))
+                    .save_file();
+                match picked {
+                    Some(p) if has_extension(&p, EXTENSION) => p,
+                    Some(p) => p.with_extension(EXTENSION),
+                    // Cancelled: whatever was to follow doesn't happen.
+                    None => return,
+                }
+            }
+        };
+        self.after_save = then;
+        self.paint.send(Cmd::Save { doc: Arc::clone(&self.doc), path, origin: None, auto: false });
+        self.ui.notify("Saving…");
+        self.request_redraw();
+    }
+
+    fn on_saved(&mut self, doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String>) {
+        let current = Arc::clone(&self.doc);
+        let mut d = current.lock().unwrap();
+        // A save of a document closed since: nothing left to update.
+        if d.id() != doc { return; }
+        match (auto, result) {
+            (true, Ok(())) => drop(d),
+            (true, Err(e)) => {
+                drop(d);
+                log::warn!("autosave failed: {e}");
+            }
+            (false, Ok(())) => {
+                if d.path.as_deref() != Some(&path) {
+                    d.name = aurastudio_file::doc_name(&path);
+                    d.path = Some(path.clone());
+                }
+                d.mark_saved(revision);
+                drop(d);
+                // The work is safe in its own file now.
+                if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); }
+                self.autosaved_revision = revision;
+                self.ui.notify(&format!("Saved {}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+                if let Some(action) = self.after_save.take() { self.perform(action); }
+            }
+            (false, Err(e)) => {
+                drop(d);
+                self.after_save = None;
+                self.ui.notify(&format!("Save failed: {e}"));
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// The merged image to PNG / JPG (on a thread: big images take a
+    /// moment to encode).
+    fn export(&mut self) {
+        let name = self.doc.lock().unwrap().name.clone();
+        let picked = rfd::FileDialog::new()
+            .set_title("Export")
+            .add_filter("PNG image", &["png"])
+            .add_filter("JPEG image", &["jpg", "jpeg"])
+            .set_file_name(format!("{name}.png"))
+            .save_file();
+        let Some(mut path) = picked else { return };
+        if !aurastudio_file::EXPORT_EXTENSIONS.iter().any(|e| has_extension(&path, e)) {
+            path.set_extension("png");
+        }
+        let (pixels, w, h) = {
+            let p = self.projection.lock().unwrap();
+            (p.pixels.clone(), p.width, p.height)
+        };
+        let proxy = self.proxy.clone();
+        self.ui.notify("Exporting…");
+        std::thread::spawn(move || {
+            let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let msg = match aurastudio_file::export_image(&pixels, w, h, &path) {
+                Ok(()) => format!("Exported {file}"),
+                Err(e) => format!("Export failed: {e}"),
+            };
+            let _ = proxy.send_event(AppEvent::Message(msg));
+        });
+        self.request_redraw();
+    }
+
+    /// Save unsaved work to the recovery file some time after it changed
+    /// (on the paint thread's queue, like any save).
+    fn check_autosave(&mut self) {
+        let Ok(d) = self.doc.try_lock() else { return };
+        let rev = d.revision();
+        if !d.is_modified() || rev == self.autosaved_revision {
+            self.autosave_at = None;
+            return;
+        }
+        let now = Instant::now();
+        match self.autosave_at {
+            None => self.autosave_at = Some(now + autosave_after()),
+            Some(t) if now >= t && !self.is_drawing => {
+                if let Some(path) = recovery_path() {
+                    let origin = d.path.clone();
+                    self.paint.send(Cmd::Save { doc: Arc::clone(&self.doc), path, origin, auto: true });
+                }
+                self.autosaved_revision = rev;
+                self.autosave_at = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// At startup: an autosave left by a session that didn't close
+    /// normally? Ask whether to recover it.
+    fn offer_recovery(&mut self) {
+        let Some(path) = recovery_path().filter(|p| p.is_file()) else { return };
+        let origin = aurastudio_file::peek_origin(&path);
+        let name = origin.as_deref().map_or_else(|| "Untitled".to_string(), aurastudio_file::doc_name);
+        let saved = std::fs::metadata(&path).and_then(|m| m.modified()).map_or_else(|_| "earlier".into(), ago);
+        self.recovery_offered = true;
+        self.ui.show_dialog(Dialog::Recover { name, saved });
+        self.request_redraw();
+    }
+
+    fn recover(&mut self) {
+        let Some(path) = recovery_path() else { return };
+        let (id, max) = (self.workspace.reserve_id(), self.max_canvas());
+        match aurastudio_file::open(&path, id, max) {
+            Ok(o) => {
+                let mut doc = o.doc;
+                doc.name = o.origin.as_deref().map_or_else(|| "Untitled".into(), aurastudio_file::doc_name);
+                doc.path = o.origin;
+                // Unsaved: it isn't in its own file yet.
+                doc.touch();
+                self.install(doc);
+                self.ui.notify("Recovered unsaved work");
+            }
+            Err(e) => {
+                log::warn!("recovery: {e}");
+                self.ui.notify(&format!("Can't recover: {e}"));
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+
+    /// "name* — AuraStudio" (the star: unsaved changes).
+    fn update_title(&mut self) {
+        let Ok(d) = self.doc.try_lock() else { return };
+        let title = format!("{}{} — AuraStudio", d.name, if d.is_modified() { "*" } else { "" });
+        drop(d);
+        if title != self.title {
+            if let Some(w) = &self.window { w.set_title(&title); }
+            self.title = title;
         }
     }
 
@@ -739,6 +1077,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.ui.notify(text);
                 self.request_redraw();
             }
+            AppEvent::Message(text) => {
+                self.ui.notify(&text);
+                self.request_redraw();
+            }
+            AppEvent::Saved { doc, path, revision, auto, result } => self.on_saved(doc, path, revision, auto, result),
         }
     }
 
@@ -747,7 +1090,13 @@ impl ApplicationHandler<AppEvent> for App {
     /// window messages, which produce no winit event: draining here paints
     /// them immediately instead of waiting for the next mouse event.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.quit {
+            event_loop.exit();
+            return;
+        }
         self.drain_stylus();
+        self.check_autosave();
+        self.update_title();
         self.activity.wakes += 1;
         self.activity.report(self.is_drawing || self.nav.is_some());
 
@@ -819,11 +1168,12 @@ impl ApplicationHandler<AppEvent> for App {
         self.cursors = Some(crate::cursors::Cursors::new(event_loop));
         self.gpu    = Some(gpu);
         self.refresh_display_profile();
+        self.offer_recovery();
     }
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         _id:        WindowId,
         event:      WindowEvent,
     ) {
@@ -860,7 +1210,10 @@ impl ApplicationHandler<AppEvent> for App {
         self.drain_stylus();
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // Asks to save unsaved changes first.
+            WindowEvent::CloseRequested => {
+                if !self.ui.has_dialog() { self.request(Pending::Quit); }
+            }
 
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = &mut self.gpu {
@@ -900,7 +1253,19 @@ impl ApplicationHandler<AppEvent> for App {
                 if key.state != ElementState::Pressed || ui_typing { return; }
                 let ctrl  = self.modifiers.control_key() || self.modifiers.super_key();
                 let shift = self.modifiers.shift_key();
+                if self.ui.has_dialog() { return; }
                 match key.logical_key.as_ref() {
+                    Key::Character(c) if ctrl && !key.repeat && ["n", "o", "s", "e"].iter().any(|k| c.eq_ignore_ascii_case(k)) => {
+                        let cmd = match c.to_ascii_lowercase().as_str() {
+                            "n" => Some(FileCmd::New),
+                            "o" => Some(FileCmd::Open),
+                            "s" if shift => Some(FileCmd::SaveAs),
+                            "s" => Some(FileCmd::Save),
+                            "e" if shift => Some(FileCmd::Export),
+                            _ => None,
+                        };
+                        if let Some(cmd) = cmd { self.file_cmd(cmd); }
+                    }
                     Key::Named(NamedKey::Delete) if !key.repeat => self.clear_active_layer(),
                     // Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo (Krita, CSP,
                     // Photoshop). Holding the keys repeats, like everywhere.
@@ -931,6 +1296,8 @@ impl ApplicationHandler<AppEvent> for App {
                     if self.nav.is_some() || self.is_drawing {
                         // Already dragging the view (middle button) or
                         // drawing: a second press starts nothing.
+                    } else if self.ui.has_dialog() {
+                        // A question is waiting: the canvas doesn't paint.
                     } else if over_canvas && self.space_down {
                         // Space + drag: pan; Shift + Space + drag: rotate;
                         // Ctrl + Space + drag: zoom (Krita / CSP).

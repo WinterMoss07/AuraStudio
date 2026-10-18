@@ -287,6 +287,22 @@ fn fuzz() {
                 }
                 ops += 1;
             }
+            // Save and open again (in memory): the same document comes back.
+            96 if r.chance(0.3) => {
+                let d = doc.lock().unwrap();
+                let mut buf = std::io::Cursor::new(Vec::new());
+                aurastudio_file::write(&aurastudio_file::snapshot(&d, None, None), &mut buf).unwrap();
+                buf.set_position(0);
+                let back = aurastudio_file::read(buf, DocId(2), "fuzz", 1 << 15).expect("saved file must open").doc;
+                assert_eq!(back.layers.layer_ids(), d.layers.layer_ids());
+                assert_eq!(back.layers.active_id(), d.layers.active_id());
+                for id in d.layers.layer_ids() {
+                    let (Some(aurastudio_layers::Node::Layer(a)), Some(aurastudio_layers::Node::Layer(b))) =
+                        (d.layers.node(id), back.layers.node(id)) else { panic!("layer {id} lost") };
+                    assert!(a.pixels == b.pixels && a.name == b.name && a.locked == b.locked, "layer {id} differs");
+                }
+                ops += 1;
+            }
             // Canvas resize (rare, big ones rarer).
             96 => {
                 let (w, h) = if r.chance(0.05) {

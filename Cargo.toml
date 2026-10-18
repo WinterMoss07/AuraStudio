@@ -10,6 +10,7 @@ members = [
     "crates/aurastudio-input",
     "crates/aurastudio-gpu",
     "crates/aurastudio-ui",
+    "crates/aurastudio-file",
     "crates/aurastudio-app",
 ]
 

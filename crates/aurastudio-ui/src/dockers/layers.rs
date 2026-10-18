@@ -160,7 +160,11 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 *node.visible_mut() ^= true;
                 a.recomposite = true;
             }
-            RowEvent::ToggleLock => *node.locked_mut() ^= true,
+            RowEvent::ToggleLock => {
+                *node.locked_mut() ^= true;
+                a.modified = true;
+            }
+            RowEvent::Renamed => a.modified = true,
             RowEvent::ToggleCollapse => {
                 if let Node::Folder(f) = node { f.collapsed ^= true; }
             }
@@ -196,7 +200,7 @@ fn node_blend_combo(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
         });
 }
 
-enum RowEvent { Select, ToggleVisible, ToggleLock, ToggleCollapse }
+enum RowEvent { Select, ToggleVisible, ToggleLock, ToggleCollapse, Renamed }
 
 fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Option<RowEvent> {
     let node = m.layers.node(row.id)?;
@@ -279,10 +283,11 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
         }
         if edit.lost_focus() {
             let new_name = buf.trim().to_owned();
-            if !new_name.is_empty() {
-                if let Some(n) = m.layers.node_mut(row.id) { *n.name_mut() = new_name; }
-            }
             st.renaming = None;
+            if !new_name.is_empty() && new_name != name {
+                if let Some(n) = m.layers.node_mut(row.id) { *n.name_mut() = new_name; }
+                return Some(RowEvent::Renamed);
+            }
         }
     } else {
         painter.text(

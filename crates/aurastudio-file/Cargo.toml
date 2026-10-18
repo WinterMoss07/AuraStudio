@@ -1,0 +1,15 @@
+[package]
+name = "aurastudio-file"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aurastudio-canvas   = { path = "../aurastudio-canvas" }
+aurastudio-layers   = { path = "../aurastudio-layers" }
+aurastudio-document = { path = "../aurastudio-document" }
+lz4_flex   = "0.14"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Stored entries only: the layers are LZ4-compressed already.
+zip        = { version = "9", default-features = false }
+image      = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "tiff", "gif"] }

@@ -27,6 +27,8 @@
 //! updated at most every UPDATE_PERIOD, so the time goes to painting.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -53,6 +55,10 @@ pub enum Cmd {
     Redo(SharedDoc),
     /// Clear the active layer (undoable).
     Clear(SharedDoc),
+    /// Save the document to `path` (after the strokes sent before). The
+    /// file is written on its own thread; painting goes on meanwhile.
+    /// `origin`: autosaves only, the file the work belongs to.
+    Save { doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool },
 }
 
 /// What the worker reports to the main thread (through `notify`).
@@ -64,6 +70,8 @@ pub enum Event {
     LayerChanged { layer_id: u64 },
     /// Short message for the options bar ("Nothing to undo"...).
     Notice(&'static str),
+    /// A save finished: the document revision now on disk, or the error.
+    Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
 }
 
 pub struct PaintThread {
@@ -73,9 +81,9 @@ pub struct PaintThread {
 
 impl PaintThread {
     /// `projection` receives the merged result of everything painted.
-    pub fn spawn(projection: SharedProjection, notify: impl Fn(Event) + Send + 'static) -> Self {
+    pub fn spawn(projection: SharedProjection, notify: impl Fn(Event) + Send + Sync + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
-        let worker = Worker::new(projection, Box::new(notify));
+        let worker = Worker::new(projection, Arc::new(notify));
         let handle = std::thread::Builder::new()
             .name("paint".into())
             .spawn(move || worker.run(rx))
@@ -107,7 +115,7 @@ struct Worker {
     /// Changed areas not merged into the projection yet.
     pending:  Vec<Rect>,
     last_update: Instant,
-    notify:   Box<dyn Fn(Event) + Send>,
+    notify:   Arc<dyn Fn(Event) + Send + Sync>,
 
     brush:    Brush,
     /// Engine of the stroke: the native dab engine, or a MyPaint one
@@ -134,7 +142,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(projection: SharedProjection, notify: Box<dyn Fn(Event) + Send>) -> Self {
+    fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
             brush: Brush::new(),
@@ -189,6 +197,25 @@ impl Worker {
                         self.finish_stroke(&mut events);
                         // Show the end of the stroke right away.
                         flush = true;
+                    }
+                    Cmd::Save { doc, path, origin, auto } => {
+                        // Under the locks only as long as it takes to copy
+                        // the compressed layers; the file is written by a
+                        // thread of its own.
+                        let (snap, doc_id) = {
+                            let d = doc.lock().unwrap();
+                            let p = self.projection.lock().unwrap();
+                            (aurastudio_file::snapshot(&d, Some(&p.pixels), origin.as_deref()), d.id())
+                        };
+                        let notify = Arc::clone(&self.notify);
+                        let spawned = std::thread::Builder::new().name("save".into()).spawn(move || {
+                            let t = Instant::now();
+                            let result = aurastudio_file::save(&snap, &path).map_err(|e| e.to_string());
+                            log::info!("{} {}: {:?} in {:.0} ms", if auto { "autosave" } else { "save" },
+                                path.display(), result, t.elapsed().as_secs_f64() * 1000.0);
+                            notify(Event::Saved { doc: doc_id, path, revision: snap.revision, auto, result });
+                        });
+                        if let Err(e) = spawned { log::error!("save thread: {e}"); }
                     }
                     Cmd::Undo(_) | Cmd::Redo(_) | Cmd::Clear(_) if self.active => {
                         // Never while a stroke is open (the main thread
@@ -664,6 +691,28 @@ mod tests {
             assert!(pixel(&doc, id, 20, 50)[3] > 0, "end not painted (engine {n})");
             assert_eq!(doc.lock().unwrap().history().undo_len(), 1);
         }
+    }
+
+    /// Save goes through the queue: the file holds the strokes sent before
+    /// it, and the thread reports the revision it saved.
+    #[test]
+    fn save_after_a_stroke_holds_it() {
+        let (doc, id) = doc_with_layer();
+        let (tx, rx) = channel();
+        let pt = PaintThread::spawn(proj(64, 64), move |e| {
+            if let Event::Saved { revision, result, .. } = e { let _ = tx.send((revision, result)); }
+        });
+        let path = std::env::temp_dir().join(format!("pt-save-{}.aurs", std::process::id()));
+        stroke(&pt, &doc, 32.0);
+        pt.send(Cmd::Save { doc: Arc::clone(&doc), path: path.clone(), origin: None, auto: false });
+        let (revision, result) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        result.unwrap();
+        assert_eq!(revision, doc.lock().unwrap().revision());
+        let opened = aurastudio_file::open(&path, DocId(9), 4096).unwrap().doc;
+        let Some(Node::Layer(l)) = opened.layers.node(id) else { panic!() };
+        let i = ((32 * 64 + 30) * 4) as usize;
+        assert_eq!(&l.pixels[i..i + 4], &[0, 0, 0, 255]);
+        std::fs::remove_file(path).unwrap();
     }
 
     /// A locked layer is never painted, even if a stroke is sent.

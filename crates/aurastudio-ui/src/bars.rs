@@ -5,7 +5,7 @@ use egui::{Align, Frame, Layout, Margin, RichText};
 
 use crate::dockers::{self, layers, Tab};
 use crate::widgets::{opacity_slider, size_slider};
-use crate::{theme, Actions, Model, Notice, UiState, ViewCmd};
+use crate::{theme, Actions, FileCmd, Model, Notice, UiState, ViewCmd};
 
 pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut Actions) {
     egui::TopBottomPanel::top("menu_bar")
@@ -19,6 +19,20 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                 ui.label(RichText::new("AuraStudio").strong().color(theme::TEXT));
                 ui.add_space(8.0);
 
+                ui.menu_button("File", |ui| {
+                    for (label, key, cmd) in [
+                        ("New", "Ctrl+N", FileCmd::New),
+                        ("Open…", "Ctrl+O", FileCmd::Open),
+                        ("Save", "Ctrl+S", FileCmd::Save),
+                        ("Save As…", "Ctrl+Shift+S", FileCmd::SaveAs),
+                        ("Export…", "Ctrl+Shift+E", FileCmd::Export),
+                    ] {
+                        if ui.add(egui::Button::new(label).shortcut_text(key)).clicked() {
+                            a.file = Some(cmd);
+                            ui.close_menu();
+                        }
+                    }
+                });
                 ui.menu_button("Edit", |ui| {
                     if ui.add_enabled(m.can_undo, egui::Button::new("Undo").shortcut_text("Ctrl+Z")).clicked() {
                         a.undo = true;

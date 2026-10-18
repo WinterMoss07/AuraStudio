@@ -141,8 +141,25 @@ impl Workspace {
         self.insert(|id| Document::new(id, name, width, height))
     }
 
-    /// Add a document built with its new id (a file being opened) and make
-    /// it the active one.
+    /// Id for a document about to be built (a file being opened); add it
+    /// with `add`.
+    pub fn reserve_id(&mut self) -> DocId {
+        let id = DocId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    /// Add a document (its id from `reserve_id`) and make it the active one.
+    pub fn add(&mut self, doc: Document) -> SharedDoc {
+        let id = doc.id();
+        self.next_id = self.next_id.max(id.0 + 1);
+        let doc = Arc::new(Mutex::new(doc));
+        self.docs.push((id, Arc::clone(&doc)));
+        self.active = self.docs.len() - 1;
+        doc
+    }
+
+    /// Add a document built with its new id and make it the active one.
     pub fn insert(&mut self, make: impl FnOnce(DocId) -> Document) -> SharedDoc {
         let id = DocId(self.next_id);
         self.next_id += 1;
