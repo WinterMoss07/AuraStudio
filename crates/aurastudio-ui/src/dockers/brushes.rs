@@ -111,9 +111,6 @@ fn brush_tile(ui: &mut Ui, st: &mut BrushesState, p: &Preset, index: usize, sele
                 let a = if soft { (40.0 + 215.0 * t) as u8 } else { 230 };
                 painter.circle_filled(c, r, Color32::from_white_alpha(a).gamma_multiply(if soft { 0.35 } else { 1.0 }));
             }
-            if matches!(p.engine, Engine::DabRound) {
-                painter.circle_stroke(c, 20.0, Stroke::new(1.0_f32, theme::TEXT_WEAK));
-            }
         }
     }
     if selected {
@@ -134,8 +131,7 @@ fn brush_tile(ui: &mut Ui, st: &mut BrushesState, p: &Preset, index: usize, sele
 
 pub fn engine_label(e: &Engine) -> &'static str {
     match e {
-        Engine::RoundPen => "Round, continuous",
-        Engine::DabRound => "Round, dabs",
+        Engine::Round => "Round brush",
         Engine::MyPaint(_) => "MyPaint brush",
     }
 }

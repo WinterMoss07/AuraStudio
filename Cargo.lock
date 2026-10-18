@@ -270,7 +270,6 @@ name = "aurastudio-input"
 version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
- "efude-input",
  "windows",
 ]
 
@@ -715,29 +714,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "efude-core"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ca3502eb6b0ddf02b1c4d029458e0a5da04e0a1e8c63df208f50e05c1491e58"
-dependencies = [
- "glam",
-]
-
-[[package]]
-name = "efude-input"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c6b496c572e9c838b8ca5d88f0b179031fc104e6a98f99db57d97821c029fb9"
-dependencies = [
- "crossbeam-queue",
- "efude-core",
- "glam",
- "serde",
- "serde_json",
- "windows",
-]
-
-[[package]]
 name = "egui"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1012,12 +988,6 @@ dependencies = [
  "log",
  "xml-rs",
 ]
-
-[[package]]
-name = "glam"
-version = "0.30.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
 
 [[package]]
 name = "glow"

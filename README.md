@@ -19,10 +19,14 @@ UI stays quiet so the painting gets the room.
 ## What works today
 
 ### Painting
-- **Round pen** — a continuous swept stroke (no dabs, so no rings), with
-  pressure-driven opacity, hardness (crisp to fully soft edge), per-brush blend
-  mode and distance-based pressure smoothing. No build-up within one stroke
-  (crossing a 20 % stroke at 30 % gives 30 %, like Krita / CSP).
+- **Round brush** — one engine for every round brush: the brush is smeared
+  continuously along the pen path (no stamped dabs, so no beads or rings, even
+  very soft and at 1000 px), with Krita's "wash" accumulation: smooth soft
+  edges and clean crossings, no build-up within one stroke (crossing a 20 %
+  stroke at 30 % gives 30 %). Pressure-driven opacity, hardness (opaque out to
+  radius × hardness, then a soft fade), per-brush blend mode, distance-based
+  pressure smoothing. The path integral has a closed form, so the per-pixel
+  work is vectorized arithmetic (see `round_brush.rs`).
 - **MyPaint brushes** — 196 brushes bundled (David Revoy, Ramón Miranda,
   Tanda, the classic MyPaint set…, all CC0), painted natively through
   [hokusai](https://crates.io/crates/hokusai) (a Rust port of libmypaint):
@@ -75,8 +79,9 @@ UI stays quiet so the painting gets the room.
   changed rectangles to the GPU. Changed areas travel as a list of rectangles,
   never one growing bounding box. The UI never waits for the brush (it
   redraws the canvas with the last UI when the document is busy).
-- **Round pen at 1000 px**: ~0.7 ms per pen sample at steady pressure, ~1.7 ms
-  with constantly varying pressure (benchmark below).
+- **Round brush at 1000 px**: the area is updated every ~45 px of pen travel,
+  not on every pen sample; the round front at the pen is a preview drawn once
+  per batch of samples (benchmarks below).
 - **Idle = 0 % CPU**: frames are only drawn when something changes.
 - Low-latency presentation (Mailbox / Immediate, one frame in flight).
 
@@ -123,6 +128,7 @@ BENCH_PRESSURE=steady BENCH_RADIUS=500 ...                            # filters
 cargo run --release -p aurastudio-layers --example bench_composite   # layer merge cost
 cargo test  --release -p aurastudio -- --ignored pipeline --nocapture # paint thread + UI model
 cargo run --release -p aurastudio-brush  --example myb_sheet -- out.png a.myb b.myb  # MyPaint sample sheet
+cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png        # round brush strokes (SHEET_LOOP=1, SHEET_RAW=1, SHEET_CONST=1)
 ```
 
 ---
@@ -132,7 +138,7 @@ cargo run --release -p aurastudio-brush  --example myb_sheet -- out.png a.myb b.
 | Crate | Role |
 |---|---|
 | `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
-| `aurastudio-brush` | brush engines: round pen, dab round (hokusai "wash"), native MyPaint |
+| `aurastudio-brush` | brush engines: the round brush, native MyPaint |
 | `aurastudio-brushes` | brush library: built-in presets, bundled MyPaint collection, import |
 | `aurastudio-layers` | layer tree, folders, lock, compositing |
 | `aurastudio-document` | documents, workspace, undo history |
@@ -152,7 +158,7 @@ See `NOTICE.md` for third-party code and assets.
 **To verify on a real machine (Windows + pen)**
 - [ ] Display color management with the real monitor profile: are grays now
       neutral? (log line `monitor profile: …`; toggle in the View menu)
-- [ ] Round pen at 1000 px on an A4 300 dpi canvas: per-stroke log lines
+- [ ] Round brush at 1000 px on an A4 300 dpi canvas: per-stroke log lines
       (`stroke: … paint avg …`, `max queued`).
 - [ ] Rotation with the pen (Shift + Space + drag).
 - [ ] MyPaint brushes: smudge / blender behavior, speed-dependent brushes
@@ -161,6 +167,8 @@ See `NOTICE.md` for third-party code and assets.
       the next launch.
 
 **Missing / planned**
+- [ ] Tool options: the value boxes grow with their number (999 vs 1000) and
+      stretch the sliders; brush size is capped at 999 px meanwhile.
 - [ ] Save / open documents (own format, PNG / PSD / ORA export).
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and
       canvas resize (history is cleared today).

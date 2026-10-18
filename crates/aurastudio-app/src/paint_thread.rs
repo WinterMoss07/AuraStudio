@@ -31,7 +31,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{stroke_line, Brush, DabEngine, MyPaintEngine, PressureSmoother};
+use aurastudio_brush::{Brush, RoundBrush, MyPaintEngine};
 use aurastudio_brushes::Engine;
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
@@ -111,10 +111,9 @@ struct Worker {
 
     brush:    Brush,
     engine:   Engine,
-    dabs:     DabEngine,
+    round:    RoundBrush,
     /// Engine of the current MyPaint stroke (built from its preset).
     mypaint:  Option<MyPaintEngine>,
-    smoother: PressureSmoother,
     /// The stroke started on a paintable layer.
     active:   bool,
     /// Layer the stroke paints on, fixed at Begin (not "the active layer":
@@ -135,10 +134,9 @@ impl Worker {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
             brush: Brush::new(),
-            engine: Engine::RoundPen,
-            dabs: DabEngine::new(),
+            engine: Engine::Round,
+            round: RoundBrush::new(),
             mypaint: None,
-            smoother: PressureSmoother::new(0.5),
             active: false,
             layer: 0,
             size: (0, 0),
@@ -236,6 +234,12 @@ impl Worker {
             // latency), when asked to, or at least every UPDATE_PERIOD.
             queue.extend(rx.try_iter());
             let due = flush || queue.is_empty() || self.last_update.elapsed() >= UPDATE_PERIOD;
+            if due {
+                if let Some(r) = self.with_doc(|w, d| w.preview(d)).flatten() {
+                    add_rect(&mut self.pending, r);
+                    merge(&mut self.stroke_rect, Some(r));
+                }
+            }
             if due && !self.pending.is_empty() {
                 self.update_projection();
                 (self.notify)(Event::Painted);
@@ -291,15 +295,12 @@ impl Worker {
         if !self.active { return false; }
 
         self.brush = brush;
-        self.smoother.span = smoothing;
-        self.smoother.reset();
         self.mypaint = None;
         match &engine {
-            Engine::RoundPen => {}
-            Engine::DabRound => {
-                self.dabs.smoother.span = smoothing;
-                self.dabs.sync_from(&self.brush);
-                self.dabs.begin_stroke();
+            Engine::Round => {
+                self.round.smoother.span = smoothing;
+                self.round.sync_from(&self.brush);
+                self.round.begin_stroke();
             }
             Engine::MyPaint(preset) => {
                 let mut e = MyPaintEngine::new((**preset).clone());
@@ -331,19 +332,21 @@ impl Worker {
                 self.last = Some((x, y, pressure));
                 e.stroke_to(&mut surface, x, y, pressure, time)
             }
-            (Engine::DabRound, _) => {
-                self.last = Some((x, y, pressure));
-                self.dabs.stroke_to(&mut surface, x, y, pressure)
-            }
             _ => {
-                let p = self.smoother.apply(x, y, pressure, self.brush.radius as f32);
-                let (fx, fy, fp) = self.last.unwrap_or((x, y, p));
-                self.last = Some((x, y, p));
-                stroke_line((fx, fy), (x, y), &self.brush, &mut surface, fp, p)
+                self.last = Some((x, y, pressure));
+                self.round.stroke_to(&mut surface, x, y, pressure)
             }
         };
         self.stats.paint.add(t0.elapsed());
         rect
+    }
+
+    /// Before showing the painted samples: the round brush draws its
+    /// front where the pen is (temporary, redrawn as the pen moves on).
+    fn preview(&mut self, doc: &mut Document) -> Option<Rect> {
+        if !self.active || !matches!(self.engine, Engine::Round) { return None; }
+        let mut surface = doc.layers.layer_surface(self.layer)?;
+        self.round.preview(&mut surface)
     }
 
     /// Finish the stroke and record it for undo. Returns the last painted
@@ -360,8 +363,7 @@ impl Worker {
             if let Some(mut surface) = doc.layers.layer_surface(id) {
                 rect = match (&self.engine, &mut self.mypaint) {
                     (Engine::MyPaint(_), Some(e)) => e.end_stroke(&mut surface),
-                    (Engine::DabRound, _) => self.dabs.end_stroke(&mut surface),
-                    _ => None,
+                    _ => self.round.end_stroke(&mut surface),
                 };
             }
         }
@@ -449,7 +451,7 @@ mod tests {
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::Round, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y, pressure: 1.0, time: 0.0 });
         pt.send(Cmd::Sample { x: 50.0, y, pressure: 1.0, time: 0.01 });
         pt.send(Cmd::End);
@@ -505,7 +507,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Round, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y: 30.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
         // The user selects another layer while the stroke goes on.
@@ -525,7 +527,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::RoundPen, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::Round, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         stroke(&pt, &doc, 40.0);
         drop(pt);
@@ -540,7 +542,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Round, smoothing: 0.0 });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
         {
@@ -611,7 +613,7 @@ mod tests {
 
             let mut brush = Brush::new();
             brush.radius = radius;
-            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::RoundPen, smoothing: 0.0 });
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Round, smoothing: 0.0 });
             let t0 = Instant::now();
             let n = 200;
             for i in 0..n {
@@ -631,54 +633,6 @@ mod tests {
             stop.store(true, Ordering::Relaxed);
             let frames = gui.join().unwrap();
             println!("radius {radius:>3}: stroke done {:>6.1} ms after pen up | gui frames {}",
-                lag.as_secs_f64() * 1000.0, frames);
-        }
-    }
-
-    /// Same workload, done the way the app worked before the paint thread
-    /// (everything on the UI thread: paint each sample, recomposite the
-    /// accumulated rect every 4 ms, build the UI). Reference for the above.
-    #[test]
-    #[ignore]
-    fn pipeline_benchmark_single_thread_reference() {
-        for radius in [50u32, 250, 500] {
-            let mut d = Document::new(DocId(1), "b", 2048, 2048);
-            d.layers.add_layer("ink");
-            let mut screen = vec![0u8; 2048 * 2048 * 4];
-            let mut brush = Brush::new();
-            brush.radius = radius;
-            let ink = d.layers.active_id();
-            d.layers.begin_stroke(ink);
-            let mut pending: Option<Rect> = None;
-            let mut last_frame = Instant::now();
-            let mut frames = Timing::default();
-            let mut last: Option<(f32, f32, f32)> = None;
-            let t0 = Instant::now();
-            let n = 200;
-            for i in 0..n {
-                let t = i as f32 / n as f32;
-                let x = 300.0 + i as f32 * 7.0;
-                let y = 1000.0 + (t * 12.0).sin() * 400.0;
-                let p = 0.3 + 0.7 * (t * 9.0).sin().abs();
-                let (fx, fy, fp) = last.unwrap_or((x, y, p));
-                let mut surface = d.layers.layer_surface(ink).unwrap();
-                merge(&mut pending, stroke_line((fx, fy), (x, y), &brush, &mut surface, fp, p));
-                last = Some((x, y, p));
-                if last_frame.elapsed() >= Duration::from_millis(4) {
-                    let f = Instant::now();
-                    if let Some(r) = pending.take() { d.layers.composite_rect_into(&mut screen, r); }
-                    let u = Instant::now();
-                    while u.elapsed() < Duration::from_micros(1500) {}
-                    frames.add(f.elapsed());
-                    last_frame = Instant::now();
-                }
-                let due = t0 + Duration::from_millis(5 * (i as u64 + 1));
-                while Instant::now() < due { std::thread::sleep(Duration::from_micros(200)); }
-            }
-            // Behind schedule = how long after the last pen sample the
-            // painting actually finished.
-            let lag = t0.elapsed().saturating_sub(Duration::from_millis(5 * n as u64));
-            println!("radius {radius:>3}: single-thread reference, lag {:>6.1} ms | ui frames {}",
                 lag.as_secs_f64() * 1000.0, frames);
         }
     }

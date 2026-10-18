@@ -56,7 +56,7 @@ impl TabViewer for Viewer<'_, '_> {
         // is at least as tall as the dock).
         let content = ui.scope(|ui| match tab {
             Tab::Color       => color::show(ui, self.color, self.m),
-            Tab::ToolOptions => tool_options::show(ui, self.m, self.a),
+            Tab::ToolOptions => tool_options::show(ui, self.m),
             Tab::Brushes     => brushes::show(ui, self.brushes, self.m, self.a),
             Tab::Layers      => layers::show(ui, self.layers, self.notice, self.m, self.a),
             Tab::Canvas      => canvas::show(ui, self.m, self.a),

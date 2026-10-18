@@ -1,8 +1,8 @@
 // Measures CPU cost per pointer sample of the painting path, without a
-// window: round dabs and the continuous round pen.
+// window: the round brush.
 // Usage: cargo run --release -p aurastudio-brush --example bench_stroke
 use std::time::{Duration, Instant};
-use aurastudio_brush::{stroke_line, Brush, DabEngine};
+use aurastudio_brush::{Brush, RoundBrush};
 use aurastudio_canvas::PaintSurface;
 
 struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8>, w: u32, h: u32 }
@@ -14,9 +14,8 @@ impl PaintSurface for S {
 
 fn main() {
     let (w, h) = (2048u32, 2048u32);
-    // Optional filters: BENCH_RADIUS=500 BENCH_ENGINE=dabs|pen
+    // Optional filter: BENCH_RADIUS=500
     let only_r: Option<u32> = std::env::var("BENCH_RADIUS").ok().and_then(|v| v.parse().ok());
-    let only_e = std::env::var("BENCH_ENGINE").ok();
     // BENCH_PRESSURE=steady: near-constant pressure (typical painting);
     // default: pressure swinging all the time (worst case: every rise
     // repaints the whole disc).
@@ -25,8 +24,7 @@ fn main() {
     let hardness: f32 = std::env::var("BENCH_HARDNESS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     for radius in [10u32, 50, 130, 250, 500] {
         if only_r.is_some_and(|r| r != radius) { continue; }
-        for engine in ["dabs", "pen"] {
-            if only_e.as_deref().is_some_and(|e| e != engine) { continue; }
+        {
             let white = vec![255u8; (w * h * 4) as usize];
             let mut s = S { px: white.clone(), base: white, mask: vec![0; (w * h) as usize], w, h };
             // Touch every page first: a fresh buffer costs a page fault on
@@ -37,27 +35,26 @@ fn main() {
             let mut b = Brush::new();
             b.radius = radius;
             b.hardness = hardness;
-            let mut d = DabEngine::new();
+            let mut d = RoundBrush::new();
             d.sync_from(&b);
             d.begin_stroke();
             let n = 200;
             let mut total = Duration::ZERO;
             let mut worst = Duration::ZERO;
-            let mut last = (300.0f32, 1000.0f32);
-            let mut last_p = 0.3f32;
             for i in 0..n {
                 // ~8 px between samples: a fast-ish stroke at 200 Hz.
                 let t = i as f32 / n as f32;
                 let p = (300.0 + i as f32 * 8.0, 1000.0 + (t * 20.0).sin() * 300.0);
                 let pr = if steady { 0.8 + 0.02 * (t * 9.0).sin() } else { 0.3 + 0.7 * (t * 9.0).sin().abs() };
                 let t0 = Instant::now();
-                if engine == "dabs" { d.stroke_to(&mut s, p.0, p.1, pr); } else { stroke_line(last, p, &b, &mut s, last_p, pr); }
-                last_p = pr;
+                d.stroke_to(&mut s, p.0, p.1, pr);
+                // The brush front is shown once per batch of samples; here
+                // after every sample (a paint thread keeping up with the pen).
+                d.preview(&mut s);
                 let dt = t0.elapsed();
-                total += dt; worst = worst.max(dt); last = p;
+                total += dt; worst = worst.max(dt);
             }
-            println!("radius {radius:>3} {:<8} avg {:>7.3} ms/sample  worst {:>7.3} ms",
-                engine,
+            println!("radius {radius:>3}  avg {:>7.3} ms/sample  worst {:>7.3} ms",
                 total.as_secs_f64() * 1000.0 / n as f64, worst.as_secs_f64() * 1000.0);
         }
     }

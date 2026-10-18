@@ -29,7 +29,7 @@ pub use dockers::Tab;
 pub use widgets::set_display_transform;
 
 /// Brush size range, as a diameter in pixels.
-pub const MAX_BRUSH_SIZE: u32 = 1000;
+pub const MAX_BRUSH_SIZE: u32 = 999;
 
 /// Everything the UI may edit this frame.
 pub struct Model<'a> {
@@ -75,9 +75,6 @@ pub struct Actions {
     pub view:        Option<ViewCmd>,
     /// Open a file dialog to import MyPaint brushes.
     pub import_brushes: Option<ImportBrushes>,
-    /// Round brush engine of the selected preset: true = dabs, false =
-    /// continuous pen.
-    pub use_dabs: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

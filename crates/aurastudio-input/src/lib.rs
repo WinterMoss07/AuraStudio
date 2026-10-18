@@ -22,65 +22,6 @@ pub struct StylusSample {
 #[cfg(target_os = "windows")]
 pub struct Stylus { inner: imp::Inner }
 
-// ---------------------------------------------------------------
-// A/B variant: build with `--features efude-upstream` to use the raw
-// efude-input crate's WindowsInkHook / WintabHook instead of our vendored
-// copy below. Only meant to tell whether some latency comes from the
-// native hook itself or from our gpu / brush pipeline; never used in
-// normal builds.
-#[cfg(all(target_os = "windows", feature = "efude-upstream"))]
-mod imp {
-    use super::StylusSample;
-    use efude_input::{PenInputQueue, WindowsInkHook, WintabHook};
-    use windows::Win32::{Foundation::HWND, UI::HiDpi::GetDpiForWindow};
-
-    pub struct Inner {
-        queue: PenInputQueue,
-        hwnd:  isize,
-        hook:  Hook,
-    }
-
-    enum Hook { Wintab(WintabHook), Ink(WindowsInkHook), None }
-
-    pub fn install(hwnd_raw: isize) -> Inner {
-        let hwnd = hwnd_raw as *mut std::ffi::c_void;
-        let queue = PenInputQueue::default();
-
-        let hook = match WintabHook::install(hwnd, queue.shared()) {
-            Ok(h) => Hook::Wintab(h),
-            Err(_) => match WindowsInkHook::install(hwnd, queue.shared()) {
-                Ok(h) => Hook::Ink(h),
-                Err(_) => Hook::None,
-            },
-        };
-
-        Inner { queue, hwnd: hwnd_raw, hook }
-    }
-
-    pub fn backend(inner: &Inner) -> &'static str {
-        match inner.hook {
-            Hook::Wintab(_) => "WinTab (efude-input upstream)",
-            Hook::Ink(_)    => "Windows Ink (efude-input upstream)",
-            Hook::None      => "none",
-        }
-    }
-
-    pub fn drain(inner: &Inner) -> Vec<StylusSample> {
-        // efude-input reports logical pixels; scale back to physical
-        // pixels so the A/B comparison draws at the right place.
-        let hwnd  = HWND(inner.hwnd as *mut std::ffi::c_void);
-        let scale = unsafe { GetDpiForWindow(hwnd) }.max(1) as f32 / 96.0;
-        let mut buf = Vec::new();
-        inner.queue.drain_into(&mut buf, 256);
-        // No pen timestamp in this API: stamped at drain time.
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u32).unwrap_or(0);
-        buf.into_iter()
-            .map(|p| StylusSample { x: p.x * scale, y: p.y * scale, pressure: p.pressure, time_ms: now })
-            .collect()
-    }
-}
-
 #[cfg(target_os = "windows")]
 impl Stylus {
     pub fn install(hwnd: isize) -> Self {
@@ -95,7 +36,7 @@ impl Stylus {
     }
 }
 
-#[cfg(all(target_os = "windows", not(feature = "efude-upstream")))]
+#[cfg(target_os = "windows")]
 mod imp {
     use super::StylusSample;
     use crossbeam_queue::ArrayQueue;

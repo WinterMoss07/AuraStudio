@@ -1,0 +1,52 @@
+// Straight strokes with big brushes at several hardness values: the dab
+// spacing must not show inside soft strokes (beads / ripples).
+// Usage: cargo run --release -p aurastudio-brush --example spacing_sheet -- out.png
+use aurastudio_brush::{Brush, RoundBrush};
+use aurastudio_canvas::PaintSurface;
+
+const W: u32 = 1400;
+const H: u32 = 1300;
+
+struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8> }
+impl PaintSurface for S {
+    fn width(&self) -> u32 { W }
+    fn height(&self) -> u32 { H }
+    fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) { (&mut self.px, &self.base, &mut self.mask) }
+}
+
+fn main() {
+    let out = std::env::args().nth(1).unwrap_or_else(|| "spacing.png".into());
+    let white = vec![255u8; (W * H * 4) as usize];
+    let mut s = S { px: white.clone(), base: white, mask: vec![0; (W * H) as usize] };
+    for (k, hardness) in [0.0f32, 0.5, 0.8, 1.0].iter().enumerate() {
+        s.base.copy_from_slice(&s.px);
+        s.mask.fill(0);
+        let mut b = Brush::new();
+        b.radius = if std::env::var("SHEET_LOOP").is_ok() { 50 } else { 140 };
+        b.hardness = *hardness;
+        let mut e = RoundBrush::new();
+        if std::env::var("SHEET_RAW").is_ok() { e.smoother.span = 0.0; }
+        e.sync_from(&b);
+        e.begin_stroke();
+        let y = 160.0 + k as f32 * 320.0;
+        let looped = std::env::var("SHEET_LOOP").is_ok();
+        // Pen samples ~3 px apart, slight pressure wobble (like a hand).
+        // SHEET_LOOP: a self-crossing loop with tight turns instead.
+        for i in 0..=360 {
+            let t = i as f32 / 360.0 * std::f32::consts::TAU;
+            let (x, yy) = if looped {
+                (700.0 + 480.0 * t.sin(), y + 90.0 * (2.0 * t).sin())
+            } else {
+                (180.0 + i as f32 * 3.0, y + (i as f32 * 0.01).sin() * 20.0)
+            };
+            let p = if std::env::var("SHEET_CONST").is_ok() { 0.75 } else { 0.75 + 0.05 * (i as f32 * 0.07).sin() };
+            e.stroke_to(&mut s, x, yy, p);
+        }
+        e.end_stroke(&mut s);
+    }
+    let file = std::fs::File::create(&out).unwrap();
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), W, H);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().unwrap().write_image_data(&s.px).unwrap();
+}

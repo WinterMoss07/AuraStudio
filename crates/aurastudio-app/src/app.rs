@@ -11,7 +11,7 @@ use winit::{
 };
 
 use aurastudio_brush::Brush;
-use aurastudio_brushes::{Engine, Library};
+use aurastudio_brushes::Library;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
@@ -601,14 +601,6 @@ impl App {
         }
         if preset != preset_before { self.select_preset(preset); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
-        if let Some(dabs) = actions.use_dabs {
-            let p = &mut self.library.presets[self.preset];
-            if !p.engine.is_mypaint() {
-                p.engine = if dabs { Engine::DabRound } else { Engine::RoundPen };
-                // The docker shows the new engine.
-                want_frame = true;
-            }
-        }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         if actions.undo { self.undo(); }
         if actions.redo { self.redo(); }

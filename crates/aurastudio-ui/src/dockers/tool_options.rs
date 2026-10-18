@@ -5,11 +5,9 @@ use egui::{RichText, Ui};
 
 use crate::widgets::{blend_combo, opacity_slider, size_slider};
 use crate::dockers::brushes::engine_label;
-use aurastudio_brushes::Engine;
+use crate::{theme, Model};
 
-use crate::{theme, Actions, Model};
-
-pub fn show(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
+pub fn show(ui: &mut Ui, m: &mut Model) {
     let full = |ui: &mut Ui| {
         // Slider = track + value box; keep the total inside the dock.
         ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(40.0);
@@ -22,26 +20,6 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
         ui.label(RichText::new(&p.name).strong());
         ui.label(RichText::new(format!("{}  ·  {}", p.group, engine_label(&p.engine))).small().color(theme::TEXT_WEAK));
         ui.add_space(2.0);
-    }
-
-    // Round brushes: continuous pen or dabs.
-    if let Some(engine) = m.presets.get(*m.preset).map(|p| &p.engine).filter(|e| !e.is_mypaint()) {
-        let dabs = matches!(engine, Engine::DabRound);
-        label(ui, "Engine");
-        ui.horizontal(|ui| {
-            if ui.selectable_label(!dabs, "Continuous")
-                .on_hover_text("One swept shape, no dabs: no rings when the pressure changes.\nBest for hard edges.")
-                .clicked() && dabs
-            {
-                a.use_dabs = Some(false);
-            }
-            if ui.selectable_label(dabs, "Dabs")
-                .on_hover_text("Round dabs that blend into each other: smooth soft edges and crossings,\nand much faster at big sizes.")
-                .clicked() && !dabs
-            {
-                a.use_dabs = Some(true);
-            }
-        });
     }
 
     label(ui, "Size");
