@@ -18,136 +18,39 @@ UI stays quiet so the painting gets the room.
 
 ## What works today
 
-### Painting
-- **Brush engine** — one engine for all our brushes; a brush is a preset of
-  its settings (the round brush is the first one). Dabs with Krita's "wash"
-  accumulation (alpha darken): smooth soft edges and clean crossings, no
-  build-up within one stroke (crossing a 20 % stroke at 30 % gives 30 %), and
-  Krita's averaged opacity when the pressure falls (no beads). Spacing is
-  Krita's auto spacing (0.8 × √diameter: straight hard edges). Pressure-driven
-  opacity, hardness, per-brush blend mode.
-- **MyPaint brushes** — 196 brushes bundled (David Revoy, Ramón Miranda,
-  Tanda, the classic MyPaint set…, all CC0), painted natively through
-  [hokusai](https://crates.io/crates/hokusai) (a Rust port of libmypaint):
-  the stroke works on tiles loaded from the layer, so smudge, blender, eraser
-  and textured brushes behave as in MyPaint.
-- **Import** — `.myb` files or whole folders of them (Brushes docker →
-  Import…); they are copied into the user's data folder and come back at the
-  next launch.
-- **Per-brush settings** — each brush keeps its own size, opacity, hardness
-  and blend mode (CSP style). The color is global.
-- **13 blend modes** (W3C formulas, sRGB space like Photoshop / Krita / CSP)
-  for brushes and layers.
-- **Brush outline cursor** — the OS arrow is replaced by an outline the size
-  of the brush at the current zoom (crosshair when tiny), drawn on the GPU so
-  it follows the pen even while the UI is busy.
-- **Navigation cursors** — open hand (Space), closed hand (panning) and a
-  circle of arrows (rotating), drawn by the app: Windows has no hand cursor
-  and showed the four-arrow cross instead.
+**Painting**
+- One native brush engine (Krita-style "wash" opacity, auto spacing,
+  pressure) plus 196 bundled MyPaint brushes (CC0) painted natively;
+  `.myb` import. Each brush keeps its own size / opacity / hardness / blend
+  mode; 13 blend modes. GPU brush outline cursor, app-drawn hand / rotate
+  cursors.
 
-### Tools
-- **Toolbox** on the left, fused with the canvas edge (Krita): Brush (B),
-  Eraser (E: the current brush, erasing), Fill (G), Color picker (I, or
-  Alt+click with the brush), Rectangle (M) and Lasso (L) selection, Hand
-  (H), Zoom (Z: click in, Alt+click out, drag to zoom). The options bar
-  and the Tool options docker follow the tool.
-- **Fill**: finds the area on the merged image (lines on another layer stop
-  it, the usual way to color line art) or on the layer alone; tolerance,
-  expand by a few pixels under anti-aliased edges. Scanline fill on 64-bit
-  words, a tile at a time: a whole A4 page in ~10 ms (layer) / ~50 ms
-  (merged), undoable.
-- **Selections**: painting, fill and Delete only change selected pixels.
-  Ctrl+A / Ctrl+D; a click without dragging deselects. The outline is
-  drawn as still black-and-white dashes (animated ones would keep the UI
-  redrawing).
+**Tools** — toolbox in the canvas's top-left corner (Krita's optimized
+layout): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
+- Fill on the merged image or the layer alone, tolerance, expand under
+  anti-aliased lines; an A4 page in ~10–50 ms.
+- Painting, fill and Delete stay inside the selection.
 
-### Files
-- **`.aurs` documents** (File menu, Ctrl+S / Ctrl+Shift+S / Ctrl+O): a zip
-  archive holding the layer tree (folders, blend modes, opacity, locks),
-  each layer's pixels (LZ4), the canvas resolution, the newest 50 undo
-  steps and a small preview. Saving goes through the paint thread's queue
-  (after the strokes before it) and writes on its own thread, through a
-  temporary file: a crash mid-save never breaks the previous file. Damaged
-  files give an error, never a crash.
-- **Start screen** (like Procreate / PhotoCraft): the docks are loaded and
-  the canvas area shows New, Open and the recent files with thumbnails
-  (the preview inside .aurs files). Ctrl+W closes the document back to
-  it. Drop an image or an .aurs file on the window to open it.
-- **New document** (Ctrl+N): presets for paper (A5, A4, A3, Letter), manga
-  (B4 manuscript, B5, A4 at 600 dpi), comics (US page with bleed, art
-  board, BD album page) and screen (square, HD, 4K, webtoon, Instagram),
-  or any size in px, mm, cm or inches at any resolution.
-- **Open images** (PNG, JPG, WebP, BMP, TIFF, GIF) as a new document, the
-  picture over the locked Paper; **export** the merged image to PNG / JPG.
-- **Autosave and recovery**: unsaved work goes to a recovery file 5 minutes
-  after it changed; after a crash, AuraStudio offers to recover it. Closing,
-  New and Open ask to save unsaved changes. The title shows `*` while
-  there are some.
+**Files**
+- `.aurs` documents (layers, folders, 50 undo steps, preview), atomic saves,
+  autosave + crash recovery, unsaved-changes prompts.
+- Start screen with recent files; New dialog with paper / manga / comics /
+  screen presets.
+- Open PNG / JPG / WebP / BMP / TIFF / GIF: the picture is the bottom layer
+  and an empty layer above it is active (no painting on the picture by
+  mistake). Export to PNG / JPG.
 
-### Layers & document
-- New documents start like CSP: a locked white **Paper** layer and an
-  empty **Layer 1** above it, active.
-- Layer tree with **folders** (Pass Through or isolated with a blend mode),
-  visibility, opacity, **lock** (inherited by folder content), duplicate,
-  reorder in / out of folders, rename (double-click).
-- **Undo / redo** (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z) for strokes and layer
-  clear. A step only stores the rectangle a stroke touched, LZ4-compressed,
-  with a memory budget (512 MB per document by default).
-- **Documents** — `aurastudio-document` holds several open documents, each
-  with its own layers and history (the UI shows one for now).
-- Canvas size presets / custom size, content kept centered.
+**Layers** — Paper + Layer 1 for new documents, folders, opacity, blend,
+lock, rename, undo / redo with a memory budget.
 
-### Viewing
-- **Zoom, pan, rotation** on the GPU; the pen goes through the exact inverse
-  transform, so strokes land under the pen at any zoom or angle. Sharp pixels
-  from 200 %.
-- **Display color management** — the monitor's ICC profile (the one Windows
-  assigns to it) is read and applied to the canvas and the color docker with a
-  3D lookup table on the GPU (moxcms; perceptual or relative colorimetric).
-  The UI itself is not converted.
+**View** — GPU zoom / pan / rotation, monitor ICC color management.
 
-### Interface (egui + egui_dock)
-- Neutral dark theme with one blue accent. Menu bar, tool options bar and
-  docks are one seamless surface (no borders, no gaps); only the canvas is
-  rounded, set right against the bar and the docks. Sliders fill with the
-  accent and show their label and value inside (right-click to type a
-  value, click elsewhere or Escape to leave). Dock column: Color (RGB / HSV
-  gradient sliders, hex field), Tool options, Brushes, Layers, Canvas. Docks
-  can be rearranged, resized and detached.
-
-### Performance architecture
-- **Paint thread** — brushes paint on their own thread (one thread per
-  stroke, never split: see `paint_thread.rs`); the UI thread only reads the
-  pen and shows results. Undo / redo / clear go through the same queue, so
-  Ctrl+Z right after lifting the pen undoes that very stroke.
-- **Tiled layers** (like Krita / CSP): layers are stored in 64 × 64 tiles,
-  and only tiles that differ from the layer's fill color (transparent, or
-  white for the Paper) exist. An empty layer costs no memory and no
-  compositing time; the stroke snapshot and coverage are kept per tile
-  too, only where the brush goes. New A4 300 dpi document: the layers take
-  0 MB (33 MB each before), the projection 33 MB; B4 600 dpi: 0 MB of
-  layers, 199 MB of projection. `.aurs` files store the painted tiles only.
-- **Strokes leaving the canvas** pause there like a lifted pen and resume
-  where they come back: zoomed out, the pen can travel hundreds of
-  thousands of canvas pixels off the canvas, and computing invisible dabs
-  there froze the paint thread (or ran out of memory with MyPaint brushes).
-- **Crash hunt** — `fuzz.rs` throws random clicks, drags, keys, strokes,
-  undo / redo, layer changes, resizes and view moves at the real UI and
-  paint thread, headless (`FUZZ_STEPS=1000000 cargo test --release -p
-  aurastudio fuzz -- --ignored`).
-- **Projection off the UI thread** (Krita's model): the paint thread merges
-  only the changed areas, each into a small buffer, and queues them; the UI
-  thread copies them to the GPU texture and drops them. The whole merged
-  image exists only on the GPU, never a second copy in RAM (33 MB at A4
-  300 dpi, 200 MB at B4 600 dpi). A full refresh (layer hidden, file
-  opened) is merged and uploaded in bands of 64 rows; Export merges the
-  whole image only while it writes the file, and the file preview is
-  merged from a few rows only.
-- **1000 px brushes**: one dab every ~25 px of pen travel, not on
-  every pen sample (benchmarks below).
-- **Idle = 0 % CPU**: frames are only drawn when something changes, at most
-  one per display refresh (a hovering pen must not drive the frame rate).
-- Low-latency presentation (Mailbox / Immediate, one frame in flight).
+**Under the hood**
+- Brushes on their own thread (never split); merge of the changed areas off
+  the UI thread, the full image only on the GPU.
+- 64 × 64 tiled layers: an empty layer costs nothing.
+- Idle = 0 % CPU; strokes far off the canvas pause instead of freezing.
+- `fuzz.rs`: headless crash hunt on the real UI and paint thread.
 
 ---
 
@@ -158,7 +61,7 @@ UI stays quiet so the painting gets the room.
 | Paint | pen / left mouse |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
 | Clear layer (or the selection) | Delete |
-| Tools | B brush, E eraser, G fill, I picker, M rectangle, L lasso, H hand, Z zoom |
+| Tools | B brush, E eraser, G fill, I picker, M rectangle, L lasso |
 | Pick a color | Alt + click (brush, eraser, fill) |
 | Select all / deselect | Ctrl+A / Ctrl+D |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
@@ -213,7 +116,7 @@ cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png     
 | `aurastudio-gpu` | wgpu renderer: canvas, view transform, color LUT, brush outline, egui |
 | `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
 | `aurastudio-file` | `.aurs` format, image import / export |
-| `aurastudio-ui` | egui interface: bars, one file per docker, theme, widgets |
+| `aurastudio-ui` | egui interface: bars, toolbox, one file per docker, theme, widgets |
 | `aurastudio-app` | the application: event loop, paint thread, projection |
 
 Data crates (layers, brushes, document…) know nothing about the UI.
@@ -228,13 +131,15 @@ See `NOTICE.md` for third-party code and assets.
       neutral? (log line `monitor profile: …`; toggle in the View menu)
 - [ ] A 1000 px brush on an A4 300 dpi canvas: per-stroke log lines
       (`stroke: … paint avg …`, `max queued`).
-- [ ] Rotation with the pen (Shift + Space + drag).
+- [x] Rotation with the pen (Shift + Space + drag).
 - [ ] MyPaint brushes: smudge / blender behavior, speed-dependent brushes
       (they now get the pen's own timestamps).
 - [ ] Brush import dialog (files and folder) and that imports come back at
       the next launch.
 
 **Missing / planned**
+- [ ] Redesign of the Brushes docker.
+- [ ] Redesign of the New document dialog.
 - [ ] PSD / ORA export.
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and
       canvas resize (history is cleared today).

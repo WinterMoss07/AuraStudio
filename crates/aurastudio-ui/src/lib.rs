@@ -232,7 +232,6 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
 
     bars::menu_bar(ctx, state, model, actions);
     bars::options_bar(ctx, &mut state.notice, model);
-    tools::toolbox(ctx, model);
 
     if let Some(tab) = state.focus_tab.take() {
         if let Some(loc) = state.dock.find_tab(&tab) {
@@ -271,7 +270,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
             state.dock_layout.enforce(&mut state.dock, bar, sep);
         });
 
-    canvas_card(ctx);
+    canvas_card(ctx, model);
     let card = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(CANVAS_RECT_ID)));
     if let (Some(card), false) = (card, model.home) {
         tools::draw_overlay(ctx, card, &model.overlay, model.to_points);
@@ -348,23 +347,27 @@ pub const CANVAS_RECT_ID: &str = "aurastudio_canvas_rect";
 /// right against the bars, the toolbox and the docks, with a thin frame of
 /// UI surface below it. The surface is painted around it and
 /// over its corners (the GPU draws the canvas below the whole UI).
-fn canvas_card(ctx: &egui::Context) {
+fn canvas_card(ctx: &egui::Context, model: &mut Model) {
     use egui::{pos2, Rect, Shape};
     let free = ctx.available_rect();
     let g = theme::CANVAS_FRAME;
-    // The toolbox is fused with the canvas edge (Krita): no gap on the left.
+    // From the window's left edge (the toolbox sits in its corner).
     let card = Rect::from_min_max(free.min, pos2(free.right(), free.bottom() - g));
     if card.width() <= 0.0 || card.height() <= 0.0 { return; }
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(CANVAS_RECT_ID), card));
+    let tools = tools::toolbox(ctx, card.min, model);
 
     let painter = ctx.layer_painter(egui::LayerId::background());
     let fill = theme::PANEL;
     painter.rect_filled(Rect::from_min_max(pos2(card.left(), card.bottom()), free.max), 0.0, fill);
-    // Each corner: the area between the corner and a quarter circle, as a
-    // fan of triangles from the corner.
+    // Each rounded corner of the canvas: the area between the corner and a
+    // quarter circle, as a fan of triangles from the corner. Its top-left
+    // corner is the toolbox: the canvas is rounded right of it and below
+    // it instead.
     let r = theme::CANVAS_ROUNDING;
     for (corner, sx, sy) in [
-        (card.left_top(), 1.0, 1.0),
+        (pos2(tools.right(), card.top()), 1.0, 1.0),
+        (pos2(card.left(), tools.bottom()), 1.0, 1.0),
         (card.right_top(), -1.0, 1.0),
         (card.left_bottom(), 1.0, -1.0),
         (card.right_bottom(), -1.0, -1.0),

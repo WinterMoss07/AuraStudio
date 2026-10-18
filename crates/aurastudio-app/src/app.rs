@@ -221,11 +221,6 @@ pub struct App {
     tool:       Tool,
     fill:       FillParams,
     gesture:    Option<Gesture>,
-    /// The view drag comes from the Hand / Zoom tool (not Space): its mode
-    /// is fixed, whatever keys are held.
-    nav_tool:   Option<Nav>,
-    /// Cursor travel during the drag (a Zoom tool click doesn't move).
-    nav_moved:  f32,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -325,8 +320,6 @@ impl App {
             tool:       Tool::default(),
             fill:       FillParams::default(),
             gesture:    None,
-            nav_tool:   None,
-            nav_moved:  0.0,
 
             painted:      false,
             // Upload the first composite.
@@ -352,7 +345,6 @@ impl App {
     /// Which view drag the held keys ask for: Ctrl zooms, Shift rotates,
     /// nothing pans (Krita / CSP).
     fn nav_mode(&self) -> Nav {
-        if let Some(mode) = self.nav_tool { return mode; }
         if self.ctrl_held() { Nav::Zoom } else if self.shift_held() { Nav::Rotate } else { Nav::Pan }
     }
 
@@ -362,7 +354,6 @@ impl App {
         let mode = self.nav_mode();
         log::info!("view drag: {mode:?}");
         self.nav = Some((mode, self.cursor));
-        self.nav_moved = 0.0;
         self.nav_button = button;
         self.set_nav_pivot(mode);
         self.update_cursor();
@@ -381,14 +372,7 @@ impl App {
     }
 
     fn end_nav(&mut self) {
-        // A Zoom tool click without dragging: zoom in there (Alt: out).
-        if self.nav_tool == Some(Nav::Zoom) && self.nav_moved < 4.0 {
-            let f = if self.modifiers.alt_key() { 1.0 / 1.5 } else { 1.5 };
-            if let Some(gpu) = &mut self.gpu { gpu.view_zoom_at(f, self.cursor); }
-            self.request_redraw();
-        }
         self.nav = None;
-        self.nav_tool = None;
         self.update_cursor();
     }
 
@@ -415,7 +399,6 @@ impl App {
         }
         let pivot = self.nav_pivot;
         let now = self.cursor;
-        self.nav_moved += (now.0 - last.0).abs() + (now.1 - last.1).abs();
         let Some(gpu) = &mut self.gpu else { return };
         match mode {
             Nav::Pan => gpu.view.pan_by(now.0 - last.0, now.1 - last.1),
@@ -468,8 +451,6 @@ impl App {
             None if self.over_canvas && !self.home => match self.tool {
                 _ if self.gesture.is_some() || self.picking_with_alt() => Wanted::System(CursorIcon::Crosshair),
                 Tool::Brush | Tool::Eraser => Wanted::Hidden,
-                Tool::Hand => Wanted::Hand,
-                Tool::Zoom => Wanted::Zoom,
                 Tool::Picker | Tool::Fill | Tool::Lasso | Tool::RectSelect => Wanted::System(CursorIcon::Crosshair),
             },
             None if self.over_canvas => Wanted::System(CursorIcon::Default),
@@ -510,10 +491,6 @@ impl App {
             }
             Tool::Lasso => self.gesture = at.map(|p| Gesture::Lasso(vec![p])),
             Tool::RectSelect => self.gesture = at.map(|p| Gesture::Rect(p, p)),
-            Tool::Hand | Tool::Zoom => {
-                self.nav_tool = Some(if tool == Tool::Hand { Nav::Pan } else { Nav::Zoom });
-                self.begin_nav(MouseButton::Left);
-            }
         }
         self.update_cursor();
         self.request_redraw();
@@ -802,7 +779,6 @@ impl App {
         self.shift_down = false;
         self.ctrl_down = false;
         self.nav = None;
-        self.nav_tool = None;
         self.gesture = None;
         if self.is_drawing {
             self.end_stroke();

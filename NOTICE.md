@@ -39,3 +39,9 @@ fuzz test), and float literals the compiler would infer as `f32` are written
 `_f32` (a warning that becomes an error in future Rust). Used through
 `[patch.crates-io]` in the workspace `Cargo.toml`; to drop once egui is
 upgraded.
+
+## Lucide icons
+
+The toolbox icons (`crates/aurastudio-ui/icons/*.svg`) come from
+[Lucide](https://lucide.dev), ISC license (`crates/aurastudio-ui/icons/LICENSE-lucide`).
+Recolored to white and drawn with a thinner stroke.

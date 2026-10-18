@@ -43,8 +43,8 @@ impl DockLayout {
             Tab::Layers => 140.0,
             Tab::Brushes => 150.0,
             // Everything else: its whole content, or a guess until drawn.
-            // (+2: a hair of slack, so no scroll bar shows at the minimum.)
-            _ => self.content.get(&tab).map_or(120.0, |h| h + 2.0),
+            // (+6: slack, so no scroll bar shows at the minimum.)
+            _ => self.content.get(&tab).map_or(120.0, |h| h + 6.0),
         }
     }
 

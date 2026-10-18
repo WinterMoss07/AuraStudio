@@ -305,6 +305,22 @@ impl LayerStack {
         s
     }
 
+    /// A new document from a picture (an opened PNG / JPG...): the picture
+    /// is the bottom layer, as it is (no Paper under it), and an empty
+    /// "Layer 1" above it is active, so painting never lands on the picture
+    /// by mistake.
+    pub fn from_image(width: u32, height: u32, name: &str, rgba: &[u8]) -> Self {
+        let mut s = Self::new(width, height);
+        if let Some(Node::Layer(l)) = s.root.first_mut() {
+            l.background = false;
+            l.name = name.to_owned();
+            l.tiles = Tiles::from_rgba(width, height, rgba, clear_pixel(false));
+        }
+        let id = s.add_layer("Layer 1");
+        s.set_active(id);
+        s
+    }
+
     /// Rebuild a stack read from a file. Checked, never trusted: every
     /// layer must have `width * height` pixels, ids must be unique, and
     /// there must be at least one paint layer. An unknown active id falls

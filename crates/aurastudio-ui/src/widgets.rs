@@ -228,6 +228,15 @@ pub fn vertical_tab(ui: &mut Ui, text: &str, selected: bool) -> Response {
     resp
 }
 
+/// One line of text from `left_center`, cut with "…" to fit `max_width`.
+pub fn elided_text(p: &egui::Painter, left_center: Pos2, text: &str, font: egui::FontId, color: Color32, max_width: f32) {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width: max_width.max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    let galley = p.layout_job(job);
+    let pos = pos2(left_center.x, left_center.y - galley.size().y / 2.0);
+    p.galley(pos, galley, color);
+}
+
 // --- Icons ---------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq, Eq)]

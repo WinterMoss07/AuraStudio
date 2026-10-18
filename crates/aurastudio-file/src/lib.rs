@@ -410,12 +410,8 @@ pub fn import_image(path: &Path, id: DocId, max_side: u32) -> Result<Document, S
     })?.into_rgba8();
     let (w, h) = img.dimensions();
     let name = doc_name(path);
-    let mut doc = Document::new(id, &name, w, h);
-    let layer = doc.layers.active_id();
-    if let Some(Node::Layer(l)) = doc.layers.node_mut(layer) {
-        l.tiles = Tiles::from_rgba(w, h, img.as_raw(), l.tiles.fill());
-        l.name = name;
-    }
+    let layers = aurastudio_layers::LayerStack::from_image(w, h, &name, img.as_raw());
+    let doc = Document::from_parts(id, &name, layers, aurastudio_document::History::new(aurastudio_document::DEFAULT_BUDGET));
     Ok(doc)
 }
 
@@ -618,8 +614,13 @@ mod tests {
         export_image(&rgba, 30, 20, &png).unwrap();
         let doc = import_image(&png, DocId(1), 16384).unwrap();
         assert_eq!((doc.layers.width, doc.layers.height, doc.name.as_str()), (30, 20, "photo"));
-        assert_eq!(pixels(&doc, doc.layers.active_id()), rgba);
-        assert_eq!(doc.layers.layer_count(), 2);
+        // The picture is the bottom layer (no Paper), an empty layer above
+        // it is active.
+        let ids = doc.layers.layer_ids();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(pixels(&doc, ids[0]), rgba);
+        assert_eq!(doc.layers.active_id(), ids[1]);
+        assert!(!doc.layers.node(ids[0]).unwrap().locked());
         export_image(&rgba, 30, 20, &dir.join("photo.jpg")).unwrap();
         assert_eq!(import_image(&dir.join("photo.jpg"), DocId(1), 16384).unwrap().layers.width, 30);
         assert!(import_image(&png, DocId(1), 16).is_err());

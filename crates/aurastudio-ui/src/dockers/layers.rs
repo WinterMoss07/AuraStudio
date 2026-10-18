@@ -289,12 +289,15 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
             }
         }
     } else {
-        painter.text(
+        // Long names (an imported image's file name) end with "…" before
+        // the lock instead of running under it.
+        crate::widgets::elided_text(
+            &painter,
             pos2(text_x, rect.center().y + 7.0),
-            egui::Align2::LEFT_CENTER,
             &name,
             egui::FontId::proportional(13.0),
             if active { Color32::WHITE } else { theme::TEXT },
+            name_rect.width(),
         );
     }
 

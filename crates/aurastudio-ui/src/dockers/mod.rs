@@ -71,7 +71,10 @@ impl TabViewer for Viewer<'_, '_> {
     fn closeable(&mut self, _tab: &mut Tab) -> bool { false }
 
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
-        // The layer list scrolls by itself; nothing scrolls sideways.
-        [false, !matches!(tab, Tab::Layers | Tab::Brushes)]
+        // The layer and brush lists scroll by themselves; the color docker
+        // has a fixed size, kept as its dock's minimum height (a scroll bar
+        // showed there, by a pixel, with everything in view); nothing
+        // scrolls sideways.
+        [false, !matches!(tab, Tab::Layers | Tab::Brushes | Tab::Color)]
     }
 }

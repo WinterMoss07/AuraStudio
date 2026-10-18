@@ -38,6 +38,8 @@ pub fn backdrop_rgb() -> [f64; 3] {
 }
 
 pub fn apply(ctx: &egui::Context) {
+    // SVG icons (toolbox).
+    egui_extras::install_image_loaders(ctx);
     let mut style = (*ctx.style()).clone();
     // egui waits for the pointer to be still before showing a tooltip, and
     // asks for a new frame right away on every frame until then. A pen
