@@ -138,7 +138,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
 
     let list_h = ui.available_height().max(ROW_H);
     let mut event = None;
-    Frame::none().fill(theme::SURFACE).rounding(6.0).show(ui, |ui| {
+    Frame::none().fill(theme::DESK).rounding(6.0).show(ui, |ui| {
         ui.set_min_height(list_h);
         egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;

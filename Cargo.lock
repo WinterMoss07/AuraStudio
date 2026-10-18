@@ -137,9 +137,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917"
 dependencies = [
  "clipboard-win",
+ "image",
  "log",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
@@ -182,8 +185,9 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "arboard",
  "aurastudio-brush",
  "aurastudio-brushes",
  "aurastudio-canvas",
@@ -212,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brush"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aurastudio-canvas",
  "hokusai",
@@ -221,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brushes"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-canvas",
@@ -232,14 +236,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-canvas"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "wgpu",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "log",
  "moxcms 0.9.1",
@@ -248,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-document"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-layers",
@@ -257,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-document",
@@ -271,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aurastudio-canvas",
  "bytemuck",
@@ -286,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-input"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossbeam-queue",
  "windows",
@@ -294,14 +298,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aurastudio-canvas",
 ]
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-brushes",

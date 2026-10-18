@@ -32,10 +32,13 @@ layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangl
 - Painting, fill and Delete stay inside the selection.
 - Geometry tools (U cycles them), drawn with the current brush: Line
   (Shift: 15° steps), Rectangle and Ellipse (Shift: square / circle, Alt:
-  from the center), and **Arc**: drag or click from start to end, move to
-  bend (free curve or circle arc), click to validate; with "Chain", the
-  next arc starts at the last end point, so outlines (hair, clothes) stay
-  closed for coloring. Escape stops.
+  from the center), and **Arc** (like OpenToonz's): drag or click from
+  start to end, the cursor then pulls the curve, click to validate; with
+  "Chain", arcs follow each other as one stroke, painted when the outline
+  is done (Enter, a click on its last point, or an end dropped on the
+  first point: closed for coloring). Ctrl+Z takes back the last arc.
+- Copy / paste pixels (selection or whole layer, to a new layer; images
+  from other apps through the system clipboard).
 
 **Files**
 - `.aurs` documents (layers, folders, 50 undo steps, preview), atomic saves,
@@ -77,6 +80,7 @@ the canvas texture).
 | Tools | B brush, E eraser, G fill, I picker, U line / rectangle / ellipse / arc, M rectangle selection, L lasso |
 | Pick a color | Alt + click (brush, eraser, fill) |
 | Select all / deselect | Ctrl+A / Ctrl+D |
+| Copy / paste pixels | Ctrl+C / Ctrl+V |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
 | 100 % / fit | `1` / `2` |
 | Pan | Space + drag, or middle-button drag |

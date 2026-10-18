@@ -26,7 +26,7 @@ fn main() {
             s.mask.fill(1);
             s.mask.fill(0);
             let mut b = Brush::new();
-            b.radius = radius;
+            b.radius = radius as f32;
             b.hardness = hardness;
             let mut d = DabEngine::new();
             d.sync_from(&b);

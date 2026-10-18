@@ -14,6 +14,8 @@ pub enum Icon {
     // Layers docker.
     NewLayer, NewFolder, Duplicate, Up, Down, Delete,
     Eye, EyeOff, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
+    // Toolbar.
+    FileNew, FileOpen, Save, Copy, Paste,
 }
 
 impl Icon {
@@ -30,6 +32,11 @@ impl Icon {
             Icon::Rectangle  => svg!("../icons/square.svg"),
             Icon::Ellipse    => svg!("../icons/circle.svg"),
             Icon::Arc        => svg!("../icons/spline.svg"),
+            Icon::FileNew    => svg!("../icons/file-plus.svg"),
+            Icon::FileOpen   => svg!("../icons/folder-open.svg"),
+            Icon::Save       => svg!("../icons/save.svg"),
+            Icon::Copy       => svg!("../icons/copy.svg"),
+            Icon::Paste      => svg!("../icons/clipboard-paste.svg"),
             Icon::NewLayer   => svg!("../icons/layers-plus.svg"),
             Icon::NewFolder  => svg!("../icons/folder-plus.svg"),
             Icon::Duplicate  => svg!("../icons/copy.svg"),

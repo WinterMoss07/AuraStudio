@@ -68,50 +68,18 @@ pub fn snap_angle(start: P, end: P) -> P {
     (start.0 + r * a.cos(), start.1 + r * a.sin())
 }
 
-/// Arc from `a` to `b`, bent through `m` (the bend point the cursor
-/// moves). `circular`: the piece of circle through the three points;
-/// otherwise a smooth free curve (quadratic Bézier) passing through `m`
-/// halfway. Straight when `m` is on the line.
-pub fn arc(a: P, b: P, m: P, circular: bool) -> Vec<P> {
-    if circular {
-        if let Some(c) = circle_arc(a, b, m) { return c; }
-        return line(a, b);
-    }
-    // Control point so that the curve passes through m at t = 0.5.
-    let c = (2.0 * m.0 - (a.0 + b.0) / 2.0, 2.0 * m.1 - (a.1 + b.1) / 2.0);
-    let len = dist(a, c) + dist(c, b);
-    let n = pieces(len, 1.0);
+/// Arc from `a` to `b` pulled toward `control` (OpenToonz's arc tool: a
+/// quadratic Bézier curve whose control point is the cursor). Straight
+/// when the control point is on the line.
+pub fn arc(a: P, b: P, c: P) -> Vec<P> {
+    // The curve moves fastest at its ends (twice the control legs per unit
+    // of t): count the points from there.
+    let n = pieces(2.0 * dist(a, c).max(dist(c, b)), 1.0);
     (0..=n).map(|i| {
         let t = i as f32 / n as f32;
         let u = 1.0 - t;
         (u * u * a.0 + 2.0 * u * t * c.0 + t * t * b.0, u * u * a.1 + 2.0 * u * t * c.1 + t * t * b.1)
     }).collect()
-}
-
-/// Circle through a, m, b, walked from a to b through m. None if the
-/// points are (almost) on one line.
-fn circle_arc(a: P, b: P, m: P) -> Option<Vec<P>> {
-    let d = 2.0 * (a.0 * (m.1 - b.1) + m.0 * (b.1 - a.1) + b.0 * (a.1 - m.1));
-    let chord = dist(a, b).max(1.0);
-    // Bend smaller than a pixel over the chord: a straight line.
-    if d.abs() < 1e-3 * chord * chord { return None; }
-    let sq = |p: P| p.0 * p.0 + p.1 * p.1;
-    let cx = (sq(a) * (m.1 - b.1) + sq(m) * (b.1 - a.1) + sq(b) * (a.1 - m.1)) / d;
-    let cy = (sq(a) * (b.0 - m.0) + sq(m) * (a.0 - b.0) + sq(b) * (m.0 - a.0)) / d;
-    let r = dist(a, (cx, cy));
-    if r > 1e6 { return None; }
-    let ang = |p: P| (p.1 - cy).atan2(p.0 - cx);
-    let tau = std::f32::consts::TAU;
-    let (a0, am, ab) = (ang(a), ang(m), ang(b));
-    // Counterclockwise sweep from a to b; if m isn't on it, go the other way.
-    let ccw = |x: f32| (x - a0).rem_euclid(tau);
-    let mut sweep = ccw(ab);
-    if ccw(am) > sweep { sweep -= tau; }
-    let n = pieces(sweep.abs() * r, 2.0);
-    Some((0..=n).map(|i| {
-        let t = a0 + sweep * i as f32 / n as f32;
-        (cx + r * t.cos(), cy + r * t.sin())
-    }).collect())
 }
 
 fn lerp(a: P, b: P, t: f32) -> P { (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t) }
@@ -140,29 +108,25 @@ mod tests {
     }
 
     #[test]
-    fn arcs_go_from_start_to_end_through_the_bend() {
-        let (a, b, m) = ((0.0, 0.0), (100.0, 0.0), (50.0, 30.0));
-        for circular in [false, true] {
-            let p = arc(a, b, m, circular);
-            assert!(dense(&p), "circular {circular}");
-            assert!(close(p[0], a) && dist(*p.last().unwrap(), b) < 0.05);
-            // Passes through (or very near) the bend point.
-            let near = p.iter().map(|&q| dist(q, m)).fold(f32::MAX, f32::min);
-            assert!(near < 1.5, "circular {circular}: {near}");
-        }
-        // Bend on the other side, and a big bend (more than half a circle).
-        let p = arc(a, b, (50.0, -80.0), true);
-        assert!(p.iter().any(|q| q.1 < -79.0) && p.iter().all(|q| q.1 < 0.5));
+    fn arcs_bulge_toward_the_control_point() {
+        let (a, b) = ((0.0, 0.0), (100.0, 0.0));
+        // Control point down right: the curve's top is toward it.
+        let p = arc(a, b, (80.0, 60.0));
+        assert!(dense(&p) && close(p[0], a) && dist(*p.last().unwrap(), b) < 0.05);
+        let deepest = p.iter().copied().fold(a, |m, q| if q.1 > m.1 { q } else { m });
+        assert!(deepest.0 > 50.0 && deepest.1 > 25.0, "{deepest:?}");
+        // Halfway between the chord and the control point at t = 0.5.
+        let mid = p[p.len() / 2];
+        assert!(dist(mid, (65.0, 30.0)) < 2.0, "{mid:?}");
         // On the line: straight.
-        assert!(arc(a, b, (50.0, 0.0), true).iter().all(|q| q.1.abs() < 1e-3));
-        assert!(arc(a, b, (50.0, 0.0), false).iter().all(|q| q.1.abs() < 1e-3));
+        assert!(arc(a, b, (50.0, 0.0)).iter().all(|q| q.1.abs() < 1e-3));
     }
 
     #[test]
     fn huge_shapes_stay_small() {
         assert!(ellipse((-1e7, -1e7), (1e7, 1e7)).len() <= MAX_POINTS + 1);
         assert!(line((0.0, 0.0), (1e9, 0.0)).len() <= MAX_POINTS + 1);
-        assert!(arc((0.0, 0.0), (1e7, 0.0), (5e6, 1e7), false).len() <= MAX_POINTS + 1);
+        assert!(arc((0.0, 0.0), (1e7, 0.0), (5e6, 1e7)).len() <= MAX_POINTS + 1);
         assert!(line((0.0, 0.0), (f32::INFINITY, 0.0)).len() <= 2);
     }
 

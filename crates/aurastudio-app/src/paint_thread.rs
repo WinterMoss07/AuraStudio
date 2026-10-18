@@ -55,6 +55,8 @@ pub enum Cmd {
     Redo(SharedDoc),
     /// Clear the active layer, or its selected pixels (undoable).
     Clear(SharedDoc),
+    /// Paste pixels on a new layer above the active one (undoable).
+    Paste { doc: SharedDoc, clip: aurastudio_document::Clip },
     /// Fill tool at canvas pixel (x, y) on the active layer (undoable).
     Fill { doc: SharedDoc, x: u32, y: u32, color: [u8; 4], params: aurastudio_layers::FillParams },
     /// Save the document to `path` (after the strokes sent before). The
@@ -218,7 +220,7 @@ impl Worker {
                         });
                         if let Err(e) = spawned { log::error!("save thread: {e}"); }
                     }
-                    Cmd::Undo(_) | Cmd::Redo(_) | Cmd::Clear(_) | Cmd::Fill { .. } if self.active => {
+                    Cmd::Undo(_) | Cmd::Redo(_) | Cmd::Clear(_) | Cmd::Fill { .. } | Cmd::Paste { .. } if self.active => {
                         // Never while a stroke is open (the main thread
                         // doesn't send them then; this is a safety net).
                         events.push(Event::Notice("Finish the stroke first"));
@@ -238,6 +240,12 @@ impl Worker {
                     Cmd::Clear(doc) => {
                         let cleared = doc.lock().unwrap().clear_active();
                         self.report_edit(cleared, "Layer is locked or is a folder", &mut events);
+                        self.doc = Some(doc);
+                        flush = true;
+                    }
+                    Cmd::Paste { doc, clip } => {
+                        let pasted = doc.lock().unwrap().paste(&clip);
+                        self.report_edit(pasted, "Nothing to paste", &mut events);
                         self.doc = Some(doc);
                         flush = true;
                     }
@@ -376,7 +384,7 @@ impl Worker {
         // hundreds of thousands of canvas pixels off the canvas: every dab
         // there is invisible, and a MyPaint brush spent seconds on them.
         let (w, h) = self.size;
-        let m = (4.0 * self.brush.radius as f32).max(256.0);
+        let m = (4.0 * self.brush.radius).max(256.0);
         let area = (-m, -m, w as f32 + m, h as f32 + m);
         let mut rect = None;
         let seg = match prev {
@@ -560,7 +568,7 @@ mod tests {
 
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
         let mut brush = Brush::new();
-        brush.radius = 4;
+        brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y, pressure: 1.0, time: 0.0 });
         pt.send(Cmd::Sample { x: 50.0, y, pressure: 1.0, time: 0.01 });
@@ -617,7 +625,7 @@ mod tests {
         doc.lock().unwrap().layers.set_active(id);
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
-        brush.radius = 4;
+        brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y: 30.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
@@ -637,7 +645,7 @@ mod tests {
         let (doc, _) = doc_with_layer();
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
-        brush.radius = 4;
+        brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         stroke(&pt, &doc, 40.0);
@@ -652,7 +660,7 @@ mod tests {
         let (doc, id) = doc_with_layer();
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
-        brush.radius = 4;
+        brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
@@ -692,7 +700,7 @@ mod tests {
             let (doc, id) = doc_with_layer();
             let pt = PaintThread::spawn(proj(64, 64), |_| {});
             let mut brush = Brush::new();
-            brush.radius = 3;
+            brush.radius = 3.0;
             let t = Instant::now();
             pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine });
             // A few samples on the canvas (MyPaint brushes only paint once
@@ -817,7 +825,7 @@ mod tests {
             };
 
             let mut brush = Brush::new();
-            brush.radius = radius;
+            brush.radius = radius as f32;
             pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
             let t0 = Instant::now();
             let n = 200;

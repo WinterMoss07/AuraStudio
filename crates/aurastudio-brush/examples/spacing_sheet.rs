@@ -15,7 +15,7 @@ fn main() {
         s.base.copy_from_slice(&s.pixels);
         s.mask.fill(0);
         let mut b = Brush::new();
-        b.radius = if std::env::var("SHEET_LOOP").is_ok() { 50 } else { 140 };
+        b.radius = if std::env::var("SHEET_LOOP").is_ok() { 50.0 } else { 140.0 };
         b.hardness = *hardness;
         let mut e = DabEngine::new();
         e.sync_from(&b);

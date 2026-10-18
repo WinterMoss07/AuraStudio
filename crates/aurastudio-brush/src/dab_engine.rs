@@ -63,7 +63,7 @@ impl DabEngine {
     /// and build the dab shape for them.
     pub fn sync_from(&mut self, b: &Brush) {
         self.brush = b.clone();
-        let r = b.radius.max(1) as f32;
+        let r = b.radius.max(0.5);
         self.reach = r + 0.5;
         // Krita's auto spacing, coefficient 0.8 (see the module doc).
         self.spacing = (0.8 * (2.0 * r).sqrt()).max(0.5);
@@ -254,7 +254,7 @@ mod tests {
     fn huge_jumps_off_the_canvas_end() {
         let mut e = DabEngine::new();
         let mut b = Brush::new();
-        b.radius = 1;
+        b.radius = 1.0;
         e.sync_from(&b);
         let mut s = white();
         e.begin_stroke();
@@ -275,7 +275,7 @@ mod tests {
 
     fn red_at(s: &T, x: u32, y: u32) -> u8 { s.pixels[((y * N + x) * 4) as usize] }
 
-    fn engine(radius: u32, hardness: f32) -> DabEngine {
+    fn engine(radius: f32, hardness: f32) -> DabEngine {
         let mut b = Brush::new();
         b.radius = radius;
         b.hardness = hardness;
@@ -293,11 +293,24 @@ mod tests {
         }
     }
 
+    /// 1 px and 3 px brushes (line clean-up): a horizontal line through
+    /// pixel centers is that many pixels thick.
+    #[test]
+    fn thin_brushes_have_their_width() {
+        for (d, rows) in [(1.0f32, 1u32), (3.0, 3)] {
+            let mut s = white();
+            let mut e = engine(d / 2.0, 1.0);
+            line(&mut e, &mut s, 10.0, 50.0, 30.5, 1.0);
+            let dark: Vec<u32> = (20..41).filter(|&y| red_at(&s, 30, y) < 128).collect();
+            assert_eq!(dark.len() as u32, rows, "{d} px brush: dark rows {dark:?}");
+        }
+    }
+
     #[test]
     fn pressure_gives_matching_gray() {
         // 20 % pressure, black: the middle of the stroke is 20 % gray (204).
         let mut s = white();
-        let mut e = engine(10, 0.9);
+        let mut e = engine(10.0, 0.9);
         line(&mut e, &mut s, 40.0, 200.0, 128.0, 0.2);
         let v = red_at(&s, 120, 128) as i32;
         assert!((v - 204).abs() <= 2, "expected ~204, got {v}");
@@ -306,7 +319,7 @@ mod tests {
     #[test]
     fn crossing_the_same_stroke_does_not_build_up() {
         let mut s = white();
-        let mut e = engine(10, 0.9);
+        let mut e = engine(10.0, 0.9);
         line(&mut e, &mut s, 40.0, 200.0, 128.0, 0.2);
         line(&mut e, &mut s, 200.0, 40.0, 128.0, 0.3);
         let v = red_at(&s, 120, 128) as i32;
@@ -316,7 +329,7 @@ mod tests {
     #[test]
     fn stroke_reaches_the_end_point() {
         let mut s = white();
-        let mut e = engine(40, 0.9);
+        let mut e = engine(40.0, 0.9);
         line(&mut e, &mut s, 40.0, 197.0, 128.0, 1.0);
         e.end_stroke(&mut s);
         assert!(red_at(&s, 197, 128) < 10, "end not painted: {}", red_at(&s, 197, 128));
@@ -328,7 +341,7 @@ mod tests {
         // through the crossing, values must change smoothly (the max of two
         // gradients makes a kink there, seen as a light line).
         let mut s = white();
-        let mut e = engine(40, 0.0);
+        let mut e = engine(40.0, 0.0);
         line(&mut e, &mut s, 20.0, 236.0, 128.0, 1.0);
         e.end_stroke(&mut s);
         e.begin_stroke();
@@ -352,7 +365,7 @@ mod tests {
         // Pressure going down along a stroke: along its middle the values
         // only lighten, gradually (no darker arc left by each dab).
         let mut s = white();
-        let mut e = engine(30, 1.0);
+        let mut e = engine(30.0, 1.0);
         for i in 0..=120 {
             let x = 30.0 + i as f32 * 1.6;
             e.stroke_to(&mut s, x, 128.0, 1.0 - 0.7 * i as f32 / 120.0);
@@ -363,7 +376,7 @@ mod tests {
 
     #[test]
     fn big_brush_paints_few_dabs() {
-        let mut e = engine(500, 0.5);
+        let mut e = engine(500.0, 0.5);
         assert!(e.spacing > 20.0, "spacing {}", e.spacing);
         e.begin_stroke();
     }

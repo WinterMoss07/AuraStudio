@@ -3,6 +3,26 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.3.0 — 2026-10-18
+
+**New**
+- Copy / paste pixels (Ctrl+C / Ctrl+V, Edit menu, toolbar): the selection
+  (or the whole layer) of the active layer, pasted in place on a new
+  layer; images copied in other apps paste too (system clipboard).
+- Fixed toolbar under the menu: New, Open, Save, Copy, Paste (each room
+  will get its own); tool settings stay in the Tool options docker.
+
+**Changed / fixed**
+- Arc tool works like OpenToonz's: the cursor is the curve's control point
+  (drag toward the bottom right, the curve bulges there), dashed control
+  lines; chained arcs make one stroke, painted when the outline is done
+  (Enter, a click on its last point, or an end dropped on the first point
+  to close it); Ctrl+Z takes back the last arc, Escape cancels. Circle arc
+  mode removed.
+- Brush size: 1 px and odd sizes (3, 5 px...) are possible (the slider
+  jumped back to 2 px).
+- Layer list background is the canvas area's dark gray.
+
 ## 0.2.0 — 2026-10-18
 
 **New**

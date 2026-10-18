@@ -136,6 +136,61 @@ impl Document {
     }
 }
 
+/// Pixels copied from a layer: RGBA rows, and where they were (canvas
+/// pixels, may lie partly off the canvas when pasted elsewhere).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clip {
+    pub x:      i64,
+    pub y:      i64,
+    pub width:  u32,
+    pub height: u32,
+    pub rgba:   Vec<u8>,
+}
+
+impl Document {
+    /// The selected pixels of the active layer (outside the selection:
+    /// transparent), or the whole layer. None on a folder.
+    pub fn copy(&self) -> Option<Clip> {
+        let id = self.layers.active_id();
+        let r = self.selection.as_ref().map_or((0, 0, self.layers.width, self.layers.height), |s| s.bbox());
+        let mut rgba = self.layers.layer_rect(id, r)?;
+        if let Some(sel) = &self.selection {
+            let mut i = 0;
+            for y in r.1..r.3 {
+                for x in r.0..r.2 {
+                    if !sel.contains(x, y) { rgba[i + 3] = 0; }
+                    i += 4;
+                }
+            }
+        }
+        Some(Clip { x: r.0 as i64, y: r.1 as i64, width: r.2 - r.0, height: r.3 - r.1, rgba })
+    }
+
+    /// Paste on a new layer above the active one (which becomes active),
+    /// undoable. Returns the new layer and the area painted.
+    pub fn paste(&mut self, clip: &Clip) -> Option<(u64, Rect)> {
+        if clip.rgba.len() != clip.width as usize * clip.height as usize * 4 { return None; }
+        let (w, h) = (self.layers.width as i64, self.layers.height as i64);
+        let (x0, y0) = (clip.x.max(0), clip.y.max(0));
+        let (x1, y1) = ((clip.x + clip.width as i64).min(w), (clip.y + clip.height as i64).min(h));
+        let id = self.layers.add_layer("Pasted");
+        self.layers.set_active(id);
+        self.touch();
+        if x0 >= x1 || y0 >= y1 { return Some((id, (0, 0, 0, 0))); }
+        let rect = (x0 as u32, y0 as u32, x1 as u32, y1 as u32);
+        let (rw, rh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        let mut px = Vec::with_capacity(rw * rh * 4);
+        for y in y0..y1 {
+            let row = ((y - clip.y) as usize * clip.width as usize + (x0 - clip.x) as usize) * 4;
+            px.extend_from_slice(&clip.rgba[row..row + rw * 4]);
+        }
+        let before = self.layers.layer_rect(id, rect)?;
+        self.layers.set_layer_rect(id, rect, &px);
+        self.history.push("Paste", id, rect, &before);
+        Some((id, rect))
+    }
+}
+
 /// Resolution of a new document until the New dialog sets one.
 pub const DEFAULT_DPI: f32 = 300.0;
 
@@ -336,5 +391,30 @@ mod tests {
         assert!(ws.close(b_id));
         assert_eq!(ws.len(), 1);
         assert_eq!(ws.active().unwrap().lock().unwrap().name, "a");
+    }
+
+    /// Copy the selected pixels, paste them: same place, on a new active
+    /// layer, outside the selection left transparent; undo empties it.
+    #[test]
+    fn copy_paste_selected_pixels() {
+        let mut d = Document::new(DocId(1), "t", 64, 64);
+        let id = d.layers.active_id();
+        assert!(d.layers.set_layer_rect(id, (0, 0, 64, 64), &[9u8, 8, 7, 255].repeat(64 * 64)));
+        d.selection = aurastudio_layers::Selection::polygon(64, 64, &[(10.0, 10.0), (30.0, 10.0), (10.0, 30.0)]);
+        let clip = d.copy().unwrap();
+        assert_eq!((clip.x, clip.y, clip.width, clip.height), (10, 10, 20, 20));
+        let (new, r) = d.paste(&clip).unwrap();
+        assert_ne!(new, id);
+        assert_eq!(d.layers.active_id(), new);
+        assert_eq!(r, (10, 10, 30, 30));
+        let px = |d: &Document, x, y| d.layers.layer_rect(new, (x, y, x + 1, y + 1)).unwrap();
+        assert_eq!(px(&d, 12, 12), vec![9, 8, 7, 255]);
+        assert_eq!(px(&d, 28, 28)[3], 0, "outside the lasso");
+        // Partly off the canvas: clipped, no panic.
+        let off = Clip { x: -5, y: 60, ..clip.clone() };
+        assert!(d.paste(&off).is_some());
+        d.undo();
+        d.undo();
+        assert_eq!(px(&d, 12, 12)[3], 0);
     }
 }

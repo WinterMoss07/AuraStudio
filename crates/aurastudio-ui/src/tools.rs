@@ -104,12 +104,10 @@ pub struct ShapeOptions {
     /// Arc: once validated, the next arc starts at its end point (closed,
     /// clean outlines for coloring).
     pub chain_arcs:   bool,
-    /// Arc: a piece of circle instead of a free curve.
-    pub circular_arc: bool,
 }
 
 impl Default for ShapeOptions {
-    fn default() -> Self { Self { chain_arcs: true, circular_arc: false } }
+    fn default() -> Self { Self { chain_arcs: true } }
 }
 
 /// Width of the toolbox.
@@ -228,6 +226,8 @@ pub struct Overlay<'a> {
     /// Shape about to be painted (geometry tools), and its handles.
     pub shape:     Option<&'a [(f32, f32)]>,
     pub handles:   &'a [(f32, f32)],
+    /// Dashed construction lines (the arc's start, control point, end).
+    pub guide:     &'a [(f32, f32)],
 }
 
 /// Selection outlines as static "marching ants" (black and white dashes,
@@ -250,6 +250,10 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
         painter.add(Shape::line(v.clone(), Stroke::new(3.0_f32, Color32::from_black_alpha(140))));
         painter.add(Shape::line(v, Stroke::new(1.5_f32, theme::ACCENT)));
     }
+    if overlay.guide.len() >= 2 {
+        let v: Vec<Pos2> = overlay.guide.iter().map(|&p| pt(p)).collect();
+        painter.extend(Shape::dashed_line(&v, Stroke::new(1.0_f32, theme::TEXT_WEAK), 5.0, 4.0));
+    }
     for &h in overlay.handles {
         painter.circle(pt(h), 4.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));
     }
@@ -265,12 +269,8 @@ pub fn shape_options(ui: &mut Ui, m: &mut Model) {
         Tool::Ellipse => hint(ui, "Drag to draw. Shift: circle, Alt: from the center."),
         Tool::Arc => {
             ui.checkbox(&mut m.shape.chain_arcs, "Chain: next arc starts at the end point")
-                .on_hover_text("Each validated arc starts the next one where it ended: outlines stay closed for coloring. Escape stops.");
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut m.shape.circular_arc, false, "Free curve");
-                ui.selectable_value(&mut m.shape.circular_arc, true, "Circle arc");
-            });
-            hint(ui, "Drag (or click twice) from start to end, move to bend, click to validate. Escape cancels.");
+                .on_hover_text("Arcs follow each other as one line, painted when the outline is done: Enter, a click on the last point, or an end dropped on the first point (closed, ready for coloring).");
+            hint(ui, "Drag (or click twice) from start to end; the cursor then pulls the curve, click to validate. Shift: 15° steps. Ctrl+Z: last arc back, Escape: cancel.");
         }
         _ => {}
     }

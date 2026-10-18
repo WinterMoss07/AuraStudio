@@ -74,7 +74,7 @@ impl MyPaintEngine {
         self.brush.get_mut(BrushSetting::ColorH).base_value = hsv.h;
         self.brush.get_mut(BrushSetting::ColorS).base_value = hsv.s;
         self.brush.get_mut(BrushSetting::ColorV).base_value = hsv.v;
-        let radius = b.radius.max(1) as f32;
+        let radius = b.radius.max(0.5);
         self.brush.get_mut(BrushSetting::Radius).base_value = radius.ln();
         self.brush.get_mut(BrushSetting::Opaque).base_value = b.opacity.clamp(0.0, 1.0);
         self.brush.get_mut(BrushSetting::Hardness).base_value = b.hardness.clamp(0.0, 1.0);
@@ -287,7 +287,7 @@ mod tests {
         let preset = hokusai::myb::from_str(json).expect("parse");
         let mut e = MyPaintEngine::new(preset.clone());
         let mut b = Brush::new();
-        b.radius = 6;
+        b.radius = 6.0;
         e.sync_from(&b);
         let mut s = surface([255, 255, 255, 255]);
         stroke(&mut e, &mut s);

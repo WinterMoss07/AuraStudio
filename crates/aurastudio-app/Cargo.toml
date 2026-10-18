@@ -30,6 +30,8 @@ aurastudio-brushes  = { path = "../aurastudio-brushes" }
 aurastudio-ui = { path = "../aurastudio-ui" }
 rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# System clipboard: images copied to / from other apps.
+arboard = { version = "3", default-features = false, features = ["image-data"] }
 tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
 
 # The .exe icon (Windows resource), see build.rs.

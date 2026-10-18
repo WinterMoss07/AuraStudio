@@ -20,7 +20,7 @@ fn main() {
         let mut e = MyPaintEngine::new(preset);
         let mut b = Brush::new();
         b.color = [40, 60, 120];
-        b.radius = (size / 2).clamp(2, 30);
+        b.radius = (size as f32 / 2.0).clamp(2.0, 30.0);
         b.opacity = opacity;
         e.sync_from(&b);
         s.base.copy_from_slice(&s.pixels);

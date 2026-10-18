@@ -55,7 +55,7 @@ pub struct Preset {
 }
 
 impl Preset {
-    fn builtin(name: &str, engine: Engine, radius: u32, hardness: f32) -> Self {
+    fn builtin(name: &str, engine: Engine, radius: f32, hardness: f32) -> Self {
         let mut settings = Brush::new();
         settings.radius = radius;
         settings.hardness = hardness;
@@ -74,7 +74,7 @@ impl Preset {
     fn mypaint(name: String, group: String, brush: MyPaintBrush, preview: Option<Cow<'static, [u8]>>, source: Source) -> Self {
         let (size, opacity) = MyPaintEngine::native_size_and_opacity(&brush);
         let mut settings = Brush::new();
-        settings.radius = (size / 2).max(1);
+        settings.radius = (size as f32 / 2.0).max(0.5);
         settings.opacity = opacity;
         settings.hardness = MyPaintEngine::native_hardness(&brush);
         Self { name, group, engine: Engine::MyPaint(Arc::new(brush)), settings, preview, source }
@@ -119,8 +119,8 @@ impl Library {
     /// the user imported before.
     pub fn load() -> Self {
         let mut presets = vec![
-            Preset::builtin("Round pen", Engine::Native, 25, 1.0),
-            Preset::builtin("Soft round", Engine::Native, 60, 0.0),
+            Preset::builtin("Round pen", Engine::Native, 25.0, 1.0),
+            Preset::builtin("Soft round", Engine::Native, 60.0, 0.0),
         ];
         for &(group, name, json, preview) in BUNDLED {
             match parse_myb(json) {

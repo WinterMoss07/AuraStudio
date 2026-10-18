@@ -112,10 +112,17 @@ pub struct Actions {
     pub forget_recent: Option<std::path::PathBuf>,
     /// Select all / deselect.
     pub select:      Option<SelectCmd>,
+    /// Copy / paste pixels.
+    pub edit:        Option<EditCmd>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileCmd { New, Open, Save, SaveAs, Export, Close }
+
+/// Copy: the selected pixels of the active layer (all of it without a
+/// selection). Paste: onto a new layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCmd { Copy, Paste }
 
 /// A question the app asks, shown over everything until answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,7 +248,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     state.layers.refresh_thumbnails(ctx, model.layers);
 
     bars::menu_bar(ctx, state, model, actions);
-    bars::options_bar(ctx, &mut state.notice, model);
+    bars::toolbar(ctx, &mut state.notice, model, actions);
 
     if let Some(tab) = state.focus_tab.take() {
         if let Some(loc) = state.dock.find_tab(&tab) {

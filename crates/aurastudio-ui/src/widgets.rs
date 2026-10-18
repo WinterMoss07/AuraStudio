@@ -351,9 +351,10 @@ pub fn percent(label: &str) -> Fill<'_> {
 /// Brush size as a diameter, logarithmic so 1..1000 px stays precise.
 pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
     let max = crate::MAX_BRUSH_SIZE as f32;
-    let d = (brush.radius * 2).clamp(1, max as u32) as f32;
+    let d = (brush.radius * 2.0).round().clamp(1.0, max);
     if let Some(v) = fill_slider(ui, id, Fill { label: "Size", range: 1.0..=max, log: true, format: &|v| format!("{v:.0} px") }, d, width) {
-        brush.radius = ((v as u32) / 2).max(1);
+        // Whole diameters, odd ones included (1, 3, 5 px...).
+        brush.radius = v.round().max(1.0) / 2.0;
     }
 }
 

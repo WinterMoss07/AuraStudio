@@ -26,4 +26,4 @@ codegen-units = 1
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.2.0"
+version = "0.3.0"

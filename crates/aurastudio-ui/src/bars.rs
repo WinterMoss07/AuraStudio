@@ -4,7 +4,6 @@
 use egui::{Align, Frame, Layout, Margin, RichText};
 
 use crate::dockers::{self, layers, Tab};
-use crate::widgets::{opacity_slider, size_slider};
 use crate::{theme, Actions, FileCmd, Model, Notice, UiState, ViewCmd};
 
 pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut Actions) {
@@ -44,6 +43,13 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     if ui.add_enabled(m.can_redo, egui::Button::new("Redo").shortcut_text("Ctrl+Y")).clicked() {
                         a.redo = true;
                         ui.close_menu();
+                    }
+                    ui.separator();
+                    for (label, key, cmd) in [("Copy", "Ctrl+C", crate::EditCmd::Copy), ("Paste", "Ctrl+V", crate::EditCmd::Paste)] {
+                        if ui.add_enabled(!m.home, egui::Button::new(label).shortcut_text(key)).clicked() {
+                            a.edit = Some(cmd);
+                            ui.close_menu();
+                        }
                     }
                 });
                 ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Layer", |ui| {
@@ -132,42 +138,26 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
         });
 }
 
-/// Tool options bar, part of the same surface as the menu bar and the
-/// docks: brush name, size and opacity sliders (value written inside).
-pub fn options_bar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model) {
+/// Toolbar under the menu, part of the same surface as the menu bar and
+/// the docks: fixed actions (each room will get its own toolbar); the
+/// current tool's settings live in the Tool options docker.
+pub fn toolbar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
+    use crate::icons::Icon;
+    use crate::widgets::icon_button;
     egui::TopBottomPanel::top("options_bar")
         .exact_height(36.0)
         .show_separator_line(false)
-        .frame(Frame::none().fill(theme::PANEL).inner_margin(Margin::symmetric(10.0, 0.0)))
+        .frame(Frame::none().fill(theme::PANEL).inner_margin(Margin::symmetric(8.0, 0.0)))
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                if m.tool.paints() {
-                    let name = m.presets.get(*m.preset).map(|p| p.name.as_str()).unwrap_or("Brush");
-                    let prefix = if *m.tool == crate::Tool::Brush { String::new() } else { format!("{} · ", m.tool.name()) };
-                    ui.label(RichText::new(format!("{prefix}{name}")).strong());
-                    ui.add_space(10.0);
-                    size_slider(ui, "bar_size", m.brush, 190.0);
-                    ui.add_space(4.0);
-                    opacity_slider(ui, "bar_opacity", m.brush, 190.0);
-                } else {
-                    ui.label(RichText::new(m.tool.name()).strong());
-                    ui.add_space(10.0);
-                    if *m.tool == crate::Tool::Fill {
-                        ui.scope(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.set_max_width(520.0);
-                            ui.horizontal(|ui| {
-                                let w = 160.0;
-                                let tol = m.fill.tolerance as f32 / 255.0 * 100.0;
-                                if let Some(v) = crate::widgets::fill_slider(ui, "bar_tolerance", crate::widgets::percent("Tolerance"), tol, w) {
-                                    m.fill.tolerance = (v / 100.0 * 255.0).round() as u8;
-                                }
-                                ui.selectable_value(&mut m.fill.merged, true, "All layers");
-                                ui.selectable_value(&mut m.fill.merged, false, "This layer");
-                            });
-                        });
-                    }
-                }
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let doc = !m.home;
+                if icon_button(ui, Icon::FileNew, "New… (Ctrl+N)", true) { a.file = Some(FileCmd::New); }
+                if icon_button(ui, Icon::FileOpen, "Open… (Ctrl+O)", true) { a.file = Some(FileCmd::Open); }
+                if icon_button(ui, Icon::Save, "Save (Ctrl+S)", doc) { a.file = Some(FileCmd::Save); }
+                ui.add_space(8.0);
+                if icon_button(ui, Icon::Copy, "Copy (Ctrl+C)", doc) { a.edit = Some(crate::EditCmd::Copy); }
+                if icon_button(ui, Icon::Paste, "Paste (Ctrl+V)", doc) { a.edit = Some(crate::EditCmd::Paste); }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if let Some((text, left)) = notice.current() {

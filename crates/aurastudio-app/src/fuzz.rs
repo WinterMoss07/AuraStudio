@@ -121,7 +121,7 @@ fn ui_events(r: &mut Rng, pointer: &mut Pos2, held: &mut Option<PointerButton>) 
 
 fn random_brush(r: &mut Rng, base: &Brush) -> Brush {
     let mut b = base.clone();
-    b.radius = match r.below(10) { 0..=2 => 1, 3..=5 => r.below(8) as u32 + 1, 6..=8 => r.below(60) as u32 + 1, _ => r.below(500) as u32 + 1 };
+    b.radius = match r.below(10) { 0..=2 => 0.5, 3..=5 => r.below(8) as f32 + 0.5, 6..=8 => r.below(60) as f32 + 1.0, _ => r.below(500) as f32 + 1.0 };
     b.opacity = if r.chance(0.1) { 0.0 } else { r.f() };
     b.hardness = if r.chance(0.2) { [0.0, 1.0][r.below(2) as usize] } else { r.f() };
     b.blend = BlendMode::ALL[r.below(BlendMode::ALL.len() as u64) as usize];
@@ -140,12 +140,11 @@ fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (
         let far = if r.chance(0.1) { 1e6 } else { 1.3 };
         let mut p = || (r.range(-0.3, far) * w, r.range(-0.3, far) * h);
         let (a, b, m) = (p(), p(), p());
-        let path = match r.below(5) {
+        let path = match r.below(4) {
             0 => crate::shapes::line(a, b),
             1 => crate::shapes::rectangle(a, b),
             2 => crate::shapes::ellipse(a, b),
-            3 => crate::shapes::arc(a, b, m, false),
-            _ => crate::shapes::arc(a, b, m, true),
+            _ => crate::shapes::arc(a, b, m),
         };
         for (i, (x, y)) in path.into_iter().enumerate() {
             pt.send(Cmd::Sample { x, y, pressure: 1.0, time: i as f64 * 0.001 });
@@ -250,7 +249,7 @@ fn fuzz() {
                         fill: &mut fill,
                         shape: &mut shape,
                         has_selection: sel_outlines.is_some(),
-                        overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None, shape: None, handles: &[] },
+                        overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None, shape: None, handles: &[], guide: &[] },
                         to_points: &to_points,
                         hidpi_scaling: &mut hidpi_scaling,
                         ui_scale: &mut ui_scale,
@@ -309,7 +308,16 @@ fn fuzz() {
             85..=91 => {
                 let d = Arc::clone(&doc);
                 let (w, h) = (size.0 as f32, size.1 as f32);
-                match r.below(6) {
+                match r.below(7) {
+                    6 => {
+                        // Copy, then paste somewhere (off the canvas too).
+                        let clip = d.lock().unwrap().copy();
+                        if let Some(mut clip) = clip {
+                            clip.x += r.range(-1.5, 1.5) as i64 * size.0 as i64;
+                            clip.y += r.range(-1.5, 1.5) as i64 * size.1 as i64;
+                            pt.send(Cmd::Paste { doc: d, clip });
+                        }
+                    }
                     0 => pt.send(Cmd::Undo(d)),
                     1 => pt.send(Cmd::Redo(d)),
                     2 => pt.send(Cmd::Clear(d)),
