@@ -12,6 +12,7 @@
 
 pub mod theme;
 mod bars;
+mod dock_layout;
 mod dockers;
 mod widgets;
 
@@ -74,6 +75,9 @@ pub struct Actions {
     pub view:        Option<ViewCmd>,
     /// Open a file dialog to import MyPaint brushes.
     pub import_brushes: Option<ImportBrushes>,
+    /// Round brush engine of the selected preset: true = dabs, false =
+    /// continuous pen.
+    pub use_dabs: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +115,7 @@ pub struct UiState {
     color:         dockers::color::ColorState,
     layers:        dockers::layers::LayersState,
     brushes:       dockers::brushes::BrushesState,
+    dock_layout:   dock_layout::DockLayout,
 }
 
 impl Default for UiState {
@@ -127,6 +132,7 @@ impl UiState {
             color:         Default::default(),
             layers:        Default::default(),
             brushes:       Default::default(),
+            dock_layout:   Default::default(),
         }
     }
 
@@ -177,7 +183,9 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
                 notice: &mut state.notice,
                 m:      model,
                 a:      actions,
+                content: &mut state.dock_layout.content,
             };
+            let (bar, sep) = (style.tab_bar.height, style.separator.width);
             DockArea::new(&mut state.dock)
                 .style(style)
                 .show_close_buttons(false)
@@ -185,5 +193,8 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
                 .show_leaf_collapse_buttons(false)
                 .window_bounds(ctx.screen_rect())
                 .show_inside(ui, &mut viewer);
+            // Docks keep their content visible: a separator pushes the
+            // next docks instead of squashing one.
+            state.dock_layout.enforce(&mut state.dock, bar, sep);
         });
 }

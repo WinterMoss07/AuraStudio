@@ -15,6 +15,11 @@ pub trait PaintSurface {
     fn height(&self) -> u32;
     /// (pixels, stroke_base, stroke_mask)
     fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]);
+    /// Called by the engines before they read or write `rect`: a layer
+    /// fills its stroke snapshot lazily, only where the stroke goes (no
+    /// full-layer copy when a stroke begins). Surfaces whose buffers are
+    /// always complete do nothing.
+    fn prepare(&mut self, _rect: Rect) {}
 }
 
 pub struct Canvas {

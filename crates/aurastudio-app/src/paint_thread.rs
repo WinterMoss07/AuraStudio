@@ -8,7 +8,7 @@
 //! Rule: a brush always paints on this ONE thread. Never split a stroke or
 //! a dab across threads (rayon, tiles...): the pieces must be gathered and
 //! reconciled afterwards, which costs more than it saves. Measured here:
-//! a parallel round pen made every stroke slower, hokusai included. This
+//! a parallel round pen made every stroke slower, dab engines included. This
 //! thread exists to keep painting off the input / UI thread, not to split it.
 //!
 //! Undo, redo and clear go through the same queue, so they always apply
@@ -31,7 +31,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, MyPaintEngine, PressureSmoother};
+use aurastudio_brush::{stroke_line, Brush, DabEngine, MyPaintEngine, PressureSmoother};
 use aurastudio_brushes::Engine;
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
@@ -111,7 +111,7 @@ struct Worker {
 
     brush:    Brush,
     engine:   Engine,
-    hokusai:  HokusaiEngine,
+    dabs:     DabEngine,
     /// Engine of the current MyPaint stroke (built from its preset).
     mypaint:  Option<MyPaintEngine>,
     smoother: PressureSmoother,
@@ -136,7 +136,7 @@ impl Worker {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
             brush: Brush::new(),
             engine: Engine::RoundPen,
-            hokusai: HokusaiEngine::new(),
+            dabs: DabEngine::new(),
             mypaint: None,
             smoother: PressureSmoother::new(0.5),
             active: false,
@@ -297,9 +297,9 @@ impl Worker {
         match &engine {
             Engine::RoundPen => {}
             Engine::DabRound => {
-                self.hokusai.smoother.span = smoothing;
-                self.hokusai.sync_from(&self.brush);
-                self.hokusai.begin_stroke();
+                self.dabs.smoother.span = smoothing;
+                self.dabs.sync_from(&self.brush);
+                self.dabs.begin_stroke();
             }
             Engine::MyPaint(preset) => {
                 let mut e = MyPaintEngine::new((**preset).clone());
@@ -333,7 +333,7 @@ impl Worker {
             }
             (Engine::DabRound, _) => {
                 self.last = Some((x, y, pressure));
-                self.hokusai.stroke_to(&mut surface, x, y, pressure, time)
+                self.dabs.stroke_to(&mut surface, x, y, pressure)
             }
             _ => {
                 let p = self.smoother.apply(x, y, pressure, self.brush.radius as f32);
@@ -360,7 +360,7 @@ impl Worker {
             if let Some(mut surface) = doc.layers.layer_surface(id) {
                 rect = match (&self.engine, &mut self.mypaint) {
                     (Engine::MyPaint(_), Some(e)) => e.end_stroke(&mut surface),
-                    (Engine::DabRound, _) => self.hokusai.end_stroke(&mut surface),
+                    (Engine::DabRound, _) => self.dabs.end_stroke(&mut surface),
                     _ => None,
                 };
             }
@@ -376,6 +376,8 @@ impl Worker {
                 self.stats.paint.count, self.stats.paint, self.stats.max_queue,
                 t0.elapsed().as_secs_f64() * 1000.0, doc.history().bytes() / 1024);
         }
+        // The stroke buffers are freed until the next stroke.
+        doc.layers.end_stroke();
         Some((rect, id))
     }
 }

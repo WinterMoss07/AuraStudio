@@ -135,11 +135,33 @@ pub struct Row {
     pub locked_by_parent: bool,
 }
 
+/// Side of the squares the stroke snapshot is filled by.
+const STROKE_TILE: u32 = 64;
+
+/// Per-stroke buffers of the layer being painted: what the layer was
+/// before the stroke, and how much the stroke covers each pixel.
+///
+/// Allocated zeroed when a stroke begins (the OS hands out zero pages on
+/// first touch: nothing is copied or cleared up front) and freed when it
+/// ends. The snapshot is filled tile by tile, the first time the brush
+/// reaches a tile. Before, every stroke started by copying the whole layer
+/// (16 MB at 2048 px, 35 MB on an A4 at 300 dpi) and the buffers stayed
+/// allocated all the time.
+#[derive(Default)]
+struct StrokeBuffers {
+    layer: u64,
+    base:  Vec<u8>,
+    mask:  Vec<u8>,
+    /// Tiles whose snapshot is filled, row by row (STROKE_TILE squares).
+    ready: Vec<bool>,
+}
+
 /// A paint layer seen as a paintable surface for the brush engines.
 pub struct LayerSurface<'a> {
     pixels: &'a mut [u8],
-    base:   &'a [u8],
+    base:   &'a mut [u8],
     mask:   &'a mut [u8],
+    ready:  &'a mut [bool],
     width:  u32,
     height: u32,
 }
@@ -149,6 +171,27 @@ impl PaintSurface for LayerSurface<'_> {
     fn height(&self) -> u32 { self.height }
     fn surfaces_mut(&mut self) -> (&mut [u8], &[u8], &mut [u8]) {
         (self.pixels, self.base, self.mask)
+    }
+
+    fn prepare(&mut self, rect: Rect) {
+        let (w, h) = (self.width, self.height);
+        let tiles_x = w.div_ceil(STROKE_TILE);
+        let (x0, y0) = (rect.0.min(w) / STROKE_TILE, rect.1.min(h) / STROKE_TILE);
+        let (x1, y1) = (rect.2.min(w).div_ceil(STROKE_TILE), rect.3.min(h).div_ceil(STROKE_TILE));
+        for ty in y0..y1 {
+            for tx in x0..x1 {
+                let t = (ty * tiles_x + tx) as usize;
+                if self.ready[t] { continue; }
+                self.ready[t] = true;
+                // Not painted yet in this stroke: the layer is still as it
+                // was before it.
+                let (px0, px1) = ((tx * STROKE_TILE) as usize * 4, ((tx + 1) * STROKE_TILE).min(w) as usize * 4);
+                for y in ty * STROKE_TILE..((ty + 1) * STROKE_TILE).min(h) {
+                    let row = y as usize * w as usize * 4;
+                    self.base[row + px0..row + px1].copy_from_slice(&self.pixels[row + px0..row + px1]);
+                }
+            }
+        }
     }
 }
 
@@ -163,8 +206,7 @@ pub struct LayerStack {
     active:     u64,
     pub width:  u32,
     pub height: u32,
-    stroke_base: Vec<u8>,
-    stroke_mask: Vec<u8>,
+    stroke:      StrokeBuffers,
     next_id:     u64,
 }
 
@@ -226,14 +268,12 @@ impl LayerStack {
         let mut base = Layer::new(width, height, true);
         base.name = "Background".into();
         base.id = 1;
-        let n = width as usize * height as usize;
         Self {
             root: vec![Node::Layer(base)],
             active: 1,
             width,
             height,
-            stroke_base: vec![0; n * 4],
-            stroke_mask: vec![0; n],
+            stroke: StrokeBuffers::default(),
             next_id: 2,
         }
     }
@@ -465,16 +505,42 @@ impl LayerStack {
     /// user may select or delete another layer meanwhile.
     pub fn begin_stroke(&mut self, id: u64) -> bool {
         // Borrow `root` and `stroke_base` as separate fields.
-        let Some(Node::Layer(l)) = node_in(&self.root, id) else { return false };
-        self.stroke_base.copy_from_slice(&l.pixels);
-        self.stroke_mask.fill(0);
+        if !matches!(node_in(&self.root, id), Some(Node::Layer(_))) { return false; }
+        let n = self.width as usize * self.height as usize;
+        let tiles = (self.width.div_ceil(STROKE_TILE) * self.height.div_ceil(STROKE_TILE)) as usize;
+        self.stroke = StrokeBuffers { layer: id, base: vec![0; n * 4], mask: vec![0; n], ready: vec![false; tiles] };
         true
     }
 
-    /// Pixels of `rect` in the active layer as it was when the current
-    /// stroke began (the undo data of the stroke). RGBA rows, tightly packed.
+    /// The stroke is over (recorded for undo, or abandoned): free its
+    /// buffers.
+    pub fn end_stroke(&mut self) {
+        self.stroke = StrokeBuffers::default();
+    }
+
+    /// Pixels of `rect` in the stroke's layer as it was when the stroke
+    /// began (the undo data of the stroke). RGBA rows, tightly packed.
     pub fn stroke_base_rect(&self, rect: Rect) -> Vec<u8> {
-        copy_rect(&self.stroke_base, self.width, rect)
+        let s = &self.stroke;
+        let Some(Node::Layer(l)) = node_in(&self.root, s.layer) else { return copy_rect(&s.base, self.width, rect) };
+        if s.ready.is_empty() { return copy_rect(&l.pixels, self.width, rect); }
+        // Tiles the stroke never reached were never copied: the layer
+        // there is still as it was.
+        let (w, tiles_x) = (self.width as usize, self.width.div_ceil(STROKE_TILE) as usize);
+        let mut out = Vec::with_capacity((rect.2 - rect.0) as usize * (rect.3 - rect.1) as usize * 4);
+        for y in rect.1..rect.3 {
+            let mut x = rect.0;
+            while x < rect.2 {
+                let tx = x / STROKE_TILE;
+                let end = ((tx + 1) * STROKE_TILE).min(rect.2);
+                let t = (y / STROKE_TILE) as usize * tiles_x + tx as usize;
+                let src = if s.ready[t] { &s.base } else { &l.pixels };
+                let row = y as usize * w;
+                out.extend_from_slice(&src[(row + x as usize) * 4..(row + end as usize) * 4]);
+                x = end;
+            }
+        }
+        out
     }
 
     /// Pixels of `rect` in paint layer `id`, RGBA rows, tightly packed.
@@ -499,17 +565,21 @@ impl LayerStack {
         true
     }
 
-    /// Paint layer `id` as a brush surface (with the stroke buffers of
-    /// begin_stroke); None if it is gone or a folder.
+    /// Paint layer `id` as a brush surface, with the stroke buffers of
+    /// begin_stroke; None if it is gone, a folder, or not the layer the
+    /// stroke began on.
     pub fn layer_surface(&mut self, id: u64) -> Option<LayerSurface<'_>> {
         let (w, h) = (self.width, self.height);
         let path = self.path(id)?;
         let (last, parent) = path.split_last()?;
         let Node::Layer(l) = &mut siblings_mut(&mut self.root, parent)[*last] else { return None };
+        // Only the layer the stroke began on has stroke buffers.
+        if self.stroke.layer != id || self.stroke.ready.is_empty() { return None; }
         Some(LayerSurface {
             pixels: &mut l.pixels,
-            base:   &self.stroke_base,
-            mask:   &mut self.stroke_mask,
+            base:   &mut self.stroke.base,
+            mask:   &mut self.stroke.mask,
+            ready:  &mut self.stroke.ready,
             width:  w,
             height: h,
         })
@@ -588,9 +658,8 @@ impl LayerStack {
 
         self.width  = width;
         self.height = height;
-        let n = width as usize * height as usize;
-        self.stroke_base = vec![0; n * 4];
-        self.stroke_mask = vec![0; n];
+        // A stroke in progress can't go on at the new size.
+        self.end_stroke();
     }
 
     /// Composite every visible layer into `out` (`width * height * 4`).
@@ -939,5 +1008,31 @@ mod tests {
         assert_eq!(layer_px(&s, 1, 0, 0), [255, 255, 255, 255]);
         assert!(s.begin_stroke(l));
         assert_eq!(s.layer_surface(l).unwrap().width(), 8);
+    }
+
+    #[test]
+    fn stroke_snapshot_is_filled_only_where_painted() {
+        // An L-shaped stroke: its bounding box covers tiles it never
+        // reached. The undo data must still be the layer as it was.
+        let mut s = LayerStack::new(256, 256);
+        let id = s.add_layer("ink");
+        assert!(s.begin_stroke(id));
+        {
+            let mut surf = s.layer_surface(id).unwrap();
+            for r in [(0, 0, 10, 200), (0, 190, 200, 200)] {
+                surf.prepare(r);
+                let (px, _, _) = surf.surfaces_mut();
+                for y in r.1..r.3 {
+                    for x in r.0..r.2 {
+                        let i = ((y * 256 + x) * 4) as usize;
+                        px[i..i + 4].copy_from_slice(&[255, 0, 0, 255]);
+                    }
+                }
+            }
+        }
+        let before = s.stroke_base_rect((0, 0, 200, 200));
+        assert!(before.chunks_exact(4).all(|p| p == [255, 255, 255, 0]), "undo data is not the original layer");
+        s.end_stroke();
+        assert!(s.layer_surface(id).is_none(), "buffers kept after the stroke");
     }
 }

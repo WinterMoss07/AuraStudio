@@ -1,7 +1,8 @@
 //! Brush library: the presets listed in the Brushes docker.
 //!
 //! - Built-in presets for our own engines (round pen, soft round, dab
-//!   round).
+//!   round); the round ones can switch between the continuous pen and
+//!   dabs (Tool options).
 //! - The MyPaint brush collection (196 brushes, CC0, see
 //!   assets/brushes/mypaint), embedded in the binary at build time.
 //! - Brushes the user imports (.myb files or folders of them), copied into
@@ -24,7 +25,8 @@ include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 pub enum Engine {
     /// Swept round pen (continuous, no dabs).
     RoundPen,
-    /// Round dabs through hokusai with no build-up within a stroke.
+    /// Round dabs with wash accumulation (smooth soft edges and crossings,
+    /// cheap at big sizes).
     DabRound,
     /// A MyPaint brush, painted natively by libmypaint's rules.
     MyPaint(Arc<MyPaintBrush>),
@@ -125,7 +127,7 @@ impl Library {
     pub fn load() -> Self {
         let mut presets = vec![
             Preset::builtin("Round pen", Engine::RoundPen, 25, 1.0),
-            Preset::builtin("Soft round", Engine::RoundPen, 60, 0.0),
+            Preset::builtin("Soft round", Engine::DabRound, 60, 0.0),
             Preset::builtin("Dab round", Engine::DabRound, 25, 0.9),
         ];
         for &(group, name, json, preview) in BUNDLED {

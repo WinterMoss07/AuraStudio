@@ -81,13 +81,10 @@ impl MyPaintEngine {
     pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, x: f32, y: f32, pressure: f32, time: f64) -> Option<Rect> {
         let dtime = self.last_time.map(|t| (time - t).clamp(0.001, 0.25)).unwrap_or(0.0);
         self.last_time = Some(time);
-        let (w, h) = (surface.width(), surface.height());
-        let (pixels, base, _mask) = surface.surfaces_mut();
-
         // Tiles a dab or a smudge sample may touch around the pen must be
         // loaded first: libmypaint reads them through tile_lookup, which
         // can't load anything.
-        let mut tiles = TileCache { tiles: &mut self.tiles, base, w, h, dirty: HashSet::new() };
+        let mut tiles = TileCache { tiles: &mut self.tiles, surface, dirty: HashSet::new() };
         // From the brush's smoothed position (dabs are placed between it and
         // the pen) to the pen, with the margin of the biggest dab so far.
         let prev = if self.state.started { (self.state.actual_x, self.state.actual_y) } else { (x, y) };
@@ -95,17 +92,15 @@ impl MyPaintEngine {
         tiles.preload(x.min(prev.0) - reach, y.min(prev.1) - reach, x.max(prev.0) + reach, y.max(prev.1) + reach);
         self.brush.stroke_to(&mut self.state, &mut tiles, x, y, pressure, 0.0, 0.0, dtime);
         let dirty = std::mem::take(&mut tiles.dirty);
-        write_back(&self.tiles, &dirty, pixels, w, h)
+        write_back(&self.tiles, &dirty, surface)
     }
 
     /// End of stroke: let libmypaint finish its smoothed path.
     pub fn end_stroke<S: PaintSurface>(&mut self, surface: &mut S) -> Option<Rect> {
-        let (w, h) = (surface.width(), surface.height());
-        let (pixels, base, _mask) = surface.surfaces_mut();
-        let mut tiles = TileCache { tiles: &mut self.tiles, base, w, h, dirty: HashSet::new() };
+        let mut tiles = TileCache { tiles: &mut self.tiles, surface, dirty: HashSet::new() };
         self.brush.finish_stroke(&mut self.state, &mut tiles);
         let dirty = std::mem::take(&mut tiles.dirty);
-        let rect = write_back(&self.tiles, &dirty, pixels, w, h);
+        let rect = write_back(&self.tiles, &dirty, surface);
         self.tiles.clear();
         rect
     }
@@ -113,18 +108,21 @@ impl MyPaintEngine {
 
 /// The stroke's tiles as a libmypaint surface. A tile is loaded from the
 /// layer as it was before the stroke the first time it is needed.
-struct TileCache<'a> {
-    tiles: &'a mut HashMap<(i32, i32), Box<TilePixels>>,
-    base:  &'a [u8],
-    w:     u32,
-    h:     u32,
-    dirty: HashSet<(i32, i32)>,
+struct TileCache<'a, S: PaintSurface> {
+    tiles:   &'a mut HashMap<(i32, i32), Box<TilePixels>>,
+    surface: &'a mut S,
+    dirty:   HashSet<(i32, i32)>,
 }
 
-impl TileCache<'_> {
+impl<S: PaintSurface> TileCache<'_, S> {
     fn load(&mut self, tx: i32, ty: i32) -> &mut Box<TilePixels> {
-        let (base, w, h) = (self.base, self.w, self.h);
+        let (w, h) = (self.surface.width(), self.surface.height());
+        let surface = &mut *self.surface;
         self.tiles.entry((tx, ty)).or_insert_with(|| {
+            let (x0, y0) = ((tx * TS).clamp(0, w as i32) as u32, (ty * TS).clamp(0, h as i32) as u32);
+            let (x1, y1) = ((tx * TS + TS).clamp(0, w as i32) as u32, (ty * TS + TS).clamp(0, h as i32) as u32);
+            surface.prepare((x0, y0, x1, y1));
+            let (_, base, _) = surface.surfaces_mut();
             let mut tile: Box<TilePixels> = Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]);
             for (ly, row) in tile.iter_mut().enumerate() {
                 let y = ty * TS + ly as i32;
@@ -150,7 +148,7 @@ impl TileCache<'_> {
     }
 }
 
-impl TiledSurface for TileCache<'_> {
+impl<S: PaintSurface> TiledSurface for TileCache<'_, S> {
     fn tile_request_start(&mut self, tx: i32, ty: i32) -> &mut TilePixels {
         self.dirty.insert((tx, ty));
         self.load(tx, ty)
@@ -183,7 +181,9 @@ fn from_fix15(p: [u16; 4]) -> [u8; 4] {
 }
 
 /// Copy the changed tiles into the layer pixels; returns their bounds.
-fn write_back(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dirty: &HashSet<(i32, i32)>, pixels: &mut [u8], w: u32, h: u32) -> Option<Rect> {
+fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dirty: &HashSet<(i32, i32)>, surface: &mut S) -> Option<Rect> {
+    let (w, h) = (surface.width(), surface.height());
+    let (pixels, _, _) = surface.surfaces_mut();
     let mut out: Option<Rect> = None;
     for &(tx, ty) in dirty {
         let Some(tile) = tiles.get(&(tx, ty)) else { continue };

@@ -98,6 +98,9 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     d.tab_bar.height  = 28.0;
     d.tab_bar.hline_color = BORDER;
     d.separator.width = 2.0;
+    // egui_dock's own limit (175 pt per side) is replaced by each
+    // dock's minimum height, see dock_layout.
+    d.separator.extra = 8.0;
     d.separator.color_idle    = BACKDROP;
     d.separator.color_hovered = ACCENT_DIM;
     d.separator.color_dragged = ACCENT;

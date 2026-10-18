@@ -124,7 +124,10 @@ impl GpuState {
                         max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
                         ..Limits::default()
                     },
-                    memory_hints:      MemoryHints::default(),
+                    // Small GPU memory blocks: the default (Performance)
+                    // reserves 128 MB chunks at a time on Vulkan, for a few
+                    // MB of staging and UI buffers.
+                    memory_hints:      MemoryHints::MemoryUsage,
                 },
                 None,
             )
@@ -515,6 +518,11 @@ impl GpuState {
     /// still updates, and the UI thread never waits for the brush.
     pub fn render_cached_ui(&mut self) {
         self.render_impl(None::<fn(&egui::Context)>);
+    }
+
+    /// A UI frame exists to reuse (see render_cached_ui).
+    pub fn has_cached_ui(&self) -> bool {
+        self.last_ui.is_some()
     }
 
     fn render_impl(&mut self, ui_fn: Option<impl FnOnce(&egui::Context)>) {

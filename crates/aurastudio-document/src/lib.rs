@@ -145,10 +145,13 @@ impl Workspace {
 mod tests {
     use super::*;
     use aurastudio_layers::Node;
+    use aurastudio_canvas::PaintSurface;
 
     fn paint(doc: &mut Document, id: u64, rect: Rect, rgba: [u8; 4]) {
         // Simulates a stroke: snapshot, change pixels, commit.
         assert!(doc.layers.begin_stroke(id));
+        // Like the brush engines: the area is prepared before painting.
+        doc.layers.layer_surface(id).unwrap().prepare(rect);
         let n = ((rect.2 - rect.0) * (rect.3 - rect.1)) as usize;
         assert!(doc.layers.set_layer_rect(id, rect, &rgba.repeat(n)));
         doc.commit_stroke(id, rect);
@@ -221,6 +224,7 @@ mod tests {
                 x ^= x << 13; x ^= x >> 7; x ^= x << 17; // xorshift64
                 (x >> 24) as u8
             }).collect();
+            doc.layers.layer_surface(id).unwrap().prepare((0, 0, 256, 256));
             doc.layers.set_layer_rect(id, (0, 0, 256, 256), &data);
             doc.commit_stroke(id, (0, 0, 256, 256));
         }

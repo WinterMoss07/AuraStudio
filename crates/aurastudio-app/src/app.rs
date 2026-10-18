@@ -11,7 +11,7 @@ use winit::{
 };
 
 use aurastudio_brush::Brush;
-use aurastudio_brushes::Library;
+use aurastudio_brushes::{Engine, Library};
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
@@ -85,6 +85,8 @@ pub struct App {
     perceptual:    bool,
     /// Space held: a left drag moves the view instead of painting.
     space_down: bool,
+    /// A Shift key is held (tracked from the keys too, see shift_held).
+    shift_down: bool,
     /// View drag in progress, with the last cursor position.
     nav:        Option<(Nav, (f32, f32))>,
     /// Set once the native pen sent samples during the current stroke:
@@ -110,6 +112,16 @@ pub struct App {
     /// A frame is needed. The actual window redraw request is made in
     /// about_to_wait: winit drops requests made while handling a redraw.
     redraw_wanted: bool,
+    /// The next frame must run the UI. Frames that only move the brush
+    /// outline or show new paint reuse the last UI as it was (no egui
+    /// layout): a pen hovering over the canvas costs a GPU pass, not a
+    /// full UI frame.
+    ui_dirty:     bool,
+    /// The cursor was over the canvas at the last full UI frame.
+    ui_saw_canvas: bool,
+    /// What woke the app lately, logged when it keeps drawing while
+    /// nothing is being painted (idle CPU hunt).
+    activity:     Activity,
     /// Delayed frame asked by egui (tooltip, notice fade-out).
     repaint_at:   Option<Instant>,
     /// Main-thread frame cost during the current stroke (logged at its end).
@@ -158,6 +170,7 @@ impl App {
             color_managed: true,
             perceptual:    true,
             space_down: false,
+            shift_down: false,
             nav:        None,
             pen_active: false,
             cursor:     (0.0, 0.0),
@@ -170,6 +183,9 @@ impl App {
             layers_dirty: true,
             last_frame:   None,
             redraw_wanted: false,
+            ui_dirty:     true,
+            ui_saw_canvas: false,
+            activity:     Activity::new(),
             repaint_at:   None,
             frame_stats:  Timing::default(),
         }
@@ -183,6 +199,8 @@ impl App {
 
     /// Start panning / rotating the view with a drag from the cursor.
     fn begin_nav(&mut self, rotate: bool) {
+        log::info!("view drag: {} (shift: modifiers {}, key {})", if rotate { "rotate" } else { "pan" },
+            self.modifiers.shift_key(), self.shift_down);
         self.nav = Some((if rotate { Nav::Rotate } else { Nav::Pan }, self.cursor));
         self.update_cursor_icon();
     }
@@ -192,9 +210,19 @@ impl App {
         self.update_cursor_icon();
     }
 
+    /// Shift is down, from the modifier state or the Shift keys
+    /// themselves (whichever Windows reported last: with the pen, the
+    /// modifier state alone was seen missing Shift).
+    fn shift_held(&self) -> bool {
+        self.modifiers.shift_key() || self.shift_down
+    }
+
     /// Cursor moved during a navigation drag.
     fn drag_nav(&mut self) {
-        let Some((mode, last)) = self.nav else { return };
+        let Some((_, last)) = self.nav else { return };
+        // Pan or rotate follows Shift during the drag (Krita): pressing or
+        // releasing it mid-drag switches.
+        let mode = if self.shift_held() { Nav::Rotate } else { Nav::Pan };
         let Some(gpu) = &mut self.gpu else { return };
         let now = self.cursor;
         match mode {
@@ -353,6 +381,13 @@ impl App {
     /// validates the window after WM_PAINT; X11 has already chosen how long
     /// to sleep). Posting Wake makes sure the loop gets there right away.
     fn request_redraw(&mut self) {
+        self.ui_dirty = true;
+        self.request_canvas_frame();
+    }
+
+    /// Ask for a frame that only needs the canvas and the brush outline
+    /// redrawn; the UI is reused from the last frame.
+    fn request_canvas_frame(&mut self) {
         if !self.redraw_wanted {
             self.redraw_wanted = true;
             let _ = self.proxy.send_event(AppEvent::Wake);
@@ -425,6 +460,7 @@ impl App {
     /// leaving them stuck.
     fn reset_input(&mut self) {
         self.space_down = false;
+        self.shift_down = false;
         self.nav = None;
         if self.is_drawing {
             self.end_stroke();
@@ -439,6 +475,7 @@ impl App {
     fn drain_stylus(&mut self) {
         let Some(stylus) = &self.stylus else { return };
         for s in stylus.drain() {
+            self.activity.pen_packets += 1;
             if self.is_drawing {
                 self.pen_active = true;
                 self.pressure   = s.pressure;
@@ -446,7 +483,7 @@ impl App {
                 // the mouse events Windows derives from them).
                 self.cursor     = (s.x, s.y);
                 self.draw_at(s.x, s.y, Some(s.time_ms));
-                self.request_redraw();
+                self.request_canvas_frame();
             }
         }
     }
@@ -454,7 +491,7 @@ impl App {
     /// The paint thread updated the projection: show it.
     fn on_painted(&mut self) {
         self.painted = true;
-        self.request_redraw();
+        self.request_canvas_frame();
         self.render_if_due();
     }
 
@@ -506,8 +543,13 @@ impl App {
         // (mid-stroke), redraw the canvas with the last UI as it was, and
         // try the UI again a moment later.
         let mut doc_busy = false;
-        match doc.try_lock() {
-            Ok(mut doc) => gpu.render(|ctx| {
+        let run_ui = std::mem::take(&mut self.ui_dirty) || !gpu.has_cached_ui();
+        let ui_saw_canvas = &mut self.ui_saw_canvas;
+        let over_canvas = self.over_canvas;
+        if run_ui { self.activity.ui_frames += 1 } else { self.activity.canvas_frames += 1 }
+        match if run_ui { doc.try_lock().ok() } else { None } {
+            Some(mut doc) => gpu.render(|ctx| {
+            *ui_saw_canvas = over_canvas;
             let (can_undo, can_redo) = (doc.history().undo_len() > 0, doc.history().redo_len() > 0);
             let mut model = Model {
                 brush,
@@ -527,13 +569,15 @@ impl App {
             };
             aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions);
             }),
-            Err(_) => {
-                doc_busy = true;
+            None => {
+                doc_busy = run_ui;
                 gpu.render_cached_ui();
             }
         }
         let mut want_frame = false;
         if doc_busy {
+            // Run the UI again in a moment.
+            self.ui_dirty = true;
             let at = Instant::now() + Duration::from_millis(4);
             self.repaint_at = Some(self.repaint_at.map_or(at, |t| t.min(at)));
         }
@@ -549,6 +593,7 @@ impl App {
         if self.is_drawing {
             self.frame_stats.add(t0.elapsed());
         }
+        self.activity.main_time += t0.elapsed();
         self.last_frame = Some(Instant::now());
 
         if (self.color_managed, self.perceptual) != (cm_before, perceptual_before) {
@@ -556,6 +601,14 @@ impl App {
         }
         if preset != preset_before { self.select_preset(preset); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
+        if let Some(dabs) = actions.use_dabs {
+            let p = &mut self.library.presets[self.preset];
+            if !p.engine.is_mypaint() {
+                p.engine = if dabs { Engine::DabRound } else { Engine::RoundPen };
+                // The docker shows the new engine.
+                want_frame = true;
+            }
+        }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         if actions.undo { self.undo(); }
         if actions.redo { self.redo(); }
@@ -633,9 +686,13 @@ impl ApplicationHandler<AppEvent> for App {
     /// them immediately instead of waiting for the next mouse event.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.drain_stylus();
+        self.activity.wakes += 1;
+        self.activity.report(self.is_drawing || self.nav.is_some());
 
         if self.repaint_at.is_some_and(|t| Instant::now() >= t) {
             self.repaint_at = None;
+            self.activity.timers += 1;
+            self.ui_dirty = true;
             self.redraw_wanted = true;
         }
         if std::mem::take(&mut self.redraw_wanted) {
@@ -693,9 +750,15 @@ impl ApplicationHandler<AppEvent> for App {
             .unwrap_or(false);
         let ui_dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
         let is_redraw = matches!(event, WindowEvent::RedrawRequested);
-        if !is_redraw && (ui_needs_frame || ui_dragging) {
+        // Moving over the canvas, when the last UI frame already had the
+        // cursor there, changes nothing in the UI (no hover can change):
+        // only the outline moves.
+        let canvas_move = matches!(event, WindowEvent::CursorMoved { .. })
+            && over_canvas && self.ui_saw_canvas && !ui_dragging;
+        if !is_redraw && (ui_needs_frame || ui_dragging) && !canvas_move {
             self.request_redraw();
         }
+        if !is_redraw { self.activity.events += 1; }
         self.over_canvas = over_canvas;
 
         self.drain_stylus();
@@ -720,6 +783,9 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::KeyboardInput { event: key, .. } => {
                 // Space is tracked on release too (and even while a field
                 // has focus, so it can't get stuck down).
+                if key.logical_key == Key::Named(NamedKey::Shift) {
+                    self.shift_down = key.state == ElementState::Pressed;
+                }
                 if key.logical_key == Key::Named(NamedKey::Space) {
                     let down = key.state == ElementState::Pressed;
                     if down != self.space_down {
@@ -766,7 +832,7 @@ impl ApplicationHandler<AppEvent> for App {
                         // drawing: a second press starts nothing.
                     } else if over_canvas && self.space_down {
                         // Space + drag: pan; Shift + Space + drag: rotate (Krita).
-                        self.begin_nav(self.modifiers.shift_key());
+                        self.begin_nav(self.shift_held());
                     } else if over_canvas {
                         self.pressure   = 1.0;
                         self.begin_stroke();
@@ -781,7 +847,7 @@ impl ApplicationHandler<AppEvent> for App {
             // Middle drag: pan, Shift + middle drag: rotate.
             WindowEvent::MouseInput { button: MouseButton::Middle, state, .. } => {
                 if state.is_pressed() && over_canvas && !self.is_drawing {
-                    self.begin_nav(self.modifiers.shift_key());
+                    self.begin_nav(self.shift_held());
                 } else if !state.is_pressed() && self.nav.is_some() {
                     self.end_nav();
                 }
@@ -811,10 +877,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.cursor = (position.x as f32, position.y as f32);
                 self.cursor_in_window = true;
                 self.over_canvas = self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(self.cursor));
+                self.activity.cursor_moves += 1;
                 // The outline moves with the cursor: a frame is needed.
                 if self.over_canvas || self.os_cursor_hidden {
                     self.update_brush_cursor();
-                    self.request_redraw();
+                    self.request_canvas_frame();
                 }
                 if self.nav.is_some() {
                     self.drag_nav();
@@ -864,5 +931,46 @@ impl ApplicationHandler<AppEvent> for App {
 
             _ => {}
         }
+    }
+}
+
+/// Counts what makes the app work, over a few seconds. Logged when the app
+/// keeps drawing frames while no stroke or view drag is going on, to find
+/// what wakes it (pen hovering, egui timers, OS events...).
+struct Activity {
+    since:         Instant,
+    ui_frames:     u32,
+    canvas_frames: u32,
+    events:        u32,
+    cursor_moves:  u32,
+    pen_packets:   u32,
+    timers:        u32,
+    wakes:         u32,
+    main_time:     Duration,
+}
+
+impl Activity {
+    const WINDOW: Duration = Duration::from_secs(5);
+    /// Frames per window above which the activity is logged (10 fps).
+    const BUSY_FRAMES: u32 = 50;
+
+    fn new() -> Self {
+        Self {
+            since: Instant::now(), ui_frames: 0, canvas_frames: 0, events: 0, cursor_moves: 0,
+            pen_packets: 0, timers: 0, wakes: 0, main_time: Duration::ZERO,
+        }
+    }
+
+    fn report(&mut self, working: bool) {
+        if self.since.elapsed() < Self::WINDOW { return; }
+        if !working && self.ui_frames + self.canvas_frames >= Self::BUSY_FRAMES {
+            log::info!(
+                "activity (5 s, no stroke): {} UI frames, {} canvas-only frames, main thread {:.0} ms | \
+                 {} window events ({} cursor moves), {} pen packets, {} UI timers, {} wake-ups",
+                self.ui_frames, self.canvas_frames, self.main_time.as_secs_f64() * 1000.0,
+                self.events, self.cursor_moves, self.pen_packets, self.timers, self.wakes,
+            );
+        }
+        *self = Self::new();
     }
 }

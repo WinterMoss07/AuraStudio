@@ -13,14 +13,16 @@ use egui_dock::{DockState, NodeIndex, TabViewer};
 
 use crate::{Actions, Model, Notice};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Tab { Color, ToolOptions, Brushes, Layers, Canvas }
 
-/// Right column: Color + Tool options + Brushes on top, Layers + Canvas
-/// below.
+/// Right column, top to bottom: Color + Brushes, Tool options, Layers +
+/// Canvas.
 pub fn default_dock() -> DockState<Tab> {
-    let mut dock = DockState::new(vec![Tab::Color, Tab::ToolOptions, Tab::Brushes]);
-    dock.main_surface_mut().split_below(NodeIndex::root(), 0.42, vec![Tab::Layers, Tab::Canvas]);
+    let mut dock = DockState::new(vec![Tab::Color, Tab::Brushes]);
+    let surface = dock.main_surface_mut();
+    let [_, rest] = surface.split_below(NodeIndex::root(), 0.25, vec![Tab::ToolOptions]);
+    surface.split_below(rest, 0.45, vec![Tab::Layers, Tab::Canvas]);
     dock
 }
 
@@ -32,6 +34,8 @@ pub struct Viewer<'s, 'a> {
     pub notice: &'s mut Notice,
     pub m:      &'s mut Model<'a>,
     pub a:      &'s mut Actions,
+    /// Content height of each tab, for the docks' minimum heights.
+    pub content: &'s mut std::collections::HashMap<Tab, f32>,
 }
 
 impl TabViewer for Viewer<'_, '_> {
@@ -48,13 +52,17 @@ impl TabViewer for Viewer<'_, '_> {
     }
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Tab) {
-        match tab {
+        // Drawn in a scope to measure the content alone (the tab's own ui
+        // is at least as tall as the dock).
+        let content = ui.scope(|ui| match tab {
             Tab::Color       => color::show(ui, self.color, self.m),
-            Tab::ToolOptions => tool_options::show(ui, self.m),
+            Tab::ToolOptions => tool_options::show(ui, self.m, self.a),
             Tab::Brushes     => brushes::show(ui, self.brushes, self.m, self.a),
             Tab::Layers      => layers::show(ui, self.layers, self.notice, self.m, self.a),
             Tab::Canvas      => canvas::show(ui, self.m, self.a),
-        }
+        }).response.rect;
+        // Body margins included.
+        self.content.insert(*tab, content.height() + 16.0);
     }
 
     fn closeable(&mut self, _tab: &mut Tab) -> bool { false }

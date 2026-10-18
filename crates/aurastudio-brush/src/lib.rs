@@ -1,8 +1,10 @@
-use aurastudio_canvas::{blend::{paint_pixel_u8, unit_to_u8}, BlendMode, PaintSurface, Rect};
+use aurastudio_canvas::{blend::unit_to_u8, BlendMode, PaintSurface, Rect};
+use raster::{changed_span, min_u8, write_pixels, CHUNK, IOTA};
 
-mod hokusai_engine;
+mod dab_engine;
 mod mypaint_engine;
-pub use hokusai_engine::HokusaiEngine;
+mod raster;
+pub use dab_engine::DabEngine;
 pub use mypaint_engine::MyPaintEngine;
 /// hokusai's brush type (a parsed .myb), for the brush library.
 pub use hokusai::Brush as MyPaintBrush;
@@ -97,6 +99,7 @@ pub fn stroke_line<S: PaintSurface>(
     let y1 = ((from.1.max(to.1) + r + 1.0).ceil() as i32 + 1).min(h);
     if x0 >= x1 || y0 >= y1 { return None; }
 
+    surface.prepare((x0 as u32, y0 as u32, x1 as u32, y1 as u32));
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     let len2 = dx * dx + dy * dy;
     let inv_len2 = if len2 > 0.0 { 1.0 / len2 } else { 0.0 };
@@ -109,15 +112,11 @@ pub fn stroke_line<S: PaintSurface>(
     // compare, before any math, is what keeps 200+ px strokes cheap.
     let seg_max_u8 = unit_to_u8(cap_a.max(cap_b));
     let reach = r + 0.5;
-    let reach2 = reach * reach;
     // Width of the fading edge: at least 1 px (anti-aliasing), up to the
     // whole radius at hardness 0.
     let soft = (r * (1.0 - brush.hardness.clamp(0.0, 1.0))).max(1.0);
     let inv_soft = 1.0 / soft;
-    // Inside this distance the edge factor is 1: no square root needed
-    // (on a hard brush, that is everything but the 1 px rim).
-    let solid = (reach - soft).max(0.0);
-    let solid2 = solid * solid;
+    let smooth = soft > 1.0;
 
     // Bounds of the pixels actually written. With big brushes, most of the
     // segment's box is skipped (already covered), and the real change is a
@@ -136,52 +135,46 @@ pub fn stroke_line<S: PaintSurface>(
         let row = py as usize * sw;
         let ry = cy - from.1;
         let (mut row_x0, mut row_x1) = (i32::MAX, i32::MIN);
-        let mut px = xa;
-        while px < xb {
-            // Skip already-covered pixels 16 at a time: one vector min over
-            // the mask instead of 16 compares (the common case once a big
-            // brush moves on at steady pressure).
-            if px + 16 <= xb {
-                let start = row + px as usize;
-                let chunk: &[u8; 16] = stroke_mask[start..start + 16].try_into().unwrap();
-                if chunk.iter().fold(u8::MAX, |m, &v| m.min(v)) >= seg_max_u8 {
-                    px += 16;
-                    continue;
-                }
+        let mut x = xa;
+        while x < xb {
+            let n = ((xb - x) as usize).min(CHUNK);
+            let i0 = row + x as usize;
+            let mrow = &mut stroke_mask[i0..i0 + n];
+            // Big brushes: consecutive segments overlap almost entirely, so
+            // most of this one was already painted at (or above) its
+            // highest opacity by the previous ones: skip those runs.
+            if min_u8(mrow) >= seg_max_u8 {
+                x += n as i32;
+                continue;
             }
-            let x = px;
-            px += 1;
-            let pidx = row + x as usize;
-            if stroke_mask[pidx] >= seg_max_u8 { continue; }
-
-            let cx = x as f32 + 0.5;
-            // Closest point on the segment, and where along it (0..1).
-            let t = (((cx - from.0) * dx + ry * dy) * inv_len2).clamp(0.0, 1.0);
-            let ex = cx - (from.0 + dx * t);
-            let ey = cy - (from.1 + dy * t);
-            let d2 = ex * ex + ey * ey;
-            if d2 >= reach2 { continue; }
-            let edge = if d2 <= solid2 {
-                1.0
-            } else {
-                // Fading edge (smoothstep), 1 px wide on a hard brush.
-                let t_edge = ((reach - d2.sqrt()) * inv_soft).clamp(0.0, 1.0);
-                if t_edge <= 0.0 { continue; }
-                if soft > 1.0 { t_edge * t_edge * (3.0 - 2.0 * t_edge) } else { t_edge }
-            };
-
-            let cov_u8 = unit_to_u8((cap_a + (cap_b - cap_a) * t) * edge);
-            if cov_u8 <= stroke_mask[pidx] { continue; }
-            stroke_mask[pidx] = cov_u8;
-
-            // Brush color blended (brush blend mode) onto the layer as it was
-            // before the stroke, at this pixel's coverage.
-            let base = pidx * 4;
-            let backdrop = [stroke_base[base], stroke_base[base + 1], stroke_base[base + 2], stroke_base[base + 3]];
-            let out = paint_pixel_u8(backdrop, brush.color, cov_u8, brush.blend);
-            pixels[base..base + 4].copy_from_slice(&out);
-            row_x0 = row_x0.min(x);
-            row_x1 = row_x1.max(x + 1);
+            // Coverage of the run (float math, vectorized): opacity
+            // interpolated at the closest point of the segment, times the
+            // edge factor at the distance to it.
+            let mut cov = [0u8; CHUNK];
+            let cov = &mut cov[..n];
+            let cx0 = x as f32 + 0.5 - from.0;
+            for (c, &j) in cov.iter_mut().zip(IOTA.iter()) {
+                let rx = cx0 + j;
+                let t = ((rx * dx + ry * dy) * inv_len2).clamp(0.0, 1.0);
+                let (ex, ey) = (rx - dx * t, ry - dy * t);
+                let d = (ex * ex + ey * ey).sqrt();
+                let e = ((reach - d) * inv_soft).clamp(0.0, 1.0);
+                let edge = if smooth { e * e * (3.0 - 2.0 * e) } else { e };
+                *c = ((cap_a + (cap_b - cap_a) * t) * edge * 255.0 + 0.5) as i32 as u8;
+            }
+            // Max with what the stroke already gave each pixel (no
+            // build-up), then the layer pixels where that changed.
+            for (c, &m) in cov.iter_mut().zip(mrow.iter()) {
+                *c = (*c).max(m);
+            }
+            if let Some((c0, c1)) = changed_span(mrow, cov) {
+                mrow[c0..c1].copy_from_slice(&cov[c0..c1]);
+                let (p0, p1) = ((i0 + c0) * 4, (i0 + c1) * 4);
+                write_pixels(&mut pixels[p0..p1], &stroke_base[p0..p1], &cov[c0..c1], brush.color, brush.blend);
+                row_x0 = row_x0.min(x + c0 as i32);
+                row_x1 = row_x1.max(x + c1 as i32);
+            }
+            x += n as i32;
         }
         if row_x0 < row_x1 {
             wx0 = wx0.min(row_x0 as u32);

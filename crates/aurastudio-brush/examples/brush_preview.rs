@@ -1,10 +1,10 @@
 // Renders test strokes into a PPM image to tune brushes without a tablet.
-// Left: hokusai engine, right: swept round pen. Rows: an infinity sign at
+// Left: round dabs, right: swept round pen. Rows: an infinity sign at
 // constant 40% pressure (self-crossing must not darken), then a wave with
 // a 0 -> 1 -> 0 pressure ramp at three sizes, then a big self-overlapping
 // scribble with jittery pressure.
 // Usage: cargo run --release -p aurastudio-brush --example brush_preview -- out.ppm
-use aurastudio_brush::{stroke_line, Brush, HokusaiEngine, PressureSmoother};
+use aurastudio_brush::{stroke_line, Brush, DabEngine, PressureSmoother};
 use aurastudio_canvas::PaintSurface;
 
 struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8>, w: u32, h: u32 }
@@ -21,12 +21,12 @@ impl S {
     }
 }
 
-fn stroke(s: &mut S, e: &mut HokusaiEngine, b: &Brush, hokusai: bool, pts: &[(f32, f32, f32)]) {
+fn stroke(s: &mut S, e: &mut DabEngine, b: &Brush, dabs: bool, pts: &[(f32, f32, f32)]) {
     s.new_stroke();
-    if hokusai {
+    if dabs {
         e.sync_from(b);
         e.begin_stroke();
-        for (k, &(x, y, p)) in pts.iter().enumerate() { e.stroke_to(s, x, y, p, k as f64 * 0.005); }
+        for &(x, y, p) in pts { e.stroke_to(s, x, y, p); }
         e.end_stroke(s);
     } else {
         let mut sm = PressureSmoother::new(0.5);
@@ -43,10 +43,10 @@ fn main() {
     let (w, h) = (800u32, 820u32);
     let white = vec![255u8; (w * h * 4) as usize];
     let mut s = S { px: white.clone(), base: white, mask: vec![0; (w * h) as usize], w, h };
-    let mut e = HokusaiEngine::new();
+    let mut e = DabEngine::new();
     if let Some(v) = std::env::args().nth(2) { e.smoother.span = v.parse().unwrap(); }
 
-    for (col, hokusai) in [(0.0f32, true), (400.0, false)] {
+    for (col, dabs) in [(0.0f32, true), (400.0, false)] {
         let mut b = Brush::new();
         b.radius = 14;
         let inf: Vec<_> = (0..=400).map(|i| {
@@ -54,7 +54,7 @@ fn main() {
             let d = 1.0 + t.sin().powi(2);
             (col + 200.0 + 150.0 * t.cos() / d, 90.0 + 150.0 * t.sin() * t.cos() / d, 0.4)
         }).collect();
-        stroke(&mut s, &mut e, &b, hokusai, &inf);
+        stroke(&mut s, &mut e, &b, dabs, &inf);
 
         for (row, (radius, color)) in [(4u32, [0, 0, 0]), (12, [200, 40, 40]), (30, [30, 60, 200])].iter().enumerate() {
             b.radius = *radius;
@@ -64,7 +64,7 @@ fn main() {
                 let t = i as f32 / 300.0;
                 (col + 30.0 + t * 340.0, y0 + (t * 12.0).sin() * 20.0, 1.0 - (2.0 * t - 1.0).abs())
             }).collect();
-            stroke(&mut s, &mut e, &b, hokusai, &pts);
+            stroke(&mut s, &mut e, &b, dabs, &pts);
         }
 
         // Big brush, hand-like jittery pressure, self-overlapping scribble:
@@ -81,7 +81,7 @@ fn main() {
             let t = i as f32 / 500.0 * std::f32::consts::TAU * 2.0;
             (col + 200.0 + t.cos() * 110.0 + (t * 0.5).sin() * 30.0, 650.0 + (t * 1.5).sin() * 90.0, p)
         }).collect();
-        stroke(&mut s, &mut e, &b, hokusai, &pts);
+        stroke(&mut s, &mut e, &b, dabs, &pts);
     }
 
     let mut out = format!("P6 {w} {h} 255\n").into_bytes();

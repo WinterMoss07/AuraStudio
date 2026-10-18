@@ -134,8 +134,8 @@ fn brush_tile(ui: &mut Ui, st: &mut BrushesState, p: &Preset, index: usize, sele
 
 pub fn engine_label(e: &Engine) -> &'static str {
     match e {
-        Engine::RoundPen => "Round pen (continuous)",
-        Engine::DabRound => "Dab round (hokusai)",
+        Engine::RoundPen => "Round, continuous",
+        Engine::DabRound => "Round, dabs",
         Engine::MyPaint(_) => "MyPaint brush",
     }
 }

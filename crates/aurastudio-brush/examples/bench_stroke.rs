@@ -1,8 +1,8 @@
 // Measures CPU cost per pointer sample of the painting path, without a
-// window: hokusai dabs + layer composite of the touched rect.
+// window: round dabs and the continuous round pen.
 // Usage: cargo run --release -p aurastudio-brush --example bench_stroke
 use std::time::{Duration, Instant};
-use aurastudio_brush::{stroke_line, Brush, HokusaiEngine};
+use aurastudio_brush::{stroke_line, Brush, DabEngine};
 use aurastudio_canvas::PaintSurface;
 
 struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8>, w: u32, h: u32 }
@@ -14,17 +14,19 @@ impl PaintSurface for S {
 
 fn main() {
     let (w, h) = (2048u32, 2048u32);
-    // Optional filters: BENCH_RADIUS=500 BENCH_ENGINE=simple|hokusai
+    // Optional filters: BENCH_RADIUS=500 BENCH_ENGINE=dabs|pen
     let only_r: Option<u32> = std::env::var("BENCH_RADIUS").ok().and_then(|v| v.parse().ok());
     let only_e = std::env::var("BENCH_ENGINE").ok();
     // BENCH_PRESSURE=steady: near-constant pressure (typical painting);
     // default: pressure swinging all the time (worst case: every rise
     // repaints the whole disc).
     let steady = std::env::var("BENCH_PRESSURE").is_ok_and(|v| v == "steady");
+    // BENCH_HARDNESS=0..1 (default 1 = hard edge).
+    let hardness: f32 = std::env::var("BENCH_HARDNESS").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     for radius in [10u32, 50, 130, 250, 500] {
         if only_r.is_some_and(|r| r != radius) { continue; }
-        for hokusai in [true, false] {
-            if only_e.as_deref().is_some_and(|e| (e == "hokusai") != hokusai) { continue; }
+        for engine in ["dabs", "pen"] {
+            if only_e.as_deref().is_some_and(|e| e != engine) { continue; }
             let white = vec![255u8; (w * h * 4) as usize];
             let mut s = S { px: white.clone(), base: white, mask: vec![0; (w * h) as usize], w, h };
             // Touch every page first: a fresh buffer costs a page fault on
@@ -34,9 +36,10 @@ fn main() {
             s.mask.fill(0);
             let mut b = Brush::new();
             b.radius = radius;
-            let mut e = HokusaiEngine::new();
-            e.sync_from(&b);
-            e.begin_stroke();
+            b.hardness = hardness;
+            let mut d = DabEngine::new();
+            d.sync_from(&b);
+            d.begin_stroke();
             let n = 200;
             let mut total = Duration::ZERO;
             let mut worst = Duration::ZERO;
@@ -48,13 +51,13 @@ fn main() {
                 let p = (300.0 + i as f32 * 8.0, 1000.0 + (t * 20.0).sin() * 300.0);
                 let pr = if steady { 0.8 + 0.02 * (t * 9.0).sin() } else { 0.3 + 0.7 * (t * 9.0).sin().abs() };
                 let t0 = Instant::now();
-                if hokusai { e.stroke_to(&mut s, p.0, p.1, pr, i as f64 * 0.005); } else { stroke_line(last, p, &b, &mut s, last_p, pr); }
+                if engine == "dabs" { d.stroke_to(&mut s, p.0, p.1, pr); } else { stroke_line(last, p, &b, &mut s, last_p, pr); }
                 last_p = pr;
                 let dt = t0.elapsed();
                 total += dt; worst = worst.max(dt); last = p;
             }
             println!("radius {radius:>3} {:<8} avg {:>7.3} ms/sample  worst {:>7.3} ms",
-                if hokusai { "hokusai" } else { "simple" },
+                engine,
                 total.as_secs_f64() * 1000.0 / n as f64, worst.as_secs_f64() * 1000.0);
         }
     }
