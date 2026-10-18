@@ -52,9 +52,4 @@ pub fn show(ui: &mut Ui, m: &mut Model) {
     label(ui, "Blend mode");
     let w = ui.available_width();
     blend_combo(ui, "brush_blend_dock", &mut m.brush.blend, w);
-
-    label(ui, "Pressure smoothing");
-    full(ui);
-    ui.add(egui::Slider::new(m.pressure_smoothing, 0.0..=1.5).fixed_decimals(2))
-        .on_hover_text("Limits sudden pressure jumps over a distance relative to the brush size.\n0 = raw pen pressure.");
 }

@@ -7,7 +7,7 @@
 //!   the user's data folder so they are there at the next launch.
 //!
 //! Each preset keeps its own settings (size, opacity, hardness, blend
-//! mode, smoothing): changing them while a brush is selected only changes
+//! mode): changing them while a brush is selected only changes
 //! that brush, like CSP.
 
 use std::borrow::Cow;
@@ -49,8 +49,6 @@ pub struct Preset {
     /// Size, opacity, hardness and blend mode of this brush (the color is
     /// global and ignored here).
     pub settings:  Brush,
-    /// Pressure smoothing (round pen and dab round).
-    pub smoothing: f32,
     /// PNG preview (MyPaint brushes come with one).
     pub preview:   Option<Cow<'static, [u8]>>,
     pub source:    Source,
@@ -66,7 +64,6 @@ impl Preset {
             group: "AuraStudio".into(),
             engine,
             settings,
-            smoothing: 0.5,
             preview: None,
             source: Source::BuiltIn,
         }
@@ -80,7 +77,7 @@ impl Preset {
         settings.radius = (size / 2).max(1);
         settings.opacity = opacity;
         settings.hardness = MyPaintEngine::native_hardness(&brush);
-        Self { name, group, engine: Engine::MyPaint(Arc::new(brush)), settings, smoothing: 0.0, preview, source }
+        Self { name, group, engine: Engine::MyPaint(Arc::new(brush)), settings, preview, source }
     }
 
     /// Decode the preview, downscaled to at most `max` px: (w, h, RGBA).

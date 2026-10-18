@@ -31,7 +31,7 @@ use aurastudio_canvas::{blend::unit_to_u8, PaintSurface, Rect};
 
 use crate::raster::{changed_span, min_u8, write_pixels, CHUNK, IOTA};
 
-use crate::{Brush, PressureSmoother};
+use crate::Brush;
 
 pub struct DabEngine {
     brush:   Brush,
@@ -41,8 +41,7 @@ pub struct DabEngine {
     reach:   f32,
     /// Distance between two dabs, in pixels.
     spacing: f32,
-    pub smoother: PressureSmoother,
-    /// Last pen position and smoothed pressure.
+    /// Last pen position and pressure.
     last:    Option<(f32, f32, f32)>,
     /// Pen travel left before the next dab.
     to_next: f32,
@@ -54,7 +53,7 @@ impl DabEngine {
     pub fn new() -> Self {
         let mut e = Self {
             brush: Brush::new(), smooth_edge: None, reach: 0.0, spacing: 1.0,
-            smoother: PressureSmoother::new(0.5), last: None, to_next: 0.0, average: 0.0,
+            last: None, to_next: 0.0, average: 0.0,
         };
         e.sync_from(&Brush::new());
         e
@@ -79,13 +78,12 @@ impl DabEngine {
         self.last = None;
         self.to_next = 0.0;
         self.average = 0.0;
-        self.smoother.reset();
     }
 
     /// One pen sample (canvas pixels). Places the dabs due between the
     /// previous sample and this one. Returns the bounds of what changed.
     pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, x: f32, y: f32, pressure: f32) -> Option<Rect> {
-        let p = self.smoother.apply(x, y, pressure, self.brush.radius as f32);
+        let p = pressure;
         let mut dirty = None;
         let Some((lx, ly, lp)) = self.last else {
             // First sample: a dab right under the pen.
@@ -269,7 +267,6 @@ mod tests {
         b.radius = radius;
         b.hardness = hardness;
         let mut e = DabEngine::new();
-        e.smoother.span = 0.0;
         e.sync_from(&b);
         e.begin_stroke();
         e

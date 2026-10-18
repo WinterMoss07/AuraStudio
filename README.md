@@ -25,7 +25,7 @@ UI stays quiet so the painting gets the room.
   build-up within one stroke (crossing a 20 % stroke at 30 % gives 30 %), and
   Krita's averaged opacity when the pressure falls (no beads). Spacing is
   Krita's auto spacing (0.8 × √diameter: straight hard edges). Pressure-driven
-  opacity, hardness, per-brush blend mode, pressure smoothing.
+  opacity, hardness, per-brush blend mode.
 - **MyPaint brushes** — 196 brushes bundled (David Revoy, Ramón Miranda,
   Tanda, the classic MyPaint set…, all CC0), painted natively through
   [hokusai](https://crates.io/crates/hokusai) (a Rust port of libmypaint):
@@ -34,8 +34,8 @@ UI stays quiet so the painting gets the room.
 - **Import** — `.myb` files or whole folders of them (Brushes docker →
   Import…); they are copied into the user's data folder and come back at the
   next launch.
-- **Per-brush settings** — each brush keeps its own size, opacity, hardness,
-  blend mode and smoothing (CSP style). The color is global.
+- **Per-brush settings** — each brush keeps its own size, opacity, hardness
+  and blend mode (CSP style). The color is global.
 - **13 blend modes** (W3C formulas, sRGB space like Photoshop / Krita / CSP)
   for brushes and layers.
 - **Brush outline cursor** — the OS arrow is replaced by an outline the size

@@ -45,7 +45,7 @@ const UPDATE_PERIOD: Duration = Duration::from_millis(8);
 pub enum Cmd {
     /// Start a stroke on the active layer of `doc` with these settings and
     /// this engine (from the selected brush preset).
-    Begin { doc: SharedDoc, brush: Brush, engine: Engine, smoothing: f32 },
+    Begin { doc: SharedDoc, brush: Brush, engine: Engine },
     /// One pen sample: canvas coordinates, pressure, pen time in seconds.
     Sample { x: f32, y: f32, pressure: f32, time: f64 },
     End,
@@ -122,7 +122,7 @@ struct Worker {
     layer:    u64,
     /// Canvas size at Begin: a resize meanwhile ends the stroke.
     size:     (u32, u32),
-    /// Last sample of the stroke: x, y and smoothed pressure.
+    /// Last sample of the stroke: x, y and pressure.
     last:     Option<(f32, f32, f32)>,
     /// Everything the stroke touched: the area saved for undo.
     stroke_rect: Option<Rect>,
@@ -164,7 +164,7 @@ impl Worker {
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
                 match cmd {
-                    Cmd::Begin { doc, brush, engine, smoothing } => {
+                    Cmd::Begin { doc, brush, engine } => {
                         // A stroke still open (its End never came, e.g. the
                         // window lost focus): finish it first, so it is
                         // recorded for undo like any other.
@@ -175,7 +175,7 @@ impl Worker {
                             }
                         }
                         self.doc = Some(doc);
-                        if self.with_doc(|w, d| w.begin(d, brush, engine, smoothing)) == Some(false) {
+                        if self.with_doc(|w, d| w.begin(d, brush, engine)) == Some(false) {
                             events.push(Event::Notice("Layer is locked or is a folder"));
                         }
                     }
@@ -279,7 +279,7 @@ impl Worker {
 
     /// Start a stroke on the active layer. False if it can't be painted
     /// (locked, or a folder is selected).
-    fn begin(&mut self, doc: &mut Document, brush: Brush, engine: Engine, smoothing: f32) -> bool {
+    fn begin(&mut self, doc: &mut Document, brush: Brush, engine: Engine) -> bool {
         self.last = None;
         self.stroke_rect = None;
         self.stats = Stats::default();
@@ -292,7 +292,6 @@ impl Worker {
         self.mypaint = None;
         match &engine {
             Engine::Native => {
-                self.dabs.smoother.span = smoothing;
                 self.dabs.sync_from(&self.brush);
                 self.dabs.begin_stroke();
             }
@@ -437,7 +436,7 @@ mod tests {
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::Native, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y, pressure: 1.0, time: 0.0 });
         pt.send(Cmd::Sample { x: 50.0, y, pressure: 1.0, time: 0.01 });
         pt.send(Cmd::End);
@@ -493,7 +492,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y: 30.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
         // The user selects another layer while the stroke goes on.
@@ -513,7 +512,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::Native, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         stroke(&pt, &doc, 40.0);
         drop(pt);
@@ -528,7 +527,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native, smoothing: 0.0 });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
         pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
         std::thread::sleep(Duration::from_millis(50));
         {
@@ -599,7 +598,7 @@ mod tests {
 
             let mut brush = Brush::new();
             brush.radius = radius;
-            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native, smoothing: 0.0 });
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
             let t0 = Instant::now();
             let n = 200;
             for i in 0..n {

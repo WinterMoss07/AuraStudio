@@ -54,8 +54,6 @@ pub struct App {
     /// Working settings of the selected preset (copied back into it when
     /// another one is selected) + the global color.
     brush:        Brush,
-    /// Pressure smoothing distance, fraction of the brush radius.
-    smoothing:    f32,
 
     /// Every open document. One for now (no document tabs yet): it owns
     /// them, `doc` is the one shown.
@@ -157,7 +155,6 @@ impl App {
             stylus: None,
 
             brush:       library.presets[0].settings.clone(),
-            smoothing:   library.presets[0].smoothing,
             library,
             preset:      0,
 
@@ -336,11 +333,9 @@ impl App {
         let color = self.brush.color;
         let old = &mut self.library.presets[self.preset];
         old.settings = self.brush.clone();
-        old.smoothing = self.smoothing;
         let new = &self.library.presets[index];
         self.brush = new.settings.clone();
         self.brush.color = color;
-        self.smoothing = new.smoothing;
         self.preset = index;
     }
 
@@ -441,7 +436,6 @@ impl App {
             doc:       Arc::clone(&self.doc),
             brush:     self.brush.clone(),
             engine:    self.library.presets[self.preset].engine.clone(),
-            smoothing: self.smoothing,
         });
     }
 
@@ -549,7 +543,6 @@ impl App {
         let presets    = &self.library.presets[..];
         let preset_before = self.preset;
         let mut preset = self.preset;
-        let smoothing  = &mut self.smoothing;
         let canvas_edit = &mut self.canvas_edit;
         let mut actions = Actions::default();
         // Never wait for the brush: if the paint thread holds the document
@@ -568,7 +561,6 @@ impl App {
                 brush,
                 presets,
                 preset: &mut preset,
-                pressure_smoothing: smoothing,
                 layers: &mut doc.layers,
                 can_undo,
                 can_redo,

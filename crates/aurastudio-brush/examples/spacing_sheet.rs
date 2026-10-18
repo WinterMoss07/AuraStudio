@@ -25,7 +25,6 @@ fn main() {
         b.radius = if std::env::var("SHEET_LOOP").is_ok() { 50 } else { 140 };
         b.hardness = *hardness;
         let mut e = DabEngine::new();
-        if std::env::var("SHEET_RAW").is_ok() { e.smoother.span = 0.0; }
         e.sync_from(&b);
         e.begin_stroke();
         let y = 160.0 + k as f32 * 320.0;

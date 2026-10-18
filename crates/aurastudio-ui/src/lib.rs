@@ -38,8 +38,6 @@ pub struct Model<'a> {
     /// Brush presets (Brushes docker) and the selected one.
     pub presets:            &'a [Preset],
     pub preset:             &'a mut usize,
-    /// Pressure smoothing distance, as a fraction of the brush radius.
-    pub pressure_smoothing: &'a mut f32,
     pub layers:             &'a mut LayerStack,
     /// Width / height typed in the Canvas dock, applied by "Resize".
     pub canvas_edit:        &'a mut (u32, u32),
