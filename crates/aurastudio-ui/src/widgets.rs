@@ -3,7 +3,7 @@
 //! scale, no dependency on font glyphs).
 
 pub use crate::icons::Icon;
-use egui::{epaint, pos2, vec2, Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui};
+use egui::{epaint, pos2, vec2, Color32, Pos2, Rect, Sense, Shape, Stroke, Ui};
 
 use std::sync::{Arc, RwLock};
 
@@ -196,38 +196,7 @@ pub fn channel_row(
     changed
 }
 
-// --- Vertical tab (CSP color slider) ---------------------------------------
-
-pub fn vertical_tab(ui: &mut Ui, text: &str, selected: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(18.0, 42.0), Sense::click());
-    let painter = ui.painter_at(rect);
-    let bg = if selected {
-        theme::WIDGET
-    } else if resp.hovered() {
-        theme::WIDGET_HOVER
-    } else {
-        Color32::TRANSPARENT
-    };
-    painter.rect_filled(rect, 5.0, bg);
-    if selected {
-        let bar = Rect::from_min_size(rect.left_top() + vec2(0.0, 8.0), vec2(2.0, rect.height() - 16.0));
-        painter.rect_filled(bar, 1.0, theme::ACCENT);
-    }
-
-    let color = if selected { theme::TEXT } else { theme::TEXT_WEAK };
-    let galley = ui.painter().layout_no_wrap(
-        text.to_owned(),
-        egui::FontId::proportional(11.0),
-        color,
-    );
-    // Rotated -90°: reads bottom to top, like CSP.
-    let pos = pos2(
-        rect.center().x - galley.size().y / 2.0,
-        rect.center().y + galley.size().x / 2.0,
-    );
-    painter.add(epaint::TextShape::new(pos, galley, color).with_angle(-std::f32::consts::FRAC_PI_2));
-    resp
-}
+// --- Text ------------------------------------------------------------------
 
 /// One line of text from `left_center`, cut with "…" to fit `max_width`.
 pub fn elided_text(p: &egui::Painter, left_center: Pos2, text: &str, font: egui::FontId, color: Color32, max_width: f32) {

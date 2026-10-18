@@ -566,7 +566,7 @@ impl App {
             EditCmd::Copy => {
                 let clip = self.doc.lock().unwrap().copy();
                 let Some(clip) = clip else {
-                    self.ui.notify("Select a layer to copy (a folder is selected)");
+                    self.ui.notify("Nothing to copy here (empty, or a folder is selected)");
                     self.request_redraw();
                     return;
                 };
@@ -922,6 +922,7 @@ impl App {
     fn set_tool(&mut self, tool: Tool) {
         if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
         self.finish_arcs();
+        self.arc_skip_release = false;
         self.tool = tool;
         self.update_cursor();
         self.request_redraw();
@@ -1122,6 +1123,7 @@ impl App {
         self.nav = None;
         self.gesture = None;
         if self.arc.is_some() { self.finish_arcs(); }
+        self.arc_skip_release = false;
         if self.is_drawing {
             self.end_stroke();
         }
@@ -1306,6 +1308,11 @@ impl App {
         if let Some(cmd) = actions.file { self.file_cmd(cmd); }
         if let Some(spec) = actions.new_doc { self.request(Pending::Create(spec)); }
         if let Some(path) = actions.open_path { self.request(Pending::Open(path)); }
+        if actions.clear_recent {
+            self.recent.clear();
+            save_recent(&self.recent);
+            self.refresh_home();
+        }
         if let Some(path) = actions.forget_recent {
             self.recent.retain(|p| *p != path);
             save_recent(&self.recent);

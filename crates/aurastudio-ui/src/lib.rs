@@ -110,6 +110,8 @@ pub struct Actions {
     pub open_path:   Option<std::path::PathBuf>,
     /// "Remove from list" on a recent file.
     pub forget_recent: Option<std::path::PathBuf>,
+    /// "Clear list" on the start screen.
+    pub clear_recent: bool,
     /// Select all / deselect.
     pub select:      Option<SelectCmd>,
     /// Copy / paste pixels.

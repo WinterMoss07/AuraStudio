@@ -55,6 +55,9 @@ pub enum Cmd {
     Redo(SharedDoc),
     /// Clear the active layer, or its selected pixels (undoable).
     Clear(SharedDoc),
+    /// Tests: answered once everything sent before is done (and shown).
+    #[cfg(test)]
+    Ping(Sender<()>),
     /// Paste pixels on a new layer above the active one (undoable).
     Paste { doc: SharedDoc, clip: aurastudio_document::Clip },
     /// Fill tool at canvas pixel (x, y) on the active layer (undoable).
@@ -242,6 +245,11 @@ impl Worker {
                         self.report_edit(cleared, "Layer is locked or is a folder", &mut events);
                         self.doc = Some(doc);
                         flush = true;
+                    }
+                    #[cfg(test)]
+                    Cmd::Ping(done) => {
+                        if !self.pending.is_empty() { self.update_projection(); }
+                        let _ = done.send(());
                     }
                     Cmd::Paste { doc, clip } => {
                         let pasted = doc.lock().unwrap().paste(&clip);

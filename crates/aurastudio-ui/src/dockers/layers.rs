@@ -216,7 +216,7 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
 
     // Eye, at the far left whatever the depth (CSP / Krita).
     let eye = Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(22.0, 22.0));
-    let (eye_icon, eye_col) = if visible { (Icon::Eye, theme::TEXT) } else { (Icon::EyeOff, theme::TEXT_WEAK.gamma_multiply(0.6)) };
+    let (eye_icon, eye_col) = if visible { (Icon::Eye, theme::TEXT) } else { (Icon::EyeClosed, if active { Color32::from_white_alpha(170) } else { theme::TEXT_WEAK }) };
     crate::icons::paint(ui, eye_icon, eye, 16.0, eye_col);
 
     // Lock, at the far right (Krita).

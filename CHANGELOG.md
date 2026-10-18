@@ -3,6 +3,17 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.3.1 — 2026-10-18
+
+- Hidden layers show a closed eye.
+- "Clear list" for the recent files on the start screen; long file names
+  end with "…" on their cards.
+- Color docker: HSV / RGB tabs under the color preview.
+- Copy without a selection takes only the painted part of the layer (it
+  copied the whole page, hundreds of MB on big canvases).
+- Arc tool: a click lost after the window lost focus mid-arc.
+- New stress test: a 20-minute painting session (`painter.rs`).
+
 ## 0.3.0 — 2026-10-18
 
 **New**

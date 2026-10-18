@@ -36,43 +36,34 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         st.hsv = [h, s, v];
     }
 
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            if vertical_tab(ui, "RGB", st.mode == Mode::Rgb).clicked() { st.mode = Mode::Rgb; }
-            if vertical_tab(ui, "HSV", st.mode == Mode::Hsv).clicked() { st.mode = Mode::Hsv; }
-        });
-
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 5.0;
-            let w = ui.available_width();
-            match st.mode {
-                Mode::Hsv => {
-                    let [h, s, v] = st.hsv;
-                    let mut new = st.hsv;
-                    // Hue bar at full saturation / value, like most apps;
-                    // S and V bars show the real color along the range.
-                    channel_row(ui, w, "H", &mut new[0], 360.0, &|t| hsv_to_color32([t, 1.0, 1.0]));
-                    channel_row(ui, w, "S", &mut new[1], 100.0, &|t| hsv_to_color32([h, t, v]));
-                    channel_row(ui, w, "V", &mut new[2], 100.0, &|t| hsv_to_color32([h, s, t]));
-                    if new != st.hsv {
-                        st.hsv = new;
-                        m.brush.color = to_u8(hsv_to_rgb(new));
-                    }
-                }
-                Mode::Rgb => {
-                    let [r, g, b] = to_f(m.brush.color);
-                    let mut new = [r, g, b];
-                    channel_row(ui, w, "R", &mut new[0], 255.0, &|t| rgb_to_color32([t, g, b]));
-                    channel_row(ui, w, "G", &mut new[1], 255.0, &|t| rgb_to_color32([r, t, b]));
-                    channel_row(ui, w, "B", &mut new[2], 255.0, &|t| rgb_to_color32([r, g, t]));
-                    if new != [r, g, b] {
-                        m.brush.color = to_u8(new);
-                    }
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 5.0;
+        let w = ui.available_width();
+        match st.mode {
+            Mode::Hsv => {
+                let [h, s, v] = st.hsv;
+                let mut new = st.hsv;
+                // Hue bar at full saturation / value, like most apps;
+                // S and V bars show the real color along the range.
+                channel_row(ui, w, "H", &mut new[0], 360.0, &|t| hsv_to_color32([t, 1.0, 1.0]));
+                channel_row(ui, w, "S", &mut new[1], 100.0, &|t| hsv_to_color32([h, t, v]));
+                channel_row(ui, w, "V", &mut new[2], 100.0, &|t| hsv_to_color32([h, s, t]));
+                if new != st.hsv {
+                    st.hsv = new;
+                    m.brush.color = to_u8(hsv_to_rgb(new));
                 }
             }
-        });
+            Mode::Rgb => {
+                let [r, g, b] = to_f(m.brush.color);
+                let mut new = [r, g, b];
+                channel_row(ui, w, "R", &mut new[0], 255.0, &|t| rgb_to_color32([t, g, b]));
+                channel_row(ui, w, "G", &mut new[1], 255.0, &|t| rgb_to_color32([r, t, b]));
+                channel_row(ui, w, "B", &mut new[2], 255.0, &|t| rgb_to_color32([r, g, t]));
+                if new != [r, g, b] {
+                    m.brush.color = to_u8(new);
+                }
+            }
+        }
     });
 
     ui.add_space(6.0);
@@ -96,6 +87,31 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
             st.hex = format!("#{r:02X}{g:02X}{b:02X}");
         }
     }
+
+    // Slider set, under the color preview (CSP keeps them as tabs too).
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (mode, label) in [(Mode::Hsv, "HSV"), (Mode::Rgb, "RGB")] {
+            if mode_tab(ui, label, st.mode == mode).clicked() { st.mode = mode; }
+        }
+    });
+}
+
+/// A small tab: accent underline when selected.
+fn mode_tab(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(44.0, 22.0), Sense::click());
+    let p = ui.painter();
+    if selected || resp.hovered() {
+        p.rect_filled(rect, 5.0, if selected { theme::WIDGET } else { theme::WIDGET_HOVER.gamma_multiply(0.6) });
+    }
+    let col = if selected { theme::TEXT } else { theme::TEXT_WEAK };
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), col);
+    if selected {
+        let line = Rect::from_min_max(pos2(rect.left() + 12.0, rect.bottom() - 2.0), pos2(rect.right() - 12.0, rect.bottom()));
+        p.rect_filled(line, 1.0, theme::ACCENT);
+    }
+    resp
 }
 
 fn parse_hex(s: &str) -> Option<[u8; 3]> {

@@ -149,10 +149,26 @@ pub struct Clip {
 
 impl Document {
     /// The selected pixels of the active layer (outside the selection:
-    /// transparent), or the whole layer. None on a folder.
+    /// transparent), or the whole layer. None on a folder, or with nothing
+    /// there to copy.
     pub fn copy(&self) -> Option<Clip> {
         let id = self.layers.active_id();
-        let r = self.selection.as_ref().map_or((0, 0, self.layers.width, self.layers.height), |s| s.bbox());
+        // Only where the layer has content: copying a whole page that is
+        // mostly empty would put hundreds of MB on the clipboard. (The
+        // Paper's content is its white: it copies whole.)
+        let aurastudio_layers::Node::Layer(l) = self.layers.node(id)? else { return None };
+        let full = (0, 0, self.layers.width, self.layers.height);
+        let content = if l.background { Some(full) } else { l.tiles.content_bounds() };
+        let r = match (&self.selection, content) {
+            (_, None) => return None,
+            (None, Some(c)) => c,
+            (Some(s), Some(c)) => {
+                let b = s.bbox();
+                let r = (b.0.max(c.0), b.1.max(c.1), b.2.min(c.2), b.3.min(c.3));
+                if r.0 >= r.2 || r.1 >= r.3 { return None; }
+                r
+            }
+        };
         let mut rgba = self.layers.layer_rect(id, r)?;
         if let Some(sel) = &self.selection {
             let mut i = 0;

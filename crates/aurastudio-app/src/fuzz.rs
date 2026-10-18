@@ -32,20 +32,20 @@ const VIEW_CMDS: [ViewCmd; 7] = [
 
 static PANICKED: AtomicBool = AtomicBool::new(false);
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         // xorshift64*
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
         self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
-    fn below(&mut self, n: u64) -> u64 { self.next() % n.max(1) }
-    fn f(&mut self) -> f32 { (self.next() >> 40) as f32 / (1u64 << 24) as f32 }
-    fn range(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * self.f() }
-    fn chance(&mut self, p: f32) -> bool { self.f() < p }
+    pub(crate) fn below(&mut self, n: u64) -> u64 { self.next() % n.max(1) }
+    pub(crate) fn f(&mut self) -> f32 { (self.next() >> 40) as f32 / (1u64 << 24) as f32 }
+    pub(crate) fn range(&mut self, a: f32, b: f32) -> f32 { a + (b - a) * self.f() }
+    pub(crate) fn chance(&mut self, p: f32) -> bool { self.f() < p }
 }
 
 const SCREEN: Rect = Rect { min: Pos2 { x: 0.0, y: 0.0 }, max: Pos2 { x: 1440.0, y: 900.0 } };
@@ -439,7 +439,7 @@ fn fuzz() {
 }
 
 /// As app::upload_all, without a GPU: the whole image merged band by band.
-fn merge_all_in_bands(layers: &aurastudio_layers::LayerStack) {
+pub(crate) fn merge_all_in_bands(layers: &aurastudio_layers::LayerStack) {
     let (w, h) = (layers.width, layers.height);
     let mut band = vec![0u8; w as usize * 64 * 4];
     for y in (0..h).step_by(64) {
@@ -477,7 +477,7 @@ fn apply_view(v: &mut CanvasView, cmd: ViewCmd, c: (u32, u32), a: [f32; 4]) {
 }
 
 /// Resident memory of this process, in MB (Linux; 0 elsewhere).
-fn rss_mb() -> u64 {
+pub(crate) fn rss_mb() -> u64 {
     std::fs::read_to_string("/proc/self/statm").ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
         .map_or(0, |pages| pages * 4096 / (1 << 20))

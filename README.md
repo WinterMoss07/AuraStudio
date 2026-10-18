@@ -66,7 +66,11 @@ the canvas texture).
   the UI thread, the full image only on the GPU.
 - 64 × 64 tiled layers: an empty layer costs nothing.
 - Idle = 0 % CPU; strokes far off the canvas pause instead of freezing.
-- `fuzz.rs`: headless crash hunt on the real UI and paint thread.
+- `fuzz.rs`: headless crash hunt on the real UI and paint thread;
+  `painter.rs`: a painting session (sketch, big brushes, smudge, ink,
+  fills, lasso copy / paste, undo, saves) with per-stroke timings
+  (`PAINT_SECS=1200 cargo test --release -p aurastudio painter_session --
+  --ignored --nocapture`).
 
 ---
 
@@ -181,7 +185,9 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Brush editor (MyPaint settings and curves); brush tilt / rotation input
       (WinTab orientation is already read).
 - [ ] Document tabs (the workspace already handles several documents).
-- [ ] Faster MyPaint compositing for very large brushes.
+- [ ] Faster painting with many layers: cache the merge of the layers
+      below / above the active one (Krita); faster large MyPaint brushes
+      (WateryFlatbrush 200–500 px trails the pen badly).
 - [ ] Pressure setting for the geometry tools (they paint at full pressure).
 - [ ] Selection modes (add / subtract), invert, transform; undo for
       selection changes.

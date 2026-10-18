@@ -2,6 +2,8 @@ mod app;
 mod cursors;
 #[cfg(test)]
 mod fuzz;
+#[cfg(test)]
+mod painter;
 mod paint_thread;
 mod projection;
 mod shapes;

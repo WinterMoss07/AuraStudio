@@ -280,7 +280,15 @@ fn recent_grid(ui: &mut Ui, recent: &mut [RecentFile], a: &mut Actions) {
     let width = n as f32 * (CARD + GAP) - GAP;
     ui.allocate_ui(vec2(width, 0.0), |ui| {
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.label(RichText::new("Recent").strong());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Recent").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let clear = egui::Button::new(RichText::new("Clear list").small().color(theme::TEXT_WEAK)).frame(false);
+                    if ui.add(clear).on_hover_text("Forget the recent files (the files stay on disk)").clicked() {
+                        a.clear_recent = true;
+                    }
+                });
+            });
             ui.add_space(6.0);
             for row in recent.chunks(cols) {
                 ui.horizontal(|ui| {
@@ -306,10 +314,11 @@ fn recent_card(ui: &mut Ui, r: &RecentFile, card: f32, a: &mut Actions) {
         let fit = Rect::from_center_size(img.center(), s * k);
         p.image(t.id(), fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-    p.text(pos2(rect.left() + 8.0, img.bottom() + 12.0), Align2::LEFT_CENTER, &r.name,
-        FontId::proportional(13.0), theme::TEXT);
-    p.text(pos2(rect.left() + 8.0, img.bottom() + 28.0), Align2::LEFT_CENTER, &r.detail,
-        FontId::proportional(11.0), theme::TEXT_WEAK);
+    // Long names end with "…" inside the card.
+    crate::widgets::elided_text(&p, pos2(rect.left() + 8.0, img.bottom() + 12.0), &r.name,
+        FontId::proportional(13.0), theme::TEXT, card - 16.0);
+    crate::widgets::elided_text(&p, pos2(rect.left() + 8.0, img.bottom() + 28.0), &r.detail,
+        FontId::proportional(11.0), theme::TEXT_WEAK, card - 16.0);
     if resp.clicked() { a.open_path = Some(r.path.clone()); }
     resp.context_menu(|ui| {
         if ui.button("Remove from list").clicked() {

@@ -78,6 +78,17 @@ impl Tiles {
         })
     }
 
+    /// Bounds of the stored tiles (where something was painted), clipped
+    /// to the layer; None when it is all fill color.
+    pub fn content_bounds(&self) -> Option<Rect> {
+        let mut b: Option<Rect> = None;
+        for (tx, ty, _) in self.iter() {
+            let r = (tx * TILE, ty * TILE, ((tx + 1) * TILE).min(self.width), ((ty + 1) * TILE).min(self.height));
+            b = Some(b.map_or(r, |b| (b.0.min(r.0), b.1.min(r.1), b.2.max(r.2), b.3.max(r.3))));
+        }
+        b
+    }
+
     /// Put a tile read from a file (or None to drop one).
     pub fn set_tile(&mut self, tx: u32, ty: u32, tile: Option<Tile>) {
         if tx < self.cols && ty < self.rows {

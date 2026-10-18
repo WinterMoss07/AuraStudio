@@ -13,7 +13,7 @@ pub enum Icon {
     Line, Rectangle, Ellipse, Arc,
     // Layers docker.
     NewLayer, NewFolder, Duplicate, Up, Down, Delete,
-    Eye, EyeOff, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
+    Eye, EyeClosed, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
     // Toolbar.
     FileNew, FileOpen, Save, Copy, Paste,
 }
@@ -44,7 +44,7 @@ impl Icon {
             Icon::Down       => svg!("../icons/arrow-down.svg"),
             Icon::Delete     => svg!("../icons/trash-2.svg"),
             Icon::Eye        => svg!("../icons/eye.svg"),
-            Icon::EyeOff     => svg!("../icons/eye-off.svg"),
+            Icon::EyeClosed  => svg!("../icons/eye-closed.svg"),
             Icon::Lock       => svg!("../icons/lock.svg"),
             Icon::LockOpen   => svg!("../icons/lock-open.svg"),
             Icon::Folder     => svg!("../icons/folder.svg"),
