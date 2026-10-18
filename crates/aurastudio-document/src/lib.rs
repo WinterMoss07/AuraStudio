@@ -10,7 +10,7 @@ mod history;
 use std::sync::{Arc, Mutex};
 
 use aurastudio_canvas::Rect;
-use aurastudio_layers::LayerStack;
+use aurastudio_layers::{FillParams, LayerStack, Selection};
 
 pub use history::{History, SavedStep, DEFAULT_BUDGET};
 
@@ -41,6 +41,8 @@ pub struct Document {
     /// there is unsaved work.
     revision:       u64,
     saved_revision: u64,
+    /// Pixels painting, filling and clearing may change; None: all.
+    pub selection:  Option<Selection>,
 }
 
 impl Document {
@@ -51,7 +53,7 @@ impl Document {
     /// A document from its parts (a file being opened). It counts as
     /// saved.
     pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
-        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0 }
+        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None }
     }
 
     /// Something changed (the layer panel edits the stack directly and
@@ -80,15 +82,35 @@ impl Document {
 
     /// Clear the active layer (white for the background), undoable.
     /// Returns the cleared layer id, or None if it is locked / a folder.
-    pub fn clear_active(&mut self) -> Option<u64> {
+    /// With a selection, only the selected pixels are cleared.
+    pub fn clear_active(&mut self) -> Option<(u64, Rect)> {
         if !self.layers.can_paint() { return None; }
         let id = self.layers.active_id();
-        let full = (0, 0, self.layers.width, self.layers.height);
-        let before = self.layers.layer_rect(id, full)?;
-        self.layers.clear_active();
-        self.history.push("Clear layer", id, full, &before);
+        let rect = match &self.selection {
+            Some(s) => s.bbox(),
+            None => (0, 0, self.layers.width, self.layers.height),
+        };
+        let before = self.layers.layer_rect(id, rect)?;
+        match &self.selection {
+            Some(s) => { self.layers.clear_selected(id, s)?; }
+            None => { self.layers.clear_active(); }
+        }
+        self.history.push("Clear layer", id, rect, &before);
         self.touch();
-        Some(id)
+        Some((id, rect))
+    }
+
+    /// Fill tool at (x, y) on the active layer, undoable. Returns the
+    /// layer and the rectangle changed.
+    pub fn fill(&mut self, x: u32, y: u32, color: [u8; 4], p: FillParams) -> Option<(u64, Rect)> {
+        if !self.layers.can_paint() { return None; }
+        let id = self.layers.active_id();
+        let area = aurastudio_layers::flood(&self.layers, id, x, y, p, self.selection.as_ref())?;
+        let before = self.layers.layer_rect(id, area.bbox)?;
+        let rect = self.layers.fill_area(id, &area, color)?;
+        self.history.push("Fill", id, rect, &before);
+        self.touch();
+        Some((id, rect))
     }
 
     pub fn undo(&mut self) -> Option<Change> {
@@ -109,6 +131,7 @@ impl Document {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.layers.resize(width, height);
         self.history.clear();
+        self.selection = None;
         self.touch();
     }
 }
@@ -254,7 +277,7 @@ mod tests {
         let mut doc = Document::new(DocId(1), "a", 32, 32);
         let id = doc.layers.add_layer("ink");
         paint(&mut doc, id, (0, 0, 32, 32), [9, 9, 9, 255]);
-        assert_eq!(doc.clear_active(), Some(id));
+        assert_eq!(doc.clear_active().map(|c| c.0), Some(id));
         assert_eq!(px(&doc, id, 5, 5)[3], 0);
         doc.undo().unwrap();
         assert_eq!(px(&doc, id, 5, 5), [9, 9, 9, 255]);

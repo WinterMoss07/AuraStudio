@@ -19,11 +19,13 @@ pub struct Brush {
     /// Edge softness, 0..1. 1 = crisp edge (1 px anti-aliasing); lower
     /// values fade the coverage out from `radius * hardness` to `radius`.
     pub hardness: f32,
+    /// Eraser: the dabs take opacity away instead of adding color.
+    pub erase:   bool,
 }
 
 impl Brush {
     pub fn new() -> Self {
-        Self { color: [0, 0, 0], opacity: 1.0, radius: 25, blend: BlendMode::Normal, hardness: 1.0 }
+        Self { color: [0, 0, 0], opacity: 1.0, radius: 25, blend: BlendMode::Normal, hardness: 1.0, erase: false }
     }
 }
 

@@ -29,7 +29,7 @@
 
 use aurastudio_canvas::{blend::unit_to_u8, tile_run, PaintSurface, Rect};
 
-use crate::raster::{changed_span, min_u8, write_pixels, CHUNK, IOTA};
+use crate::raster::{changed_span, erase_pixels, min_u8, write_pixels, CHUNK, IOTA};
 
 use crate::Brush;
 
@@ -211,7 +211,11 @@ impl DabEngine {
                     continue;
                 };
                 mrow[c0..c1].copy_from_slice(&new[c0..c1]);
-                write_pixels(&mut prow[c0 * 4..c1 * 4], &brow[c0 * 4..c1 * 4], &new[c0..c1], color, blend);
+                if self.brush.erase {
+                    erase_pixels(&mut prow[c0 * 4..c1 * 4], &brow[c0 * 4..c1 * 4], &new[c0..c1]);
+                } else {
+                    write_pixels(&mut prow[c0 * 4..c1 * 4], &brow[c0 * 4..c1 * 4], &new[c0..c1], color, blend);
+                }
                 row_x0 = row_x0.min(x + c0 as i32);
                 row_x1 = row_x1.max(x + c1 as i32);
                 x += n as i32;

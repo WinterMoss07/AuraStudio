@@ -15,19 +15,21 @@ mod bars;
 mod dock_layout;
 mod dockers;
 mod home;
+mod tools;
 mod widgets;
 
 use std::time::{Duration, Instant};
 
 use aurastudio_brush::Brush;
 use aurastudio_brushes::Preset;
-use aurastudio_layers::LayerStack;
+use aurastudio_layers::{FillParams, LayerStack};
 use egui::Frame;
 use egui_dock::{DockArea, DockState};
 
 pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
 pub use home::{NewDoc, RecentFile};
+pub use tools::{Overlay, SelectCmd, Tool};
 pub use widgets::set_display_transform;
 
 /// Brush size range, as a diameter in pixels.
@@ -58,6 +60,14 @@ pub struct Model<'a> {
     /// No document open: the start screen shows in place of the canvas
     /// (the layer stack lent is an empty placeholder).
     pub home:               bool,
+    /// Selected tool and the fill tool's settings.
+    pub tool:               &'a mut Tool,
+    pub fill:               &'a mut FillParams,
+    pub has_selection:      bool,
+    /// Drawn over the canvas, placed with `to_points` (canvas pixel ->
+    /// egui point).
+    pub overlay:            Overlay<'a>,
+    pub to_points:          &'a dyn Fn((f32, f32)) -> (f32, f32),
 }
 
 /// View commands from the View menu (the app also binds them to keys).
@@ -90,6 +100,8 @@ pub struct Actions {
     pub open_path:   Option<std::path::PathBuf>,
     /// "Remove from list" on a recent file.
     pub forget_recent: Option<std::path::PathBuf>,
+    /// Select all / deselect.
+    pub select:      Option<SelectCmd>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,6 +232,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
 
     bars::menu_bar(ctx, state, model, actions);
     bars::options_bar(ctx, &mut state.notice, model);
+    tools::toolbox(ctx, model);
 
     if let Some(tab) = state.focus_tab.take() {
         if let Some(loc) = state.dock.find_tab(&tab) {
@@ -259,6 +272,10 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         });
 
     canvas_card(ctx);
+    let card = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(CANVAS_RECT_ID)));
+    if let (Some(card), false) = (card, model.home) {
+        tools::draw_overlay(ctx, card, &model.overlay, model.to_points);
+    }
     if model.home {
         if let Some(area) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(CANVAS_RECT_ID))) {
             home::start_screen(ctx, area, &mut state.recent, actions);
@@ -328,25 +345,21 @@ fn dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
 pub const CANVAS_RECT_ID: &str = "aurastudio_canvas_rect";
 
 /// The canvas is the one rounded element: what is left of the window,
-/// right against the bar and the docks, with a thin frame of UI surface on
-/// its free sides (left, bottom). The surface is painted around it and
+/// right against the bars, the toolbox and the docks, with a thin frame of
+/// UI surface below it. The surface is painted around it and
 /// over its corners (the GPU draws the canvas below the whole UI).
 fn canvas_card(ctx: &egui::Context) {
     use egui::{pos2, Rect, Shape};
     let free = ctx.available_rect();
     let g = theme::CANVAS_FRAME;
-    let card = Rect::from_min_max(pos2(free.left() + g, free.top()), pos2(free.right(), free.bottom() - g));
+    // The toolbox is fused with the canvas edge (Krita): no gap on the left.
+    let card = Rect::from_min_max(free.min, pos2(free.right(), free.bottom() - g));
     if card.width() <= 0.0 || card.height() <= 0.0 { return; }
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(CANVAS_RECT_ID), card));
 
     let painter = ctx.layer_painter(egui::LayerId::background());
     let fill = theme::PANEL;
-    for strip in [
-        Rect::from_min_max(free.min, pos2(card.left(), free.bottom())),
-        Rect::from_min_max(pos2(card.left(), card.bottom()), pos2(card.right(), free.bottom())),
-    ] {
-        painter.rect_filled(strip, 0.0, fill);
-    }
+    painter.rect_filled(Rect::from_min_max(pos2(card.left(), card.bottom()), free.max), 0.0, fill);
     // Each corner: the area between the corner and a quarter circle, as a
     // fan of triangles from the corner.
     let r = theme::CANVAS_ROUNDING;

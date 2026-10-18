@@ -4,12 +4,29 @@
 //! tracked by id, so reordering or moving in and out of folders never
 //! changes which layer you paint on.
 
+pub mod fill;
+mod selection;
 mod tiles;
 
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
 
+pub use fill::{flood, FillParams};
+pub use selection::Selection;
 pub use tiles::{new_tile, Tile, Tiles, TILE_BYTES};
+
+/// Straight-alpha "over": `src` painted on `dst`.
+fn over(dst: &mut [u8], src: [u8; 4]) {
+    let sa = src[3] as u32;
+    if sa == 255 { dst.copy_from_slice(&src); return; }
+    if sa == 0 { return; }
+    let da = dst[3] as u32 * (255 - sa) / 255;
+    let a = sa + da;
+    for c in 0..3 {
+        dst[c] = ((src[c] as u32 * sa + dst[c] as u32 * da) / a) as u8;
+    }
+    dst[3] = a as u8;
+}
 
 /// One paint layer: RGBA8, straight alpha, stored in tiles (only where
 /// it differs from its fill color).
@@ -608,6 +625,68 @@ impl LayerStack {
         let Some(Node::Layer(l)) = self.node_mut(id) else { return false };
         l.tiles.write_rect(rect, data);
         true
+    }
+
+    /// Paint `color` over the pixels of `area` in paint layer `id` (the
+    /// fill tool). Returns the rectangle changed.
+    pub fn fill_area(&mut self, id: u64, area: &fill::Area, color: [u8; 4]) -> Option<Rect> {
+        let r = area.bbox;
+        let mut px = self.layer_rect(id, r)?;
+        let mut i = 0;
+        for y in r.1..r.3 {
+            for x in r.0..r.2 {
+                if area.contains(x, y) { over(&mut px[i..i + 4], color); }
+                i += 4;
+            }
+        }
+        self.set_layer_rect(id, r, &px).then_some(r)
+    }
+
+    /// Clear the selected pixels of paint layer `id` to its fill color.
+    pub fn clear_selected(&mut self, id: u64, sel: &Selection) -> Option<Rect> {
+        let r = sel.bbox();
+        let Some(Node::Layer(l)) = self.node(id) else { return None };
+        let fill = l.tiles.fill();
+        let mut px = l.tiles.read_rect(r);
+        let mut i = 0;
+        for y in r.1..r.3 {
+            for x in r.0..r.2 {
+                if sel.contains(x, y) { px[i..i + 4].copy_from_slice(&fill); }
+                i += 4;
+            }
+        }
+        self.set_layer_rect(id, r, &px).then_some(r)
+    }
+
+    /// Undo what the stroke painted in `rect` outside `sel`: painting only
+    /// changes selected pixels. Call after each engine call.
+    pub fn clip_stroke(&mut self, rect: Rect, sel: &Selection) {
+        let (w, h) = (self.width, self.height);
+        let (x0, y0, x1, y1) = (rect.0.min(w), rect.1.min(h), rect.2.min(w), rect.3.min(h));
+        if x0 >= x1 || y0 >= y1 { return; }
+        let id = self.stroke.layer;
+        let Some(path) = self.path(id) else { return };
+        let Some((last, parent)) = path.split_last() else { return };
+        let Node::Layer(l) = &mut siblings_mut(&mut self.root, parent)[*last] else { return };
+        let sb = sel.bbox();
+        for ty in y0 / TILE..y1.div_ceil(TILE) {
+            for tx in x0 / TILE..x1.div_ceil(TILE) {
+                let (tx0, ty0) = (tx * TILE, ty * TILE);
+                // Tiles all inside a rectangle selection need nothing.
+                let i = l.tiles.index(tx, ty);
+                let Some(base) = self.stroke.base.get(i).and_then(|b| b.as_ref()) else { continue };
+                let inside_box = tx0 >= sb.0 && ty0 >= sb.1 && tx0 + TILE <= sb.2 && ty0 + TILE <= sb.3;
+                if inside_box && sel.is_rect() { continue; }
+                let px = l.tiles.tile_mut(tx, ty);
+                for y in y0.max(ty0)..y1.min(ty0 + TILE) {
+                    for x in x0.max(tx0)..x1.min(tx0 + TILE) {
+                        if sel.contains(x, y) { continue; }
+                        let o = (((y - ty0) * TILE + x - tx0) * 4) as usize;
+                        px[o..o + 4].copy_from_slice(&base[o..o + 4]);
+                    }
+                }
+            }
+        }
     }
 
     /// Paint layer `id` as a brush surface, with the stroke buffers of

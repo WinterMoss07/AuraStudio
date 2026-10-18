@@ -18,7 +18,8 @@ use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
 use aurastudio_document::{Document, SharedDoc, Workspace};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
-use aurastudio_ui::{Actions, Dialog, DialogChoice, FileCmd, ImportBrushes, Model, UiState, ViewCmd};
+use aurastudio_layers::{FillParams, Selection};
+use aurastudio_ui::{Actions, Dialog, DialogChoice, FileCmd, ImportBrushes, Model, Overlay, SelectCmd, Tool, UiState, ViewCmd};
 
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
@@ -82,6 +83,27 @@ fn ago(t: std::time::SystemTime) -> String {
         _ => (s / 86_400, "day"),
     };
     format!("{n} {unit}{} ago", if n > 1 { "s" } else { "" })
+}
+
+/// A drag of a tool other than the brush, in progress.
+enum Gesture {
+    /// Color picker: picks under the cursor as it moves.
+    Pick,
+    /// Lasso: its outline so far, canvas pixels.
+    Lasso(Vec<(f32, f32)>),
+    /// Rectangle selection: corner where it started, and the other one.
+    Rect((f32, f32), (f32, f32)),
+}
+
+impl Gesture {
+    /// The outline being drawn, canvas pixels.
+    fn outline(&self) -> Option<Vec<(f32, f32)>> {
+        match self {
+            Gesture::Pick => None,
+            Gesture::Lasso(p) => Some(p.clone()),
+            Gesture::Rect(a, b) => Some(vec![*a, (b.0, a.1), *b, (a.0, b.1)]),
+        }
+    }
 }
 
 /// View navigation drag in progress.
@@ -195,6 +217,15 @@ pub struct App {
     outline_shown: bool,
     /// Our cursors (hands, rotate), made once the event loop runs.
     cursors: Option<crate::cursors::Cursors>,
+    /// Selected tool, the fill tool's settings.
+    tool:       Tool,
+    fill:       FillParams,
+    gesture:    Option<Gesture>,
+    /// The view drag comes from the Hand / Zoom tool (not Space): its mode
+    /// is fixed, whatever keys are held.
+    nav_tool:   Option<Nav>,
+    /// Cursor travel during the drag (a Zoom tool click doesn't move).
+    nav_moved:  f32,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -291,6 +322,11 @@ impl App {
             cursor_in_window: false,
             outline_shown: false,
             cursors: None,
+            tool:       Tool::default(),
+            fill:       FillParams::default(),
+            gesture:    None,
+            nav_tool:   None,
+            nav_moved:  0.0,
 
             painted:      false,
             // Upload the first composite.
@@ -316,6 +352,7 @@ impl App {
     /// Which view drag the held keys ask for: Ctrl zooms, Shift rotates,
     /// nothing pans (Krita / CSP).
     fn nav_mode(&self) -> Nav {
+        if let Some(mode) = self.nav_tool { return mode; }
         if self.ctrl_held() { Nav::Zoom } else if self.shift_held() { Nav::Rotate } else { Nav::Pan }
     }
 
@@ -325,6 +362,7 @@ impl App {
         let mode = self.nav_mode();
         log::info!("view drag: {mode:?}");
         self.nav = Some((mode, self.cursor));
+        self.nav_moved = 0.0;
         self.nav_button = button;
         self.set_nav_pivot(mode);
         self.update_cursor();
@@ -343,7 +381,14 @@ impl App {
     }
 
     fn end_nav(&mut self) {
+        // A Zoom tool click without dragging: zoom in there (Alt: out).
+        if self.nav_tool == Some(Nav::Zoom) && self.nav_moved < 4.0 {
+            let f = if self.modifiers.alt_key() { 1.0 / 1.5 } else { 1.5 };
+            if let Some(gpu) = &mut self.gpu { gpu.view_zoom_at(f, self.cursor); }
+            self.request_redraw();
+        }
         self.nav = None;
+        self.nav_tool = None;
         self.update_cursor();
     }
 
@@ -369,8 +414,9 @@ impl App {
             self.update_cursor();
         }
         let pivot = self.nav_pivot;
-        let Some(gpu) = &mut self.gpu else { return };
         let now = self.cursor;
+        self.nav_moved += (now.0 - last.0).abs() + (now.1 - last.1).abs();
+        let Some(gpu) = &mut self.gpu else { return };
         match mode {
             Nav::Pan => gpu.view.pan_by(now.0 - last.0, now.1 - last.1),
             Nav::Rotate => {
@@ -391,7 +437,8 @@ impl App {
     /// place of the OS arrow; the arrow / hand comes back over the dockers
     /// and while navigating.
     fn update_outline(&mut self) {
-        let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none();
+        let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
+            && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none();
         self.outline_shown = show;
         if let Some(gpu) = &mut self.gpu {
             let outline = show.then(|| (self.cursor, self.brush.radius as f32 * gpu.zoom()));
@@ -417,12 +464,141 @@ impl App {
                 Nav::Rotate => Wanted::Rotate,
                 Nav::Pan => Wanted::Hand,
             },
-            None if self.over_canvas || self.is_drawing => Wanted::Hidden,
+            None if self.is_drawing => Wanted::Hidden,
+            None if self.over_canvas && !self.home => match self.tool {
+                _ if self.gesture.is_some() || self.picking_with_alt() => Wanted::System(CursorIcon::Crosshair),
+                Tool::Brush | Tool::Eraser => Wanted::Hidden,
+                Tool::Hand => Wanted::Hand,
+                Tool::Zoom => Wanted::Zoom,
+                Tool::Picker | Tool::Fill | Tool::Lasso | Tool::RectSelect => Wanted::System(CursorIcon::Crosshair),
+            },
+            None if self.over_canvas => Wanted::System(CursorIcon::Default),
             None => self.gpu.as_ref().map_or(Wanted::System(CursorIcon::Default),
                 |g| crate::cursors::from_egui(g.egui_cursor())),
         };
         let (Some(window), Some(cursors)) = (&self.window, &mut self.cursors) else { return };
         cursors.apply(window, wanted);
+    }
+
+    /// Alt held with the brush or the fill: a click picks a color (Krita,
+    /// CSP, Photoshop).
+    fn picking_with_alt(&self) -> bool {
+        self.modifiers.alt_key() && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Fill)
+    }
+
+    /// Left press on the canvas: what the current tool does.
+    fn tool_press(&mut self) {
+        let tool = if self.picking_with_alt() { Tool::Picker } else { self.tool };
+        let at = self.window_to_canvas(self.cursor.0, self.cursor.1);
+        match tool {
+            Tool::Brush | Tool::Eraser => {
+                self.pressure = 1.0;
+                self.begin_stroke();
+            }
+            Tool::Picker => {
+                self.gesture = Some(Gesture::Pick);
+                self.pick_color();
+            }
+            Tool::Fill => {
+                let Some((x, y)) = at else { return };
+                let (w, h) = self.canvas_size();
+                if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 { return; }
+                let [r, g, b] = self.brush.color;
+                self.paint.send(Cmd::Fill {
+                    doc: Arc::clone(&self.doc), x: x as u32, y: y as u32, color: [r, g, b, 255], params: self.fill,
+                });
+            }
+            Tool::Lasso => self.gesture = at.map(|p| Gesture::Lasso(vec![p])),
+            Tool::RectSelect => self.gesture = at.map(|p| Gesture::Rect(p, p)),
+            Tool::Hand | Tool::Zoom => {
+                self.nav_tool = Some(if tool == Tool::Hand { Nav::Pan } else { Nav::Zoom });
+                self.begin_nav(MouseButton::Left);
+            }
+        }
+        self.update_cursor();
+        self.request_redraw();
+    }
+
+    /// Cursor moved during a tool drag.
+    fn tool_drag(&mut self) {
+        let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
+        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        match &mut self.gesture {
+            Some(Gesture::Pick) => self.pick_color(),
+            Some(Gesture::Lasso(points)) => {
+                // One point per screen pixel or so of travel.
+                let last = *points.last().unwrap();
+                if (at.0 - last.0).abs().max((at.1 - last.1).abs()) * zoom >= 1.5 { points.push(at); }
+            }
+            Some(Gesture::Rect(_, end)) => *end = at,
+            None => return,
+        }
+        self.request_redraw();
+    }
+
+    /// Left release: a selection drawn becomes the selection; a click
+    /// without dragging deselects (Krita, Photoshop).
+    fn tool_release(&mut self) {
+        let Some(g) = self.gesture.take() else { return };
+        let (w, h) = self.canvas_size();
+        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        let sel = match g {
+            Gesture::Pick => { self.update_cursor(); return; }
+            Gesture::Lasso(points) => Selection::polygon(w, h, &points),
+            Gesture::Rect(a, b) if (a.0 - b.0).abs().max((a.1 - b.1).abs()) * zoom >= 3.0 => {
+                let r = (a.0.min(b.0).round().max(0.0) as u32, a.1.min(b.1).round().max(0.0) as u32,
+                         a.0.max(b.0).round().max(0.0) as u32, a.1.max(b.1).round().max(0.0) as u32);
+                Selection::rect(w, h, r)
+            }
+            Gesture::Rect(..) => None,
+        };
+        self.set_selection(sel);
+        self.update_cursor();
+    }
+
+    fn set_selection(&mut self, sel: Option<Selection>) {
+        // The paint thread reads it at its next stroke: taken under the
+        // document lock (a stroke still painting keeps the lock briefly).
+        self.doc.lock().unwrap().selection = sel;
+        self.request_redraw();
+    }
+
+    fn select(&mut self, cmd: SelectCmd) {
+        if self.home || self.is_drawing { return; }
+        let (w, h) = self.canvas_size();
+        self.set_selection(match cmd {
+            SelectCmd::All => Some(Selection::all(w, h)),
+            SelectCmd::None => None,
+        });
+    }
+
+    /// Color picker: the merged image's color under the cursor becomes the
+    /// brush color.
+    fn pick_color(&mut self) {
+        let Some((x, y)) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
+        // Never wait for a stroke being painted: skip this sample.
+        let Ok(d) = self.doc.try_lock() else { return };
+        let (w, h) = (d.layers.width, d.layers.height);
+        if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 { return; }
+        let (x, y) = (x as u32, y as u32);
+        let px = d.layers.composite_rect((x, y, x + 1, y + 1));
+        drop(d);
+        if px.len() == 4 && self.brush.color != [px[0], px[1], px[2]] {
+            self.brush.color = [px[0], px[1], px[2]];
+            self.request_redraw();
+        }
+    }
+
+    fn canvas_size(&self) -> (u32, u32) {
+        let p = self.projection.lock().unwrap();
+        (p.width, p.height)
+    }
+
+    fn set_tool(&mut self, tool: Tool) {
+        if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
+        self.tool = tool;
+        self.update_cursor();
+        self.request_redraw();
     }
 
     /// Win32 window handle, for the monitor profile lookup.
@@ -585,9 +761,11 @@ impl App {
         self.samples_sent = 0;
         self.press_point = Some(self.cursor);
         self.frame_stats = Timing::default();
+        let mut brush = self.brush.clone();
+        brush.erase = self.tool == Tool::Eraser;
         self.paint.send(Cmd::Begin {
             doc:       Arc::clone(&self.doc),
-            brush:     self.brush.clone(),
+            brush,
             engine:    self.library.presets[self.preset].engine.clone(),
         });
     }
@@ -624,6 +802,8 @@ impl App {
         self.shift_down = false;
         self.ctrl_down = false;
         self.nav = None;
+        self.nav_tool = None;
+        self.gesture = None;
         if self.is_drawing {
             self.end_stroke();
         }
@@ -701,6 +881,12 @@ impl App {
         let mut preset = self.preset;
         let canvas_edit = &mut self.canvas_edit;
         let home = self.home;
+        let tool_before = self.tool;
+        let tool = &mut self.tool;
+        let fill = &mut self.fill;
+        let drawing = self.gesture.as_ref().and_then(Gesture::outline);
+        let snap = gpu.view_snapshot();
+        let to_points = move |p: (f32, f32)| snap.to_points(p);
         let mut actions = Actions::default();
         // Never wait for the brush: if the paint thread holds the document
         // (mid-stroke), redraw the canvas with the last UI as it was, and
@@ -714,11 +900,20 @@ impl App {
             Some(mut doc) => gpu.render(|ctx| {
             *ui_saw_canvas = over_canvas;
             let (can_undo, can_redo) = (doc.history().undo_len() > 0, doc.history().redo_len() > 0);
+            let d = &mut *doc;
             let mut model = Model {
                 brush,
                 presets,
                 preset: &mut preset,
-                layers: &mut doc.layers,
+                layers: &mut d.layers,
+                tool,
+                fill,
+                has_selection: d.selection.is_some(),
+                overlay: Overlay {
+                    selection: d.selection.as_ref().map_or(&[], |s| s.outlines()),
+                    drawing: drawing.as_deref(),
+                },
+                to_points: &to_points,
                 can_undo,
                 can_redo,
                 view_zoom,
@@ -765,6 +960,8 @@ impl App {
             self.apply_color_management();
         }
         if preset != preset_before { self.select_preset(preset); }
+        if self.tool != tool_before { self.update_cursor(); }
+        if let Some(cmd) = actions.select { self.select(cmd); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
         if let Some(choice) = actions.dialog { self.on_dialog(choice); }
         if let Some(cmd) = actions.file { self.file_cmd(cmd); }
@@ -1325,7 +1522,15 @@ impl ApplicationHandler<AppEvent> for App {
                 self.request_redraw();
             }
 
-            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                let alt = self.modifiers.alt_key();
+                self.modifiers = m.state();
+                // Alt switches the brush to the picker: cursor follows.
+                if alt != self.modifiers.alt_key() && self.over_canvas {
+                    self.update_cursor();
+                    self.request_canvas_frame();
+                }
+            }
 
             // A file dropped on the window: opened like with Open.
             WindowEvent::DroppedFile(path) => {
@@ -1390,6 +1595,11 @@ impl ApplicationHandler<AppEvent> for App {
                         if shift { self.redo() } else { self.undo() }
                     }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => self.redo(),
+                    Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.select(SelectCmd::All),
+                    Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::None),
+                    Key::Character(c) if !ctrl && !key.repeat && Tool::from_key(c).is_some() => {
+                        if let Some(t) = Tool::from_key(c) { self.set_tool(t); }
+                    }
                     // View keys (Krita): 1 = 100 %, 2 = fit, 4 / 6 = rotate
                     // by 15 degrees, 5 = reset rotation, + / - = zoom.
                     Key::Character(c) if !ctrl => match c {
@@ -1419,14 +1629,15 @@ impl ApplicationHandler<AppEvent> for App {
                         // Space + drag: pan; Shift + Space + drag: rotate;
                         // Ctrl + Space + drag: zoom (Krita / CSP).
                         self.begin_nav(MouseButton::Left);
-                    } else if over_canvas {
-                        self.pressure   = 1.0;
-                        self.begin_stroke();
+                    } else if over_canvas && !self.home && self.gesture.is_none() {
+                        self.tool_press();
                     }
                 } else if self.nav.is_some() {
                     if self.nav_button == MouseButton::Left { self.end_nav(); }
                 } else if self.is_drawing {
                     self.end_stroke();
+                } else if self.gesture.is_some() {
+                    self.tool_release();
                 }
             }
 
@@ -1474,6 +1685,8 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 if self.nav.is_some() {
                     self.drag_nav();
+                } else if self.gesture.is_some() {
+                    self.tool_drag();
                 } else if self.is_drawing && !self.pen_active {
                     if let Some((x, y)) = self.press_point.take() { self.draw_at(x, y, None); }
                     self.draw_at(self.cursor.0, self.cursor.1, None);

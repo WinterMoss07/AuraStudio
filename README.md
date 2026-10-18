@@ -45,6 +45,22 @@ UI stays quiet so the painting gets the room.
   circle of arrows (rotating), drawn by the app: Windows has no hand cursor
   and showed the four-arrow cross instead.
 
+### Tools
+- **Toolbox** on the left, fused with the canvas edge (Krita): Brush (B),
+  Eraser (E: the current brush, erasing), Fill (G), Color picker (I, or
+  Alt+click with the brush), Rectangle (M) and Lasso (L) selection, Hand
+  (H), Zoom (Z: click in, Alt+click out, drag to zoom). The options bar
+  and the Tool options docker follow the tool.
+- **Fill**: finds the area on the merged image (lines on another layer stop
+  it, the usual way to color line art) or on the layer alone; tolerance,
+  expand by a few pixels under anti-aliased edges. Scanline fill on 64-bit
+  words, a tile at a time: a whole A4 page in ~10 ms (layer) / ~50 ms
+  (merged), undoable.
+- **Selections**: painting, fill and Delete only change selected pixels.
+  Ctrl+A / Ctrl+D; a click without dragging deselects. The outline is
+  drawn as still black-and-white dashes (animated ones would keep the UI
+  redrawing).
+
 ### Files
 - **`.aurs` documents** (File menu, Ctrl+S / Ctrl+Shift+S / Ctrl+O): a zip
   archive holding the layer tree (folders, blend modes, opacity, locks),
@@ -141,7 +157,10 @@ UI stays quiet so the painting gets the room.
 |---|---|
 | Paint | pen / left mouse |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
-| Clear layer | Delete |
+| Clear layer (or the selection) | Delete |
+| Tools | B brush, E eraser, G fill, I picker, M rectangle, L lasso, H hand, Z zoom |
+| Pick a color | Alt + click (brush, eraser, fill) |
+| Select all / deselect | Ctrl+A / Ctrl+D |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
 | 100 % / fit | `1` / `2` |
 | Pan | Space + drag, or middle-button drag |
@@ -216,7 +235,7 @@ See `NOTICE.md` for third-party code and assets.
       the next launch.
 
 **Missing / planned**
-- [ ] Save / open documents (own format, PNG / PSD / ORA export).
+- [ ] PSD / ORA export.
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and
       canvas resize (history is cleared today).
 - [ ] Persist per-brush settings and UI layout between sessions.
@@ -225,7 +244,8 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Document tabs (the workspace already handles several documents).
 - [ ] Faster MyPaint compositing for very large brushes; mipmaps for zoomed
       out views.
-- [ ] Selection tools, transform, fill, eraser tool mode, color picker.
+- [ ] Selection modes (add / subtract), invert, transform; undo for
+      selection changes.
 - [ ] Rooms / workspaces (painting, animation…) with lazy loading.
 - [ ] Animation timeline (OpenToonz-inspired), comics panels.
 - [ ] Native pen input on macOS / Linux (today: winit touch events).

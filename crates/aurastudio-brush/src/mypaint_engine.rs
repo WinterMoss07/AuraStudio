@@ -43,11 +43,14 @@ pub struct MyPaintEngine {
     /// Upper bound of the dab radius, for preloading the tiles a dab or a
     /// smudge sample may read.
     reach: f32,
+    /// The preset's own eraser setting (the Eraser tool turns it fully on).
+    preset_eraser: f32,
 }
 
 impl MyPaintEngine {
     pub fn new(brush: hokusai::Brush) -> Self {
-        Self { brush, state: BrushState::default(), tiles: HashMap::new(),
+        let preset_eraser = brush.get(BrushSetting::Eraser).base_value;
+        Self { brush, preset_eraser, state: BrushState::default(), tiles: HashMap::new(),
             scratch: Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]), last_time: None, reach: 64.0 }
     }
 
@@ -75,6 +78,7 @@ impl MyPaintEngine {
         self.brush.get_mut(BrushSetting::Radius).base_value = radius.ln();
         self.brush.get_mut(BrushSetting::Opaque).base_value = b.opacity.clamp(0.0, 1.0);
         self.brush.get_mut(BrushSetting::Hardness).base_value = b.hardness.clamp(0.0, 1.0);
+        self.brush.get_mut(BrushSetting::Eraser).base_value = if b.erase { 1.0 } else { self.preset_eraser };
         // Dynamics can grow the dab (pressure, random...), smudge reads
         // around it: keep a generous margin.
         self.reach = (radius * 3.0 + 16.0).min(4096.0);

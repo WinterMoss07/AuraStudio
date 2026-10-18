@@ -33,6 +33,15 @@ pub fn changed_span(old: &[u8], new: &[u8]) -> Option<(usize, usize)> {
     Some((c0, c1))
 }
 
+/// Eraser: the pre-stroke pixels with their alpha lowered by the
+/// coverage (color kept, so a half-erased pixel keeps its hue).
+pub fn erase_pixels(out: &mut [u8], base: &[u8], cov: &[u8]) {
+    for ((o, b), &a) in out.chunks_exact_mut(4).zip(base.chunks_exact(4)).zip(cov) {
+        let alpha = (b[3] as u16 * (255 - a as u16) + 127) / 255;
+        o.copy_from_slice(&[b[0], b[1], b[2], alpha as u8]);
+    }
+}
+
 /// Layer pixels = brush color over the pre-stroke pixels at the given
 /// coverages. Recomputing an unchanged pixel gives the same value, so whole
 /// runs are written without per-pixel tests; normal blend over an opaque or

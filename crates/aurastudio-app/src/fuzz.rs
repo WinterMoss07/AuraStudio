@@ -18,7 +18,8 @@ use aurastudio_brush::Brush;
 use aurastudio_brushes::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_gpu::CanvasView;
-use aurastudio_ui::{Actions, BlendMode, Model, UiState, ViewCmd};
+use aurastudio_layers::{FillParams, Selection};
+use aurastudio_ui::{Actions, BlendMode, Model, Overlay, SelectCmd, Tool, UiState, ViewCmd};
 use egui::{pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
 use crate::paint_thread::{Cmd, PaintThread};
@@ -53,7 +54,8 @@ const SCREEN: Rect = Rect { min: Pos2 { x: 0.0, y: 0.0 }, max: Pos2 { x: 1440.0,
 /// the right), sometimes anywhere.
 fn ui_pos(r: &mut Rng) -> Pos2 {
     match r.below(10) {
-        0..=5 => pos2(r.range(1100.0, 1440.0), r.range(0.0, 900.0)),
+        0..=4 => pos2(r.range(1100.0, 1440.0), r.range(0.0, 900.0)),
+        5 => pos2(r.range(0.0, 44.0), r.range(60.0, 400.0)),
         6..=7 => pos2(r.range(0.0, 1440.0), r.range(0.0, 70.0)),
         _ => pos2(r.range(-20.0, 1460.0), r.range(-20.0, 920.0)),
     }
@@ -181,6 +183,8 @@ fn fuzz() {
     let mut pointer = pos2(700.0, 400.0);
     let mut held = None;
     let mut stroke_open = false;
+    let mut tool = Tool::default();
+    let mut fill = FillParams::default();
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
     let t0 = Instant::now();
@@ -202,6 +206,8 @@ fn fuzz() {
                     ..Default::default()
                 };
                 let (can_undo, can_redo) = (d.history().undo_len() > 0, d.history().redo_len() > 0);
+                let sel_outlines = d.selection.as_ref().map(|s| s.outlines().to_vec());
+                let to_points = |p: (f32, f32)| { let q = view.canvas_to_screen(p, size, area); (q.0, q.1) };
                 let mut actions = Actions::default();
                 let mut p = preset;
                 let _ = ctx.run(input, |ctx| {
@@ -220,6 +226,11 @@ fn fuzz() {
                         canvas_edit: &mut canvas_edit,
                         max_canvas: 4096,
                         home: false,
+                        tool: &mut tool,
+                        fill: &mut fill,
+                        has_selection: sel_outlines.is_some(),
+                        overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None },
+                        to_points: &to_points,
                     };
                     aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
                 });
@@ -234,6 +245,11 @@ fn fuzz() {
                 }
                 // As the end of App::render_frame.
                 if let Some(cmd) = actions.view { apply_view(&mut view, cmd, size, area); }
+                match actions.select {
+                    Some(SelectCmd::All) => d.selection = Some(Selection::all(size.0, size.1)),
+                    Some(SelectCmd::None) => d.selection = None,
+                    None => {}
+                }
                 drop(d);
                 if !stroke_open {
                     if actions.undo { pt.send(Cmd::Undo(Arc::clone(&doc))); }
@@ -269,7 +285,35 @@ fn fuzz() {
             // Shortcuts, also sent mid-stroke (the paint thread refuses).
             85..=91 => {
                 let d = Arc::clone(&doc);
-                pt.send(match r.below(3) { 0 => Cmd::Undo(d), 1 => Cmd::Redo(d), _ => Cmd::Clear(d) });
+                let (w, h) = (size.0 as f32, size.1 as f32);
+                match r.below(6) {
+                    0 => pt.send(Cmd::Undo(d)),
+                    1 => pt.send(Cmd::Redo(d)),
+                    2 => pt.send(Cmd::Clear(d)),
+                    3 | 4 => {
+                        let params = FillParams { tolerance: r.below(256) as u8, merged: r.chance(0.5), expand: r.below(4) as u32 };
+                        let color = [r.below(256) as u8, r.below(256) as u8, r.below(256) as u8, r.below(256) as u8];
+                        // Off the canvas too (the app checks; the thread must cope).
+                        let (x, y) = (r.range(-0.1, 1.1) * w, r.range(-0.1, 1.1) * h);
+                        pt.send(Cmd::Fill { doc: d, x: x.max(0.0) as u32, y: y.max(0.0) as u32, color, params });
+                    }
+                    // A new selection: lasso, rectangle, all or none.
+                    _ => {
+                        let sel = match r.below(4) {
+                            0 => {
+                                let pts: Vec<(f32, f32)> = (0..r.below(60)).map(|_| (r.range(-0.3, 1.3) * w, r.range(-0.3, 1.3) * h)).collect();
+                                Selection::polygon(size.0, size.1, &pts)
+                            }
+                            1 => {
+                                let (x, y) = (r.below(size.0 as u64 + 50) as u32, r.below(size.1 as u64 + 50) as u32);
+                                Selection::rect(size.0, size.1, (x, y, x + r.below(400) as u32, y + r.below(400) as u32))
+                            }
+                            2 => Some(Selection::all(size.0, size.1)),
+                            _ => None,
+                        };
+                        d.lock().unwrap().selection = sel;
+                    }
+                }
                 ops += 1;
             }
             // Layer changes while the paint thread may be painting.

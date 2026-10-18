@@ -61,7 +61,7 @@ pub struct SavedStep {
 
 /// Step labels the app knows; anything else read from a file becomes a
 /// generic one (labels are static strings).
-const LABELS: [&str; 2] = ["Brush stroke", "Clear layer"];
+const LABELS: [&str; 3] = ["Brush stroke", "Clear layer", "Fill"];
 
 pub struct History {
     undo:   VecDeque<Step>,

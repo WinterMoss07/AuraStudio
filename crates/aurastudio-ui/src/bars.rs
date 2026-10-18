@@ -129,12 +129,33 @@ pub fn options_bar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model) {
         .frame(Frame::none().fill(theme::PANEL).inner_margin(Margin::symmetric(10.0, 0.0)))
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                let name = m.presets.get(*m.preset).map(|p| p.name.as_str()).unwrap_or("Brush");
-                ui.label(RichText::new(name).strong());
-                ui.add_space(10.0);
-                size_slider(ui, "bar_size", m.brush, 190.0);
-                ui.add_space(4.0);
-                opacity_slider(ui, "bar_opacity", m.brush, 190.0);
+                if m.tool.paints() {
+                    let name = m.presets.get(*m.preset).map(|p| p.name.as_str()).unwrap_or("Brush");
+                    let eraser = if *m.tool == crate::Tool::Eraser { "Eraser · " } else { "" };
+                    ui.label(RichText::new(format!("{eraser}{name}")).strong());
+                    ui.add_space(10.0);
+                    size_slider(ui, "bar_size", m.brush, 190.0);
+                    ui.add_space(4.0);
+                    opacity_slider(ui, "bar_opacity", m.brush, 190.0);
+                } else {
+                    ui.label(RichText::new(m.tool.name()).strong());
+                    ui.add_space(10.0);
+                    if *m.tool == crate::Tool::Fill {
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.set_max_width(520.0);
+                            ui.horizontal(|ui| {
+                                let w = 160.0;
+                                let tol = m.fill.tolerance as f32 / 255.0 * 100.0;
+                                if let Some(v) = crate::widgets::fill_slider(ui, "bar_tolerance", crate::widgets::percent("Tolerance"), tol, w) {
+                                    m.fill.tolerance = (v / 100.0 * 255.0).round() as u8;
+                                }
+                                ui.selectable_value(&mut m.fill.merged, true, "All layers");
+                                ui.selectable_value(&mut m.fill.merged, false, "This layer");
+                            });
+                        });
+                    }
+                }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if let Some((text, left)) = notice.current() {

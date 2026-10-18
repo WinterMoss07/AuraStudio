@@ -53,8 +53,10 @@ pub enum Cmd {
     End,
     Undo(SharedDoc),
     Redo(SharedDoc),
-    /// Clear the active layer (undoable).
+    /// Clear the active layer, or its selected pixels (undoable).
     Clear(SharedDoc),
+    /// Fill tool at canvas pixel (x, y) on the active layer (undoable).
+    Fill { doc: SharedDoc, x: u32, y: u32, color: [u8; 4], params: aurastudio_layers::FillParams },
     /// Save the document to `path` (after the strokes sent before). The
     /// file is written on its own thread; painting goes on meanwhile.
     /// `origin`: autosaves only, the file the work belongs to.
@@ -216,7 +218,7 @@ impl Worker {
                         });
                         if let Err(e) = spawned { log::error!("save thread: {e}"); }
                     }
-                    Cmd::Undo(_) | Cmd::Redo(_) | Cmd::Clear(_) if self.active => {
+                    Cmd::Undo(_) | Cmd::Redo(_) | Cmd::Clear(_) | Cmd::Fill { .. } if self.active => {
                         // Never while a stroke is open (the main thread
                         // doesn't send them then; this is a safety net).
                         events.push(Event::Notice("Finish the stroke first"));
@@ -234,16 +236,21 @@ impl Worker {
                         flush = true;
                     }
                     Cmd::Clear(doc) => {
-                        let cleared = {
+                        let cleared = doc.lock().unwrap().clear_active();
+                        self.report_edit(cleared, "Layer is locked or is a folder", &mut events);
+                        self.doc = Some(doc);
+                        flush = true;
+                    }
+                    Cmd::Fill { doc, x, y, color, params } => {
+                        let t = Instant::now();
+                        let filled = {
                             let mut d = doc.lock().unwrap();
-                            d.clear_active().map(|id| (id, (0, 0, d.layers.width, d.layers.height)))
+                            if d.layers.can_paint() { Ok(d.fill(x, y, color, params)) } else { Err(()) }
                         };
-                        match cleared {
-                            Some((id, full)) => {
-                                add_rect(&mut self.pending, full);
-                                events.push(Event::LayerChanged { layer_id: id });
-                            }
-                            None => events.push(Event::Notice("Layer is locked or is a folder")),
+                        log::info!("fill: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+                        match filled {
+                            Ok(f) => self.report_edit(f, "Outside the selection", &mut events),
+                            Err(()) => events.push(Event::Notice("Layer is locked or is a folder")),
                         }
                         self.doc = Some(doc);
                         flush = true;
@@ -305,6 +312,16 @@ impl Worker {
             Some(c) => {
                 add_rect(&mut self.pending, c.rect);
                 events.push(Event::LayerChanged { layer_id: c.layer_id });
+            }
+            None => events.push(Event::Notice(none_msg)),
+        }
+    }
+
+    fn report_edit(&mut self, edit: Option<(u64, Rect)>, none_msg: &'static str, events: &mut Vec<Event>) {
+        match edit {
+            Some((id, r)) => {
+                add_rect(&mut self.pending, r);
+                events.push(Event::LayerChanged { layer_id: id });
             }
             None => events.push(Event::Notice(none_msg)),
         }
@@ -394,6 +411,8 @@ impl Worker {
             }
             None => {}
         }
+        // Only selected pixels may change.
+        if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
         self.stats.paint.add(t0.elapsed());
         rect
     }
@@ -436,6 +455,7 @@ impl Worker {
                 rect = self.engine_end(&mut surface);
             }
         }
+        if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
         self.mypaint = None;
         if let Some(r) = rect { self.stroke_rect = Some(self.stroke_rect.map_or(r, |s| union(s, r))); }
         // After a resize the snapshot no longer matches: nothing to record.
@@ -714,6 +734,34 @@ mod tests {
         let Some(Node::Layer(l)) = opened.layers.node(id) else { panic!() };
         assert_eq!(l.tiles.pixel(30, 32), [0, 0, 0, 255]);
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// With a selection, strokes, fill and clear only change selected
+    /// pixels.
+    #[test]
+    fn selection_limits_strokes_fill_and_clear() {
+        let (doc, id) = doc_with_layer();
+        doc.lock().unwrap().selection = aurastudio_layers::Selection::rect(64, 64, (0, 0, 30, 64));
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        stroke(&pt, &doc, 20.0);
+        drop(pt);
+        assert_eq!(pixel(&doc, id, 20, 20), [0, 0, 0, 255]);
+        assert_eq!(pixel(&doc, id, 40, 20)[3], 0);
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        let params = aurastudio_layers::FillParams { merged: false, ..Default::default() };
+        pt.send(Cmd::Fill { doc: Arc::clone(&doc), x: 5, y: 50, color: [255, 0, 0, 255], params });
+        drop(pt);
+        assert_eq!(pixel(&doc, id, 5, 60), [255, 0, 0, 255]);
+        assert_eq!(pixel(&doc, id, 50, 50)[3], 0);
+        assert_eq!(pixel(&doc, id, 20, 20), [0, 0, 0, 255], "the fill went over the line");
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        doc.lock().unwrap().selection = aurastudio_layers::Selection::rect(64, 64, (0, 0, 10, 64));
+        pt.send(Cmd::Clear(Arc::clone(&doc)));
+        pt.send(Cmd::Undo(Arc::clone(&doc)));
+        pt.send(Cmd::Redo(Arc::clone(&doc)));
+        drop(pt);
+        assert_eq!(pixel(&doc, id, 5, 60)[3], 0);
+        assert_eq!(pixel(&doc, id, 20, 60), [255, 0, 0, 255]);
     }
 
     /// A locked layer is never painted, even if a stroke is sent.

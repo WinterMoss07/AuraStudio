@@ -390,6 +390,12 @@ impl GpuState {
         self.view.screen_to_canvas(pos, self.canvas_size(), self.viewport)
     }
 
+    /// The current view, to place UI drawn over the canvas (selection
+    /// outline...) in egui points.
+    pub fn view_snapshot(&self) -> ViewSnapshot {
+        ViewSnapshot { view: self.view, canvas: self.canvas_size(), area: self.viewport, ppp: self.egui_ctx.pixels_per_point() }
+    }
+
     /// Center of the canvas area (pivot for keyboard zoom / rotation).
     pub fn view_center(&self) -> (f32, f32) {
         let [x, y, w, h] = self.viewport;
@@ -831,4 +837,21 @@ fn canvas_bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas,
             BindGroupEntry { binding: 4, resource: BindingResource::Sampler(&lut.sampler) },
         ],
     })
+}
+
+/// The view at one moment (see GpuState::view_snapshot).
+#[derive(Clone, Copy, Debug)]
+pub struct ViewSnapshot {
+    view:   view::CanvasView,
+    canvas: (u32, u32),
+    area:   view::Area,
+    ppp:    f32,
+}
+
+impl ViewSnapshot {
+    /// Canvas pixel -> egui point.
+    pub fn to_points(&self, p: (f32, f32)) -> (f32, f32) {
+        let (x, y) = self.view.canvas_to_screen(p, self.canvas, self.area);
+        (x / self.ppp, y / self.ppp)
+    }
 }

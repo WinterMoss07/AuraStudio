@@ -8,13 +8,18 @@ use crate::widgets::{blend_combo, hardness_slider, opacity_slider, size_slider};
 use crate::dockers::brushes::engine_label;
 use crate::{theme, Model};
 
-pub fn show(ui: &mut Ui, m: &mut Model) {
+pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
+    if !m.tool.paints() {
+        crate::tools::options(ui, m, a);
+        return;
+    }
     let label = |ui: &mut Ui, t: &str| { ui.label(RichText::new(t).small().color(theme::TEXT_WEAK)); };
 
     // Which brush these settings belong to (each brush keeps its own).
     let mypaint = m.presets.get(*m.preset).is_some_and(|p| p.engine.is_mypaint());
     if let Some(p) = m.presets.get(*m.preset) {
-        ui.label(RichText::new(&p.name).strong());
+        let eraser = if *m.tool == crate::Tool::Eraser { "Eraser · " } else { "" };
+        ui.label(RichText::new(format!("{eraser}{}", p.name)).strong());
         ui.label(RichText::new(format!("{}  ·  {}", p.group, engine_label(&p.engine))).small().color(theme::TEXT_WEAK));
         ui.add_space(4.0);
     }

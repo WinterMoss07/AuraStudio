@@ -56,7 +56,7 @@ impl TabViewer for Viewer<'_, '_> {
         // is at least as tall as the dock).
         let content = ui.scope(|ui| match tab {
             Tab::Color       => color::show(ui, self.color, self.m),
-            Tab::ToolOptions => tool_options::show(ui, self.m),
+            Tab::ToolOptions => tool_options::show(ui, self.m, self.a),
             Tab::Brushes     => brushes::show(ui, self.brushes, self.m, self.a),
             Tab::Layers | Tab::Canvas if self.m.home => {
                 ui.label(egui::RichText::new("No document").color(crate::theme::TEXT_WEAK));
