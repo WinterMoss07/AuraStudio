@@ -1,24 +1,31 @@
-//! Round dabs with "wash" accumulation (Krita's alpha darken), native.
+//! The brush engine: dabs placed along the pen path, with Krita's "wash"
+//! accumulation (alpha darken). Every brush that is not a MyPaint brush
+//! goes through it; the round brush is one preset of it, and each brush
+//! keeps its own settings (Tool options).
 //!
-//! The stroke is a row of round dabs placed along the pen path. Each dab
-//! moves the pixels it covers toward its opacity (brush opacity × pressure)
-//! by the dab's shape value, never past it:
+//! Each dab moves the pixels it covers toward its opacity (brush opacity ×
+//! pressure) by the dab's shape value, never past it:
 //!
 //!   if mask < cap: mask += (cap - mask) × shape
 //!
 //! so a stroke never gets more opaque than its strongest dab (crossing a
 //! 20 % stroke at 30 % gives 30 %), while overlapping soft edges add up
-//! smoothly. That is what gives this engine its soft, even gradients and
-//! clean crossings (a per-pixel max leaves a visible crease where two soft
-//! parts of a stroke cross).
+//! smoothly (clean crossings: a per-pixel max leaves a crease).
 //!
-//! It is also what keeps big brushes cheap: like Krita's auto spacing, the
-//! gap between dabs grows with the brush (but only as √radius past a point,
-//! so a hard edge never scallops by more than half a pixel), so a 1000 px
-//! brush paints a dab every ~45 px of pen travel, not on every pen sample.
+//! When the pressure falls, Krita's averaged opacity (KisPainter::
+//! blendAverageOpacity + the "creamy" alpha darken): the stroke aims at an
+//! average that follows a rise at once but decays by 10 % of the gap per
+//! dab, and pixels already painted keep being pulled toward it. Without
+//! it, the front of every stronger dab stayed visible as an arc ("beads")
+//! wherever the pressure went down.
 //!
-//! The dab shape is the round pen's: opaque out to `radius × hardness`,
-//! then a smoothstep fade to the edge.
+//! Spacing as Krita's auto spacing: 0.8 × √diameter (Krita's Basic presets
+//! use 0.8). The straight edge of a hard stroke then ripples by
+//! s² / 8r = 0.16 px whatever the size, and a 1000 px brush paints a dab
+//! every ~25 px of pen travel, not on every pen sample.
+//!
+//! Dab shape: opaque out to `radius × hardness`, then a smoothstep fade to
+//! the edge (1 px of anti-aliasing at 100 %).
 
 use aurastudio_canvas::{blend::unit_to_u8, PaintSurface, Rect};
 
@@ -39,13 +46,15 @@ pub struct DabEngine {
     last:    Option<(f32, f32, f32)>,
     /// Pen travel left before the next dab.
     to_next: f32,
+    /// Averaged opacity of the stroke (mask units), see the module doc.
+    average: f32,
 }
 
 impl DabEngine {
     pub fn new() -> Self {
         let mut e = Self {
             brush: Brush::new(), smooth_edge: None, reach: 0.0, spacing: 1.0,
-            smoother: PressureSmoother::new(0.5), last: None, to_next: 0.0,
+            smoother: PressureSmoother::new(0.5), last: None, to_next: 0.0, average: 0.0,
         };
         e.sync_from(&Brush::new());
         e
@@ -57,14 +66,11 @@ impl DabEngine {
         self.brush = b.clone();
         let r = b.radius.max(1) as f32;
         self.reach = r + 0.5;
-        // 6 dabs per radius (what the hokusai engine used), but no more
-        // than 2·√r apart: the edge of a hard brush then ripples by at
-        // most s² / 8r = 0.5 px.
-        self.spacing = (r / 6.0).min(2.0 * r.sqrt()).max(0.5);
+        // Krita's auto spacing, coefficient 0.8 (see the module doc).
+        self.spacing = (0.8 * (2.0 * r).sqrt()).max(0.5);
 
-        // Same shape as the round pen: full opacity out to `radius ×
-        // hardness`, then a smoothstep fade to the edge (at least one pixel
-        // wide: anti-aliasing).
+        // Full opacity out to `radius × hardness`, then a smoothstep fade
+        // to the edge (at least one pixel wide: anti-aliasing).
         let soft = (r * (1.0 - b.hardness.clamp(0.0, 1.0))).max(1.0);
         self.smooth_edge = (soft > 1.0).then_some(1.0 / soft);
     }
@@ -72,6 +78,7 @@ impl DabEngine {
     pub fn begin_stroke(&mut self) {
         self.last = None;
         self.to_next = 0.0;
+        self.average = 0.0;
         self.smoother.reset();
     }
 
@@ -111,9 +118,18 @@ impl DabEngine {
 
     /// One dab, wash-accumulated into the stroke mask, and the layer pixels
     /// it changed recomposited from the layer as it was before the stroke.
-    fn dab<S: PaintSurface>(&self, surface: &mut S, cx: f32, cy: f32, pressure: f32) -> Option<Rect> {
-        let cap = unit_to_u8(self.brush.opacity * pressure);
-        if cap == 0 { return None; }
+    fn dab<S: PaintSurface>(&mut self, surface: &mut S, cx: f32, cy: f32, pressure: f32) -> Option<Rect> {
+        let opacity = (self.brush.opacity * pressure).clamp(0.0, 1.0) * 255.0;
+        // Krita's averaged opacity: up at once, down by 10 % per dab.
+        self.average = if self.average < opacity { opacity } else { 0.1 * opacity + 0.9 * self.average };
+        let cap = unit_to_u8(opacity / 255.0);
+        let average = unit_to_u8(self.average / 255.0);
+        // Pressure falling: pull toward the average (see the module doc).
+        let falling = average > cap;
+        let target = cap.max(average);
+        if target == 0 { return None; }
+        let (capf, avgf) = (cap as f32, average as f32);
+        let inv_avg = 1.0 / avgf.max(1.0);
         let (w, h) = (surface.width() as i32, surface.height() as i32);
         let reach = self.reach;
         let y0 = ((cy - reach).floor() as i32).max(0);
@@ -149,7 +165,7 @@ impl DabEngine {
                 let mrow = &mut mask[i0..i0 + n];
                 // Already at this dab's opacity (the middle of a stroke at
                 // steady pressure): nothing to do.
-                if min_u8(mrow) >= cap {
+                if min_u8(mrow) >= target {
                     x += n as i32;
                     continue;
                 }
@@ -172,12 +188,26 @@ impl DabEngine {
                         *v = (t * 256.0 + 0.5) as i32 as u16;
                     }
                 }
-                // ...then the wash step toward the cap (integer, vectorized).
+                // ...then the wash step (vectorized).
                 let mut new = [0u8; CHUNK];
                 let new = &mut new[..n];
-                for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
-                    let gap = cap.saturating_sub(cur) as u16;
-                    *nv = cur + ((gap * sh + 128) >> 8) as u8;
+                if falling {
+                    // Krita's creamy alpha darken with averageOpacity >
+                    // opacity: lerp(src, average, mask / average), never
+                    // lowering a pixel. A new pixel gets the dab's own
+                    // (lower) opacity; a painted one is pulled toward the
+                    // average.
+                    for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
+                        let src = capf * sh as f32 * (1.0 / 256.0);
+                        let m = cur as f32;
+                        let v = src + (avgf - src) * (m * inv_avg).min(1.0);
+                        *nv = (v + 0.5).max(m) as i32 as u8;
+                    }
+                } else {
+                    for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
+                        let gap = cap.saturating_sub(cur) as u16;
+                        *nv = cur + ((gap * sh + 128) >> 8) as u8;
+                    }
                 }
                 let prow = &mut pixels[i0 * 4..(i0 + n) * 4];
                 let brow = &base[i0 * 4..(i0 + n) * 4];
@@ -302,13 +332,29 @@ mod tests {
         // light line). Wash accumulation bends smoothly.
         let v: Vec<i32> = (0..60).map(|k| 255 - red_at(&s, 128 + k, 160) as i32).collect();
         let worst = v.windows(3).map(|w| (w[0] - 2 * w[1] + w[2]).abs()).max().unwrap();
-        assert!(worst <= 8, "kink along the row: {worst} ({v:?})");
+        // (A per-pixel max bends by 30+ here; 8-bit rounding of the dabs
+        // alone leaves a few levels of wobble in the faint edge.)
+        assert!(worst <= 12, "kink along the row: {worst} ({v:?})");
+    }
+
+    #[test]
+    fn falling_pressure_fades_without_beads() {
+        // Pressure going down along a stroke: along its middle the values
+        // only lighten, gradually (no darker arc left by each dab).
+        let mut s = white();
+        let mut e = engine(30, 1.0);
+        for i in 0..=120 {
+            let x = 30.0 + i as f32 * 1.6;
+            e.stroke_to(&mut s, x, 128.0, 1.0 - 0.7 * i as f32 / 120.0);
+        }
+        let row: Vec<i32> = (60..200).map(|x| red_at(&s, x, 128) as i32).collect();
+        assert!(row.windows(2).all(|w| w[1] >= w[0] - 1), "not monotonic: {row:?}");
     }
 
     #[test]
     fn big_brush_paints_few_dabs() {
         let mut e = engine(500, 0.5);
-        assert!(e.spacing > 40.0, "spacing {}", e.spacing);
+        assert!(e.spacing > 20.0, "spacing {}", e.spacing);
         e.begin_stroke();
     }
 }

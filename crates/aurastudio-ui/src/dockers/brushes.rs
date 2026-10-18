@@ -131,7 +131,7 @@ fn brush_tile(ui: &mut Ui, st: &mut BrushesState, p: &Preset, index: usize, sele
 
 pub fn engine_label(e: &Engine) -> &'static str {
     match e {
-        Engine::Round => "Round brush",
+        Engine::Native => "AuraStudio engine",
         Engine::MyPaint(_) => "MyPaint brush",
     }
 }

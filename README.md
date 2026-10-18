@@ -19,12 +19,13 @@ UI stays quiet so the painting gets the room.
 ## What works today
 
 ### Painting
-- **Round brush** — one engine for every round brush: round dabs with
-  Krita's "wash" accumulation (alpha darken): smooth soft edges and clean
-  crossings, no build-up within one stroke (crossing a 20 % stroke at 30 %
-  gives 30 %). Pressure-driven opacity, hardness, per-brush blend mode,
-  distance-based pressure smoothing. Dab spacing grows with the size (as √r
-  past a point, like Krita's auto spacing), so 1000 px brushes stay fast.
+- **Brush engine** — one engine for all our brushes; a brush is a preset of
+  its settings (the round brush is the first one). Dabs with Krita's "wash"
+  accumulation (alpha darken): smooth soft edges and clean crossings, no
+  build-up within one stroke (crossing a 20 % stroke at 30 % gives 30 %), and
+  Krita's averaged opacity when the pressure falls (no beads). Spacing is
+  Krita's auto spacing (0.8 × √diameter: straight hard edges). Pressure-driven
+  opacity, hardness, per-brush blend mode, pressure smoothing.
 - **MyPaint brushes** — 196 brushes bundled (David Revoy, Ramón Miranda,
   Tanda, the classic MyPaint set…, all CC0), painted natively through
   [hokusai](https://crates.io/crates/hokusai) (a Rust port of libmypaint):
@@ -77,7 +78,7 @@ UI stays quiet so the painting gets the room.
   changed rectangles to the GPU. Changed areas travel as a list of rectangles,
   never one growing bounding box. The UI never waits for the brush (it
   redraws the canvas with the last UI when the document is busy).
-- **Round brush at 1000 px**: one dab every ~45 px of pen travel, not on
+- **1000 px brushes**: one dab every ~25 px of pen travel, not on
   every pen sample (benchmarks below).
 - **Idle = 0 % CPU**: frames are only drawn when something changes, at most
   one per display refresh (a hovering pen must not drive the frame rate).
@@ -136,7 +137,7 @@ cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png     
 | Crate | Role |
 |---|---|
 | `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
-| `aurastudio-brush` | brush engines: round dabs, native MyPaint |
+| `aurastudio-brush` | the brush engine, native MyPaint engine |
 | `aurastudio-brushes` | brush library: built-in presets, bundled MyPaint collection, import |
 | `aurastudio-layers` | layer tree, folders, lock, compositing |
 | `aurastudio-document` | documents, workspace, undo history |
@@ -156,7 +157,7 @@ See `NOTICE.md` for third-party code and assets.
 **To verify on a real machine (Windows + pen)**
 - [ ] Display color management with the real monitor profile: are grays now
       neutral? (log line `monitor profile: …`; toggle in the View menu)
-- [ ] Round brush at 1000 px on an A4 300 dpi canvas: per-stroke log lines
+- [ ] A 1000 px brush on an A4 300 dpi canvas: per-stroke log lines
       (`stroke: … paint avg …`, `max queued`).
 - [ ] Rotation with the pen (Shift + Space + drag).
 - [ ] MyPaint brushes: smudge / blender behavior, speed-dependent brushes

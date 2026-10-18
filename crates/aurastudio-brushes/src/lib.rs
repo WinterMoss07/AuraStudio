@@ -1,6 +1,6 @@
 //! Brush library: the presets listed in the Brushes docker.
 //!
-//! - Built-in presets for our round brush (hard and soft).
+//! - Built-in presets of our brush engine (hard and soft round).
 //! - The MyPaint brush collection (196 brushes, CC0, see
 //!   assets/brushes/mypaint), embedded in the binary at build time.
 //! - Brushes the user imports (.myb files or folders of them), copied into
@@ -21,8 +21,9 @@ include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 /// Which engine paints a preset.
 #[derive(Clone)]
 pub enum Engine {
-    /// Our round brush (aurastudio_brush::DabEngine).
-    Round,
+    /// AuraStudio's brush engine (aurastudio_brush::DabEngine); presets
+    /// only differ by their settings.
+    Native,
     /// A MyPaint brush, painted natively by libmypaint's rules.
     MyPaint(Arc<MyPaintBrush>),
 }
@@ -121,8 +122,8 @@ impl Library {
     /// the user imported before.
     pub fn load() -> Self {
         let mut presets = vec![
-            Preset::builtin("Round pen", Engine::Round, 25, 1.0),
-            Preset::builtin("Soft round", Engine::Round, 60, 0.0),
+            Preset::builtin("Round pen", Engine::Native, 25, 1.0),
+            Preset::builtin("Soft round", Engine::Native, 60, 0.0),
         ];
         for &(group, name, json, preview) in BUNDLED {
             match parse_myb(json) {
