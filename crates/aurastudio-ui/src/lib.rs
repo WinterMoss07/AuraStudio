@@ -69,9 +69,10 @@ pub struct Model<'a> {
     /// egui point).
     pub overlay:            Overlay<'a>,
     pub to_points:          &'a dyn Fn((f32, f32)) -> (f32, f32),
-    /// View menu: 100 % = one image pixel per physical screen pixel, and
-    /// the size of the interface (1.0 = the system's scaling).
-    pub pixel_exact:        &'a mut bool,
+    /// View menu: 100 % zoom follows the display scaling (off: one image
+    /// pixel per physical screen pixel), and the size of the interface
+    /// (1.0 = the system's scaling).
+    pub hidpi_scaling:      &'a mut bool,
     pub ui_scale:           &'a mut f32,
 }
 

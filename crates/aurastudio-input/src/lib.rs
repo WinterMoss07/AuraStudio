@@ -421,3 +421,36 @@ impl Stylus {
     pub fn drain(&self) -> Vec<StylusSample> { Vec::new() }
     pub fn backend(&self) -> &'static str { "none (winit touch events)" }
 }
+
+/// How Windows scales this window, for the log: the process's DPI
+/// awareness (per-monitor is needed to follow each monitor's scaling) and
+/// the window's current DPI (96 = 100 %).
+#[cfg(target_os = "windows")]
+pub fn dpi_report(hwnd: isize) -> String {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::HiDpi::{GetAwarenessFromDpiAwarenessContext, GetDpiForWindow, GetThreadDpiAwarenessContext};
+    let (awareness, dpi) = unsafe {
+        let a = GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext());
+        (a.0, GetDpiForWindow(HWND(hwnd as *mut std::ffi::c_void)))
+    };
+    let name = match awareness { 0 => "unaware", 1 => "system", 2 => "per-monitor", _ => "unknown" };
+    format!("DPI awareness {name}, window DPI {dpi} ({:.0} %)", dpi as f32 / 96.0 * 100.0)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn dpi_report(_hwnd: isize) -> String { String::from("DPI report: Windows only") }
+
+/// The window's current DPI as Windows sees it (96 = 100 %), asked
+/// directly: winit only learns it from WM_DPICHANGED, which does not come
+/// in every case (seen when switching from a 200 % laptop screen to a 100 %
+/// HD screen: the app stayed at 200 %).
+#[cfg(target_os = "windows")]
+pub fn window_dpi(hwnd: isize) -> Option<u32> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    let dpi = unsafe { GetDpiForWindow(HWND(hwnd as *mut std::ffi::c_void)) };
+    (dpi > 0).then_some(dpi)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn window_dpi(_hwnd: isize) -> Option<u32> { None }

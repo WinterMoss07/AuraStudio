@@ -52,6 +52,8 @@ pub struct GpuState {
     /// "1 image pixel = 1 screen pixel"); off: per point, so a picture
     /// keeps the same size on a 4K and an HD screen.
     pixel_exact:     bool,
+    /// Interface size chosen in the View menu (1.0 = the system's).
+    ui_scale:        f32,
     canvas_pipeline: RenderPipeline,
     view_buffer:     Buffer,
     nearest_sampler: Sampler,
@@ -339,6 +341,7 @@ impl GpuState {
             clear_color: [0.4, 0.4, 0.4],
             dpi_scale,
             pixel_exact: false,
+            ui_scale: 1.0,
         }
     }
 
@@ -407,14 +410,16 @@ impl GpuState {
 
     /// Size of the interface relative to the system's scaling.
     pub fn set_ui_scale(&mut self, scale: f32) {
-        self.egui_ctx.set_zoom_factor(scale);
+        self.ui_scale = scale;
+        self.apply_ui_zoom();
     }
 
-    /// The window may be on another monitor now (or its scaling changed):
-    /// keep the picture the same size on screen, in points. Returns the
-    /// new scale if it changed.
-    pub fn check_dpi_scale(&mut self) -> Option<f32> {
-        let new = self.window.scale_factor() as f32;
+    /// The display scale the window is really at (see
+    /// aurastudio_input::window_dpi; None: trust winit). When it differs
+    /// from winit's, the interface is corrected by that ratio. The picture
+    /// keeps its size on screen. Returns the new scale if it changed.
+    pub fn set_dpi_scale(&mut self, real: Option<f32>) -> Option<f32> {
+        let new = real.unwrap_or(self.window.scale_factor() as f32);
         if (new - self.dpi_scale).abs() < 1e-3 { return None; }
         let k = new / self.dpi_scale;
         self.dpi_scale = new;
@@ -422,7 +427,20 @@ impl GpuState {
             self.view.zoom = (self.view.zoom * k).clamp(view::MIN_ZOOM, view::MAX_ZOOM);
             self.view.pan = (self.view.pan.0 * k, self.view.pan.1 * k);
         }
+        self.apply_ui_zoom();
         Some(new)
+    }
+
+    /// Scale winit reports for the window (egui's base scale).
+    pub fn winit_scale(&self) -> f32 {
+        self.window.scale_factor() as f32
+    }
+
+    /// egui's zoom: the chosen interface size, times the correction when
+    /// winit's scale is stale.
+    fn apply_ui_zoom(&self) {
+        let fix = self.dpi_scale / self.winit_scale();
+        self.egui_ctx.set_zoom_factor(self.ui_scale * fix);
     }
 
     /// Current zoom (screen pixels per canvas pixel).

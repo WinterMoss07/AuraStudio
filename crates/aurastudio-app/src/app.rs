@@ -72,12 +72,14 @@ fn save_recent(list: &[PathBuf]) {
 /// Settings kept between sessions (key=value lines).
 #[derive(Clone, Copy, PartialEq)]
 struct Settings {
-    pixel_exact: bool,
+    /// 100 % zoom follows the display scaling (off: one image pixel per
+    /// physical screen pixel).
+    hidpi_scaling: bool,
     ui_scale:    f32,
 }
 
 impl Default for Settings {
-    fn default() -> Self { Self { pixel_exact: false, ui_scale: 1.0 } }
+    fn default() -> Self { Self { hidpi_scaling: true, ui_scale: 1.0 } }
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -89,7 +91,7 @@ fn load_settings() -> Settings {
     let text = settings_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     for line in text.lines() {
         match line.split_once('=') {
-            Some(("pixel_exact", v)) => s.pixel_exact = v.trim() == "true",
+            Some(("hidpi_image_scaling", v)) => s.hidpi_scaling = v.trim() != "false",
             Some(("ui_scale", v)) => if let Ok(v) = v.trim().parse::<f32>() { s.ui_scale = v.clamp(0.5, 2.0) },
             _ => {}
         }
@@ -100,7 +102,7 @@ fn load_settings() -> Settings {
 fn save_settings(s: Settings) {
     let Some(path) = settings_path() else { return };
     if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
-    let text = format!("pixel_exact={}\nui_scale={}\n", s.pixel_exact, s.ui_scale);
+    let text = format!("hidpi_image_scaling={}\nui_scale={}\n", s.hidpi_scaling, s.ui_scale);
     if let Err(e) = std::fs::write(&path, text) { log::warn!("settings: {e}"); }
 }
 
@@ -498,10 +500,26 @@ impl App {
         cursors.apply(window, wanted);
     }
 
+    /// Follow the scaling of the monitor the window is on. Asked from
+    /// Windows directly on every move / resize / focus: winit only updates
+    /// its own value on WM_DPICHANGED, which did not come when switching
+    /// from the 200 % laptop screen to a 100 % HD screen.
+    fn refresh_dpi(&mut self, why: &str) {
+        // AURASTUDIO_DPI=96...: pretend Windows reports this DPI (testing).
+        let forced = std::env::var("AURASTUDIO_DPI").ok().and_then(|v| v.parse::<u32>().ok());
+        let real = forced.or_else(|| self.hwnd().and_then(aurastudio_input::window_dpi)).map(|d| d as f32 / 96.0);
+        let Some(gpu) = &mut self.gpu else { return };
+        if let Some(scale) = gpu.set_dpi_scale(real) {
+            log::info!("display scaling: {:.0} % ({why}; winit: {:.0} %)", scale * 100.0, gpu.winit_scale() * 100.0);
+            self.update_cursor();
+            self.request_redraw();
+        }
+    }
+
     /// Interface size and 100 % zoom meaning, from the settings.
     fn apply_settings(&mut self) {
         let Some(gpu) = &mut self.gpu else { return };
-        gpu.set_pixel_exact(self.settings.pixel_exact);
+        gpu.set_pixel_exact(!self.settings.hidpi_scaling);
         gpu.set_ui_scale(self.settings.ui_scale);
         self.update_cursor();
         self.request_redraw();
@@ -892,7 +910,7 @@ impl App {
         let max_canvas = gpu.max_canvas_size();
         let (view_zoom, view_angle) = (gpu.display_zoom(), gpu.view.angle.to_degrees());
         let settings_before = self.settings;
-        let mut pixel_exact = self.settings.pixel_exact;
+        let mut hidpi_scaling = self.settings.hidpi_scaling;
         let mut ui_scale = self.settings.ui_scale;
         let (cm_before, perceptual_before) = (self.color_managed, self.perceptual);
         let color_managed = &mut self.color_managed;
@@ -939,7 +957,7 @@ impl App {
                     drawing: drawing.as_deref(),
                 },
                 to_points: &to_points,
-                pixel_exact: &mut pixel_exact,
+                hidpi_scaling: &mut hidpi_scaling,
                 ui_scale: &mut ui_scale,
                 can_undo,
                 can_redo,
@@ -987,7 +1005,7 @@ impl App {
             self.apply_color_management();
         }
         if preset != preset_before { self.select_preset(preset); }
-        self.settings.pixel_exact = pixel_exact;
+        self.settings.hidpi_scaling = hidpi_scaling;
         self.settings.ui_scale = ui_scale;
         if self.settings != settings_before {
             self.apply_settings();
@@ -1500,8 +1518,10 @@ impl ApplicationHandler<AppEvent> for App {
         self.window = Some(window);
         self.cursors = Some(crate::cursors::Cursors::new(event_loop));
         self.gpu    = Some(gpu);
-        log::info!("display scaling: {:.0} %", window_scale * 100.0);
+        log::info!("display scaling: {:.0} % ({})", window_scale * 100.0,
+            self.hwnd().map_or_else(String::new, aurastudio_input::dpi_report));
         self.apply_settings();
+        self.refresh_dpi("startup");
         self.refresh_display_profile();
         self.refresh_home();
         self.offer_recovery();
@@ -1555,6 +1575,7 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.resize(size);
                 }
+                self.refresh_dpi("resized");
                 self.request_redraw();
             }
 
@@ -1580,17 +1601,14 @@ impl ApplicationHandler<AppEvent> for App {
             }
 
             WindowEvent::Focused(false) => self.reset_input(),
+            WindowEvent::Focused(true) => self.refresh_dpi("focused"),
 
             // The window may now be on another monitor (other profile).
             // The window may be on another monitor now (other profile,
             // other scaling: Windows sends WM_DPICHANGED, which winit turns
             // into ScaleFactorChanged; the picture keeps its size on screen).
             WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                if let Some(scale) = self.gpu.as_mut().and_then(|g| g.check_dpi_scale()) {
-                    log::info!("display scaling: {:.0} %", scale * 100.0);
-                    self.update_cursor();
-                    self.request_redraw();
-                }
+                self.refresh_dpi("moved");
                 self.refresh_display_profile();
             }
 

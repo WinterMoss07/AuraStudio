@@ -99,8 +99,8 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         });
                     });
                     ui.separator();
-                    ui.checkbox(m.pixel_exact, "1 image pixel = 1 screen pixel")
-                        .on_hover_text("Off: 100 % shows a picture at the same size on every screen, following the system's display scaling (a 4K laptop and an HD monitor alike). On: one image pixel per physical screen pixel (pixel art).");
+                    ui.checkbox(m.hidpi_scaling, "HiDPI image scaling")
+                        .on_hover_text("On: at 100 %, a picture has the same size on a 3K / 4K screen and on an HD one (it follows Windows' display scaling). Off: one image pixel per physical screen pixel, much smaller on 3K / 4K.");
                     ui.menu_button("Interface size", |ui| {
                         for s in crate::UI_SCALES {
                             let label = format!("{:.0} %", s * 100.0);
