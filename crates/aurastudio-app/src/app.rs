@@ -25,11 +25,13 @@ use crate::projection::{Projection, SharedProjection};
 const UI_FRAME: Duration = Duration::from_micros(16_667);
 
 /// Canvas size at startup; changed afterwards from the Canvas docker.
+/// Zoom drag speed: the zoom is multiplied by e^(ZOOM_DRAG * dx px).
+const ZOOM_DRAG: f32 = 0.007;
 const DEFAULT_CANVAS: (u32, u32) = (2048, 2048);
 
 /// View navigation drag in progress.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Nav { Pan, Rotate }
+enum Nav { Pan, Rotate, Zoom }
 
 /// Message posted to the event loop (by the app itself or the paint thread).
 #[derive(Debug, Clone, Copy)]
@@ -88,8 +90,12 @@ pub struct App {
     space_down: bool,
     /// A Shift key is held (tracked from the keys too, see shift_held).
     shift_down: bool,
+    /// A Ctrl key is held (same reason).
+    ctrl_down:  bool,
     /// View drag in progress, with the last cursor position.
     nav:        Option<(Nav, (f32, f32))>,
+    /// Fixed point of the zoom / rotation drag (window pixels).
+    nav_pivot:  (f32, f32),
     /// Set once the native pen sent samples during the current stroke:
     /// the CursorMoved events Windows synthesizes for the same pen are then
     /// ignored, otherwise the stroke gets two slightly offset position
@@ -180,6 +186,8 @@ impl App {
             perceptual:    true,
             space_down: false,
             shift_down: false,
+            ctrl_down:  false,
+            nav_pivot:  (0.0, 0.0),
             nav:        None,
             pen_active: false,
             cursor:     (0.0, 0.0),
@@ -209,12 +217,32 @@ impl App {
         Some(self.gpu.as_ref()?.screen_to_canvas((wx, wy)))
     }
 
-    /// Start panning / rotating the view with a drag from the cursor.
-    fn begin_nav(&mut self, rotate: bool) {
-        log::info!("view drag: {} (shift: modifiers {}, key {})", if rotate { "rotate" } else { "pan" },
-            self.modifiers.shift_key(), self.shift_down);
-        self.nav = Some((if rotate { Nav::Rotate } else { Nav::Pan }, self.cursor));
+    /// Which view drag the held keys ask for: Ctrl zooms, Shift rotates,
+    /// nothing pans (Krita / CSP).
+    fn nav_mode(&self) -> Nav {
+        if self.ctrl_held() { Nav::Zoom } else if self.shift_held() { Nav::Rotate } else { Nav::Pan }
+    }
+
+    /// Start panning / rotating / zooming the view with a drag from the
+    /// cursor.
+    fn begin_nav(&mut self) {
+        let mode = self.nav_mode();
+        log::info!("view drag: {mode:?}");
+        self.nav = Some((mode, self.cursor));
+        self.set_nav_pivot(mode);
         self.update_cursor_icon();
+    }
+
+    /// Fixed point of a zoom or rotation drag, chosen when it starts (or
+    /// switches mode): zoom around where the drag began (CSP); rotate
+    /// around the picture's center while all of it is in view, else around
+    /// the middle of the canvas area.
+    fn set_nav_pivot(&mut self, mode: Nav) {
+        let Some(gpu) = &self.gpu else { return };
+        self.nav_pivot = match mode {
+            Nav::Zoom => self.cursor,
+            _ => gpu.rotation_pivot(),
+        };
     }
 
     fn end_nav(&mut self) {
@@ -229,23 +257,34 @@ impl App {
         self.modifiers.shift_key() || self.shift_down
     }
 
+    fn ctrl_held(&self) -> bool {
+        self.modifiers.control_key() || self.ctrl_down
+    }
+
     /// Cursor moved during a navigation drag.
     fn drag_nav(&mut self) {
-        let Some((_, last)) = self.nav else { return };
-        // Pan or rotate follows Shift during the drag (Krita): pressing or
-        // releasing it mid-drag switches.
-        let mode = if self.shift_held() { Nav::Rotate } else { Nav::Pan };
+        let Some((prev_mode, last)) = self.nav else { return };
+        // The mode follows Ctrl / Shift during the drag (Krita): pressing or
+        // releasing one mid-drag switches.
+        let mode = self.nav_mode();
+        if mode != prev_mode {
+            self.set_nav_pivot(mode);
+            self.update_cursor_icon();
+        }
+        let pivot = self.nav_pivot;
         let Some(gpu) = &mut self.gpu else { return };
         let now = self.cursor;
         match mode {
             Nav::Pan => gpu.view.pan_by(now.0 - last.0, now.1 - last.1),
             Nav::Rotate => {
-                // Turn by the angle the cursor swept around the view center.
-                let c = gpu.view_center();
-                let a0 = (last.1 - c.1).atan2(last.0 - c.0);
-                let a1 = (now.1 - c.1).atan2(now.0 - c.0);
-                gpu.view_rotate_at(aurastudio_gpu::wrap_angle(a1 - a0), c);
+                // Turn by the angle the cursor swept around the pivot.
+                let a0 = (last.1 - pivot.1).atan2(last.0 - pivot.0);
+                let a1 = (now.1 - pivot.1).atan2(now.0 - pivot.0);
+                gpu.view_rotate_at(aurastudio_gpu::wrap_angle(a1 - a0), pivot);
             }
+            // Horizontal drag (CSP): right zooms in, left zooms out; 100 px
+            // is about x2.
+            Nav::Zoom => gpu.view_zoom_at((ZOOM_DRAG * (now.0 - last.0)).exp(), pivot),
         }
         self.nav = Some((mode, now));
         self.request_redraw();
@@ -275,9 +314,12 @@ impl App {
         let wanted = match self.nav {
             Some((Nav::Pan, _)) => Wanted::HandClosed,
             Some((Nav::Rotate, _)) => Wanted::Rotate,
-            None if self.space_down && self.over_canvas => {
-                if self.shift_held() { Wanted::Rotate } else { Wanted::Hand }
-            }
+            Some((Nav::Zoom, _)) => Wanted::Zoom,
+            None if self.space_down && self.over_canvas => match self.nav_mode() {
+                Nav::Zoom => Wanted::Zoom,
+                Nav::Rotate => Wanted::Rotate,
+                Nav::Pan => Wanted::Hand,
+            },
             None if self.over_canvas || self.is_drawing => Wanted::Hidden,
             None => self.gpu.as_ref().map_or(Wanted::System(CursorIcon::Default),
                 |g| crate::cursors::from_egui(g.egui_cursor())),
@@ -382,14 +424,15 @@ impl App {
     fn view_cmd(&mut self, cmd: ViewCmd) {
         let Some(gpu) = &mut self.gpu else { return };
         let c = gpu.view_center();
+        let turn = gpu.rotation_pivot();
         let step = 15f32.to_radians();
         match cmd {
             ViewCmd::ZoomIn        => gpu.view_zoom_at(1.25, c),
             ViewCmd::ZoomOut       => gpu.view_zoom_at(1.0 / 1.25, c),
             ViewCmd::ActualSize    => gpu.view_set_zoom(1.0, c),
             ViewCmd::Fit           => gpu.view.fit_to_area(),
-            ViewCmd::RotateLeft    => gpu.view_rotate_at(-step, c),
-            ViewCmd::RotateRight   => gpu.view_rotate_at(step, c),
+            ViewCmd::RotateLeft    => gpu.view_rotate_at(-step, turn),
+            ViewCmd::RotateRight   => gpu.view_rotate_at(step, turn),
             ViewCmd::ResetRotation => gpu.view_reset_rotation(),
         }
         self.request_redraw();
@@ -483,6 +526,7 @@ impl App {
     fn reset_input(&mut self) {
         self.space_down = false;
         self.shift_down = false;
+        self.ctrl_down = false;
         self.nav = None;
         if self.is_drawing {
             self.end_stroke();
@@ -831,6 +875,10 @@ impl ApplicationHandler<AppEvent> for App {
                     self.shift_down = key.state == ElementState::Pressed;
                     if self.space_down { self.update_cursor_icon(); }
                 }
+                if key.logical_key == Key::Named(NamedKey::Control) {
+                    self.ctrl_down = key.state == ElementState::Pressed;
+                    if self.space_down { self.update_cursor_icon(); }
+                }
                 if key.logical_key == Key::Named(NamedKey::Space) {
                     let down = key.state == ElementState::Pressed;
                     if down != self.space_down {
@@ -876,8 +924,9 @@ impl ApplicationHandler<AppEvent> for App {
                         // Already dragging the view (middle button) or
                         // drawing: a second press starts nothing.
                     } else if over_canvas && self.space_down {
-                        // Space + drag: pan; Shift + Space + drag: rotate (Krita).
-                        self.begin_nav(self.shift_held());
+                        // Space + drag: pan; Shift + Space + drag: rotate;
+                        // Ctrl + Space + drag: zoom (Krita / CSP).
+                        self.begin_nav();
                     } else if over_canvas {
                         self.pressure   = 1.0;
                         self.begin_stroke();
@@ -889,10 +938,11 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
 
-            // Middle drag: pan, Shift + middle drag: rotate.
+            // Middle drag: pan, Shift + middle drag: rotate, Ctrl + middle
+            // drag: zoom.
             WindowEvent::MouseInput { button: MouseButton::Middle, state, .. } => {
                 if state.is_pressed() && over_canvas && !self.is_drawing {
-                    self.begin_nav(self.shift_held());
+                    self.begin_nav();
                 } else if !state.is_pressed() && self.nav.is_some() {
                     self.end_nav();
                 }

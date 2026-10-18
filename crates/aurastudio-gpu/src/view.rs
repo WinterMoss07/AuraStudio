@@ -96,6 +96,19 @@ impl CanvasView {
     }
 
     /// Multiply the zoom by `factor`, around the screen point `pivot`.
+    /// Pivot for turning the view: the picture's own center while all of
+    /// it is in view (it spins in place), else the middle of the canvas
+    /// area (zoomed in: turn around what is being looked at).
+    pub fn rotation_pivot(&self, canvas: (u32, u32), area: Area) -> (f32, f32) {
+        let (w, h) = (canvas.0 as f32, canvas.1 as f32);
+        let [x, y, aw, ah] = area;
+        let all_in = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].iter().all(|&p| {
+            let (sx, sy) = self.canvas_to_screen(p, canvas, area);
+            sx >= x - 1.0 && sx <= x + aw + 1.0 && sy >= y - 1.0 && sy <= y + ah + 1.0
+        });
+        if all_in { self.canvas_to_screen((w / 2.0, h / 2.0), canvas, area) } else { center(area) }
+    }
+
     pub fn zoom_at(&mut self, factor: f32, pivot: (f32, f32), canvas: (u32, u32), area: Area) {
         self.keep_pivot(pivot, canvas, area, |v| v.zoom = (v.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM));
     }
@@ -159,6 +172,21 @@ mod tests {
 
     fn close(a: (f32, f32), b: (f32, f32)) -> bool {
         (a.0 - b.0).abs() < 1e-2 && (a.1 - b.1).abs() < 1e-2
+    }
+
+    #[test]
+    fn rotation_turns_around_the_picture_when_it_is_all_in_view() {
+        let mut v = CanvasView::default();
+        v.update_fit(CANVAS, AREA);
+        v.fit = false;
+        // Picture moved aside, still entirely visible: its own center.
+        v.zoom_at(0.5, (200.0, 200.0), CANVAS, AREA);
+        let mid = v.canvas_to_screen((1000.0, 500.0), CANVAS, AREA);
+        assert!(close(v.rotation_pivot(CANVAS, AREA), mid));
+        assert!(!close(mid, center(AREA)));
+        // Zoomed in past the edges: the middle of the area.
+        v.zoom_at(8.0, (300.0, 300.0), CANVAS, AREA);
+        assert!(close(v.rotation_pivot(CANVAS, AREA), center(AREA)));
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                             ui.close_menu();
                         }
                     }
-                    ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate")
+                    ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate · Ctrl+Space+drag: zoom")
                         .small().color(theme::TEXT_WEAK));
                     ui.separator();
                     // Display color management of the canvas (and color docker).

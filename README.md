@@ -101,10 +101,10 @@ UI stays quiet so the painting gets the room.
 | Paint | pen / left mouse |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
 | Clear layer | Delete |
-| Zoom | mouse wheel (toward the cursor), `+` / `-` |
+| Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
 | 100 % / fit | `1` / `2` |
 | Pan | Space + drag, or middle-button drag |
-| Rotate | Shift + Space + drag, or Shift + middle drag; `4` / `6` = ±15°, `5` = reset |
+| Rotate | Shift + Space + drag, or Shift + middle drag; `4` / `6` = ±15°, `5` = reset. Turns around the picture's center while it is all in view, else around the middle of the canvas area |
 
 ---
 

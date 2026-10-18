@@ -20,6 +20,8 @@ pub enum Wanted {
     HandClosed,
     /// Shift + Space held, or rotating.
     Rotate,
+    /// Ctrl + Space held, or zooming.
+    Zoom,
     System(CursorIcon),
 }
 
@@ -27,6 +29,7 @@ pub struct Cursors {
     hand:        CustomCursor,
     hand_closed: CustomCursor,
     rotate:      CustomCursor,
+    zoom:        CustomCursor,
     /// What the window shows now (None: unknown, set it again).
     applied:     Option<Wanted>,
 }
@@ -46,6 +49,7 @@ impl Cursors {
             hand: make(hand(false)),
             hand_closed: make(hand(true)),
             rotate: make(rotate()),
+            zoom: make(magnifier()),
             applied: None,
         }
     }
@@ -59,6 +63,7 @@ impl Cursors {
             Wanted::Hand => { window.set_cursor(self.hand.clone()); window.set_cursor_visible(true); }
             Wanted::HandClosed => { window.set_cursor(self.hand_closed.clone()); window.set_cursor_visible(true); }
             Wanted::Rotate => { window.set_cursor(self.rotate.clone()); window.set_cursor_visible(true); }
+            Wanted::Zoom => { window.set_cursor(self.zoom.clone()); window.set_cursor_visible(true); }
             Wanted::System(icon) => { window.set_cursor(icon); window.set_cursor_visible(true); }
         }
     }
@@ -185,6 +190,25 @@ fn rotate() -> Pixmap {
     pixmap
 }
 
+/// A magnifying glass (zoom the view).
+fn magnifier() -> Pixmap {
+    let mut pixmap = Pixmap::new(SIZE, SIZE).unwrap();
+    let (cx, cy, r) = (14.0f32, 14.0f32, 7.5f32);
+    outline_then_fill(&mut pixmap, |pm, paint, extra| {
+        let ring = Stroke { width: 2.6 + extra, ..Default::default() };
+        let circle = PathBuilder::from_circle(cx, cy, r).unwrap();
+        pm.stroke_path(&circle, paint, &ring, Transform::identity(), None);
+        let handle = Stroke { width: 3.6 + extra, line_cap: LineCap::Round, ..Default::default() };
+        let mut pb = PathBuilder::new();
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        pb.move_to(cx + (r + 1.5) * k, cy + (r + 1.5) * k);
+        pb.line_to(26.0, 26.0);
+        let path = pb.finish().unwrap();
+        pm.stroke_path(&path, paint, &handle, Transform::identity(), None);
+    });
+    pixmap
+}
+
 fn rounded_rect(r: tiny_skia::Rect, radius: f32) -> tiny_skia::Path {
     let (l, t, rt, b) = (r.left(), r.top(), r.right(), r.bottom());
     let k = radius * 0.5523;
@@ -216,7 +240,7 @@ mod tests {
 
     #[test]
     fn cursor_bitmaps_have_ink() {
-        for pm in [hand(false), hand(true), rotate()] {
+        for pm in [hand(false), hand(true), rotate(), magnifier()] {
             let rgba = straight_rgba(&pm);
             assert_eq!(rgba.len(), (SIZE * SIZE * 4) as usize);
             let opaque = rgba.chunks(4).filter(|p| p[3] > 128).count();

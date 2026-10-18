@@ -7,17 +7,17 @@ use egui::{Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Vis
 
 /// The UI surface: menu bar, tool options bar, docks, and the thin frame
 /// around the canvas.
-pub const PANEL:        Color32 = Color32::from_rgb(0x1a, 0x1a, 0x1a);
+pub const PANEL:        Color32 = Color32::from_rgb(0x1f, 0x1f, 0x1f);
 /// Same surface (kept as a name for "behind everything").
 pub const BACKDROP:     Color32 = PANEL;
 /// Around the image, inside the canvas card (GPU clear color).
 pub const DESK:         Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
 /// Inset areas inside a card (layer list).
-pub const SURFACE:      Color32 = Color32::from_rgb(0x1d, 0x1d, 0x1e);
+pub const SURFACE:      Color32 = Color32::from_rgb(0x22, 0x22, 0x23);
 /// Widgets and list rows.
-pub const WIDGET:       Color32 = Color32::from_rgb(0x29, 0x29, 0x2a);
-pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x34, 0x34, 0x36);
-pub const BORDER:       Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2e);
+pub const WIDGET:       Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2f);
+pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x39, 0x39, 0x3b);
+pub const BORDER:       Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 /// Selection and slider fill: #0070E7 with 10 % less saturation (HSB).
 pub const ACCENT:       Color32 = Color32::from_rgb(0x17, 0x7c, 0xe7);
 /// The accent toned down (hovered separators, drop zones).

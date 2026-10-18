@@ -396,6 +396,11 @@ impl GpuState {
         (x + w / 2.0, y + h / 2.0)
     }
 
+    /// Pivot for turning the view (see CanvasView::rotation_pivot).
+    pub fn rotation_pivot(&self) -> (f32, f32) {
+        self.view.rotation_pivot(self.canvas_size(), self.viewport)
+    }
+
     pub fn view_zoom_at(&mut self, factor: f32, pivot: (f32, f32)) {
         let (c, a) = (self.canvas_size(), self.viewport);
         self.view.zoom_at(factor, pivot, c, a);
@@ -412,7 +417,7 @@ impl GpuState {
     }
 
     pub fn view_reset_rotation(&mut self) {
-        let (c, a, pivot) = (self.canvas_size(), self.viewport, self.view_center());
+        let (c, a, pivot) = (self.canvas_size(), self.viewport, self.rotation_pivot());
         let back = -self.view.angle;
         self.view.rotate_at(back, pivot, c, a);
     }
