@@ -1,4 +1,4 @@
-//! Tool options docker ("Tweaks"): settings of the selected brush, as
+//! Tool options docker: settings of the selected brush, as
 //! full-width sliders with their label and value inside, so the dock can
 //! be narrow without anything being cut off.
 

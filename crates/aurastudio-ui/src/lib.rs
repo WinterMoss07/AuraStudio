@@ -169,9 +169,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         .show_separator_line(false)
         .default_width(300.0)
         .width_range(240.0..=600.0)
-        .frame(Frame::none().fill(theme::BACKDROP).inner_margin(egui::Margin {
-            left: 0.0, right: theme::GAP, top: 0.0, bottom: theme::GAP,
-        }))
+        .frame(Frame::none().fill(theme::PANEL))
         .show(ctx, |ui| {
             let style = theme::dock_style(ui.style());
             let mut viewer = dockers::Viewer {
@@ -203,29 +201,29 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
 /// place the canvas viewport.
 pub const CANVAS_RECT_ID: &str = "aurastudio_canvas_rect";
 
-/// The canvas is a rounded card like the docks: what is left of the
-/// window, inset by the gap, with the backdrop painted around it and over
-/// its corners (the GPU draws the canvas below the whole UI).
+/// The canvas is the one rounded element: what is left of the window,
+/// right against the bar and the docks, with a thin frame of UI surface on
+/// its free sides (left, bottom). The surface is painted around it and
+/// over its corners (the GPU draws the canvas below the whole UI).
 fn canvas_card(ctx: &egui::Context) {
     use egui::{pos2, Rect, Shape};
     let free = ctx.available_rect();
-    let g = theme::GAP;
-    let card = Rect::from_min_max(pos2(free.left() + g, free.top()), pos2(free.right() - g, free.bottom() - g));
+    let g = theme::CANVAS_FRAME;
+    let card = Rect::from_min_max(pos2(free.left() + g, free.top()), pos2(free.right(), free.bottom() - g));
     if card.width() <= 0.0 || card.height() <= 0.0 { return; }
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(CANVAS_RECT_ID), card));
 
     let painter = ctx.layer_painter(egui::LayerId::background());
-    let fill = theme::BACKDROP;
+    let fill = theme::PANEL;
     for strip in [
         Rect::from_min_max(free.min, pos2(card.left(), free.bottom())),
-        Rect::from_min_max(pos2(card.right(), free.top()), free.max),
         Rect::from_min_max(pos2(card.left(), card.bottom()), pos2(card.right(), free.bottom())),
     ] {
         painter.rect_filled(strip, 0.0, fill);
     }
     // Each corner: the area between the corner and a quarter circle, as a
     // fan of triangles from the corner.
-    let r = theme::CARD_ROUNDING;
+    let r = theme::CANVAS_ROUNDING;
     for (corner, sx, sy) in [
         (card.left_top(), 1.0, 1.0),
         (card.right_top(), -1.0, 1.0),

@@ -1,33 +1,36 @@
 //! AuraStudio dark theme: neutral grays (R = G = B, give or take one
 //! level), one saturated blue for everything selected or filled (sliders,
-//! selected tab, layer and brush), and rounded cards floating on a darker
-//! backdrop instead of borders between the areas.
+//! selected tab, layer and brush). Menu bar, tool options bar and docks are
+//! one seamless surface; only the canvas is a rounded card set into it.
 
 use egui::{Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Visuals};
 
-/// Window background: menu bar and the gaps between the cards.
-pub const BACKDROP:     Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
-/// Cards: docks and the tool options bar.
-pub const PANEL:        Color32 = Color32::from_rgb(0x1f, 0x1f, 0x20);
+/// The UI surface: menu bar, tool options bar, docks, and the thin frame
+/// around the canvas. All grays are 10 % lighter (+25 levels) than the
+/// first version of this theme (#181818).
+pub const PANEL:        Color32 = Color32::from_rgb(0x31, 0x31, 0x31);
+/// Same surface (kept as a name for "behind everything").
+pub const BACKDROP:     Color32 = PANEL;
 /// Around the image, inside the canvas card (GPU clear color).
-pub const DESK:         Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2c);
+pub const DESK:         Color32 = Color32::from_rgb(0x44, 0x44, 0x45);
 /// Inset areas inside a card (layer list).
-pub const SURFACE:      Color32 = Color32::from_rgb(0x1b, 0x1b, 0x1c);
+pub const SURFACE:      Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2b);
 /// Widgets and list rows.
-pub const WIDGET:       Color32 = Color32::from_rgb(0x27, 0x27, 0x28);
-pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x32, 0x32, 0x34);
-pub const BORDER:       Color32 = Color32::from_rgb(0x2c, 0x2c, 0x2c);
-/// Selection and slider fill.
-pub const ACCENT:       Color32 = Color32::from_rgb(0x00, 0x70, 0xe7);
+pub const WIDGET:       Color32 = Color32::from_rgb(0x40, 0x40, 0x41);
+pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x4b, 0x4b, 0x4d);
+pub const BORDER:       Color32 = Color32::from_rgb(0x45, 0x45, 0x45);
+/// Selection and slider fill: #0070E7 with 10 % less saturation (HSB).
+pub const ACCENT:       Color32 = Color32::from_rgb(0x17, 0x7c, 0xe7);
 /// The accent toned down (hovered separators, drop zones).
-pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x0e, 0x3c, 0x6e);
+pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x1f, 0x4a, 0x7a);
 pub const TEXT:         Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
 pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0xaf, 0xaf, 0xb3);
 
-/// Corner radius of the cards (docks, bar, canvas).
-pub const CARD_ROUNDING: f32 = 8.0;
-/// Gap between the cards.
-pub const GAP: f32 = 6.0;
+/// Corner radius of the canvas.
+pub const CANVAS_ROUNDING: f32 = 10.0;
+/// Frame of UI surface left of and below the canvas (where nothing is
+/// docked yet).
+pub const CANVAS_FRAME: f32 = 3.0;
 
 /// DESK as a 0..1 float color, for the GPU clear (the UI paints the
 /// backdrop around the canvas card itself).
@@ -105,18 +108,17 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// egui_dock look matching the theme: each dock is a rounded card (tab
-/// bar on top, body below, same color), the gaps between them are the
-/// separators; the selected tab is a lighter pill.
+/// egui_dock look matching the theme: docks are seamless (tab bar, body
+/// and separators all the surface color, no borders); the selected tab is
+/// a lighter pill, and a separator lights up only when hovered.
 pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     let mut d = egui_dock::Style::from_egui(style);
-    let r = CARD_ROUNDING;
     d.main_surface_border_stroke = Stroke::NONE;
     d.tab_bar.bg_fill = PANEL;
     d.tab_bar.height  = 30.0;
     d.tab_bar.hline_color = PANEL;
-    d.tab_bar.rounding = Rounding { nw: r, ne: r, sw: 0.0, se: 0.0 };
-    d.separator.width = GAP;
+    d.tab_bar.rounding = Rounding::ZERO;
+    d.separator.width = 2.0;
     // egui_dock's own limit (175 pt per side) is replaced by each
     // dock's minimum height, see dock_layout.
     d.separator.extra = 8.0;
@@ -125,7 +127,7 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     d.separator.color_dragged = ACCENT;
     d.tab.tab_body.bg_fill = PANEL;
     d.tab.tab_body.stroke  = Stroke::NONE;
-    d.tab.tab_body.rounding = Rounding { nw: 0.0, ne: 0.0, sw: r, se: r };
+    d.tab.tab_body.rounding = Rounding::ZERO;
     d.tab.tab_body.inner_margin = Margin::same(8.0);
     d.tab.hline_below_active_tab_name = false;
     let pill = Rounding::same(6.0);

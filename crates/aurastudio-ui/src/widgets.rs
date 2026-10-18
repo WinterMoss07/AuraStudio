@@ -342,31 +342,43 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
     let id = ui.id().with(("fill_slider", id_salt));
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click_and_drag());
     let editing_id = id.with("editing");
-    let editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+    // (text typed so far, focus already given)
+    let editing: Option<(String, bool)> = ui.data(|d| d.get_temp(editing_id));
 
-    if let Some(mut text) = editing {
+    if let Some((mut text, focused)) = editing {
         ui.painter().rect(rect, 6.0, theme::WIDGET, Stroke::new(1.0_f32, theme::ACCENT));
         let edit = ui.put(rect, egui::TextEdit::singleline(&mut text)
             .frame(false)
             .hint_text(format(value))
             .horizontal_align(egui::Align::Center)
             .vertical_align(egui::Align::Center));
-        edit.request_focus();
+        // Focus once: asked every frame, it came straight back after a
+        // click elsewhere and only Escape could close the field.
+        if !focused { edit.request_focus(); }
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-        if edit.lost_focus() || enter || escape {
-            ui.data_mut(|d| d.remove::<String>(editing_id));
-            if escape { return None; }
+        let clicked_away = ui.input(|i| i.pointer.any_pressed()) && !edit.hovered();
+        let left = focused && !edit.has_focus();
+        if left || clicked_away || enter || escape {
+            ui.data_mut(|d| d.remove::<(String, bool)>(editing_id));
+            if escape || clicked_away && text.is_empty() { return None; }
             let digits: String = text.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
             return digits.parse::<f32>().ok().map(|v| v.clamp(lo, hi));
         }
-        ui.data_mut(|d| d.insert_temp(editing_id, text));
+        ui.data_mut(|d| d.insert_temp(editing_id, (text, true)));
         return None;
     }
 
+    // The first click of a double-click already moved the value: remember
+    // it from before each press, to put it back.
+    let before_id = id.with("before_press");
     if resp.double_clicked() {
         // Empty, the current value as a hint: typing replaces it.
-        ui.data_mut(|d| d.insert_temp(editing_id, String::new()));
+        ui.data_mut(|d| d.insert_temp(editing_id, (String::new(), false)));
+        return ui.data(|d| d.get_temp::<f32>(before_id)).filter(|v| (v - value).abs() >= 0.5);
+    }
+    if resp.hovered() && ui.input(|i| i.pointer.any_pressed()) {
+        ui.data_mut(|d| d.insert_temp(before_id, value));
     }
 
     let mut new = None;

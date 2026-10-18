@@ -66,13 +66,13 @@ UI stays quiet so the painting gets the room.
   The UI itself is not converted.
 
 ### Interface (egui + egui_dock)
-- Neutral dark theme with one blue accent; docks, tool options bar and
-  canvas are rounded cards floating on the backdrop, no borders between
-  them. Sliders fill with the accent and show their label and value inside
-  (double-click to type a value). Dock column: Chroma (RGB / HSV gradient
-  sliders, hex field), Tweaks (tool options), Bristles (brushes), Stack
-  (layers), Paper (canvas size). Docks can be rearranged, resized and
-  detached.
+- Neutral dark theme with one blue accent. Menu bar, tool options bar and
+  docks are one seamless surface (no borders, no gaps); only the canvas is
+  rounded, set right against the bar and the docks. Sliders fill with the
+  accent and show their label and value inside (double-click to type a
+  value, click elsewhere or Escape to leave). Dock column: Color (RGB / HSV
+  gradient sliders, hex field), Tool options, Brushes, Layers, Canvas. Docks
+  can be rearranged, resized and detached.
 
 ### Performance architecture
 - **Paint thread** — brushes paint on their own thread (one thread per
