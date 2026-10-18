@@ -18,6 +18,8 @@ use aurastudio_brush::{parse_myb, Brush, MyPaintBrush, MyPaintEngine};
 
 include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
+pub mod preview;
+
 /// Which engine paints a preset.
 #[derive(Clone)]
 pub enum Engine {

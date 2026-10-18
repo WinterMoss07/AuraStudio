@@ -12,6 +12,7 @@
 
 pub mod theme;
 mod bars;
+mod brush_preview;
 mod dock_layout;
 mod dockers;
 mod home;

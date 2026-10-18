@@ -3,6 +3,23 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.4.0 — 2026-10-18
+
+**New**
+- Brush previews. The Brushes docker is a list: each brush as an S stroke
+  painted by the brush itself (its engine, pressure tapering in and out),
+  its name in the bottom right corner, instead of the MyPaint icons.
+  Tool options shows the selected brush's stroke in place of its name and
+  engine, repainted as its settings change: smaller size, thinner stroke;
+  hardness 0, soft stroke; opacity, blend mode, Eraser tool.
+- Size in the previews: true size for small brushes, compressed beyond
+  (up to 1000 px), so every change shows. Brushes whose dynamics spill
+  out of the strip are drawn smaller.
+- Smudge, eraser, colorize and posterize brushes are previewed over color
+  bands (on empty paper they show nothing).
+- The list paints a few previews per frame (no freeze when opening a
+  collection of 36 brushes).
+
 ## 0.3.4 — 2026-10-18
 
 - Arc tool: a mouse button bouncing (a worn switch opens and closes again

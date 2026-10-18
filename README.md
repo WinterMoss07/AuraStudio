@@ -24,6 +24,10 @@ UI stays quiet so the painting gets the room.
   `.myb` import. Each brush keeps its own size / opacity / hardness / blend
   mode; 13 blend modes. GPU brush outline cursor, app-drawn hand / rotate
   cursors.
+- Brush previews: the Brushes docker lists each brush as a stroke painted
+  by the brush itself (name in the corner); Tool options shows the
+  selected brush's stroke, repainted as its size, hardness, opacity or
+  blend mode change.
 
 **Tools** — toolbox on the canvas's left edge, centered (Krita's optimized
 layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
@@ -125,6 +129,7 @@ cargo run --release -p aurastudio-layers --example bench_composite   # layer mer
 cargo run --release -p aurastudio-brush  --example bench_myb -- brush.myb 300  # MyPaint brush cost per sample
 cargo test  --release -p aurastudio -- --ignored pipeline --nocapture # paint thread + UI model
 cargo run --release -p aurastudio-brush  --example myb_sheet -- out.png a.myb b.myb  # MyPaint sample sheet
+cargo run --release -p aurastudio-brushes --example preview_sheet -- out.png [filter] # every brush preview
 cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png        # round brush strokes (SHEET_LOOP=1, SHEET_RAW=1, SHEET_CONST=1)
 ```
 
@@ -196,7 +201,7 @@ See `NOTICE.md` for third-party code and assets.
 **Missing / planned**
 - [ ] Smudge / blend strength sliders in Tool options (MyPaint brushes
       smudge too weakly by default).
-- [ ] Redesign of the Brushes docker.
+- [x] Brushes docker: list of brush strokes (0.4.0).
 - [ ] Redesign of the New document dialog.
 - [ ] PSD / ORA export.
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and

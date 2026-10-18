@@ -1,24 +1,26 @@
 //! Brushes docker: the brush presets, grouped (AuraStudio, then the
-//! MyPaint collections and imported packs), as a grid of previews.
-//! Click selects; each brush keeps its own size / opacity / blend mode.
-
-use std::collections::HashMap;
+//! MyPaint collections and imported packs), as a list of strokes painted
+//! by each brush (brush_preview.rs), its name in the corner. Click
+//! selects; each brush keeps its own size / opacity / blend mode, and the
+//! selected one's stroke follows its settings.
 
 use aurastudio_brushes::{Engine, Preset};
-use egui::{pos2, vec2, Color32, Rect, RichText, Sense, Stroke, Ui};
+use egui::{vec2, RichText, Sense, Stroke, Ui};
 
+use crate::brush_preview::{PreviewCache, Slot};
 use crate::{theme, Actions, ImportBrushes, Model};
 
-/// Tile size of a brush in the grid.
-const TILE: f32 = 58.0;
-/// Previews are decoded at this size (memory: ~10 KB each).
-const PREVIEW_PX: u32 = 64;
+/// Height of a brush's row (points).
+const ROW: f32 = 46.0;
 
 #[derive(Default)]
 pub struct BrushesState {
     filter:   String,
-    /// Preview textures by preset index, decoded the first time shown.
-    previews: HashMap<usize, Option<egui::TextureHandle>>,
+    /// Stroke previews, shared with the Tool options docker.
+    pub previews: PreviewCache,
+    /// Number of presets the previews were made for (an import changes
+    /// the list: they are redone).
+    count:    usize,
 }
 
 pub fn show(ui: &mut Ui, st: &mut BrushesState, m: &mut Model, a: &mut Actions) {
@@ -41,6 +43,10 @@ pub fn show(ui: &mut Ui, st: &mut BrushesState, m: &mut Model, a: &mut Actions) 
 
     let filter = st.filter.trim().to_lowercase();
     let presets = m.presets;
+    if presets.len() != st.count {
+        st.count = presets.len();
+        st.previews.clear_list();
+    }
     let current_group = presets.get(*m.preset).map(|p| p.group.clone());
     let mut groups: Vec<&str> = Vec::new();
     for p in presets {
@@ -63,69 +69,31 @@ pub fn show(ui: &mut Ui, st: &mut BrushesState, m: &mut Model, a: &mut Actions) 
                 .default_open(open)
                 .open(if filter.is_empty() { None } else { Some(true) })
                 .show(ui, |ui| {
-                    let cols = ((ui.available_width() + 4.0) / (TILE + 4.0)).floor().max(1.0) as usize;
-                    for row in members.chunks(cols) {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            for &i in row {
-                                if brush_tile(ui, st, &presets[i], i, i == *m.preset).clicked() {
-                                    *m.preset = i;
-                                }
-                            }
-                        });
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    for &i in &members {
+                        let selected = i == *m.preset;
+                        if brush_row(ui, st, &presets[i], i, selected, m.brush).clicked() {
+                            *m.preset = i;
+                        }
                     }
                 });
         }
     });
 }
 
-fn brush_tile(ui: &mut Ui, st: &mut BrushesState, p: &Preset, index: usize, selected: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(TILE, TILE + 14.0), Sense::click());
+fn brush_row(ui: &mut Ui, st: &mut BrushesState, p: &Preset, index: usize, selected: bool, current: &aurastudio_brush::Brush) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
     let resp = resp.on_hover_text(format!("{}\n{}", p.name, engine_label(&p.engine)));
     if !ui.is_rect_visible(rect) { return resp; }
-    let painter = ui.painter_at(rect);
-    let img = Rect::from_min_size(rect.min, vec2(TILE, TILE));
-
-    let bg = if selected { theme::ACCENT } else if resp.hovered() { theme::WIDGET } else { theme::SURFACE };
-    painter.rect_filled(img, 5.0, bg);
-
-    let tex = st.previews.entry(index).or_insert_with(|| {
-        p.decode_preview(PREVIEW_PX).map(|(w, h, rgba)| {
-            let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-            ui.ctx().load_texture(format!("brush-preview-{index}"), image, egui::TextureOptions::LINEAR)
-        })
-    });
-    match tex {
-        Some(tex) => {
-            let r = img.shrink(3.0);
-            painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        }
-        // Built-in brushes: a drawn dab (hard or soft).
-        None => {
-            let c = img.center();
-            let soft = p.settings.hardness < 0.5;
-            let rings = if soft { 8 } else { 1 };
-            for k in 0..rings {
-                let t = k as f32 / rings as f32;
-                let r = 18.0 * (1.0 - t * 0.9);
-                let a = if soft { (40.0 + 215.0 * t) as u8 } else { 230 };
-                painter.circle_filled(c, r, Color32::from_white_alpha(a).gamma_multiply(if soft { 0.35 } else { 1.0 }));
-            }
-        }
-    }
+    let bg = if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE };
+    ui.painter().rect_filled(rect, 4.0, bg);
+    // The selected brush is shown with its current settings.
+    let mut settings = if selected { current.clone() } else { p.settings.clone() };
+    settings.erase = false;
+    st.previews.show(ui, rect.shrink(1.0), Slot::List(index), p, &settings, &p.name);
     if selected {
-        painter.rect_stroke(img, 5.0, Stroke::new(1.5_f32, theme::ACCENT));
+        ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5_f32, theme::ACCENT));
     }
-
-    // Name under the preview, cut to fit.
-    let mut name = p.name.clone();
-    while name.chars().count() > 3 && ui.fonts(|f| f.layout_no_wrap(name.clone(), egui::FontId::proportional(10.0), Color32::WHITE).size().x) > TILE {
-        name.pop();
-        name.pop();
-        name.push('…');
-    }
-    painter.text(pos2(img.center().x, img.bottom() + 7.0), egui::Align2::CENTER_CENTER, name,
-        egui::FontId::proportional(10.0), if selected { theme::TEXT } else { theme::TEXT_WEAK });
     resp
 }
 

@@ -62,6 +62,14 @@ impl MyPaintEngine {
         (d, brush.get(BrushSetting::Opaque).base_value.clamp(0.0, 1.0))
     }
 
+    /// The brush mostly works on paint already there (smudge, eraser,
+    /// posterize, colorize, lock alpha), as the .myb file sets it: brush
+    /// previews give such brushes paint to work on.
+    pub fn works_on_paint(brush: &hokusai::Brush) -> bool {
+        [BrushSetting::Smudge, BrushSetting::Eraser, BrushSetting::Posterize, BrushSetting::Colorize, BrushSetting::LockAlpha]
+            .into_iter().any(|k| brush.get(k).base_value > 0.5)
+    }
+
     /// Edge hardness the .myb file was made with.
     pub fn native_hardness(brush: &hokusai::Brush) -> f32 {
         brush.get(BrushSetting::Hardness).base_value.clamp(0.0, 1.0)

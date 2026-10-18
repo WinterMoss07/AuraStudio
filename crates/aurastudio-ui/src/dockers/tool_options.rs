@@ -1,14 +1,18 @@
-//! Tool options docker: settings of the selected brush, as
-//! full-width sliders with their label and value inside, so the dock can
-//! be narrow without anything being cut off.
+//! Tool options docker: the selected brush's stroke (repainted as its
+//! settings change), then its settings as full-width sliders with their
+//! label and value inside, so the dock can be narrow without anything
+//! being cut off.
 
 use egui::{RichText, Ui};
 
 use crate::widgets::{blend_combo, hardness_slider, opacity_slider, size_slider};
-use crate::dockers::brushes::engine_label;
+use crate::brush_preview::{PreviewCache, Slot};
 use crate::{theme, Model};
 
-pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
+/// Height of the brush stroke strip (points).
+const STRIP: f32 = 56.0;
+
+pub fn show(ui: &mut Ui, previews: &mut PreviewCache, m: &mut Model, a: &mut crate::Actions) {
     if !m.tool.paints() {
         crate::tools::options(ui, m, a);
         return;
@@ -18,9 +22,13 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
     // Which brush these settings belong to (each brush keeps its own).
     let mypaint = m.presets.get(*m.preset).is_some_and(|p| p.engine.is_mypaint());
     if let Some(p) = m.presets.get(*m.preset) {
-        let prefix = if *m.tool == crate::Tool::Brush { String::new() } else { format!("{} · ", m.tool.name()) };
-        ui.label(RichText::new(format!("{prefix}{}", p.name)).strong());
-        ui.label(RichText::new(format!("{}  ·  {}", p.group, engine_label(&p.engine))).small().color(theme::TEXT_WEAK));
+        let name = if *m.tool == crate::Tool::Brush { p.name.clone() } else { format!("{} · {}", m.tool.name(), p.name) };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), STRIP), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 4.0, theme::SURFACE);
+        let mut settings = m.brush.clone();
+        settings.erase = *m.tool == crate::Tool::Eraser;
+        previews.show(ui, rect.shrink(1.0), Slot::ToolOptions, p, &settings, &name);
+        resp.on_hover_text(format!("{}  ·  {}", p.group, crate::dockers::brushes::engine_label(&p.engine)));
         ui.add_space(4.0);
     }
 

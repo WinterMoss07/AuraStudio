@@ -185,7 +185,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "arboard",
  "aurastudio-brush",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brush"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "aurastudio-canvas",
  "hokusai",
@@ -225,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brushes"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-canvas",
@@ -236,14 +236,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-canvas"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "wgpu",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "log",
  "moxcms 0.9.1",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-document"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-layers",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-document",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "aurastudio-canvas",
  "bytemuck",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-input"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "crossbeam-queue",
  "windows",
@@ -298,14 +298,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "aurastudio-canvas",
 ]
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-brushes",
