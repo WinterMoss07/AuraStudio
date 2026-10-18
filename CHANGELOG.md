@@ -10,6 +10,9 @@ Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
   start to that point. A release followed by a press within 60 ms is now
   taken as the button held all along (logged: "mouse button bounce
   ignored"). Same on the validating click (it could end the chain).
+- The Windows .exe carries its details (product name, description,
+  version, author), shown in Properties > Details: an unsigned .exe
+  without them is more often flagged by antivirus heuristics.
 - The arc tool's logic moved to `arc_tool.rs`, with tests replaying mouse
   sequences (drags, clicks, bounces, random sequences).
 
