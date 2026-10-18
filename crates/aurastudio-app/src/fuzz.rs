@@ -19,7 +19,7 @@ use aurastudio_brushes::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_gpu::CanvasView;
 use aurastudio_layers::{FillParams, Selection};
-use aurastudio_ui::{Actions, BlendMode, Model, Overlay, SelectCmd, Tool, UiState, ViewCmd};
+use aurastudio_ui::{Actions, BlendMode, Model, Overlay, SelectCmd, ShapeOptions, Tool, UiState, ViewCmd};
 use egui::{pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
 use crate::paint_thread::{Cmd, PaintThread};
@@ -135,6 +135,24 @@ fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (
     let brush = random_brush(r, &preset.settings);
     pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: preset.engine.clone() });
     let (w, h) = (size.0 as f32, size.1 as f32);
+    // Sometimes a geometry tool's shape (as App::paint_path sends it).
+    if r.chance(0.2) {
+        let far = if r.chance(0.1) { 1e6 } else { 1.3 };
+        let mut p = || (r.range(-0.3, far) * w, r.range(-0.3, far) * h);
+        let (a, b, m) = (p(), p(), p());
+        let path = match r.below(5) {
+            0 => crate::shapes::line(a, b),
+            1 => crate::shapes::rectangle(a, b),
+            2 => crate::shapes::ellipse(a, b),
+            3 => crate::shapes::arc(a, b, m, false),
+            _ => crate::shapes::arc(a, b, m, true),
+        };
+        for (i, (x, y)) in path.into_iter().enumerate() {
+            pt.send(Cmd::Sample { x, y, pressure: 1.0, time: i as f64 * 0.001 });
+        }
+        if finish { pt.send(Cmd::End); }
+        return;
+    }
     let far = r.chance(0.1);
     let mut t = 0.0f64;
     let (mut x, mut y) = (r.range(-50.0, w + 50.0), r.range(-50.0, h + 50.0));
@@ -185,6 +203,7 @@ fn fuzz() {
     let mut stroke_open = false;
     let mut tool = Tool::default();
     let mut fill = FillParams::default();
+    let mut shape = ShapeOptions::default();
     let (mut hidpi_scaling, mut ui_scale) = (true, 1.0f32);
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
@@ -229,8 +248,9 @@ fn fuzz() {
                         home: false,
                         tool: &mut tool,
                         fill: &mut fill,
+                        shape: &mut shape,
                         has_selection: sel_outlines.is_some(),
-                        overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None },
+                        overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None, shape: None, handles: &[] },
                         to_points: &to_points,
                         hidpi_scaling: &mut hidpi_scaling,
                         ui_scale: &mut ui_scale,

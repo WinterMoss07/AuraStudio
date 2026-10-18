@@ -30,6 +30,12 @@ layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangl
 - Fill on the merged image or the layer alone, tolerance, expand under
   anti-aliased lines; an A4 page in ~10–50 ms.
 - Painting, fill and Delete stay inside the selection.
+- Geometry tools (U cycles them), drawn with the current brush: Line
+  (Shift: 15° steps), Rectangle and Ellipse (Shift: square / circle, Alt:
+  from the center), and **Arc**: drag or click from start to end, move to
+  bend (free curve or circle arc), click to validate; with "Chain", the
+  next arc starts at the last end point, so outlines (hair, clothes) stay
+  closed for coloring. Escape stops.
 
 **Files**
 - `.aurs` documents (layers, folders, 50 undo steps, preview), atomic saves,
@@ -66,7 +72,7 @@ lock, rename, undo / redo with a memory budget.
 | Paint | pen / left mouse |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
 | Clear layer (or the selection) | Delete |
-| Tools | B brush, E eraser, G fill, I picker, M rectangle, L lasso |
+| Tools | B brush, E eraser, G fill, I picker, U line / rectangle / ellipse / arc, M rectangle selection, L lasso |
 | Pick a color | Alt + click (brush, eraser, fill) |
 | Select all / deselect | Ctrl+A / Ctrl+D |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |

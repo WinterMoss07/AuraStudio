@@ -143,8 +143,8 @@ pub fn options_bar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model) {
             ui.horizontal_centered(|ui| {
                 if m.tool.paints() {
                     let name = m.presets.get(*m.preset).map(|p| p.name.as_str()).unwrap_or("Brush");
-                    let eraser = if *m.tool == crate::Tool::Eraser { "Eraser · " } else { "" };
-                    ui.label(RichText::new(format!("{eraser}{name}")).strong());
+                    let prefix = if *m.tool == crate::Tool::Brush { String::new() } else { format!("{} · ", m.tool.name()) };
+                    ui.label(RichText::new(format!("{prefix}{name}")).strong());
                     ui.add_space(10.0);
                     size_slider(ui, "bar_size", m.brush, 190.0);
                     ui.add_space(4.0);

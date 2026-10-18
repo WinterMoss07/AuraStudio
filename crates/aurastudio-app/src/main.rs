@@ -4,6 +4,7 @@ mod cursors;
 mod fuzz;
 mod paint_thread;
 mod projection;
+mod shapes;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 

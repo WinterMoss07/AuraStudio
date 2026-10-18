@@ -18,8 +18,8 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
     // Which brush these settings belong to (each brush keeps its own).
     let mypaint = m.presets.get(*m.preset).is_some_and(|p| p.engine.is_mypaint());
     if let Some(p) = m.presets.get(*m.preset) {
-        let eraser = if *m.tool == crate::Tool::Eraser { "Eraser · " } else { "" };
-        ui.label(RichText::new(format!("{eraser}{}", p.name)).strong());
+        let prefix = if *m.tool == crate::Tool::Brush { String::new() } else { format!("{} · ", m.tool.name()) };
+        ui.label(RichText::new(format!("{prefix}{}", p.name)).strong());
         ui.label(RichText::new(format!("{}  ·  {}", p.group, engine_label(&p.engine))).small().color(theme::TEXT_WEAK));
         ui.add_space(4.0);
     }
@@ -29,6 +29,7 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
     size_slider(ui, "dock_size", m.brush, w);
     opacity_slider(ui, "dock_opacity", m.brush, w);
     hardness_slider(ui, "dock_hardness", m.brush, w);
+    if m.tool.is_shape() { crate::tools::shape_options(ui, m); }
 
     if mypaint {
         // MyPaint brushes blend their dabs themselves (normal, eraser,

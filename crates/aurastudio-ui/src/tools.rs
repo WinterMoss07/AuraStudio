@@ -16,15 +16,24 @@ pub enum Tool {
     Fill,
     Lasso,
     RectSelect,
+    Line,
+    Rectangle,
+    Ellipse,
+    Arc,
 }
 
 impl Tool {
     /// Toolbox order. No hand or zoom tool: Space / Ctrl+Space drags and
     /// the wheel do that from any tool.
-    pub const ALL: [Tool; 6] = [
+    pub const ALL: [Tool; 10] = [
         Tool::Brush, Tool::Eraser, Tool::Fill, Tool::Picker,
+        Tool::Line, Tool::Rectangle, Tool::Ellipse, Tool::Arc,
         Tool::RectSelect, Tool::Lasso,
     ];
+
+    /// Geometry tools: they draw a shape with the current brush. U cycles
+    /// through them (Photoshop).
+    pub const SHAPES: [Tool; 4] = [Tool::Line, Tool::Rectangle, Tool::Ellipse, Tool::Arc];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -34,6 +43,10 @@ impl Tool {
             Tool::Fill       => "Fill",
             Tool::Lasso      => "Lasso selection",
             Tool::RectSelect => "Rectangle selection",
+            Tool::Line       => "Line",
+            Tool::Rectangle  => "Rectangle",
+            Tool::Ellipse    => "Ellipse",
+            Tool::Arc        => "Arc",
         }
     }
 
@@ -46,11 +59,17 @@ impl Tool {
             Tool::Fill       => "G",
             Tool::Lasso      => "L",
             Tool::RectSelect => "M",
+            Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => "U",
         }
     }
 
-    /// The tool of a shortcut key, if any.
-    pub fn from_key(c: &str) -> Option<Tool> {
+    /// The tool of a shortcut key, if any (U: the next geometry tool after
+    /// `current`).
+    pub fn from_key(c: &str, current: Tool) -> Option<Tool> {
+        if c.eq_ignore_ascii_case("u") {
+            let i = Tool::SHAPES.iter().position(|&t| t == current).map_or(0, |i| (i + 1) % Tool::SHAPES.len());
+            return Some(Tool::SHAPES[i]);
+        }
         Tool::ALL.into_iter().find(|t| t.key().eq_ignore_ascii_case(c))
     }
 
@@ -63,14 +82,34 @@ impl Tool {
             Tool::Fill       => Icon::Fill,
             Tool::Lasso      => Icon::Lasso,
             Tool::RectSelect => Icon::RectSelect,
+            Tool::Line       => Icon::Line,
+            Tool::Rectangle  => Icon::Rectangle,
+            Tool::Ellipse    => Icon::Ellipse,
+            Tool::Arc        => Icon::Arc,
         }
     }
 
     /// Paints with the brush (size, opacity... apply; outline cursor).
-    pub fn paints(self) -> bool { matches!(self, Tool::Brush | Tool::Eraser) }
+    pub fn paints(self) -> bool { matches!(self, Tool::Brush | Tool::Eraser) || self.is_shape() }
+
+    pub fn is_shape(self) -> bool { Tool::SHAPES.contains(&self) }
 
     /// Separator above it in the toolbox.
-    fn group_start(self) -> bool { matches!(self, Tool::RectSelect) }
+    fn group_start(self) -> bool { matches!(self, Tool::Line | Tool::RectSelect) }
+}
+
+/// Settings of the geometry tools.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapeOptions {
+    /// Arc: once validated, the next arc starts at its end point (closed,
+    /// clean outlines for coloring).
+    pub chain_arcs:   bool,
+    /// Arc: a piece of circle instead of a free curve.
+    pub circular_arc: bool,
+}
+
+impl Default for ShapeOptions {
+    fn default() -> Self { Self { chain_arcs: true, circular_arc: false } }
 }
 
 /// Width of the toolbox.
@@ -147,7 +186,7 @@ pub fn options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
             selection_buttons(ui, m, a);
             hint(ui, "Drag to select; a click without dragging deselects. Painting, fill and Delete then only change the selection.");
         }
-        Tool::Brush | Tool::Eraser => {}
+        Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => {}
     }
 }
 
@@ -186,6 +225,9 @@ pub struct Overlay<'a> {
     pub selection: &'a [Vec<(f32, f32)>],
     /// Lasso or rectangle being drawn (closed when shown).
     pub drawing:   Option<&'a [(f32, f32)]>,
+    /// Shape about to be painted (geometry tools), and its handles.
+    pub shape:     Option<&'a [(f32, f32)]>,
+    pub handles:   &'a [(f32, f32)],
 }
 
 /// Selection outlines as static "marching ants" (black and white dashes,
@@ -201,4 +243,35 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
     };
     for o in overlay.selection { outline(o); }
     if let Some(d) = overlay.drawing { outline(d); }
+    let pt = |p: (f32, f32)| { let (x, y) = to_points(p); pos2(x, y) };
+    if let Some(s) = overlay.shape {
+        let v: Vec<Pos2> = s.iter().map(|&p| pt(p)).collect();
+        // Dark under light: visible on any color.
+        painter.add(Shape::line(v.clone(), Stroke::new(3.0_f32, Color32::from_black_alpha(140))));
+        painter.add(Shape::line(v, Stroke::new(1.5_f32, theme::ACCENT)));
+    }
+    for &h in overlay.handles {
+        painter.circle(pt(h), 4.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));
+    }
+}
+
+/// Options of the geometry tools, under the brush settings.
+pub fn shape_options(ui: &mut Ui, m: &mut Model) {
+    let hint = |ui: &mut Ui, t: &str| { ui.label(RichText::new(t).small().color(theme::TEXT_WEAK)); };
+    ui.add_space(4.0);
+    match *m.tool {
+        Tool::Line => hint(ui, "Drag to draw. Shift: steps of 15°. Drawn with the current brush."),
+        Tool::Rectangle => hint(ui, "Drag to draw. Shift: square, Alt: from the center."),
+        Tool::Ellipse => hint(ui, "Drag to draw. Shift: circle, Alt: from the center."),
+        Tool::Arc => {
+            ui.checkbox(&mut m.shape.chain_arcs, "Chain: next arc starts at the end point")
+                .on_hover_text("Each validated arc starts the next one where it ended: outlines stay closed for coloring. Escape stops.");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut m.shape.circular_arc, false, "Free curve");
+                ui.selectable_value(&mut m.shape.circular_arc, true, "Circle arc");
+            });
+            hint(ui, "Drag (or click twice) from start to end, move to bend, click to validate. Escape cancels.");
+        }
+        _ => {}
+    }
 }

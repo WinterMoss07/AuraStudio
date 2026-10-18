@@ -19,7 +19,7 @@ use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent
 use aurastudio_document::{Document, SharedDoc, Workspace};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_layers::{FillParams, Selection};
-use aurastudio_ui::{Actions, Dialog, DialogChoice, FileCmd, ImportBrushes, Model, Overlay, SelectCmd, Tool, UiState, ViewCmd};
+use aurastudio_ui::{Actions, Dialog, DialogChoice, FileCmd, ImportBrushes, Model, Overlay, SelectCmd, ShapeOptions, Tool, UiState, ViewCmd};
 
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
@@ -130,13 +130,30 @@ enum Gesture {
     Lasso(Vec<(f32, f32)>),
     /// Rectangle selection: corner where it started, and the other one.
     Rect((f32, f32), (f32, f32)),
+    /// Line, rectangle or ellipse being dragged.
+    Shape { tool: Tool, start: (f32, f32), end: (f32, f32) },
+}
+
+/// A geometry tool's preview: its path, and the handles to show.
+type Preview = (Vec<(f32, f32)>, Vec<(f32, f32)>);
+
+/// The arc tool between clicks (it lives across presses and releases).
+#[derive(Clone, Copy, Debug)]
+enum ArcState {
+    /// Start placed; the end follows the cursor. `held`: the button is
+    /// down (dragging to the end); up: waiting for a click on the end.
+    Placing { start: (f32, f32), end: (f32, f32), held: bool },
+    /// Both ends placed: moving the cursor bends the arc, a click paints
+    /// it. `origin`: cursor when bending started (the bend follows how far
+    /// the cursor moved from there, so the arc starts straight).
+    Bending { start: (f32, f32), end: (f32, f32), origin: (f32, f32), cursor: (f32, f32) },
 }
 
 impl Gesture {
     /// The outline being drawn, canvas pixels.
     fn outline(&self) -> Option<Vec<(f32, f32)>> {
         match self {
-            Gesture::Pick => None,
+            Gesture::Pick | Gesture::Shape { .. } => None,
             Gesture::Lasso(p) => Some(p.clone()),
             Gesture::Rect(a, b) => Some(vec![*a, (b.0, a.1), *b, (a.0, b.1)]),
         }
@@ -258,7 +275,11 @@ pub struct App {
     /// Selected tool, the fill tool's settings.
     tool:       Tool,
     fill:       FillParams,
+    shape:      ShapeOptions,
     gesture:    Option<Gesture>,
+    arc:        Option<ArcState>,
+    /// The press that validated an arc: its release starts nothing.
+    arc_skip_release: bool,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -358,7 +379,10 @@ impl App {
             settings:   load_settings(),
             tool:       Tool::default(),
             fill:       FillParams::default(),
+            shape:      ShapeOptions::default(),
             gesture:    None,
+            arc:        None,
+            arc_skip_release: false,
 
             painted:      false,
             // Upload the first composite.
@@ -489,7 +513,7 @@ impl App {
             None if self.is_drawing => Wanted::Hidden,
             None if self.over_canvas && !self.home => match self.tool {
                 _ if self.gesture.is_some() || self.picking_with_alt() => Wanted::System(CursorIcon::Crosshair),
-                Tool::Brush | Tool::Eraser => Wanted::Hidden,
+                Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => Wanted::Hidden,
                 Tool::Picker | Tool::Fill | Tool::Lasso | Tool::RectSelect => Wanted::System(CursorIcon::Crosshair),
             },
             None if self.over_canvas => Wanted::System(CursorIcon::Default),
@@ -536,6 +560,10 @@ impl App {
         let tool = if self.picking_with_alt() { Tool::Picker } else { self.tool };
         let at = self.window_to_canvas(self.cursor.0, self.cursor.1);
         match tool {
+            Tool::Line | Tool::Rectangle | Tool::Ellipse => {
+                self.gesture = at.map(|p| Gesture::Shape { tool, start: p, end: p });
+            }
+            Tool::Arc => if let Some(p) = at { self.arc_press(p) },
             Tool::Brush | Tool::Eraser => {
                 self.pressure = 1.0;
                 self.begin_stroke();
@@ -571,7 +599,7 @@ impl App {
                 let last = *points.last().unwrap();
                 if (at.0 - last.0).abs().max((at.1 - last.1).abs()) * zoom >= 1.5 { points.push(at); }
             }
-            Some(Gesture::Rect(_, end)) => *end = at,
+            Some(Gesture::Rect(_, end)) | Some(Gesture::Shape { end, .. }) => *end = at,
             None => return,
         }
         self.request_redraw();
@@ -592,9 +620,130 @@ impl App {
                 Selection::rect(w, h, r)
             }
             Gesture::Rect(..) => None,
+            Gesture::Shape { tool, start, end } => {
+                // A click without dragging draws nothing.
+                if (start.0 - end.0).abs().max((start.1 - end.1).abs()) * zoom >= 2.0 {
+                    let path = self.shape_path(tool, start, end);
+                    self.paint_path(path);
+                }
+                self.update_cursor();
+                self.request_redraw();
+                return;
+            }
         };
         self.set_selection(sel);
         self.update_cursor();
+    }
+
+    /// Path of a line / rectangle / ellipse dragged from `start` to `end`,
+    /// with the modifiers held (Shift: 15° steps, square, circle; Alt:
+    /// from the center).
+    fn shape_path(&self, tool: Tool, start: (f32, f32), end: (f32, f32)) -> Vec<(f32, f32)> {
+        let (shift, alt) = (self.shift_held(), self.modifiers.alt_key());
+        match tool {
+            Tool::Line => crate::shapes::line(start, if shift { crate::shapes::snap_angle(start, end) } else { end }),
+            Tool::Rectangle => { let (a, b) = crate::shapes::drag_box(start, end, shift, alt); crate::shapes::rectangle(a, b) }
+            Tool::Ellipse => { let (a, b) = crate::shapes::drag_box(start, end, shift, alt); crate::shapes::ellipse(a, b) }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The arc as it would be painted now.
+    fn arc_path(&self, a: ArcState) -> Vec<(f32, f32)> {
+        match a {
+            ArcState::Placing { start, end, .. } => crate::shapes::line(start, end),
+            ArcState::Bending { start, end, origin, cursor } => {
+                let mid = ((start.0 + end.0) / 2.0 + cursor.0 - origin.0, (start.1 + end.1) / 2.0 + cursor.1 - origin.1);
+                crate::shapes::arc(start, end, mid, self.shape.circular_arc)
+            }
+        }
+    }
+
+    /// Geometry tool preview: the path and its handles.
+    fn shape_preview(&self) -> Option<Preview> {
+        if let Some(Gesture::Shape { tool, start, end }) = self.gesture {
+            return Some((self.shape_path(tool, start, end), Vec::new()));
+        }
+        let a = self.arc?;
+        let ends = match a {
+            ArcState::Placing { start, end, .. } | ArcState::Bending { start, end, .. } => vec![start, end],
+        };
+        Some((self.arc_path(a), ends))
+    }
+
+    fn arc_press(&mut self, at: (f32, f32)) {
+        self.arc = match self.arc {
+            None => Some(ArcState::Placing { start: at, end: at, held: true }),
+            Some(ArcState::Placing { start, .. }) => Some(ArcState::Placing { start, end: at, held: true }),
+            Some(a @ ArcState::Bending { end, .. }) => {
+                // Validate: paint it, and maybe start the next one there.
+                let path = self.arc_path(a);
+                self.paint_path(path);
+                self.arc_skip_release = true;
+                self.shape.chain_arcs.then_some(ArcState::Placing { start: end, end: at, held: false })
+            }
+        };
+        self.request_redraw();
+    }
+
+    fn arc_release(&mut self, at: (f32, f32)) {
+        if std::mem::take(&mut self.arc_skip_release) { return; }
+        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        if let Some(ArcState::Placing { start, held: true, .. }) = self.arc {
+            let far = (at.0 - start.0).abs().max((at.1 - start.1).abs()) * zoom >= 4.0;
+            // Dragged to the end: bend now; a click on the start: wait for
+            // a second click on the end.
+            self.arc = Some(if far {
+                ArcState::Bending { start, end: at, origin: at, cursor: at }
+            } else {
+                ArcState::Placing { start, end: at, held: false }
+            });
+            self.request_redraw();
+        }
+    }
+
+    /// Cursor moved (button up or down) with an arc on the way.
+    fn arc_move(&mut self, at: (f32, f32)) {
+        match &mut self.arc {
+            Some(ArcState::Placing { end, .. }) => *end = at,
+            Some(ArcState::Bending { cursor, .. }) => *cursor = at,
+            None => return,
+        }
+        self.request_redraw();
+    }
+
+    /// Paint a geometry tool's path as one stroke with the current brush
+    /// (full pressure, an even pen speed for speed-sensitive brushes).
+    fn paint_path(&mut self, path: Vec<(f32, f32)>) {
+        if path.is_empty() { return; }
+        if let Some(msg) = self.paint_refusal() {
+            self.ui.notify(msg);
+            self.request_redraw();
+            return;
+        }
+        let mut brush = self.brush.clone();
+        brush.erase = false;
+        self.paint.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, engine: self.library.presets[self.preset].engine.clone() });
+        let mut time = self.start.elapsed().as_secs_f64();
+        let mut last = path[0];
+        for (x, y) in path {
+            // 2000 canvas px per second.
+            time += (((x - last.0).powi(2) + (y - last.1).powi(2)).sqrt() as f64 / 2000.0).max(0.0005);
+            last = (x, y);
+            self.paint.send(Cmd::Sample { x, y, pressure: 1.0, time });
+        }
+        self.paint.send(Cmd::End);
+    }
+
+    /// Why the active layer can't be painted, if it can't. try_lock: if
+    /// the paint thread is busy, don't wait; it checks again itself.
+    fn paint_refusal(&self) -> Option<&'static str> {
+        match self.doc.try_lock() {
+            Ok(doc) if doc.layers.can_paint() => None,
+            Ok(doc) if doc.layers.active_node().is_folder() => Some("Select a layer to paint (a folder is selected)"),
+            Ok(_) => Some("Layer is locked"),
+            Err(_) => None,
+        }
     }
 
     fn set_selection(&mut self, sel: Option<Selection>) {
@@ -638,6 +787,7 @@ impl App {
     fn set_tool(&mut self, tool: Tool) {
         if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
         self.tool = tool;
+        self.arc = None;
         self.update_cursor();
         self.request_redraw();
     }
@@ -782,16 +932,8 @@ impl App {
     /// Start a stroke on the active layer. Refused (with a notice in the
     /// options bar) when it is locked or a folder is selected.
     fn begin_stroke(&mut self) {
-        // Instant feedback when the layer can't be painted. try_lock: if
-        // the paint thread is still busy with the previous stroke, don't
-        // wait for it; it checks again itself and reports a refusal.
-        let refusal = match self.doc.try_lock() {
-            Ok(doc) if doc.layers.can_paint() => None,
-            Ok(doc) if doc.layers.active_node().is_folder() => Some("Select a layer to paint (a folder is selected)"),
-            Ok(_) => Some("Layer is locked"),
-            Err(_) => None,
-        };
-        if let Some(msg) = refusal {
+        // Instant feedback when the layer can't be painted.
+        if let Some(msg) = self.paint_refusal() {
             self.ui.notify(msg);
             self.is_drawing = false;
             self.request_redraw();
@@ -844,6 +986,7 @@ impl App {
         self.ctrl_down = false;
         self.nav = None;
         self.gesture = None;
+        self.arc = None;
         if self.is_drawing {
             self.end_stroke();
         }
@@ -895,6 +1038,7 @@ impl App {
 
     fn render_frame(&mut self) {
         self.update_outline();
+        let preview = self.shape_preview();
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
@@ -928,6 +1072,7 @@ impl App {
         let tool = &mut self.tool;
         let fill = &mut self.fill;
         let drawing = self.gesture.as_ref().and_then(Gesture::outline);
+        let shape = &mut self.shape;
         let snap = gpu.view_snapshot();
         let to_points = move |p: (f32, f32)| snap.to_points(p);
         let mut actions = Actions::default();
@@ -955,7 +1100,10 @@ impl App {
                 overlay: Overlay {
                     selection: d.selection.as_ref().map_or(&[], |s| s.outlines()),
                     drawing: drawing.as_deref(),
+                    shape: preview.as_ref().map(|p| &p.0[..]),
+                    handles: preview.as_ref().map_or(&[], |p| &p.1[..]),
                 },
+                shape,
                 to_points: &to_points,
                 hidpi_scaling: &mut hidpi_scaling,
                 ui_scale: &mut ui_scale,
@@ -1011,7 +1159,10 @@ impl App {
             self.apply_settings();
             save_settings(self.settings);
         }
-        if self.tool != tool_before { self.update_cursor(); }
+        if self.tool != tool_before {
+            self.arc = None;
+            self.update_cursor();
+        }
         if let Some(cmd) = actions.select { self.select(cmd); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
         if let Some(choice) = actions.dialog { self.on_dialog(choice); }
@@ -1661,8 +1812,13 @@ impl ApplicationHandler<AppEvent> for App {
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => self.redo(),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.select(SelectCmd::All),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::None),
-                    Key::Character(c) if !ctrl && !key.repeat && Tool::from_key(c).is_some() => {
-                        if let Some(t) = Tool::from_key(c) { self.set_tool(t); }
+                    Key::Character(c) if !ctrl && !key.repeat && Tool::from_key(c, self.tool).is_some() => {
+                        if let Some(t) = Tool::from_key(c, self.tool) { self.set_tool(t); }
+                    }
+                    // Stop the arc in progress (and a chain of arcs).
+                    Key::Named(NamedKey::Escape | NamedKey::Enter) if self.arc.is_some() => {
+                        self.arc = None;
+                        self.request_redraw();
                     }
                     // View keys (Krita): 1 = 100 %, 2 = fit, 4 / 6 = rotate
                     // by 15 degrees, 5 = reset rotation, + / - = zoom.
@@ -1702,6 +1858,8 @@ impl ApplicationHandler<AppEvent> for App {
                     self.end_stroke();
                 } else if self.gesture.is_some() {
                     self.tool_release();
+                } else if self.arc.is_some() || self.arc_skip_release {
+                    if let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) { self.arc_release(at); }
                 }
             }
 
@@ -1751,6 +1909,8 @@ impl ApplicationHandler<AppEvent> for App {
                     self.drag_nav();
                 } else if self.gesture.is_some() {
                     self.tool_drag();
+                } else if self.arc.is_some() {
+                    if let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) { self.arc_move(at); }
                 } else if self.is_drawing && !self.pen_active {
                     if let Some((x, y)) = self.press_point.take() { self.draw_at(x, y, None); }
                     self.draw_at(self.cursor.0, self.cursor.1, None);

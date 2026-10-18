@@ -30,7 +30,7 @@ use egui_dock::{DockArea, DockState};
 pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
 pub use home::{NewDoc, RecentFile};
-pub use tools::{Overlay, SelectCmd, Tool};
+pub use tools::{Overlay, SelectCmd, ShapeOptions, Tool};
 pub use widgets::set_display_transform;
 
 /// Brush size range, as a diameter in pixels.
@@ -64,6 +64,7 @@ pub struct Model<'a> {
     /// Selected tool and the fill tool's settings.
     pub tool:               &'a mut Tool,
     pub fill:               &'a mut FillParams,
+    pub shape:              &'a mut ShapeOptions,
     pub has_selection:      bool,
     /// Drawn over the canvas, placed with `to_points` (canvas pixel ->
     /// egui point).

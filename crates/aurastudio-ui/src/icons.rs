@@ -10,6 +10,7 @@ use egui::{vec2, Color32, ImageSource, Rect, Ui};
 pub enum Icon {
     // Toolbox.
     Brush, Eraser, Picker, Fill, Lasso, RectSelect,
+    Line, Rectangle, Ellipse, Arc,
     // Layers docker.
     NewLayer, NewFolder, Duplicate, Up, Down, Delete,
     Eye, EyeOff, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
@@ -25,6 +26,10 @@ impl Icon {
             Icon::Fill       => svg!("../icons/paint-bucket.svg"),
             Icon::Lasso      => svg!("../icons/lasso.svg"),
             Icon::RectSelect => svg!("../icons/square-dashed.svg"),
+            Icon::Line       => svg!("../icons/slash.svg"),
+            Icon::Rectangle  => svg!("../icons/square.svg"),
+            Icon::Ellipse    => svg!("../icons/circle.svg"),
+            Icon::Arc        => svg!("../icons/spline.svg"),
             Icon::NewLayer   => svg!("../icons/layers-plus.svg"),
             Icon::NewFolder  => svg!("../icons/folder-plus.svg"),
             Icon::Duplicate  => svg!("../icons/copy.svg"),
