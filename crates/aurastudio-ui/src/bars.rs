@@ -99,6 +99,18 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         });
                     });
                     ui.separator();
+                    ui.checkbox(m.pixel_exact, "1 image pixel = 1 screen pixel")
+                        .on_hover_text("Off: 100 % shows a picture at the same size on every screen, following the system's display scaling (a 4K laptop and an HD monitor alike). On: one image pixel per physical screen pixel (pixel art).");
+                    ui.menu_button("Interface size", |ui| {
+                        for s in crate::UI_SCALES {
+                            let label = format!("{:.0} %", s * 100.0);
+                            if ui.radio((*m.ui_scale - s).abs() < 1e-3, label).clicked() {
+                                *m.ui_scale = s;
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();
                         ui.close_menu();

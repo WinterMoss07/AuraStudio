@@ -25,8 +25,8 @@ UI stays quiet so the painting gets the room.
   mode; 13 blend modes. GPU brush outline cursor, app-drawn hand / rotate
   cursors.
 
-**Tools** — toolbox in the canvas's top-left corner (Krita's optimized
-layout): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
+**Tools** — toolbox on the canvas's left edge, centered (Krita's optimized
+layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
 - Fill on the merged image or the layer alone, tolerance, expand under
   anti-aliased lines; an A4 page in ~10–50 ms.
 - Painting, fill and Delete stay inside the selection.
@@ -44,6 +44,11 @@ layout): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
 lock, rename, undo / redo with a memory budget.
 
 **View** — GPU zoom / pan / rotation, monitor ICC color management.
+- High-density screens: 100 % follows the system's display scaling, so a
+  picture has the same size on a 3K laptop and an HD monitor; moving the
+  window to another monitor keeps it the same size. View menu: "1 image
+  pixel = 1 screen pixel" (XnView's option) and Interface size (75–150 %),
+  both remembered.
 
 **Under the hood**
 - Brushes on their own thread (never split); merge of the changed areas off
@@ -127,17 +132,18 @@ See `NOTICE.md` for third-party code and assets.
 ## To check / next steps
 
 **To verify on a real machine (Windows + pen)**
-- [ ] Display color management with the real monitor profile: are grays now
-      neutral? (log line `monitor profile: …`; toggle in the View menu)
-- [ ] A 1000 px brush on an A4 300 dpi canvas: per-stroke log lines
-      (`stroke: … paint avg …`, `max queued`).
+- [x] Display color management with the real monitor profile.
+- [x] A 1000 px brush on an A4 300 dpi canvas: no lag.
 - [x] Rotation with the pen (Shift + Space + drag).
-- [ ] MyPaint brushes: smudge / blender behavior, speed-dependent brushes
-      (they now get the pen's own timestamps).
+- [x] MyPaint brushes: smudge / blender behavior.
+- [ ] Moving the window between a 3K and an HD screen: same picture size,
+      interface follows (log line `display scaling: …`).
 - [ ] Brush import dialog (files and folder) and that imports come back at
       the next launch.
 
 **Missing / planned**
+- [ ] Smudge / blend strength sliders in Tool options (MyPaint brushes
+      smudge too weakly by default).
 - [ ] Redesign of the Brushes docker.
 - [ ] Redesign of the New document dialog.
 - [ ] PSD / ORA export.

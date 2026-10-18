@@ -54,6 +54,18 @@ impl Tool {
         Tool::ALL.into_iter().find(|t| t.key().eq_ignore_ascii_case(c))
     }
 
+    fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Tool::Brush      => Icon::Brush,
+            Tool::Eraser     => Icon::Eraser,
+            Tool::Picker     => Icon::Picker,
+            Tool::Fill       => Icon::Fill,
+            Tool::Lasso      => Icon::Lasso,
+            Tool::RectSelect => Icon::RectSelect,
+        }
+    }
+
     /// Paints with the brush (size, opacity... apply; outline cursor).
     pub fn paints(self) -> bool { matches!(self, Tool::Brush | Tool::Eraser) }
 
@@ -64,23 +76,24 @@ impl Tool {
 /// Width of the toolbox.
 pub const TOOLBOX_WIDTH: f32 = 40.0;
 
-/// The toolbox: a small block of the UI surface coming down into the
-/// top-left corner of the canvas, only as tall as its tools (Krita's
-/// optimized layout); the canvas goes on to the window edge below it.
-/// Returns its rect.
+/// The toolbox: a small block of the UI surface on the left edge of the
+/// canvas, centered, only as tall as its tools (Krita's optimized layout);
+/// the canvas goes on to the window edge above and below it. `at`: middle
+/// of the canvas's left edge. Returns its rect.
 pub fn toolbox(ctx: &egui::Context, at: Pos2, m: &mut Model) -> Rect {
     let r = theme::CANVAS_ROUNDING;
     let id = egui::Id::new("toolbox");
     // Above the start screen, which covers the whole canvas area.
     ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
     egui::Area::new(id)
+        .pivot(egui::Align2::LEFT_CENTER)
         .fixed_pos(at)
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
             egui::Frame::none()
                 .fill(theme::PANEL)
-                .rounding(egui::Rounding { se: r, ..Default::default() })
-                .inner_margin(egui::Margin { left: 4.0, right: 4.0, top: 2.0, bottom: 6.0 })
+                .rounding(egui::Rounding { ne: r, se: r, ..Default::default() })
+                .inner_margin(egui::Margin::symmetric(4.0, 6.0))
                 .show(ui, |ui| {
                     ui.set_width(TOOLBOX_WIDTH - 8.0);
                     ui.spacing_mut().item_spacing.y = 2.0;
@@ -113,22 +126,10 @@ fn tool_button(ui: &mut Ui, tool: Tool, selected: bool, enabled: bool) -> bool {
         (true, true) => theme::TEXT,
         (true, false) => Color32::from_gray(0xc8),
     };
-    egui::Image::new(icon(tool)).tint(col).paint_at(ui, Rect::from_center_size(rect.center(), vec2(20.0, 20.0)));
+    crate::icons::paint(ui, tool.icon(), rect, 20.0, col);
     enabled && resp.clicked()
 }
 
-/// Tool icons: Lucide (ISC license, see icons/LICENSE-lucide), drawn
-/// white in the SVG and tinted here.
-fn icon(tool: Tool) -> egui::ImageSource<'static> {
-    match tool {
-        Tool::Brush      => egui::include_image!("../icons/brush.svg"),
-        Tool::Eraser     => egui::include_image!("../icons/eraser.svg"),
-        Tool::Picker     => egui::include_image!("../icons/pipette.svg"),
-        Tool::Fill       => egui::include_image!("../icons/paint-bucket.svg"),
-        Tool::Lasso      => egui::include_image!("../icons/lasso.svg"),
-        Tool::RectSelect => egui::include_image!("../icons/square-dashed.svg"),
-    }
-}
 
 /// Options of the tools that are not brushes (Tool options docker).
 pub fn options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {

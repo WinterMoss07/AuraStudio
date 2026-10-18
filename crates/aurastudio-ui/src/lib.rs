@@ -15,6 +15,7 @@ mod bars;
 mod dock_layout;
 mod dockers;
 mod home;
+mod icons;
 mod tools;
 mod widgets;
 
@@ -68,7 +69,14 @@ pub struct Model<'a> {
     /// egui point).
     pub overlay:            Overlay<'a>,
     pub to_points:          &'a dyn Fn((f32, f32)) -> (f32, f32),
+    /// View menu: 100 % = one image pixel per physical screen pixel, and
+    /// the size of the interface (1.0 = the system's scaling).
+    pub pixel_exact:        &'a mut bool,
+    pub ui_scale:           &'a mut f32,
 }
+
+/// Interface sizes offered in the View menu.
+pub const UI_SCALES: [f32; 6] = [0.75, 0.85, 1.0, 1.1, 1.25, 1.5];
 
 /// View commands from the View menu (the app also binds them to keys).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,22 +359,22 @@ fn canvas_card(ctx: &egui::Context, model: &mut Model) {
     use egui::{pos2, Rect, Shape};
     let free = ctx.available_rect();
     let g = theme::CANVAS_FRAME;
-    // From the window's left edge (the toolbox sits in its corner).
+    // From the window's left edge (the toolbox sits on it).
     let card = Rect::from_min_max(free.min, pos2(free.right(), free.bottom() - g));
     if card.width() <= 0.0 || card.height() <= 0.0 { return; }
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(CANVAS_RECT_ID), card));
-    let tools = tools::toolbox(ctx, card.min, model);
+    let tools = tools::toolbox(ctx, card.left_center(), model);
 
     let painter = ctx.layer_painter(egui::LayerId::background());
     let fill = theme::PANEL;
     painter.rect_filled(Rect::from_min_max(pos2(card.left(), card.bottom()), free.max), 0.0, fill);
     // Each rounded corner of the canvas: the area between the corner and a
-    // quarter circle, as a fan of triangles from the corner. Its top-left
-    // corner is the toolbox: the canvas is rounded right of it and below
-    // it instead.
+    // quarter circle, as a fan of triangles from the corner. The canvas is
+    // also rounded where it meets the toolbox, above and below it.
     let r = theme::CANVAS_ROUNDING;
     for (corner, sx, sy) in [
-        (pos2(tools.right(), card.top()), 1.0, 1.0),
+        (card.left_top(), 1.0, 1.0),
+        (pos2(card.left(), tools.top()), 1.0, -1.0),
         (pos2(card.left(), tools.bottom()), 1.0, 1.0),
         (card.right_top(), -1.0, 1.0),
         (card.left_bottom(), 1.0, -1.0),

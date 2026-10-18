@@ -216,7 +216,8 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
 
     // Eye, at the far left whatever the depth (CSP / Krita).
     let eye = Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(22.0, 22.0));
-    paint_eye(&painter, eye.center(), visible);
+    let (eye_icon, eye_col) = if visible { (Icon::Eye, theme::TEXT) } else { (Icon::EyeOff, theme::TEXT_WEAK.gamma_multiply(0.6)) };
+    crate::icons::paint(ui, eye_icon, eye, 16.0, eye_col);
 
     // Lock, at the far right (Krita).
     let lock = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(22.0, 22.0));
@@ -229,7 +230,8 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
     } else {
         if active { Color32::from_white_alpha(110) } else { theme::TEXT_WEAK.gamma_multiply(0.35) }
     };
-    paint_lock(&painter, lock.center(), locked || row.locked_by_parent, lock_col);
+    let lock_icon = if locked || row.locked_by_parent { Icon::Lock } else { Icon::LockOpen };
+    crate::icons::paint(ui, lock_icon, lock, 15.0, lock_col);
 
     // Content, indented by folder depth.
     let x = eye.right() + 4.0 + row.depth as f32 * INDENT;
@@ -237,15 +239,11 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
     let icon_box = if row.is_folder {
         // Disclosure triangle + folder icon.
         toggle_rect = Rect::from_center_size(pos2(x + 7.0, rect.center().y), vec2(14.0, 20.0));
-        let c = toggle_rect.center();
-        let tri = if row.collapsed {
-            vec![c + vec2(-2.5, -4.0), c + vec2(3.0, 0.0), c + vec2(-2.5, 4.0)]
-        } else {
-            vec![c + vec2(-4.0, -2.5), c + vec2(4.0, -2.5), c + vec2(0.0, 3.0)]
-        };
-        painter.add(egui::Shape::convex_polygon(tri, theme::TEXT_WEAK, Stroke::NONE));
+        let chevron = if row.collapsed { Icon::Collapsed } else { Icon::Expanded };
+        crate::icons::paint(ui, chevron, toggle_rect, 13.0, theme::TEXT_WEAK);
         let b = Rect::from_center_size(pos2(toggle_rect.right() + 4.0 + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
-        folder_shape(&painter, b.center(), 20.0, Stroke::new(1.4_f32, if active { theme::TEXT } else { theme::TEXT_WEAK }));
+        let folder = if row.collapsed { Icon::Folder } else { Icon::FolderOpen };
+        crate::icons::paint(ui, folder, b, 20.0, if active { theme::TEXT } else { theme::TEXT_WEAK });
         b
     } else {
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
@@ -316,19 +314,3 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Opt
     None
 }
 
-/// Eye icon drawn with shapes.
-fn paint_eye(painter: &egui::Painter, c: egui::Pos2, open: bool) {
-    let col = if open { theme::TEXT } else { theme::TEXT_WEAK.gamma_multiply(0.6) };
-    let pts: Vec<_> = (0..=24)
-        .map(|k| {
-            let a = k as f32 / 24.0 * std::f32::consts::TAU;
-            pos2(c.x + 7.0 * a.cos(), c.y + 4.2 * a.sin() * (1.0 - 0.25 * a.cos().abs()))
-        })
-        .collect();
-    painter.add(egui::Shape::closed_line(pts, Stroke::new(1.3_f32, col)));
-    if open {
-        painter.circle_filled(c, 2.2, col);
-    } else {
-        painter.line_segment([pos2(c.x - 6.5, c.y + 5.5), pos2(c.x + 6.5, c.y - 5.5)], Stroke::new(1.3_f32, col));
-    }
-}

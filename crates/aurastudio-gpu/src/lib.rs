@@ -45,6 +45,13 @@ pub struct GpuState {
     swapchain_rebuilt: bool,
     /// egui's wish for the next frame, from the last render().
     repaint_delay:   Option<std::time::Duration>,
+    /// Scale of the monitor the window is on (Windows display scaling:
+    /// 2.0 at 200 %), as of the last check.
+    dpi_scale:       f32,
+    /// 100 % zoom = one canvas pixel per physical screen pixel (XnView's
+    /// "1 image pixel = 1 screen pixel"); off: per point, so a picture
+    /// keeps the same size on a 4K and an HD screen.
+    pixel_exact:     bool,
     canvas_pipeline: RenderPipeline,
     view_buffer:     Buffer,
     nearest_sampler: Sampler,
@@ -300,6 +307,7 @@ impl GpuState {
         let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &canvas.sampler, &view_buffer, &lut);
         let nearest_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &nearest_sampler, &view_buffer, &lut);
 
+        let dpi_scale = window.scale_factor() as f32;
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
@@ -329,6 +337,8 @@ impl GpuState {
             swapchain_rebuilt: false,
             repaint_delay: None,
             clear_color: [0.4, 0.4, 0.4],
+            dpi_scale,
+            pixel_exact: false,
         }
     }
 
@@ -373,6 +383,46 @@ impl GpuState {
     /// `radius` in screen pixels, or hide it.
     pub fn set_brush_cursor(&mut self, cursor: Option<((f32, f32), f32)>) {
         self.brush_cursor = cursor;
+    }
+
+    /// Physical screen pixels per canvas pixel at 100 % zoom.
+    pub fn zoom_unit(&self) -> f32 {
+        if self.pixel_exact { 1.0 } else { self.dpi_scale }
+    }
+
+    /// The zoom as shown to the user (1.0 = 100 %, see zoom_unit).
+    pub fn display_zoom(&self) -> f32 {
+        self.view.zoom / self.zoom_unit()
+    }
+
+    /// Switch "1 image pixel = 1 screen pixel"; the zoom percentage stays,
+    /// so the picture changes size on a high-density screen.
+    pub fn set_pixel_exact(&mut self, on: bool) {
+        if on == self.pixel_exact { return; }
+        let shown = self.display_zoom();
+        self.pixel_exact = on;
+        let (unit, c) = (self.zoom_unit(), self.view_center());
+        if !self.view.fit { self.view_set_zoom(shown * unit, c); }
+    }
+
+    /// Size of the interface relative to the system's scaling.
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        self.egui_ctx.set_zoom_factor(scale);
+    }
+
+    /// The window may be on another monitor now (or its scaling changed):
+    /// keep the picture the same size on screen, in points. Returns the
+    /// new scale if it changed.
+    pub fn check_dpi_scale(&mut self) -> Option<f32> {
+        let new = self.window.scale_factor() as f32;
+        if (new - self.dpi_scale).abs() < 1e-3 { return None; }
+        let k = new / self.dpi_scale;
+        self.dpi_scale = new;
+        if !self.pixel_exact && !self.view.fit {
+            self.view.zoom = (self.view.zoom * k).clamp(view::MIN_ZOOM, view::MAX_ZOOM);
+            self.view.pan = (self.view.pan.0 * k, self.view.pan.1 * k);
+        }
+        Some(new)
     }
 
     /// Current zoom (screen pixels per canvas pixel).

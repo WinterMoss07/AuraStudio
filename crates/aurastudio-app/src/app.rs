@@ -69,6 +69,41 @@ fn save_recent(list: &[PathBuf]) {
     if let Err(e) = std::fs::write(&path, text) { log::warn!("recent files: {e}"); }
 }
 
+/// Settings kept between sessions (key=value lines).
+#[derive(Clone, Copy, PartialEq)]
+struct Settings {
+    pixel_exact: bool,
+    ui_scale:    f32,
+}
+
+impl Default for Settings {
+    fn default() -> Self { Self { pixel_exact: false, ui_scale: 1.0 } }
+}
+
+fn settings_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("AuraStudio").join("settings.txt"))
+}
+
+fn load_settings() -> Settings {
+    let mut s = Settings::default();
+    let text = settings_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some(("pixel_exact", v)) => s.pixel_exact = v.trim() == "true",
+            Some(("ui_scale", v)) => if let Ok(v) = v.trim().parse::<f32>() { s.ui_scale = v.clamp(0.5, 2.0) },
+            _ => {}
+        }
+    }
+    s
+}
+
+fn save_settings(s: Settings) {
+    let Some(path) = settings_path() else { return };
+    if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+    let text = format!("pixel_exact={}\nui_scale={}\n", s.pixel_exact, s.ui_scale);
+    if let Err(e) = std::fs::write(&path, text) { log::warn!("settings: {e}"); }
+}
+
 fn has_extension(path: &Path, ext: &str) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
@@ -217,6 +252,7 @@ pub struct App {
     outline_shown: bool,
     /// Our cursors (hands, rotate), made once the event loop runs.
     cursors: Option<crate::cursors::Cursors>,
+    settings:   Settings,
     /// Selected tool, the fill tool's settings.
     tool:       Tool,
     fill:       FillParams,
@@ -317,6 +353,7 @@ impl App {
             cursor_in_window: false,
             outline_shown: false,
             cursors: None,
+            settings:   load_settings(),
             tool:       Tool::default(),
             fill:       FillParams::default(),
             gesture:    None,
@@ -459,6 +496,15 @@ impl App {
         };
         let (Some(window), Some(cursors)) = (&self.window, &mut self.cursors) else { return };
         cursors.apply(window, wanted);
+    }
+
+    /// Interface size and 100 % zoom meaning, from the settings.
+    fn apply_settings(&mut self) {
+        let Some(gpu) = &mut self.gpu else { return };
+        gpu.set_pixel_exact(self.settings.pixel_exact);
+        gpu.set_ui_scale(self.settings.ui_scale);
+        self.update_cursor();
+        self.request_redraw();
     }
 
     /// Alt held with the brush or the fill: a click picks a color (Krita,
@@ -679,7 +725,7 @@ impl App {
         match cmd {
             ViewCmd::ZoomIn        => gpu.view_zoom_at(1.25, c),
             ViewCmd::ZoomOut       => gpu.view_zoom_at(1.0 / 1.25, c),
-            ViewCmd::ActualSize    => gpu.view_set_zoom(1.0, c),
+            ViewCmd::ActualSize    => gpu.view_set_zoom(gpu.zoom_unit(), c),
             ViewCmd::Fit           => gpu.view.fit_to_area(),
             ViewCmd::RotateLeft    => gpu.view_rotate_at(-step, turn),
             ViewCmd::RotateRight   => gpu.view_rotate_at(step, turn),
@@ -844,7 +890,10 @@ impl App {
         }
 
         let max_canvas = gpu.max_canvas_size();
-        let (view_zoom, view_angle) = (gpu.view.zoom, gpu.view.angle.to_degrees());
+        let (view_zoom, view_angle) = (gpu.display_zoom(), gpu.view.angle.to_degrees());
+        let settings_before = self.settings;
+        let mut pixel_exact = self.settings.pixel_exact;
+        let mut ui_scale = self.settings.ui_scale;
         let (cm_before, perceptual_before) = (self.color_managed, self.perceptual);
         let color_managed = &mut self.color_managed;
         let perceptual = &mut self.perceptual;
@@ -890,6 +939,8 @@ impl App {
                     drawing: drawing.as_deref(),
                 },
                 to_points: &to_points,
+                pixel_exact: &mut pixel_exact,
+                ui_scale: &mut ui_scale,
                 can_undo,
                 can_redo,
                 view_zoom,
@@ -936,6 +987,12 @@ impl App {
             self.apply_color_management();
         }
         if preset != preset_before { self.select_preset(preset); }
+        self.settings.pixel_exact = pixel_exact;
+        self.settings.ui_scale = ui_scale;
+        if self.settings != settings_before {
+            self.apply_settings();
+            save_settings(self.settings);
+        }
         if self.tool != tool_before { self.update_cursor(); }
         if let Some(cmd) = actions.select { self.select(cmd); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
@@ -1438,10 +1495,13 @@ impl ApplicationHandler<AppEvent> for App {
             self.frame_interval = Duration::from_secs_f64(1.0 / hz);
             log::info!("display refresh: {hz:.0} Hz");
         }
+        let window_scale = window.scale_factor();
         window.request_redraw();
         self.window = Some(window);
         self.cursors = Some(crate::cursors::Cursors::new(event_loop));
         self.gpu    = Some(gpu);
+        log::info!("display scaling: {:.0} %", window_scale * 100.0);
+        self.apply_settings();
         self.refresh_display_profile();
         self.refresh_home();
         self.offer_recovery();
@@ -1522,7 +1582,17 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::Focused(false) => self.reset_input(),
 
             // The window may now be on another monitor (other profile).
-            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => self.refresh_display_profile(),
+            // The window may be on another monitor now (other profile,
+            // other scaling: Windows sends WM_DPICHANGED, which winit turns
+            // into ScaleFactorChanged; the picture keeps its size on screen).
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(scale) = self.gpu.as_mut().and_then(|g| g.check_dpi_scale()) {
+                    log::info!("display scaling: {:.0} %", scale * 100.0);
+                    self.update_cursor();
+                    self.request_redraw();
+                }
+                self.refresh_display_profile();
+            }
 
             WindowEvent::KeyboardInput { event: key, .. } => {
                 // Space is tracked on release too (and even while a field

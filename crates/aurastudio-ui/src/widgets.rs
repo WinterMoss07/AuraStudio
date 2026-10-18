@@ -2,6 +2,7 @@
 //! vertical tabs (CSP), and toolbar icons drawn with shapes (crisp at any
 //! scale, no dependency on font glyphs).
 
+pub use crate::icons::Icon;
 use egui::{epaint, pos2, vec2, Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui};
 
 use std::sync::{Arc, RwLock};
@@ -239,91 +240,16 @@ pub fn elided_text(p: &egui::Painter, left_center: Pos2, text: &str, font: egui:
 
 // --- Icons ---------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Icon { NewLayer, NewFolder, Duplicate, Up, Down, Delete }
-
-/// Frameless toolbar button with a shape-drawn icon.
+/// Frameless toolbar button with an icon.
 pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
     let resp = resp.on_hover_text(tooltip);
-    let p = ui.painter_at(rect);
     if enabled && resp.hovered() {
-        p.rect_filled(rect, 5.0, theme::WIDGET_HOVER);
+        ui.painter().rect_filled(rect, 5.0, theme::WIDGET_HOVER);
     }
     let col = if enabled { theme::TEXT } else { theme::TEXT_WEAK.gamma_multiply(0.45) };
-    draw_icon(&p, rect.center(), icon, col);
+    crate::icons::paint(ui, icon, rect, 16.0, col);
     enabled && resp.clicked()
-}
-
-fn draw_icon(p: &egui::Painter, c: Pos2, icon: Icon, col: Color32) {
-    let st = Stroke::new(1.3_f32, col);
-    let plus = |p: &egui::Painter, at: Pos2| {
-        p.line_segment([pos2(at.x - 3.0, at.y), pos2(at.x + 3.0, at.y)], st);
-        p.line_segment([pos2(at.x, at.y - 3.0), pos2(at.x, at.y + 3.0)], st);
-    };
-    match icon {
-        Icon::NewLayer => {
-            p.rect_stroke(Rect::from_center_size(c + vec2(-2.0, 0.0), vec2(10.0, 12.0)), 1.5, st);
-            plus(p, c + vec2(5.0, 4.0));
-        }
-        Icon::NewFolder => {
-            folder_shape(p, c + vec2(-2.0, 0.5), 12.0, st);
-            plus(p, c + vec2(5.0, 4.0));
-        }
-        Icon::Duplicate => {
-            p.rect_stroke(Rect::from_center_size(c + vec2(-2.0, -2.0), vec2(9.0, 9.0)), 1.5, st);
-            p.rect_stroke(Rect::from_center_size(c + vec2(2.0, 2.0), vec2(9.0, 9.0)), 1.5, st);
-        }
-        Icon::Up | Icon::Down => {
-            let d = if icon == Icon::Up { -1.0 } else { 1.0 };
-            p.add(Shape::convex_polygon(
-                vec![c + vec2(0.0, 4.0 * d), c + vec2(-5.0, -3.0 * d), c + vec2(5.0, -3.0 * d)],
-                col,
-                Stroke::NONE,
-            ));
-        }
-        Icon::Delete => {
-            p.line_segment([c + vec2(-6.0, -4.0), c + vec2(6.0, -4.0)], st);
-            p.line_segment([c + vec2(-2.0, -6.0), c + vec2(2.0, -6.0)], st);
-            p.rect_stroke(Rect::from_min_max(c + vec2(-4.5, -3.5), c + vec2(4.5, 6.0)), 1.0, st);
-            p.line_segment([c + vec2(-1.5, -1.0), c + vec2(-1.5, 4.0)], st);
-            p.line_segment([c + vec2(1.5, -1.0), c + vec2(1.5, 4.0)], st);
-        }
-    }
-}
-
-/// Folder outline (tab + body), `w` wide, centered on `c`.
-pub fn folder_shape(p: &egui::Painter, c: Pos2, w: f32, st: Stroke) {
-    let h = w * 0.75;
-    let body = Rect::from_center_size(c + vec2(0.0, 1.0), vec2(w, h));
-    let tab = Rect::from_min_size(body.left_top() + vec2(0.0, -2.5), vec2(w * 0.45, 3.0));
-    p.rect_stroke(tab, 1.0, st);
-    p.rect_stroke(body, 1.5, st);
-}
-
-/// Padlock, closed (`locked`) or open, in color `col`.
-pub fn paint_lock(p: &egui::Painter, c: Pos2, locked: bool, col: Color32) {
-    let st = Stroke::new(1.3_f32, col);
-    let body = Rect::from_center_size(c + vec2(0.0, 2.5), vec2(10.0, 7.5));
-    if locked {
-        p.rect_filled(body, 1.5, col);
-    } else {
-        p.rect_stroke(body, 1.5, st);
-    }
-    // Shackle: closed sits on the body, open is lifted and shifted.
-    let (dx, lift) = if locked { (0.0, 0.0) } else { (2.5, 2.0) };
-    let top = body.top() - 1.0 - lift;
-    let pts: Vec<Pos2> = (0..=12)
-        .map(|k| {
-            let a = std::f32::consts::PI * (1.0 + k as f32 / 12.0);
-            pos2(c.x + dx + 3.2 * a.cos(), top - 1.0 + 3.2 * a.sin())
-        })
-        .collect();
-    p.add(Shape::line(pts, st));
-    p.line_segment([pos2(c.x + dx - 3.2, top - 1.0), pos2(c.x + dx - 3.2, body.top())], st);
-    if locked {
-        p.line_segment([pos2(c.x + 3.2, top - 1.0), pos2(c.x + 3.2, body.top())], st);
-    }
 }
 
 // --- Brush controls (options bar + Tool options dock) ---------------------

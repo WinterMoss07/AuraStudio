@@ -40,6 +40,8 @@ pub fn backdrop_rgb() -> [f64; 3] {
 pub fn apply(ctx: &egui::Context) {
     // SVG icons (toolbox).
     egui_extras::install_image_loaders(ctx);
+    // Ctrl + / - / 0 belong to the canvas, not to egui's own UI zoom.
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut style = (*ctx.style()).clone();
     // egui waits for the pointer to be still before showing a tooltip, and
     // asks for a new frame right away on every frame until then. A pen

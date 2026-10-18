@@ -185,6 +185,7 @@ fn fuzz() {
     let mut stroke_open = false;
     let mut tool = Tool::default();
     let mut fill = FillParams::default();
+    let (mut pixel_exact, mut ui_scale) = (false, 1.0f32);
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
     let t0 = Instant::now();
@@ -231,6 +232,8 @@ fn fuzz() {
                         has_selection: sel_outlines.is_some(),
                         overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None },
                         to_points: &to_points,
+                        pixel_exact: &mut pixel_exact,
+                        ui_scale: &mut ui_scale,
                     };
                     aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
                 });
