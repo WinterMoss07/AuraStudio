@@ -109,6 +109,13 @@ pub struct App {
     /// layer, resize) needs a full-canvas recomposite.
     layers_dirty: bool,
     last_frame:   Option<Instant>,
+    /// Shortest time between two frames outside strokes: one display
+    /// refresh. Without it, anything asking for "a frame right away" on
+    /// every frame (egui does, for animations and tooltips) runs as fast as
+    /// the GPU goes with the Immediate present mode.
+    frame_interval: Duration,
+    /// A frame wanted before `frame_interval` was over: drawn at this time.
+    deferred_frame: Option<Instant>,
     /// A frame is needed. The actual window redraw request is made in
     /// about_to_wait: winit drops requests made while handling a redraw.
     redraw_wanted: bool,
@@ -182,6 +189,8 @@ impl App {
             // Upload the first composite.
             layers_dirty: true,
             last_frame:   None,
+            frame_interval: Duration::from_micros(16_667),
+            deferred_frame: None,
             redraw_wanted: false,
             ui_dirty:     true,
             ui_saw_canvas: false,
@@ -396,7 +405,11 @@ impl App {
 
     /// Sleep until the next OS event, or until egui's delayed repaint.
     fn schedule(&self, event_loop: &ActiveEventLoop) {
-        event_loop.set_control_flow(match self.repaint_at {
+        let wake = match (self.repaint_at, self.deferred_frame) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        event_loop.set_control_flow(match wake {
             Some(t) => ControlFlow::WaitUntil(t),
             None    => ControlFlow::Wait,
         });
@@ -687,8 +700,20 @@ impl ApplicationHandler<AppEvent> for App {
             self.ui_dirty = true;
             self.redraw_wanted = true;
         }
+        let now = Instant::now();
+        if self.deferred_frame.is_some_and(|t| now >= t) {
+            self.deferred_frame = None;
+            self.redraw_wanted = true;
+        }
         if std::mem::take(&mut self.redraw_wanted) {
-            if let Some(w) = &self.window { w.request_redraw(); }
+            // At most one frame per display refresh (strokes have their own
+            // pacing, see render_if_due).
+            let due = self.last_frame.map_or(now, |t| t + self.frame_interval);
+            if now >= due || self.is_drawing {
+                if let Some(w) = &self.window { w.request_redraw(); }
+            } else {
+                self.deferred_frame = Some(self.deferred_frame.map_or(due, |t| t.min(due)));
+            }
         }
         self.schedule(event_loop);
     }
@@ -715,6 +740,12 @@ impl ApplicationHandler<AppEvent> for App {
             }
         }
 
+        // One frame per refresh of the monitor the window opens on.
+        if let Some(mhz) = window.current_monitor().and_then(|m| m.refresh_rate_millihertz()) {
+            let hz = (mhz as f64 / 1000.0).clamp(30.0, 360.0);
+            self.frame_interval = Duration::from_secs_f64(1.0 / hz);
+            log::info!("display refresh: {hz:.0} Hz");
+        }
         window.request_redraw();
         self.window = Some(window);
         self.gpu    = Some(gpu);

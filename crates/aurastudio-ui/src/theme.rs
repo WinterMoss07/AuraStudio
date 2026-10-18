@@ -28,6 +28,13 @@ pub fn backdrop_rgb() -> [f64; 3] {
 
 pub fn apply(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
+    // egui waits for the pointer to be still before showing a tooltip, and
+    // asks for a new frame right away on every frame until then. A pen
+    // hovering over the tablet is never still (it jitters by a pixel): over
+    // any widget with a tooltip, that was hundreds of frames per second
+    // (Immediate present mode) and the idle CPU use. Tooltips now show
+    // after their usual delay, from a timer.
+    style.interaction.show_tooltips_only_when_still = false;
 
     style.text_styles = [
         (TextStyle::Small,     FontId::new(11.0, FontFamily::Proportional)),
