@@ -3,6 +3,16 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.3.4 — 2026-10-18
+
+- Arc tool: a mouse button bouncing (a worn switch opens and closes again
+  within a few ms) ended the drag and painted a straight line from the
+  start to that point. A release followed by a press within 60 ms is now
+  taken as the button held all along (logged: "mouse button bounce
+  ignored"). Same on the validating click (it could end the chain).
+- The arc tool's logic moved to `arc_tool.rs`, with tests replaying mouse
+  sequences (drags, clicks, bounces, random sequences).
+
 ## 0.3.3 — 2026-10-18
 
 - The executable built by the CI has the version in its name

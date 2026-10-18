@@ -1,4 +1,5 @@
 mod app;
+mod arc_tool;
 mod cursors;
 #[cfg(test)]
 mod fuzz;

@@ -21,6 +21,7 @@ use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_layers::{FillParams, Selection};
 use aurastudio_ui::{Actions, Dialog, DialogChoice, EditCmd, FileCmd, ImportBrushes, Model, Overlay, SelectCmd, ShapeOptions, Tool, UiState, ViewCmd};
 
+use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
 
@@ -144,21 +145,6 @@ enum Gesture {
 /// arc's control lines (start, control point, end).
 type Preview = (Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<(f32, f32)>);
 
-/// Distance (screen pixels) at which an arc's end sticks to the first
-/// point of the chain, closing the outline (OpenToonz: 5).
-const ARC_SNAP: f32 = 6.0;
-
-/// The arc tool between clicks (it lives across presses and releases),
-/// modeled on OpenToonz's arc / multi-arc tool.
-#[derive(Clone, Copy, Debug)]
-enum ArcState {
-    /// Start placed; the end follows the cursor. `held`: the button is
-    /// down (dragging to the end); up: waiting for a click on the end.
-    Placing { start: (f32, f32), end: (f32, f32), held: bool },
-    /// Both ends placed: the cursor is the curve's control point (it pulls
-    /// the curve toward itself); a click validates.
-    Bending { start: (f32, f32), end: (f32, f32), control: (f32, f32) },
-}
 
 impl Gesture {
     /// The outline being drawn, canvas pixels.
@@ -291,13 +277,8 @@ pub struct App {
     fill:       FillParams,
     shape:      ShapeOptions,
     gesture:    Option<Gesture>,
-    arc:        Option<ArcState>,
-    /// Arcs validated so far (chain mode): one path, painted as one stroke
-    /// when the outline is done; `arc_marks`: where each arc starts in it.
-    arc_chain:  Vec<(f32, f32)>,
-    arc_marks:  Vec<usize>,
-    /// The press that validated an arc: its release starts nothing.
-    arc_skip_release: bool,
+    /// The arc tool between clicks (arc_tool.rs).
+    arc:        ArcTool,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -400,10 +381,7 @@ impl App {
             fill:       FillParams::default(),
             shape:      ShapeOptions::default(),
             gesture:    None,
-            arc:        None,
-            arc_skip_release: false,
-            arc_chain:  Vec::new(),
-            arc_marks:  Vec::new(),
+            arc:        ArcTool::default(),
 
             painted:      false,
             // Upload the first composite.
@@ -719,134 +697,53 @@ impl App {
         }
     }
 
-    /// The arc as it would be painted now.
-    fn arc_path(&self, a: ArcState) -> Vec<(f32, f32)> {
-        match a {
-            ArcState::Placing { start, end, .. } => crate::shapes::line(start, end),
-            ArcState::Bending { start, end, control } => crate::shapes::arc(start, end, control),
-        }
-    }
-
-    /// Geometry tool preview: the path (the chain of arcs validated so far
-    /// plus the current one), its handles and control lines.
+    /// Geometry tool preview: the path, its handles and control lines.
     fn shape_preview(&self) -> Option<Preview> {
         if let Some(Gesture::Shape { tool, start, end }) = self.gesture {
             return Some((self.shape_path(tool, start, end), Vec::new(), Vec::new()));
         }
-        let a = self.arc?;
-        let mut path = self.arc_chain.clone();
-        path.extend(self.arc_path(a));
-        let (start, end, guide) = match a {
-            ArcState::Placing { start, end, .. } => (start, end, Vec::new()),
-            ArcState::Bending { start, end, control } => (start, end, vec![start, control, end]),
-        };
-        let mut handles = vec![start, end];
-        // The chain's first point: an end dropped on it closes the outline.
-        if let Some(&first) = self.arc_chain.first() { handles.push(first); }
-        Some((path, handles, guide))
+        self.arc.preview()
     }
 
-    /// Where the arc's end goes for the cursor at `at`: Shift snaps the
-    /// direction (15° steps), and near the chain's first point it sticks
-    /// to it.
-    fn arc_end(&self, start: (f32, f32), at: (f32, f32)) -> (f32, f32) {
-        let at = if self.shift_held() { crate::shapes::snap_angle(start, at) } else { at };
+    fn arc_ctx(&self) -> ArcCtx {
         let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
-        match self.arc_chain.first() {
-            Some(&f) if ((at.0 - f.0).powi(2) + (at.1 - f.1).powi(2)).sqrt() * zoom < ARC_SNAP => f,
-            _ => at,
-        }
+        ArcCtx { zoom, shift: self.shift_held(), chain_arcs: self.shape.chain_arcs }
     }
 
     fn arc_press(&mut self, at: (f32, f32)) {
-        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
-        let near = |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() * zoom < ARC_SNAP;
-        self.arc = match self.arc {
-            None => Some(ArcState::Placing { start: at, end: at, held: true }),
-            // Clicking again on the last end point (a double click right
-            // after validating): the outline is done, open.
-            Some(ArcState::Placing { start, held: false, .. }) if !self.arc_chain.is_empty() && near(at, start) => {
-                self.finish_arcs();
-                None
-            }
-            Some(ArcState::Placing { start, .. }) => Some(ArcState::Placing { start, end: self.arc_end(start, at), held: true }),
-            Some(a @ ArcState::Bending { end, .. }) => {
-                // Validate: add it to the chain (one stroke, painted when
-                // the outline is done).
-                let path = self.arc_path(a);
-                let skip = usize::from(!self.arc_chain.is_empty());
-                self.arc_marks.push(self.arc_chain.len());
-                self.arc_chain.extend(path.into_iter().skip(skip));
-                self.arc_skip_release = true;
-                let closed = self.arc_chain.len() > 2 && self.arc_chain.first() == Some(&end);
-                if !self.shape.chain_arcs || closed {
-                    self.finish_arcs();
-                    None
-                } else {
-                    Some(ArcState::Placing { start: end, end: at, held: false })
-                }
-            }
-        };
+        let cx = self.arc_ctx();
+        if let Some(path) = self.arc.press(at, cx, Instant::now()) { self.paint_path(path); }
         self.request_redraw();
     }
 
     fn arc_release(&mut self, at: (f32, f32)) {
-        if std::mem::take(&mut self.arc_skip_release) { return; }
-        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
-        if let Some(ArcState::Placing { start, held: true, .. }) = self.arc {
-            let end = self.arc_end(start, at);
-            let far = (end.0 - start.0).abs().max((end.1 - start.1).abs()) * zoom >= 4.0;
-            // Dragged to the end: bend now (the control point starts on
-            // the end: a straight line); a click on the start: wait for a
-            // second click on the end.
-            self.arc = Some(if far {
-                ArcState::Bending { start, end, control: end }
-            } else {
-                ArcState::Placing { start, end, held: false }
-            });
-            self.request_redraw();
-        }
+        let cx = self.arc_ctx();
+        self.arc.release(at, cx, Instant::now());
+        self.request_redraw();
     }
 
     /// Cursor moved (button up or down) with an arc on the way.
     fn arc_move(&mut self, at: (f32, f32)) {
-        match self.arc {
-            Some(ArcState::Placing { start, held, .. }) => {
-                let end = self.arc_end(start, at);
-                self.arc = Some(ArcState::Placing { start, end, held });
-            }
-            Some(ArcState::Bending { start, end, .. }) => self.arc = Some(ArcState::Bending { start, end, control: at }),
-            None => return,
-        }
-        self.request_redraw();
+        let cx = self.arc_ctx();
+        if self.arc.moved(at, cx) { self.request_redraw(); }
     }
 
-    /// The outline is done (Enter, a click on its last point, closing it,
-    /// or leaving the tool): paint the validated arcs as one stroke.
+    /// The outline is done (Enter, leaving the tool...): paint it.
     fn finish_arcs(&mut self) {
-        let chain = std::mem::take(&mut self.arc_chain);
-        self.arc_marks.clear();
-        self.arc = None;
-        if chain.len() >= 2 { self.paint_path(chain); }
+        if let Some(path) = self.arc.finish() { self.paint_path(path); }
         self.request_redraw();
     }
 
     /// Escape: drop the outline in progress, nothing painted.
     fn cancel_arcs(&mut self) {
-        self.arc_chain.clear();
-        self.arc_marks.clear();
-        self.arc = None;
+        self.arc.cancel();
         self.request_redraw();
     }
 
     /// Ctrl+Z while building an outline: take back its last arc.
     fn undo_arc(&mut self) {
-        let Some(mark) = self.arc_marks.pop() else { self.cancel_arcs(); return };
-        // Back to where that arc started (the first arc: nothing left).
-        self.arc_chain.truncate(mark);
-        let start = self.arc_chain.last().copied();
         let at = self.window_to_canvas(self.cursor.0, self.cursor.1).unwrap_or((0.0, 0.0));
-        self.arc = start.map(|s| ArcState::Placing { start: s, end: at, held: false });
+        self.arc.undo(at);
         self.request_redraw();
     }
 
@@ -925,7 +822,7 @@ impl App {
     fn set_tool(&mut self, tool: Tool) {
         if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
         self.finish_arcs();
-        self.arc_skip_release = false;
+        self.arc.reset_release();
         self.tool = tool;
         self.update_cursor();
         self.request_redraw();
@@ -1125,8 +1022,8 @@ impl App {
         self.ctrl_down = false;
         self.nav = None;
         self.gesture = None;
-        if self.arc.is_some() { self.finish_arcs(); }
-        self.arc_skip_release = false;
+        if self.arc.active() { self.finish_arcs(); }
+        self.arc.reset_release();
         if self.is_drawing {
             self.end_stroke();
         }
@@ -1959,7 +1856,7 @@ impl ApplicationHandler<AppEvent> for App {
                     // Photoshop). Holding the keys repeats, like everywhere.
                     // While building an arc outline, Ctrl+Z takes back its
                     // last arc (nothing is on the layer yet).
-                    Key::Character(c) if ctrl && !shift && c.eq_ignore_ascii_case("z") && self.arc.is_some() => self.undo_arc(),
+                    Key::Character(c) if ctrl && !shift && c.eq_ignore_ascii_case("z") && self.arc.active() => self.undo_arc(),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => {
                         if shift { self.redo() } else { self.undo() }
                     }
@@ -1972,8 +1869,8 @@ impl ApplicationHandler<AppEvent> for App {
                         if let Some(t) = Tool::from_key(c, self.tool) { self.set_tool(t); }
                     }
                     // Arc outline: Enter paints it, Escape drops it.
-                    Key::Named(NamedKey::Enter) if self.arc.is_some() => self.finish_arcs(),
-                    Key::Named(NamedKey::Escape) if self.arc.is_some() => self.cancel_arcs(),
+                    Key::Named(NamedKey::Enter) if self.arc.active() => self.finish_arcs(),
+                    Key::Named(NamedKey::Escape) if self.arc.active() => self.cancel_arcs(),
                     // View keys (Krita): 1 = 100 %, 2 = fit, 4 / 6 = rotate
                     // by 15 degrees, 5 = reset rotation, + / - = zoom.
                     Key::Character(c) if !ctrl => match c {
@@ -2012,7 +1909,7 @@ impl ApplicationHandler<AppEvent> for App {
                     self.end_stroke();
                 } else if self.gesture.is_some() {
                     self.tool_release();
-                } else if self.arc.is_some() || self.arc_skip_release {
+                } else if self.arc.wants_release() {
                     if let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) { self.arc_release(at); }
                 }
             }
@@ -2063,7 +1960,7 @@ impl ApplicationHandler<AppEvent> for App {
                     self.drag_nav();
                 } else if self.gesture.is_some() {
                     self.tool_drag();
-                } else if self.arc.is_some() {
+                } else if self.arc.active() {
                     if let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) { self.arc_move(at); }
                 } else if self.is_drawing && !self.pen_active {
                     if let Some((x, y)) = self.press_point.take() { self.draw_at(x, y, None); }
