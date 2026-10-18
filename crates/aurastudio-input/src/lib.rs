@@ -454,3 +454,29 @@ pub fn window_dpi(hwnd: isize) -> Option<u32> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn window_dpi(_hwnd: isize) -> Option<u32> { None }
+
+/// Turn off Windows' keyboard "menu mode": pressing and releasing Alt (or
+/// F10) alone, or Alt + a letter, sends the window SC_KEYMENU, and the
+/// next key goes to an (invisible) menu instead of the app. Alt is the
+/// color picker modifier here, so that ate shortcuts. Alt+Space (the
+/// window menu: move, minimize, close) and Alt+F4 keep working.
+#[cfg(target_os = "windows")]
+pub fn disable_alt_menu(hwnd: isize) -> bool {
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{SC_KEYMENU, WM_SYSCOMMAND};
+    const SUBCLASS_ID: usize = 0x414C_544D_454E;
+
+    unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        // lParam: the character typed with Alt (' ' for Alt+Space), 0 for
+        // Alt or F10 alone.
+        if msg == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_KEYMENU as usize && lparam.0 != b' ' as isize {
+            return LRESULT(0);
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+    unsafe { SetWindowSubclass(HWND(hwnd as *mut std::ffi::c_void), Some(proc_), SUBCLASS_ID, 0) }.as_bool()
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn disable_alt_menu(_hwnd: isize) -> bool { false }

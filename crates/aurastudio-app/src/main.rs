@@ -1,5 +1,6 @@
 mod app;
 mod arc_tool;
+mod debounce;
 mod cursors;
 #[cfg(test)]
 mod fuzz;

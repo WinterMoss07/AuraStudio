@@ -1,10 +1,12 @@
-//! Brush library: the presets listed in the Brushes docker.
+//! Brush library: the presets listed in the Brushes docker, by medium
+//! (pencil, ink, paint...).
 //!
-//! - Built-in presets of our brush engine (hard and soft round).
-//! - The MyPaint brush collection (196 brushes, CC0, see
-//!   assets/brushes/mypaint), embedded in the binary at build time.
+//! - The bundled brushes, listed in assets/brushes/catalog.txt: our own
+//!   engine's round brushes and a selection of the MyPaint collection
+//!   (CC0, assets/brushes/mypaint), embedded in the binary at build time.
 //! - Brushes the user imports (.myb files or folders of them), copied into
-//!   the user's data folder so they are there at the next launch.
+//!   the user's data folder so they are there at the next launch; their
+//!   medium is guessed from their name.
 //!
 //! Each preset keeps its own settings (size, opacity, hardness, blend
 //! mode): changing them while a brush is selected only changes
@@ -16,7 +18,29 @@ use std::sync::Arc;
 
 use aurastudio_brush::{parse_myb, Brush, MyPaintBrush, MyPaintEngine};
 
+/// A brush of the catalog.
+pub enum BundledBrush { Round, Soft, MyPaint(&'static str) }
+
 include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
+
+/// The mediums, in the Brushes docker's order.
+pub const MEDIUMS: &[&str] = &["Pencil", "Ink", "Charcoal & pastel", "Paint", "Watercolor", "Airbrush", "Blend & smudge", "Eraser", "Texture & FX", "Misc"];
+
+/// Medium of an imported brush, from words in its name (Misc if none).
+pub fn guess_medium(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
+    if has(&["eraser", "erase", "gomme"]) { "Eraser" }
+    else if has(&["blend", "smudge", "smear", "blur", "knife"]) { "Blend & smudge" }
+    else if has(&["pencil", "sketch", "graphite", "crayon", "hb", "2b", "4b", "6b", "8b"]) { "Pencil" }
+    else if has(&["charcoal", "chalk", "pastel", "conte", "fusain"]) { "Charcoal & pastel" }
+    else if has(&["water", "wet", "aquarel", "gouache", "wash"]) { "Watercolor" }
+    else if has(&["air", "spray", "soft"]) { "Airbrush" }
+    else if has(&["ink", "pen", "liner", "marker", "callig", "nib", "feutre"]) { "Ink" }
+    else if has(&["oil", "acryl", "paint", "brush", "bristle", "flat", "round", "fan"]) { "Paint" }
+    else if has(&["texture", "grass", "leaf", "leaves", "fur", "hair", "splat", "cloud", "particle", "noise", "grain", "pattern"]) { "Texture & FX" }
+    else { "Misc" }
+}
 
 pub mod preview;
 
@@ -46,7 +70,10 @@ pub enum Source {
 #[derive(Clone)]
 pub struct Preset {
     pub name:   String,
+    /// Medium (one of MEDIUMS).
     pub group:  String,
+    /// Who made it (shown on hover).
+    pub author: String,
     pub engine: Engine,
     /// Size, opacity, hardness and blend mode of this brush (the color is
     /// global and ignored here).
@@ -57,14 +84,15 @@ pub struct Preset {
 }
 
 impl Preset {
-    fn builtin(name: &str, engine: Engine, radius: f32, hardness: f32) -> Self {
+    fn builtin(name: &str, medium: &str, radius: f32, hardness: f32) -> Self {
         let mut settings = Brush::new();
         settings.radius = radius;
         settings.hardness = hardness;
         Self {
             name: name.into(),
-            group: "AuraStudio".into(),
-            engine,
+            group: medium.into(),
+            author: "AuraStudio".into(),
+            engine: Engine::Native,
             settings,
             preview: None,
             source: Source::BuiltIn,
@@ -73,13 +101,13 @@ impl Preset {
 
     /// A preset from a parsed .myb brush, with the size / opacity /
     /// hardness it was made with.
-    fn mypaint(name: String, group: String, brush: MyPaintBrush, preview: Option<Cow<'static, [u8]>>, source: Source) -> Self {
+    fn mypaint(name: String, group: String, author: String, brush: MyPaintBrush, preview: Option<Cow<'static, [u8]>>, source: Source) -> Self {
         let (size, opacity) = MyPaintEngine::native_size_and_opacity(&brush);
         let mut settings = Brush::new();
         settings.radius = (size as f32 / 2.0).max(0.5);
         settings.opacity = opacity;
         settings.hardness = MyPaintEngine::native_hardness(&brush);
-        Self { name, group, engine: Engine::MyPaint(Arc::new(brush)), settings, preview, source }
+        Self { name, group, author, engine: Engine::MyPaint(Arc::new(brush)), settings, preview, source }
     }
 
     /// Decode the preview, downscaled to at most `max` px: (w, h, RGBA).
@@ -117,17 +145,18 @@ pub struct Library {
 }
 
 impl Library {
-    /// Built-in presets, then the bundled MyPaint collection, then what
-    /// the user imported before.
+    /// The bundled brushes (catalog.txt), then what the user imported
+    /// before.
     pub fn load() -> Self {
-        let mut presets = vec![
-            Preset::builtin("Round pen", Engine::Native, 25.0, 1.0),
-            Preset::builtin("Soft round", Engine::Native, 60.0, 0.0),
-        ];
-        for &(group, name, json, preview) in BUNDLED {
-            match parse_myb(json) {
-                Ok(b) => presets.push(Preset::mypaint(name.into(), group.into(), b, preview.map(Cow::Borrowed), Source::Bundled)),
-                Err(e) => log::warn!("bundled brush {group}/{name}: {e:?}"),
+        let mut presets = Vec::new();
+        for (medium, name, author, brush) in BUNDLED {
+            match brush {
+                BundledBrush::Round => presets.push(Preset::builtin(name, medium, 25.0, 1.0)),
+                BundledBrush::Soft => presets.push(Preset::builtin(name, medium, 60.0, 0.0)),
+                BundledBrush::MyPaint(json) => match parse_myb(json) {
+                    Ok(b) => presets.push(Preset::mypaint(name.to_string(), medium.to_string(), author.to_string(), b, None, Source::Bundled)),
+                    Err(e) => log::warn!("bundled brush {medium}/{name}: {e:?}"),
+                },
             }
         }
         let mut lib = Self { presets };
@@ -138,7 +167,7 @@ impl Library {
         lib
     }
 
-    /// Group names in display order.
+    /// Mediums in use, in display order.
     pub fn groups(&self) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();
         for p in &self.presets {
@@ -190,12 +219,14 @@ impl Library {
                 Err(e) => { log::warn!("brush {}: {e:?}", f.display()); continue; }
             };
             let name = f.file_stem().map(|s| s.to_string_lossy().replace('_', " ")).unwrap_or_default();
-            let g = group.map(str::to_owned).unwrap_or_else(|| {
+            // The pack (its folder) as the author; the medium from the name.
+            let pack = group.map(str::to_owned).unwrap_or_else(|| {
                 f.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Imported".into())
             });
             let prev = f.with_file_name(format!("{}_prev.png", f.file_stem().unwrap().to_string_lossy()));
             let preview = std::fs::read(prev).ok().map(Cow::Owned);
-            self.presets.push(Preset::mypaint(name, g, brush, preview, Source::Imported(f)));
+            let medium = guess_medium(&name).to_string();
+            self.presets.push(Preset::mypaint(name, medium, pack, brush, preview, Source::Imported(f)));
             added += 1;
         }
         added
@@ -238,17 +269,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_collection_loads_with_previews() {
+    fn catalog_loads_by_medium() {
         let lib = Library::load();
-        let mypaint = lib.presets.iter().filter(|p| p.source == Source::Bundled).count();
-        assert!(mypaint >= 190, "only {mypaint} bundled brushes parsed");
-        assert_eq!(lib.presets[0].name, "Round pen");
-        let groups = lib.groups();
-        assert_eq!(groups[0], "AuraStudio");
-        assert!(groups.contains(&"Deevad") && groups.contains(&"Classic"), "{groups:?}");
-        let charcoal = lib.presets.iter().find(|p| p.name == "charcoal").expect("charcoal");
-        let (w, h, rgba) = charcoal.decode_preview(48).expect("preview");
-        assert!(w <= 48 && h <= 48 && rgba.len() == (w * h * 4) as usize);
+        let n = lib.presets.len();
+        assert!((50..=70).contains(&n), "{n} bundled brushes");
+        assert!(lib.presets.iter().all(|p| MEDIUMS.contains(&p.group.as_str())), "unknown medium");
+        // Every medium has brushes, in MEDIUMS order.
+        assert_eq!(lib.groups(), MEDIUMS);
+        assert_eq!(lib.presets[0].group, "Pencil");
+        let round = lib.presets.iter().find(|p| p.name == "Round pen").unwrap();
+        assert!(matches!(round.engine, Engine::Native) && round.group == "Ink");
+        assert_eq!(lib.presets.iter().find(|p| p.name == "Liner").unwrap().author, "David Revoy");
+    }
+
+    #[test]
+    fn imported_brushes_get_a_medium_from_their_name() {
+        assert_eq!(guess_medium("Big Soft Eraser"), "Eraser");
+        assert_eq!(guess_medium("2B pencil HB"), "Pencil");
+        assert_eq!(guess_medium("wet acrylic"), "Watercolor");
+        assert_eq!(guess_medium("Bristle oil"), "Paint");
+        assert_eq!(guess_medium("G-pen"), "Ink");
+        assert_eq!(guess_medium("zorglub"), "Misc");
     }
 
     #[test]
@@ -265,7 +306,8 @@ mod tests {
         let added = lib.import(&src).unwrap();
         assert_eq!(added, 1);
         assert!(user.join("My pack/inky.myb").is_file());
-        assert_eq!(lib.presets[0].group, "My pack");
+        assert_eq!(lib.presets[0].author, "My pack");
+        assert_eq!(lib.presets[0].group, "Ink");
         assert_eq!(lib.presets[0].name, "inky");
         // Importing again doesn't duplicate.
         assert_eq!(lib.import(&src).unwrap(), 0);

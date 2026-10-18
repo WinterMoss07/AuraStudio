@@ -25,6 +25,7 @@ fn main() {
         }
     }
     eprintln!("{} previews in {:?}", presets.len(), t.elapsed());
+    for p in &presets { println!("{}/{}", p.group, p.name); }
     let f = std::fs::File::create(&args[0]).unwrap();
     let mut e = png::Encoder::new(std::io::BufWriter::new(f), sw, sh);
     e.set_color(png::ColorType::Rgba);

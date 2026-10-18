@@ -28,7 +28,7 @@ pub fn show(ui: &mut Ui, previews: &mut PreviewCache, m: &mut Model, a: &mut cra
         let mut settings = m.brush.clone();
         settings.erase = *m.tool == crate::Tool::Eraser;
         previews.show(ui, rect.shrink(1.0), Slot::ToolOptions, p, &settings, &name);
-        resp.on_hover_text(format!("{}  ·  {}", p.group, crate::dockers::brushes::engine_label(&p.engine)));
+        resp.on_hover_text(format!("{}  ·  {}  ·  {}", p.group, p.author, crate::dockers::brushes::engine_label(&p.engine)));
         ui.add_space(4.0);
     }
 

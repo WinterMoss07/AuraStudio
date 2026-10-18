@@ -26,6 +26,19 @@ const TS: i32 = TILE_SIZE as i32;
 // one run of a layer tile.
 const _: () = assert!(TILE_SIZE as u32 == aurastudio_canvas::TILE);
 
+/// How a brush uses the paint already on the layer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaintUse {
+    /// Paints its color only.
+    None,
+    /// Paints, mixing with what is there (wet paint).
+    Mixes,
+    /// Only moves or changes what is there (blender, smudge, colorize...).
+    Moves,
+    /// Takes paint away.
+    Erases,
+}
+
 pub struct MyPaintEngine {
     /// The preset's brush, with color / size / opacity bases set from
     /// the shared Brush at each stroke (its curves are kept).
@@ -62,12 +75,20 @@ impl MyPaintEngine {
         (d, brush.get(BrushSetting::Opaque).base_value.clamp(0.0, 1.0))
     }
 
-    /// The brush mostly works on paint already there (smudge, eraser,
-    /// posterize, colorize, lock alpha), as the .myb file sets it: brush
-    /// previews give such brushes paint to work on.
-    pub fn works_on_paint(brush: &hokusai::Brush) -> bool {
-        [BrushSetting::Smudge, BrushSetting::Eraser, BrushSetting::Posterize, BrushSetting::Colorize, BrushSetting::LockAlpha]
-            .into_iter().any(|k| brush.get(k).base_value > 0.5)
+    /// How the brush depends on the paint already there, as the .myb file
+    /// sets it (brush previews give such brushes a stroke to work on).
+    pub fn paint_use(brush: &hokusai::Brush) -> PaintUse {
+        let base = |k| brush.get(k).base_value;
+        if base(BrushSetting::Eraser) > 0.5 {
+            PaintUse::Erases
+        } else if base(BrushSetting::Smudge) >= 0.9
+            || [BrushSetting::Posterize, BrushSetting::Colorize, BrushSetting::LockAlpha].into_iter().any(|k| base(k) > 0.5) {
+            PaintUse::Moves
+        } else if base(BrushSetting::Smudge) > 0.3 {
+            PaintUse::Mixes
+        } else {
+            PaintUse::None
+        }
     }
 
     /// Edge hardness the .myb file was made with.

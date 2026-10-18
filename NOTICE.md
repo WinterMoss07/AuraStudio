@@ -16,13 +16,14 @@ Full original source: https://docs.rs/efude-input/0.1.0/src/efude_input/lib.rs.h
 
 ## assets/brushes/mypaint — MyPaint brush collection
 
-The 196 brushes (`.myb` files and their `_prev.png` previews) come from
+The brushes (`.myb` files and their `_prev.png` previews) come from
 https://github.com/mypaint/mypaint-brushes and are released under
 **CC0 1.0** (public domain dedication), see `assets/brushes/mypaint/LICENSES.dep5`.
 Authors: Martin Renold and the MyPaint Development Team (classic,
 experimental), David Revoy (deevad), Ramón Miranda (ramon), Marcelo "Tanda"
 Cerviño (tanda), Guillaume Loussarévian (kaerhon_v1), Brien Dieterle
-(Dieterle). Thank you!
+(Dieterle). Thank you! AuraStudio ships 56 of them, chosen and renamed in
+`assets/brushes/catalog.txt`; the others stay in the folder.
 
 ## hokusai — MyPaint brush engine
 
@@ -52,4 +53,5 @@ upgraded.
 
 The interface icons (`crates/aurastudio-ui/icons/*.svg`) come from
 [Lucide](https://lucide.dev), ISC license (`crates/aurastudio-ui/icons/LICENSE-lucide`).
-Recolored to white and drawn with a thinner stroke.
+Recolored to white and drawn with a thinner stroke. `charcoal.svg` is ours,
+drawn in the same style (Lucide has no charcoal stick).

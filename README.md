@@ -20,14 +20,21 @@ UI stays quiet so the painting gets the room.
 
 **Painting**
 - One native brush engine (Krita-style "wash" opacity, auto spacing,
-  pressure) plus 196 bundled MyPaint brushes (CC0) painted natively;
+  pressure) plus 56 MyPaint brushes (CC0, chosen from the 196 of the
+  MyPaint collection, `assets/brushes/catalog.txt`) painted natively;
   `.myb` import. Each brush keeps its own size / opacity / hardness / blend
   mode; 13 blend modes. GPU brush outline cursor, app-drawn hand / rotate
   cursors.
-- Brush previews: the Brushes docker lists each brush as a stroke painted
-  by the brush itself (name in the corner); Tool options shows the
-  selected brush's stroke, repainted as its size, hardness, opacity or
-  blend mode change.
+- Brushes by medium: Pencil, Ink, Charcoal & pastel, Paint, Watercolor,
+  Airbrush, Blend & smudge, Eraser, Texture & FX, Misc (one icon each in
+  the Brushes docker; search looks in all; imported brushes get a medium
+  from their name).
+- Brush previews: each brush as a stroke painted by the brush itself
+  (name in the corner; erasers and blenders over a first stroke); Tool
+  options shows the selected brush's stroke, repainted as its size,
+  hardness, opacity or blend mode change (on a thread of its own).
+- Mouse button bounce filtered for everything (a worn switch no longer
+  drops a slider drag or ends a stroke); Windows' Alt menu mode is off.
 
 **Tools** — toolbox on the canvas's left edge, centered (Krita's optimized
 layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
@@ -201,7 +208,8 @@ See `NOTICE.md` for third-party code and assets.
 **Missing / planned**
 - [ ] Smudge / blend strength sliders in Tool options (MyPaint brushes
       smudge too weakly by default).
-- [x] Brushes docker: list of brush strokes (0.4.0).
+- [x] Brushes docker: list of brush strokes (0.4.0), by medium (0.5.0).
+- [ ] Krita brush bundles (.bundle) import.
 - [ ] Redesign of the New document dialog.
 - [ ] PSD / ORA export.
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and

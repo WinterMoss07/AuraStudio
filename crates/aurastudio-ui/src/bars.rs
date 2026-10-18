@@ -15,8 +15,6 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
             // Flat menu titles: only hovered / open ones get a background.
             ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
             ui.horizontal_centered(|ui| {
-                ui.label(RichText::new("AuraStudio").strong().color(theme::TEXT));
-                ui.add_space(8.0);
 
                 ui.menu_button("File", |ui| {
                     for (label, key, cmd) in [

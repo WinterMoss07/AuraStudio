@@ -9,5 +9,6 @@ aurastudio-brushes = { path = "../aurastudio-brushes" }
 aurastudio-canvas = { path = "../aurastudio-canvas" }
 aurastudio-layers = { path = "../aurastudio-layers" }
 egui      = "0.30"
+log       = "0.4"
 egui_dock = "0.15"
 egui_extras = { version = "0.30", default-features = false, features = ["svg"] }

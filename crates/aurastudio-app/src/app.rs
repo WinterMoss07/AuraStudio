@@ -22,6 +22,7 @@ use aurastudio_layers::{FillParams, Selection};
 use aurastudio_ui::{Actions, Dialog, DialogChoice, EditCmd, FileCmd, ImportBrushes, Model, Overlay, SelectCmd, ShapeOptions, Tool, UiState, ViewCmd};
 
 use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
+use crate::debounce::{Debounce, Kind as DebounceKind};
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
 
@@ -279,6 +280,8 @@ pub struct App {
     gesture:    Option<Gesture>,
     /// The arc tool between clicks (arc_tool.rs).
     arc:        ArcTool,
+    /// Left button releases held back BOUNCE (debounce.rs).
+    debounce:   Debounce<WindowEvent>,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -328,15 +331,17 @@ impl App {
                 paint_thread::Event::Saved { doc, path, revision, auto, result } => AppEvent::Saved { doc, path, revision, auto, result },
             });
         });
+        // Start with the round pen (the catalog starts with pencils).
+        let first = library.presets.iter().position(|p| p.name == "Round pen").unwrap_or(0);
         Self {
             proxy,
             window: None,
             gpu:    None,
             stylus: None,
 
-            brush:       library.presets[0].settings.clone(),
+            brush:       library.presets[first].settings.clone(),
             library,
-            preset:      0,
+            preset:      first,
 
             workspace,
             pending: None,
@@ -382,6 +387,7 @@ impl App {
             shape:      ShapeOptions::default(),
             gesture:    None,
             arc:        ArcTool::default(),
+            debounce:   Debounce::default(),
 
             painted:      false,
             // Upload the first composite.
@@ -712,13 +718,13 @@ impl App {
 
     fn arc_press(&mut self, at: (f32, f32)) {
         let cx = self.arc_ctx();
-        if let Some(path) = self.arc.press(at, cx, Instant::now()) { self.paint_path(path); }
+        if let Some(path) = self.arc.press(at, cx) { self.paint_path(path); }
         self.request_redraw();
     }
 
     fn arc_release(&mut self, at: (f32, f32)) {
         let cx = self.arc_ctx();
-        self.arc.release(at, cx, Instant::now());
+        self.arc.release(at, cx);
         self.request_redraw();
     }
 
@@ -958,7 +964,7 @@ impl App {
 
     /// Sleep until the next OS event, or until egui's delayed repaint.
     fn schedule(&self, event_loop: &ActiveEventLoop) {
-        let wake = [self.repaint_at, self.deferred_frame, self.autosave_at].into_iter().flatten().min();
+        let wake = [self.repaint_at, self.deferred_frame, self.autosave_at, self.debounce.deadline()].into_iter().flatten().min();
         event_loop.set_control_flow(match wake {
             Some(t) => ControlFlow::WaitUntil(t),
             None    => ControlFlow::Wait,
@@ -1035,6 +1041,9 @@ impl App {
     /// comes from MouseInput, which Windows always synthesizes for the pen;
     /// only position and pressure come from here.
     fn drain_stylus(&mut self) {
+        // A release is held back (debounce.rs): the pen may be up, its
+        // hover packets must not paint. Left in the queue meanwhile.
+        if self.debounce.holding() { return; }
         let Some(stylus) = &self.stylus else { return };
         for s in stylus.drain() {
             self.activity.pen_packets += 1;
@@ -1642,6 +1651,7 @@ impl ApplicationHandler<AppEvent> for App {
             event_loop.exit();
             return;
         }
+        for e in self.debounce.poll(Instant::now()) { self.handle_event(e); }
         self.drain_stylus();
         self.check_autosave();
         self.update_title();
@@ -1703,6 +1713,7 @@ impl ApplicationHandler<AppEvent> for App {
                 let stylus = Stylus::install(h.hwnd.get());
                 log::info!("pen input backend: {}", stylus.backend());
                 self.stylus = Some(stylus);
+                if !aurastudio_input::disable_alt_menu(h.hwnd.get()) { log::warn!("couldn't turn off the Alt menu"); }
             }
         }
 
@@ -1732,6 +1743,28 @@ impl ApplicationHandler<AppEvent> for App {
         _id:        WindowId,
         event:      WindowEvent,
     ) {
+        // Left button bounce filter first (debounce.rs): a release is held
+        // back until it is sure not to be the switch chattering.
+        let kind = match &event {
+            WindowEvent::MouseInput { button: MouseButton::Left, state, .. } if state.is_pressed() => DebounceKind::LeftPress,
+            WindowEvent::MouseInput { button: MouseButton::Left, .. } => DebounceKind::LeftRelease,
+            WindowEvent::CursorMoved { .. } => DebounceKind::Move,
+            _ => DebounceKind::Other,
+        };
+        // Leaving the window: nothing held may stay behind.
+        let flush = matches!(event, WindowEvent::Focused(false) | WindowEvent::CloseRequested);
+        let before = self.debounce.bounces;
+        let mut events = if flush { self.debounce.flush() } else { Vec::new() };
+        events.extend(self.debounce.event(event, kind, Instant::now()));
+        if self.debounce.bounces != before {
+            log::info!("mouse button bounce ignored ({} so far)", self.debounce.bounces);
+        }
+        for e in events { self.handle_event(e); }
+    }
+}
+
+impl App {
+    fn handle_event(&mut self, event: WindowEvent) {
         // egui sees every event and says when it needs a new frame (hover,
         // slider drag...). Whether a press starts a stroke is decided by
         // GpuState::is_canvas_at, see there for why egui can't decide it.

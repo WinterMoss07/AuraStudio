@@ -1,0 +1,74 @@
+# The brushes AuraStudio ships with, by medium (the Brushes docker's
+# icons), in display order:  medium | brush | name
+# brush: a .myb under mypaint/ (folder/file, without .myb), or @round /
+# @soft (AuraStudio's own engine). The other .myb files stay in the repo
+# but are not bundled (near duplicates); add a line to bring one back.
+# Authors: see mypaint/LICENSES.dep5 (all CC0).
+
+Pencil | deevad/4H_pencil | 4H pencil
+Pencil | deevad/2B_pencil | 2B pencil
+Pencil | tanda/pencil-8b | 8B pencil
+Pencil | ramon/Sketch_1 | Sketch
+Pencil | Dieterle/Pencil-_Left_Handed | Shading pencil
+
+Ink | @round | Round pen
+Ink | deevad/liner | Liner
+Ink | deevad/ballpen | Ballpen
+Ink | deevad/soft-dip-pen | Soft dip pen
+Ink | classic/pointy_ink | Pointy ink
+Ink | kaerhon_v1/ink_slow_s | Slow ink
+Ink | ramon/Thin_Pen | Thin pen
+Ink | classic/calligraphy | Calligraphy
+Ink | classic/textured_ink | Textured ink
+Ink | Dieterle/Fountain_SF#1 | Fountain pen
+Ink | tanda/marker-01 | Marker
+Ink | ramon/Marker | Soft marker
+
+Charcoal & pastel | classic/charcoal | Charcoal
+Charcoal & pastel | tanda/charcoal-01 | Fine charcoal
+Charcoal & pastel | tanda/charcoal-04 | Rough charcoal
+Charcoal & pastel | deevad/chalk | Chalk
+Charcoal & pastel | ramon/Pastel_1 | Pastel
+
+Paint | deevad/basic_digital_brush | Digital brush
+Paint | deevad/detail_brush_thin | Detail brush
+Paint | deevad/rigger_brush | Rigger
+Paint | tanda/oil-03-paint | Oil
+Paint | tanda/acrylic-04-paint | Acrylic
+Paint | tanda/acrylic-04-with-water | Acrylic + water
+Paint | ramon/Classic_Paint | Classic paint
+Paint | kaerhon_v1/wet_paint_sm | Wet paint
+
+Watercolor | deevad/thin_watercolor | Thin watercolor
+Watercolor | deevad/large_watercolor_fringe | Watercolor fringe
+Watercolor | deevad/watercolor_glazing | Watercolor glazing
+Watercolor | tanda/watercolor-02-paint | Watercolor
+Watercolor | Dieterle/WateryFlatbrush | Watery flat
+Watercolor | deevad/only_water_fringe | Water only
+
+Airbrush | @soft | Soft round
+Airbrush | deevad/airbrush | Airbrush
+Airbrush | kaerhon_v1/airbruch_press_a | Pressure airbrush
+Airbrush | deevad/spray2 | Grainy spray
+
+Blend & smudge | deevad/blending | Blender
+Blend & smudge | deevad/grainy_blending | Grainy blender
+Blend & smudge | ramon/Smear | Smear
+Blend & smudge | classic/blending_knife | Blending knife
+Blend & smudge | ramon/Blur_Fast | Blur
+
+Eraser | deevad/thin_hard_eraser | Thin hard eraser
+Eraser | deevad/large_hard_eraser | Large hard eraser
+Eraser | deevad/kneaded_eraser | Kneaded eraser
+Eraser | ramon/Soft_Eraser | Soft eraser
+
+Texture & FX | classic/short_grass | Grass
+Texture & FX | tanda/splatter-02 | Splatter
+Texture & FX | tanda/texture-06 | Fur and hair
+Texture & FX | ramon/Clouds | Clouds
+Texture & FX | Dieterle/HalfTone#1 | Halftone
+Texture & FX | experimental/particules_3 | Particles
+
+Misc | experimental/1pixel | 1 pixel
+Misc | experimental/pixelblocking | Pixel blocking
+Misc | Dieterle/Posterizer | Posterizer

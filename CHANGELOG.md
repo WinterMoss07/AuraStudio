@@ -3,6 +3,36 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.5.0 — 2026-10-18
+
+**New**
+- Brushes sorted by medium: Pencil, Ink, Charcoal & pastel, Paint,
+  Watercolor, Airbrush, Blend & smudge, Eraser, Texture & FX, Misc. One
+  icon per medium above the search field; the list shows that medium's
+  brushes; search looks in all of them.
+- 58 brushes instead of 198: near duplicates of the MyPaint collection
+  left out (three "2B pencil", acrylic / oil / water variants...), clean
+  names ("Soft dip pen", not "soft-dip-pen"), the author on hover. The
+  choice is `assets/brushes/catalog.txt` (one line per brush, the other
+  files stay in the repo). Imported brushes get a medium from their name.
+- Mouse button bounce filtered everywhere (sliders, docks, strokes,
+  shapes, arcs): a left release is held 50 ms; a press coming back in
+  that time means the switch chattered, and the drag goes on (logged:
+  "mouse button bounce ignored").
+
+**Changed / fixed**
+- Brush previews: erasers and wet brushes cross a first stroke (warm and
+  cool segments), blenders scrub along it, instead of the red / green /
+  blue bands. The S no longer moves when the size changes (only the
+  stroke's width does). Previews are painted on a thread of their own:
+  sliders stay smooth with textured brushes.
+- Interface text can't be selected or copied any more (text fields still
+  can).
+- No "AuraStudio" in the menu bar.
+- Windows: Alt (or F10) alone, or Alt + a letter, no longer puts the
+  window in menu mode (the next key went nowhere). Alt+Space and Alt+F4
+  still work.
+
 ## 0.4.0 — 2026-10-18
 
 **New**

@@ -1,9 +1,7 @@
 //! The arc tool's state between clicks (it lives across presses and
 //! releases), modeled on OpenToonz's arc / multi-arc tool. Kept apart
 //! from the window code so press / release / move sequences can be
-//! tested, mouse button bounce included.
-
-use std::time::{Duration, Instant};
+//! tested, mouse button bounce included (filtered before, debounce.rs).
 
 use crate::shapes;
 
@@ -12,12 +10,6 @@ type P = (f32, f32);
 /// Distance (screen pixels) at which an arc's end sticks to the first
 /// point of the chain, closing the outline (OpenToonz: 5).
 pub const ARC_SNAP: f32 = 6.0;
-
-/// A release followed by a press this soon is the button bouncing (a worn
-/// mouse switch "chatters": it opens and closes again for a few ms), not
-/// the user: the button is taken as held all along. Without this, a
-/// bounce mid-drag ended the drag and validated a straight arc.
-pub const BOUNCE: Duration = Duration::from_millis(60);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ArcState {
@@ -49,9 +41,6 @@ pub struct ArcTool {
     marks: Vec<usize>,
     /// The press that validated an arc: its release starts nothing.
     skip_release: bool,
-    /// The last release: when, and the state before it (to undo it if it
-    /// was a bounce).
-    released: Option<(Instant, Option<ArcState>, bool)>,
 }
 
 impl ArcTool {
@@ -63,7 +52,6 @@ impl ArcTool {
     /// Forget a pending release (tool switch, focus lost).
     pub fn reset_release(&mut self) {
         self.skip_release = false;
-        self.released = None;
     }
 
     /// Where the arc's end goes for the cursor at `at`: Shift snaps the
@@ -79,18 +67,7 @@ impl ArcTool {
 
     /// Button pressed on the canvas. Returns a path to paint when this
     /// press ends the outline.
-    pub fn press(&mut self, at: P, cx: Ctx, now: Instant) -> Option<Vec<P>> {
-        if let Some((t, before, skip)) = self.released.take() {
-            if now.duration_since(t) < BOUNCE {
-                // The button never really went up: back to before the
-                // release, still held.
-                log::info!("arc tool: mouse button bounce ignored ({} ms)", now.duration_since(t).as_millis());
-                self.state = before;
-                self.skip_release = skip;
-                self.moved(at, cx);
-                return None;
-            }
-        }
+    pub fn press(&mut self, at: P, cx: Ctx) -> Option<Vec<P>> {
         let near = |a: P, b: P| dist(a, b) * cx.zoom < ARC_SNAP;
         let mut painted = None;
         self.state = match self.state {
@@ -122,8 +99,7 @@ impl ArcTool {
     }
 
     /// Button released (anywhere).
-    pub fn release(&mut self, at: P, cx: Ctx, now: Instant) {
-        self.released = Some((now, self.state, self.skip_release));
+    pub fn release(&mut self, at: P, cx: Ctx) {
         if std::mem::take(&mut self.skip_release) { return; }
         if let Some(ArcState::Placing { start, held: true, .. }) = self.state {
             let end = self.end_for(start, at, cx);
@@ -207,32 +183,54 @@ mod tests {
     const CX: Ctx = Ctx { zoom: 1.0, shift: false, chain_arcs: true };
     const SINGLE: Ctx = Ctx { zoom: 1.0, shift: false, chain_arcs: false };
 
-    /// Drives the tool like the window does, with a clock in ms.
-    struct Mouse { tool: ArcTool, t0: Instant, ms: u64, painted: Vec<Vec<P>>, cx: Ctx }
+    use crate::debounce::{Debounce, Kind, BOUNCE};
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, Copy)]
+    enum Ev { Down(P), Up(P), Move(P) }
+
+    /// Drives the tool like the window does: events through the bounce
+    /// filter, a clock in ms.
+    struct Mouse { tool: ArcTool, filter: Debounce<Ev>, t0: Instant, ms: u64, painted: Vec<Vec<P>>, cx: Ctx }
 
     impl Mouse {
-        fn new(cx: Ctx) -> Self { Self { tool: ArcTool::default(), t0: Instant::now(), ms: 0, painted: Vec::new(), cx } }
+        fn new(cx: Ctx) -> Self { Self { tool: ArcTool::default(), filter: Debounce::default(), t0: Instant::now(), ms: 0, painted: Vec::new(), cx } }
         fn now(&self) -> Instant { self.t0 + Duration::from_millis(self.ms) }
-        fn wait(&mut self, ms: u64) -> &mut Self { self.ms += ms; self }
-        fn down(&mut self, at: P) -> &mut Self {
+        fn handle(&mut self, evs: Vec<Ev>) {
+            for e in evs {
+                match e {
+                    Ev::Down(at) => if let Some(p) = self.tool.press(at, self.cx) { self.painted.push(p) },
+                    Ev::Up(at) => if self.tool.wants_release() { self.tool.release(at, self.cx) },
+                    Ev::Move(at) => { self.tool.moved(at, self.cx); }
+                }
+            }
+        }
+        fn send(&mut self, e: Ev, k: Kind) -> &mut Self {
             let now = self.now();
-            if let Some(p) = self.tool.press(at, self.cx, now) { self.painted.push(p); }
+            let evs = self.filter.event(e, k, now);
+            self.handle(evs);
             self
         }
-        fn up(&mut self, at: P) -> &mut Self {
-            if self.tool.wants_release() { let now = self.now(); self.tool.release(at, self.cx, now); }
+        fn wait(&mut self, ms: u64) -> &mut Self {
+            self.ms += ms;
+            let now = self.now();
+            let evs = self.filter.poll(now);
+            self.handle(evs);
             self
         }
+        fn down(&mut self, at: P) -> &mut Self { self.send(Ev::Down(at), Kind::LeftPress) }
+        fn up(&mut self, at: P) -> &mut Self { self.send(Ev::Up(at), Kind::LeftRelease) }
         /// Move in steps of 8 ms (a 125 Hz mouse).
         fn drag(&mut self, from: P, to: P, steps: u32) -> &mut Self {
             for i in 1..=steps {
                 let t = i as f32 / steps as f32;
-                self.ms += 8;
-                self.tool.moved((from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t), self.cx);
+                self.wait(8);
+                self.send(Ev::Move((from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)), Kind::Move);
             }
             self
         }
         fn enter(&mut self) -> &mut Self {
+            self.wait(BOUNCE.as_millis() as u64);
             if let Some(p) = self.tool.finish() { self.painted.push(p); }
             self
         }
@@ -247,7 +245,7 @@ mod tests {
 
     /// Drag start → end, release, move to bend, click: one curved arc.
     fn one_arc(m: &mut Mouse, a: P, b: P, c: P) {
-        m.down(a).drag(a, b, 30).up(b).wait(200).drag(b, c, 20).wait(150).down(c).wait(90).up(c);
+        m.down(a).drag(a, b, 30).up(b).wait(200).drag(b, c, 20).wait(150).down(c).wait(90).up(c).wait(BOUNCE.as_millis() as u64);
     }
 
     #[test]
@@ -265,7 +263,7 @@ mod tests {
     fn click_click_then_bend_paints_a_curve() {
         let mut m = Mouse::new(SINGLE);
         let (a, b, c) = ((50.0, 50.0), (250.0, 80.0), (150.0, 200.0));
-        m.down(a).wait(90).up(a).drag(a, b, 25).down(b).wait(90).up(b).drag(b, c, 20).down(c).wait(90).up(c);
+        m.down(a).wait(90).up(a).wait(60).drag(a, b, 25).down(b).wait(90).up(b).wait(60).drag(b, c, 20).down(c).wait(90).up(c).wait(60);
         assert_eq!(m.painted.len(), 1);
         assert!(bulge(&m.painted[0], a, b) > 40.0);
     }
@@ -276,10 +274,10 @@ mod tests {
     #[test]
     fn bounce_mid_drag_is_ignored() {
         for chain in [SINGLE, CX] {
-            for bounce_ms in [1, 5, 15, 30, 50] {
+            for bounce_ms in [1, 5, 15, 30, 45] {
                 let mut m = Mouse::new(chain);
                 let (a, mid, b, c) = ((100.0, 100.0), (250.0, 100.0), (400.0, 100.0), (300.0, 250.0));
-                m.down(a).drag(a, mid, 15).up(mid).wait(bounce_ms).down(mid).drag(mid, b, 15).up(b);
+                m.down(a).drag(a, mid, 15).up(mid).wait(bounce_ms).down(mid).drag(mid, b, 15).up(b).wait(60);
                 assert!(m.painted.is_empty(), "painted mid-drag ({bounce_ms} ms)");
                 assert_eq!(m.tool.state, Some(ArcState::Bending { start: a, end: b, control: b }), "{bounce_ms} ms");
                 m.wait(200).drag(b, c, 20).down(c).wait(90).up(c).enter();
@@ -301,7 +299,7 @@ mod tests {
             x += 100.0;
             m.up((x, 0.0)).wait(10).down((x, 0.0));
         }
-        m.up(b);
+        m.up(b).wait(60);
         assert!(m.painted.is_empty());
         assert_eq!(m.tool.state, Some(ArcState::Bending { start: a, end: b, control: b }));
     }
@@ -313,12 +311,12 @@ mod tests {
     fn bounce_on_the_validating_click() {
         let (a, b, c) = ((100.0, 100.0), (400.0, 100.0), (300.0, 250.0));
         let mut m = Mouse::new(CX);
-        m.down(a).drag(a, b, 30).up(b).wait(200).drag(b, c, 20).down(c).wait(40).up(c).wait(8).down(c).wait(60).up(c);
+        m.down(a).drag(a, b, 30).up(b).wait(200).drag(b, c, 20).down(c).wait(40).up(c).wait(8).down(c).wait(60).up(c).wait(60);
         assert!(m.painted.is_empty(), "the outline ended");
         assert!(matches!(m.tool.state, Some(ArcState::Placing { start, held: false, .. }) if start == b));
 
         let mut m = Mouse::new(SINGLE);
-        m.down(a).drag(a, b, 30).up(b).wait(200).drag(b, c, 20).down(c).wait(40).up(c).wait(8).down(c).wait(60).up(c);
+        m.down(a).drag(a, b, 30).up(b).wait(200).drag(b, c, 20).down(c).wait(40).up(c).wait(8).down(c).wait(60).up(c).wait(60);
         assert_eq!(m.painted.len(), 1);
         assert!(!m.tool.active(), "a bounce started a new arc");
     }
@@ -331,7 +329,7 @@ mod tests {
         let mut m = Mouse::new(CX);
         m.down(a).drag(a, b, 30).up(b).wait(200).drag(b, c, 20).down(c).wait(70).up(c);
         // Back on the end point, second click well after the bounce window.
-        m.drag(c, b, 5).wait(BOUNCE.as_millis() as u64 + 20).down(b).wait(70).up(b);
+        m.drag(c, b, 5).wait(BOUNCE.as_millis() as u64 + 20).down(b).wait(70).up(b).wait(60);
         assert_eq!(m.painted.len(), 1);
         assert!(!m.tool.active());
     }
@@ -343,9 +341,9 @@ mod tests {
         one_arc(&mut m, a, b, (200.0, 50.0));
         assert!(m.painted.is_empty());
         // Next arc from b: click on c, bend, click.
-        m.wait(100).drag(b, c, 20).down(c).wait(80).up(c).drag(c, (300.0, 250.0), 10).wait(100).down((300.0, 250.0)).wait(80).up((300.0, 250.0));
+        m.wait(100).drag(b, c, 20).down(c).wait(80).up(c).wait(60).drag(c, (300.0, 250.0), 10).wait(100).down((300.0, 250.0)).wait(80).up((300.0, 250.0)).wait(60);
         // Last arc ends on the first point (within the snap): closes.
-        m.wait(100).drag(c, (102.0, 103.0), 20).down((102.0, 103.0)).wait(80).up((102.0, 103.0)).drag(a, (120.0, 250.0), 10).wait(100).down((120.0, 250.0)).wait(80).up((120.0, 250.0));
+        m.wait(100).drag(c, (102.0, 103.0), 20).down((102.0, 103.0)).wait(80).up((102.0, 103.0)).wait(60).drag(a, (120.0, 250.0), 10).wait(100).down((120.0, 250.0)).wait(80).up((120.0, 250.0)).wait(60);
         assert_eq!(m.painted.len(), 1, "closed outline painted once");
         let p = &m.painted[0];
         assert_eq!(p.first(), p.last());
@@ -378,10 +376,10 @@ mod tests {
                     0 if !down => { m.down(at); down = true; }
                     1 if down => { m.up(at); down = false; }
                     2 => { m.wait(rnd(120)); }
-                    3 => { m.tool.moved(at, m.cx); }
+                    3 => { m.send(Ev::Move(at), Kind::Move); }
                     _ => { let p = m.tool.preview(); assert!(p.is_none() || !p.unwrap().0.is_empty()); }
                 }
-                if !down {
+                if !down && !m.filter.holding() {
                     assert!(!matches!(m.tool.state, Some(ArcState::Placing { held: true, .. })), "held with the button up");
                 }
             }

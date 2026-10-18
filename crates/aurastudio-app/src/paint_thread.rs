@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn stroke_leaving_the_canvas_far_pauses_and_resumes() {
         let lib = aurastudio_brushes::Library::load();
-        let mypaint = lib.presets.iter().find(|p| p.engine.is_mypaint() && p.name == "marker fat").unwrap().engine.clone();
+        let mypaint = lib.presets.iter().find(|p| p.engine.is_mypaint() && p.name == "Marker").unwrap().engine.clone();
         for (n, engine) in [Engine::Native, mypaint].into_iter().enumerate() {
             let (doc, id) = doc_with_layer();
             let pt = PaintThread::spawn(proj(64, 64), |_| {});

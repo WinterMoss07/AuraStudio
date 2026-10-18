@@ -51,6 +51,8 @@ pub fn apply(ctx: &egui::Context) {
     // (Immediate present mode) and the idle CPU use. Tooltips now show
     // after their usual delay, from a timer.
     style.interaction.show_tooltips_only_when_still = false;
+    // Interface text is not selectable / copyable (only text fields are).
+    style.interaction.selectable_labels = false;
 
     style.text_styles = [
         (TextStyle::Small,     FontId::new(11.0, FontFamily::Proportional)),
