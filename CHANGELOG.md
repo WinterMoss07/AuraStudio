@@ -3,6 +3,20 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.3.2 — 2026-10-18
+
+Faster painting, nothing new to learn:
+- While painting, the layers under and over the painted one are merged
+  once per stroke and kept (like Krita): on a 30-layer document the
+  display update of a big brush went from ~100 ms to ~3 ms.
+- Soft round brushes about 1.8× faster (vectorized dab edge and pixel
+  writes).
+- MyPaint pigment brushes (watery, acrylic, oil) about 30 % faster:
+  hokusai's spectral mix computes the brush color's part once per dab,
+  same result to the bit (vendored, see NOTICE).
+- Layer merging about 2× faster.
+- New benchmark: `bench_myb` (MyPaint brush cost per pen sample).
+
 ## 0.3.1 — 2026-10-18
 
 - Hidden layers show a closed eye.

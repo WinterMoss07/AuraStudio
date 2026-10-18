@@ -207,11 +207,22 @@ fn to_fix15(p: [u8; 4]) -> [u16; 4] {
 /// like our cleared layers).
 fn from_fix15(p: [u16; 4]) -> [u8; 4] {
     let a = (p[3] as u32).min(ONE);
+    if a == ONE {
+        // Opaque (most painted pixels): same rounding as below, without
+        // the divisions (a third of a big brush's write-back).
+        let c = |v: u16| ((v as u32 * 255 + ONE / 2) >> 15).min(255) as u8;
+        return [c(p[0]), c(p[1]), c(p[2]), 255];
+    }
     let a8 = ((a * 255 + ONE / 2) / ONE) as u8;
     if a8 == 0 {
         return [255, 255, 255, 0];
     }
-    let c = |v: u16| ((v as u32 * 255 + a / 2) / a).min(255) as u8;
+    // (v * 255 + a / 2) / a, by one reciprocal instead of three integer
+    // divisions. Exact: the quotient's fraction is a multiple of 1 / a
+    // (≥ 2^-15), far above the f64 product's error, which the tiny bias
+    // keeps from rounding an exact integer down.
+    let inv = 1.0 / a as f64;
+    let c = |v: u16| (((v as u32 * 255 + a / 2) as f64 * inv + 1e-9) as u32).min(255) as u8;
     [c(p[0]), c(p[1]), c(p[2]), a8]
 }
 
@@ -261,6 +272,19 @@ mod tests {
             e.stroke_to(s, 30.0 + i as f32 * 3.0, 64.0, 1.0, i as f64 * 0.008);
         }
         e.end_stroke(s);
+    }
+
+    #[test]
+    fn fix15_reciprocal_is_exact() {
+        for a in 1..=ONE {
+            for k in 0..24u32 {
+                let v = ((k * 2_654_435_761u32.wrapping_mul(a)) >> 5) % (ONE + 1);
+                let want = ((v * 255 + a / 2) / a).min(255) as u8;
+                let a8 = ((a * 255 + ONE / 2) / ONE) as u8;
+                let got = from_fix15([v as u16, a as u16, 0, a as u16]);
+                if a8 != 0 && a != ONE { assert_eq!(got[0], want, "v {v} a {a}"); }
+            }
+        }
     }
 
     #[test]

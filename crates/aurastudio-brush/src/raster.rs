@@ -15,6 +15,15 @@ pub const IOTA: [f32; CHUNK] = {
     a
 };
 
+/// `v` (0 ≤ v < 65536) rounded to the nearest integer. Branch-free, so the
+/// loops using it vectorize: Rust's saturating `as` casts compile to
+/// scalar code per lane (most of a soft dab's time).
+#[inline(always)]
+pub fn round_small(v: f32) -> u16 {
+    // Adding 2^23 puts the rounded integer in the low mantissa bits.
+    (v + 8_388_608.0).to_bits() as u16
+}
+
 /// Smallest value of a mask run (vectorized 16 at a time).
 pub fn min_u8(v: &[u8]) -> u8 {
     let mut chunks = v.chunks_exact(16);
@@ -48,21 +57,32 @@ pub fn erase_pixels(out: &mut [u8], base: &[u8], cov: &[u8]) {
 /// empty run is plain arithmetic the compiler vectorizes.
 pub fn write_pixels(out: &mut [u8], base: &[u8], cov: &[u8], color: [u8; 3], blend: BlendMode) {
     if blend == BlendMode::Normal {
-        if base.chunks_exact(4).all(|b| b[3] == 255) {
+        // Run alpha in one pass over whole pixels (vectorizes, a per-byte
+        // `all` doesn't): AND of all = opaque, OR of all = empty.
+        let (mut and, mut or) = (u32::MAX, 0u32);
+        for b in base.chunks_exact(4) {
+            let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            and &= w;
+            or |= w;
+        }
+        if and >> 24 == 255 {
             // Byte by byte over the whole run (RGBA alike: the alpha byte
             // gives 255 again), with each pixel's coverage repeated 4 times.
             let mut a4 = [0u8; CHUNK * 4];
             let a4 = &mut a4[..out.len()];
-            for (d, &a) in a4.chunks_exact_mut(4).zip(cov) { d.fill(a); }
-            let mut c4 = [255u8; CHUNK * 4];
-            for d in c4.chunks_exact_mut(4) { d[..3].copy_from_slice(&color); }
+            for (d, &a) in a4.chunks_exact_mut(4).zip(cov) {
+                d.copy_from_slice(&(a as u32 * 0x0101_0101).to_le_bytes());
+            }
+            let mut c4 = [0u8; CHUNK * 4];
+            let c = [color[0], color[1], color[2], 255];
+            for d in c4.chunks_exact_mut(4) { d.copy_from_slice(&c); }
             for (((o, &b), &a), &c) in out.iter_mut().zip(base).zip(a4.iter()).zip(c4.iter()) {
                 let (a, c) = (a as u16, c as u16);
                 *o = ((c * a + b as u16 * (255 - a) + 127) / 255) as u8;
             }
             return;
         }
-        if base.chunks_exact(4).all(|b| b[3] == 0) {
+        if or >> 24 == 0 {
             for (o, &a) in out.chunks_exact_mut(4).zip(cov) {
                 o.copy_from_slice(&[color[0], color[1], color[2], a]);
             }

@@ -1337,6 +1337,9 @@ impl App {
                 gpu.resize_canvas(w, h);
                 self.ui.invalidate_all_thumbnails();
             }
+            // A stroke being painted keeps merges of the other layers:
+            // they just changed.
+            doc.layers.drop_stroke_cache();
             // Pieces the paint thread merged before are superseded (it
             // can't merge more meanwhile: the document is locked here).
             self.projection.lock().unwrap().clear();

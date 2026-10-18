@@ -6,6 +6,7 @@
 
 pub mod fill;
 mod selection;
+mod stroke_cache;
 mod tiles;
 
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
@@ -168,6 +169,8 @@ struct StrokeBuffers {
     layer: u64,
     base:  Vec<Option<Tile>>,
     mask:  Vec<Option<MaskTile>>,
+    /// Merges under / over the layer, for the display (stroke_cache.rs).
+    cache: stroke_cache::StrokeCache,
 }
 
 /// A paint layer seen as a paintable surface for the brush engines.
@@ -586,6 +589,7 @@ impl LayerStack {
             layer: id,
             base: (0..tiles).map(|_| None).collect(),
             mask: (0..tiles).map(|_| None).collect(),
+            cache: Default::default(),
         };
         true
     }
@@ -896,18 +900,26 @@ fn blend_layer_opaque(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode)
     let op8 = (opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
     if op8 == 0 { return; }
     if mode == BlendMode::Normal {
-        // dst += (src - dst) * a, with a = alpha * opacity in 0..=255*255.
-        const FULL: u32 = 255 * 255;
-        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
-            let a = s[3] as u32 * op8;
-            if a == 0 { continue; }
-            if a == FULL {
-                d[..3].copy_from_slice(&s[..3]);
-                continue;
+        // dst += (src - dst) * a, a = alpha * opacity, in blocks: skip a
+        // fully transparent block, else plain u16 math over every byte
+        // (the compiler vectorizes it; a per-pixel branch doesn't).
+        const B: usize = 64;
+        for (dc, sc) in dst.chunks_mut(B * 4).zip(src.chunks(B * 4)) {
+            // OR of whole pixels (vectorizes, a strided byte read doesn't).
+            let mut or = 0u32;
+            for p in sc.chunks_exact(4) { or |= u32::from_le_bytes([p[0], p[1], p[2], p[3]]); }
+            if or >> 24 == 0 { continue; }
+            // Each pixel's alpha for its color bytes, 0 for its alpha byte
+            // (the backdrop stays opaque).
+            let mut a4 = [0u8; B * 4];
+            let a4 = &mut a4[..sc.len()];
+            for (d, p) in a4.chunks_exact_mut(4).zip(sc.chunks_exact(4)) {
+                let a = if op8 == 255 { p[3] } else { ((p[3] as u32 * op8 + 127) / 255) as u8 };
+                d.copy_from_slice(&[a, a, a, 0]);
             }
-            let ia = FULL - a;
-            for c in 0..3 {
-                d[c] = ((d[c] as u32 * ia + s[c] as u32 * a + FULL / 2) / FULL) as u8;
+            for ((d, &s), &a) in dc.iter_mut().zip(sc).zip(a4.iter()) {
+                let a = a as u16;
+                *d = ((*d as u16 * (255 - a) + s as u16 * a + 127) / 255) as u8;
             }
         }
     } else {

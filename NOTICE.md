@@ -27,7 +27,15 @@ Cerviño (tanda), Guillaume Loussarévian (kaerhon_v1), Brien Dieterle
 ## hokusai — MyPaint brush engine
 
 Brush dynamics and dab rendering for MyPaint brushes use the `hokusai`
-crates (a Rust port of libmypaint), as a regular crates.io dependency.
+crates (https://github.com/reearth/hokusai, a Rust port of libmypaint,
+MIT OR Apache-2.0), from crates.io.
+
+`vendor/hokusai-core` is a copy of `hokusai-core` 0.3.0 with speedups that
+keep its output identical: the spectral (pigment) mix takes the brush
+color's logarithms once per dab and a branch-free `fastpow2` that
+vectorizes (`spectral.rs`, test `wgm_mix_matches_fastpow`), and the
+`HOKUSAI_TRACE_DABS` check runs in debug builds only. Used through
+`[patch.crates-io]` in the workspace `Cargo.toml`.
 
 ## vendor/egui — egui 0.30.0, patched
 

@@ -302,11 +302,12 @@ impl Worker {
         self.last_update = Instant::now();
         let rects = std::mem::take(&mut self.pending);
         let Some(doc) = self.doc.clone() else { return };
-        let d = doc.lock().unwrap();
+        let mut d = doc.lock().unwrap();
         // Merged outside the projection lock: the UI thread never waits for
-        // the merge, only for the handover.
+        // the merge, only for the handover. During a stroke, from the
+        // merges kept under / over the painted layer (stroke_cache.rs).
         let (w, h) = (d.layers.width, d.layers.height);
-        let patches: Vec<_> = rects.into_iter().map(|r| (r, d.layers.composite_rect(r))).collect();
+        let patches: Vec<_> = rects.into_iter().map(|r| (r, d.layers.composite_rect_stroke(r))).collect();
         let mut p = self.projection.lock().unwrap();
         if (p.width, p.height) != (w, h) { return; }
         for (r, rgba) in patches {

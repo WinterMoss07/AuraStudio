@@ -18,6 +18,7 @@ members = [
 # compare_order). Drop this once egui is upgraded to 0.31 or later.
 [patch.crates-io]
 egui = { path = "vendor/egui" }
+hokusai-core = { path = "vendor/hokusai-core" }
 
 [profile.release]
 opt-level     = 3
@@ -33,4 +34,4 @@ codegen-units = 16
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.3.1"
+version = "0.3.2"

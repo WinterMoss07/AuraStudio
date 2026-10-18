@@ -29,7 +29,7 @@
 
 use aurastudio_canvas::{blend::unit_to_u8, tile_run, PaintSurface, Rect};
 
-use crate::raster::{changed_span, erase_pixels, min_u8, write_pixels, CHUNK, IOTA};
+use crate::raster::{changed_span, erase_pixels, min_u8, round_small, write_pixels, CHUNK, IOTA};
 
 use crate::Brush;
 
@@ -175,14 +175,14 @@ impl DabEngine {
                     for (v, &j) in shape.iter_mut().zip(IOTA.iter()) {
                         let dx = dx0 + j;
                         let t = ((reach - (dx * dx + dy2).sqrt()) * inv_soft).clamp(0.0, 1.0);
-                        *v = (t * t * (3.0 - 2.0 * t) * 256.0 + 0.5) as i32 as u16;
+                        *v = round_small(t * t * (3.0 - 2.0 * t) * 256.0);
                     }
                 } else {
                     // Hard: 1 px anti-aliased edge.
                     for (v, &j) in shape.iter_mut().zip(IOTA.iter()) {
                         let dx = dx0 + j;
                         let t = (reach - (dx * dx + dy2).sqrt()).clamp(0.0, 1.0);
-                        *v = (t * 256.0 + 0.5) as i32 as u16;
+                        *v = round_small(t * 256.0);
                     }
                 }
                 // ...then the wash step (vectorized).
@@ -198,7 +198,7 @@ impl DabEngine {
                         let src = capf * sh as f32 * (1.0 / 256.0);
                         let m = cur as f32;
                         let v = src + (avgf - src) * (m * inv_avg).min(1.0);
-                        *nv = (v + 0.5).max(m) as i32 as u8;
+                        *nv = round_small(v.max(m)) as u8;
                     }
                 } else {
                     for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
