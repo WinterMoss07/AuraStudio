@@ -3,6 +3,13 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.3.3 — 2026-10-18
+
+- The executable built by the CI has the version in its name
+  (`aurastudio-0.3.3.exe`): several versions can run side by side.
+- One autosave file per version (they no longer overwrite each other).
+- README: the single tile manager is the next priority.
+
 ## 0.3.2 — 2026-10-18
 
 Faster painting, nothing new to learn:

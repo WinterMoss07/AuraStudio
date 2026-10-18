@@ -49,9 +49,12 @@ fn autosave_after() -> Duration {
 enum Pending { Create(aurastudio_ui::NewDoc), Open(PathBuf), Close, Quit }
 
 /// Where unsaved work is saved automatically (one file: AuraStudio has one
-/// document open at a time for now).
+/// document open at a time for now). One per version, so two versions
+/// running side by side (to compare them) don't overwrite or delete each
+/// other's autosave.
 fn recovery_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(format!("autosave.{EXTENSION}")))
+    let name = format!("autosave-{}.{EXTENSION}", env!("CARGO_PKG_VERSION"));
+    dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(name))
 }
 
 /// The list of recently used files, one path per line.

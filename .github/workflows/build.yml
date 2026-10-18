@@ -55,11 +55,22 @@ jobs:
       - name: Build
         run: cargo build --profile ci
 
+      # The version in the file name (aurastudio-0.3.2.exe), so two
+      # versions can sit side by side and run at the same time.
+      - name: Name with version
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          mkdir dist
+          if [ -f target/ci/aurastudio.exe ]; then
+            cp target/ci/aurastudio.exe "dist/aurastudio-$v.exe"
+          else
+            cp target/ci/aurastudio "dist/aurastudio-$v"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: aurastudio-${{ runner.os }}
-          path: |
-            target/ci/aurastudio
-            target/ci/aurastudio.exe
-          if-no-files-found: ignore
+          name: aurastudio-${{ env.VERSION }}-${{ runner.os }}
+          path: dist/*

@@ -98,8 +98,12 @@ the canvas texture).
 cargo run --release
 ```
 
-The CI (`.github/workflows/build.yml`) builds Windows, Linux and macOS
-binaries on every push.
+The CI (`.github/workflows/build.yml`) builds Windows and Linux binaries
+on every push (macOS on demand). The downloaded executable carries the
+version in its name (`aurastudio-0.3.2.exe`), so several versions can be
+kept side by side and run at the same time to compare them; each version
+has its own autosave file. A local `cargo build` gives a plain
+`aurastudio.exe`: copy it under a versioned name to keep it.
 
 Environment variables (for testing and comparisons):
 
@@ -118,6 +122,7 @@ Benchmarks:
 cargo run --release -p aurastudio-brush  --example bench_stroke      # brush cost per sample
 BENCH_PRESSURE=steady BENCH_RADIUS=500 ...                            # filters
 cargo run --release -p aurastudio-layers --example bench_composite   # layer merge cost
+cargo run --release -p aurastudio-brush  --example bench_myb -- brush.myb 300  # MyPaint brush cost per sample
 cargo test  --release -p aurastudio -- --ignored pipeline --nocapture # paint thread + UI model
 cargo run --release -p aurastudio-brush  --example myb_sheet -- out.png a.myb b.myb  # MyPaint sample sheet
 cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png        # round brush strokes (SHEET_LOOP=1, SHEET_RAW=1, SHEET_CONST=1)
@@ -128,8 +133,8 @@ cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png     
 ## Versioning
 
 One version for the whole app (`[workspace.package]` in `Cargo.toml`),
-[Semantic Versioning](https://semver.org) MAJOR.MINOR.PATCH, tagged
-`vX.Y.Z` in git and listed in `CHANGELOG.md`:
+[Semantic Versioning](https://semver.org) MAJOR.MINOR.PATCH, listed in
+`CHANGELOG.md` (no git tags or releases: personal project for now):
 
 - **PATCH** (0.2.0 → 0.2.1): bug fixes only.
 - **MINOR** (0.2.x → 0.3.0): new features; files from older versions still
@@ -173,6 +178,21 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Brush import dialog (files and folder) and that imports come back at
       the next launch.
 
+**Priority: one tile manager for all the memory**
+- [ ] **A single manager for every tile in memory** (Krita's tile data
+      store), before the animation timeline (hundreds of drawings in
+      memory). Each part keeps its own data (layers, stroke copies, merge
+      caches, MyPaint working tiles, undo history), but all of it goes
+      through the manager, which:
+      - counts all the memory in one place, against a budget (e.g. 4 GB,
+        set in the preferences);
+      - when over budget, frees what can be rebuilt (merge caches) and
+        writes the least recently used tiles to a swap file on disk;
+      - shares identical tiles instead of copying them (copy on write: a
+        copied tile is really copied only when it is changed).
+      Today nothing caps the memory: 1.5 GB with 35 layers in the 20-minute
+      painting test.
+
 **Missing / planned**
 - [ ] Smudge / blend strength sliders in Tool options (MyPaint brushes
       smudge too weakly by default).
@@ -185,9 +205,9 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Brush editor (MyPaint settings and curves); brush tilt / rotation input
       (WinTab orientation is already read).
 - [ ] Document tabs (the workspace already handles several documents).
-- [ ] Faster painting with many layers: cache the merge of the layers
-      below / above the active one (Krita); faster large MyPaint brushes
-      (WateryFlatbrush 200–500 px trails the pen badly).
+- [ ] Faster large MyPaint smudge brushes (acrylic / water / oil "only
+      water", 500–1000 px: still 2–3× slower than the pen on a slow
+      2-core machine; the time goes into reading the canvas colors).
 - [ ] Pressure setting for the geometry tools (they paint at full pressure).
 - [ ] Selection modes (add / subtract), invert, transform; undo for
       selection changes.
