@@ -49,6 +49,20 @@ impl Step {
     }
 }
 
+/// One undo / redo step as stored in a file: its pixels stay
+/// LZ4-compressed, exactly as the history keeps them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedStep {
+    pub label:    String,
+    pub layer_id: u64,
+    pub rect:     Rect,
+    pub data:     Vec<u8>,
+}
+
+/// Step labels the app knows; anything else read from a file becomes a
+/// generic one (labels are static strings).
+const LABELS: [&str; 2] = ["Brush stroke", "Clear layer"];
+
 pub struct History {
     undo:   VecDeque<Step>,
     redo:   Vec<Step>,
@@ -91,6 +105,32 @@ impl History {
             }
         }
         None
+    }
+
+    /// The newest `max_undo` undo steps (oldest first) and every redo step
+    /// (next to redo last), for saving.
+    pub fn export(&self, max_undo: usize) -> (Vec<SavedStep>, Vec<SavedStep>) {
+        let save = |s: &Step| SavedStep { label: s.label.to_owned(), layer_id: s.layer_id, rect: s.rect, data: s.data.clone() };
+        let skip = self.undo.len().saturating_sub(max_undo);
+        (self.undo.iter().skip(skip).map(save).collect(), self.redo.iter().map(save).collect())
+    }
+
+    /// History read from a file. Steps whose rectangle is empty are
+    /// dropped; one that no longer fits its layer is dropped when undone,
+    /// like a step of a deleted layer.
+    pub fn import(budget: usize, undo: Vec<SavedStep>, redo: Vec<SavedStep>) -> Self {
+        let load = |s: SavedStep| {
+            let label = LABELS.iter().find(|l| **l == s.label).copied().unwrap_or("Action");
+            (s.rect.0 < s.rect.2 && s.rect.1 < s.rect.3)
+                .then_some(Step { label, layer_id: s.layer_id, rect: s.rect, data: s.data })
+        };
+        let mut h = Self {
+            undo: undo.into_iter().filter_map(load).collect(),
+            redo: redo.into_iter().filter_map(load).collect(),
+            budget,
+        };
+        h.trim();
+        h
     }
 
     pub fn clear(&mut self) {

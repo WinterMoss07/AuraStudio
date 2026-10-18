@@ -292,6 +292,35 @@ impl LayerStack {
         s
     }
 
+    /// Rebuild a stack read from a file. Checked, never trusted: every
+    /// layer must have `width * height` pixels, ids must be unique, and
+    /// there must be at least one paint layer. An unknown active id falls
+    /// back to the topmost layer.
+    pub fn from_parts(width: u32, height: u32, root: Vec<Node>, active: u64) -> Result<Self, String> {
+        fn walk(nodes: &[Node], len: usize, ids: &mut std::collections::HashSet<u64>) -> Result<(), String> {
+            for n in nodes {
+                if n.id() == 0 || !ids.insert(n.id()) { return Err(format!("duplicate or zero layer id {}", n.id())); }
+                match n {
+                    Node::Layer(l) if l.pixels.len() != len => {
+                        return Err(format!("layer {} has {} bytes, expected {len}", l.id, l.pixels.len()));
+                    }
+                    Node::Layer(_) => {}
+                    Node::Folder(f) => walk(&f.children, len, ids)?,
+                }
+            }
+            Ok(())
+        }
+        if width == 0 || height == 0 { return Err("empty canvas".into()); }
+        let len = width as usize * height as usize * 4;
+        let mut ids = std::collections::HashSet::new();
+        walk(&root, len, &mut ids)?;
+        if count_layers(&root) == 0 { return Err("no paint layer".into()); }
+        let next_id = ids.iter().max().copied().unwrap_or(0) + 1;
+        let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id };
+        s.active = if ids.contains(&active) { active } else { first_layer_id(&s.root).unwrap_or(0) };
+        Ok(s)
+    }
+
     fn new_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;

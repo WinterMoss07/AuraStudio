@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use aurastudio_canvas::Rect;
 use aurastudio_layers::LayerStack;
 
-pub use history::{History, DEFAULT_BUDGET};
+pub use history::{History, SavedStep, DEFAULT_BUDGET};
 
 /// Stable id of an open document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -33,17 +33,37 @@ pub struct Document {
     pub name:   String,
     pub layers: LayerStack,
     history:    History,
+    /// Print resolution (dots per inch), kept in the file.
+    pub dpi:    f32,
+    /// File the document was opened from / last saved to.
+    pub path:   Option<std::path::PathBuf>,
+    /// Bumped by every change; compared with `saved_revision` to know if
+    /// there is unsaved work.
+    revision:       u64,
+    saved_revision: u64,
 }
 
 impl Document {
     pub fn new(id: DocId, name: &str, width: u32, height: u32) -> Self {
-        Self {
-            id,
-            name: name.to_owned(),
-            layers: LayerStack::new_document(width, height),
-            history: History::new(DEFAULT_BUDGET),
-        }
+        Self::from_parts(id, name, LayerStack::new_document(width, height), History::new(DEFAULT_BUDGET))
     }
+
+    /// A document from its parts (a file being opened). It counts as
+    /// saved.
+    pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
+        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0 }
+    }
+
+    /// Something changed (the layer panel edits the stack directly and
+    /// calls this; strokes, clear, undo, redo and resize do it here).
+    pub fn touch(&mut self) { self.revision += 1; }
+
+    pub fn revision(&self) -> u64 { self.revision }
+
+    /// The document as of `revision` is now on disk.
+    pub fn mark_saved(&mut self, revision: u64) { self.saved_revision = revision; }
+
+    pub fn is_modified(&self) -> bool { self.revision != self.saved_revision }
 
     pub fn id(&self) -> DocId { self.id }
 
@@ -55,6 +75,7 @@ impl Document {
     pub fn commit_stroke(&mut self, layer_id: u64, rect: Rect) {
         let before = self.layers.stroke_base_rect(rect);
         self.history.push("Brush stroke", layer_id, rect, &before);
+        self.touch();
     }
 
     /// Clear the active layer (white for the background), undoable.
@@ -66,15 +87,20 @@ impl Document {
         let before = self.layers.layer_rect(id, full)?;
         self.layers.clear_active();
         self.history.push("Clear layer", id, full, &before);
+        self.touch();
         Some(id)
     }
 
     pub fn undo(&mut self) -> Option<Change> {
-        self.history.undo(&mut self.layers)
+        let c = self.history.undo(&mut self.layers);
+        if c.is_some() { self.touch(); }
+        c
     }
 
     pub fn redo(&mut self) -> Option<Change> {
-        self.history.redo(&mut self.layers)
+        let c = self.history.redo(&mut self.layers);
+        if c.is_some() { self.touch(); }
+        c
     }
 
     /// New canvas size. The saved rectangles no longer match the layers,
@@ -83,8 +109,12 @@ impl Document {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.layers.resize(width, height);
         self.history.clear();
+        self.touch();
     }
 }
+
+/// Resolution of a new document until the New dialog sets one.
+pub const DEFAULT_DPI: f32 = 300.0;
 
 pub type SharedDoc = Arc<Mutex<Document>>;
 
@@ -108,9 +138,15 @@ impl Workspace {
 
     /// Open a new blank document and make it the active one.
     pub fn new_document(&mut self, name: &str, width: u32, height: u32) -> SharedDoc {
+        self.insert(|id| Document::new(id, name, width, height))
+    }
+
+    /// Add a document built with its new id (a file being opened) and make
+    /// it the active one.
+    pub fn insert(&mut self, make: impl FnOnce(DocId) -> Document) -> SharedDoc {
         let id = DocId(self.next_id);
         self.next_id += 1;
-        let doc = Arc::new(Mutex::new(Document::new(id, name, width, height)));
+        let doc = Arc::new(Mutex::new(make(id)));
         self.docs.push((id, Arc::clone(&doc)));
         self.active = self.docs.len() - 1;
         doc
