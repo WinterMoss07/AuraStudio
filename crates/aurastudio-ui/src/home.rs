@@ -230,8 +230,12 @@ pub fn start_screen(ctx: &egui::Context, area: Rect, recent: &mut [RecentFile], 
             let col = Rect::from_min_size(pos2(area.center().x - col_w / 2.0, area.top() + (area.height() * 0.14).min(120.0)), vec2(col_w, area.height()));
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(col), |ui| {
                 ui.vertical_centered(|ui| {
+                    ui.add(egui::Image::new(egui::include_image!("../../../assets/logo/aurastudio-logo.svg"))
+                        .fit_to_exact_size(vec2(84.0, 84.0)));
+                    ui.add_space(10.0);
                     ui.label(RichText::new("AuraStudio").size(38.0).strong().color(theme::TEXT));
-                    ui.add_space(4.0);
+                    ui.label(RichText::new(concat!("Version ", env!("CARGO_PKG_VERSION"))).small().color(theme::TEXT_WEAK));
+                    ui.add_space(6.0);
                     ui.label(RichText::new("Create a new document or open a file.").color(theme::TEXT_WEAK));
                     ui.add_space(22.0);
                     // Two buttons, centered as a pair.

@@ -1,3 +1,4 @@
+mod mip;
 mod view;
 pub use view::{wrap_angle, CanvasView};
 
@@ -55,6 +56,8 @@ pub struct GpuState {
     /// Interface size chosen in the View menu (1.0 = the system's).
     ui_scale:        f32,
     canvas_pipeline: RenderPipeline,
+    /// Keeps the canvas texture's mipmaps up to date.
+    mip:             mip::MipGen,
     view_buffer:     Buffer,
     nearest_sampler: Sampler,
     /// Same as view_bind_group with nearest sampling, for strong zoom.
@@ -306,6 +309,7 @@ impl GpuState {
             min_filter:     FilterMode::Linear,
             ..Default::default()
         });
+        let mip = mip::MipGen::new(&device, &canvas);
         let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &canvas.sampler, &view_buffer, &lut);
         let nearest_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &nearest_sampler, &view_buffer, &lut);
 
@@ -332,7 +336,7 @@ impl GpuState {
             egui_cursor: egui::CursorIcon::Default,
             lut,
             color_managed: false,
-            canvas, window,
+            canvas, window, mip,
             egui_ctx, egui_state, egui_renderer,
             viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
             text_input_active: false,
@@ -354,6 +358,7 @@ impl GpuState {
     /// the new composite with upload_rect.
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
         self.canvas = Canvas::new(&self.device, width, height);
+        self.mip.attach(&self.device, &self.canvas);
         self.rebuild_bind_groups();
         // New canvas: show it whole.
         self.view.fit_to_area();
@@ -588,6 +593,7 @@ impl GpuState {
             },
             Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
         );
+        self.mip.mark(rect);
     }
 
     /// Draw a frame. egui runs first to know how much room the docks take;
@@ -686,6 +692,8 @@ impl GpuState {
         let mut enc = self.device.create_command_encoder(
             &CommandEncoderDescriptor { label: Some("frame") }
         );
+        // Zoomed-out views sample the mipmaps: bring them up to date.
+        self.mip.rebuild(&mut enc, &self.canvas);
 
         {
             let mut pass = enc.begin_render_pass(&RenderPassDescriptor {

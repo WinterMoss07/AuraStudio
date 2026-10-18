@@ -85,11 +85,12 @@ impl Canvas {
         let texture = device.create_texture(&TextureDescriptor {
             label:           Some("canvas"),
             size:            Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
+            // Mipmaps (built by aurastudio-gpu): down to 1 px.
+            mip_level_count: 32 - width.max(height).max(1).leading_zeros(),
             sample_count:    1,
             dimension:       TextureDimension::D2,
             format:          Self::FORMAT,
-            usage:           TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            usage:           TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
             view_formats:    &[],
         });
 
@@ -104,6 +105,7 @@ impl Canvas {
             address_mode_v: AddressMode::ClampToEdge,
             mag_filter:     FilterMode::Linear,
             min_filter:     FilterMode::Linear,
+            mipmap_filter:  FilterMode::Linear,
             ..Default::default()
         });
 

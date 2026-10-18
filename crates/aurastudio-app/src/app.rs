@@ -24,6 +24,9 @@ use aurastudio_ui::{Actions, Dialog, DialogChoice, FileCmd, ImportBrushes, Model
 use crate::paint_thread::{self, Cmd, PaintThread, Timing};
 use crate::projection::{Projection, SharedProjection};
 
+/// Window title: the name and version.
+const APP_TITLE: &str = concat!("AuraStudio ", env!("CARGO_PKG_VERSION"));
+
 /// Shortest time between two frames that only update the UI.
 const UI_FRAME: Duration = Duration::from_micros(16_667);
 
@@ -1525,9 +1528,9 @@ impl App {
     fn update_title(&mut self) {
         let Ok(d) = self.doc.try_lock() else { return };
         let title = if self.home {
-            "AuraStudio".to_string()
+            APP_TITLE.to_string()
         } else {
-            format!("{}{} — AuraStudio", d.name, if d.is_modified() { "*" } else { "" })
+            format!("{}{} — {APP_TITLE}", d.name, if d.is_modified() { "*" } else { "" })
         };
         drop(d);
         if title != self.title {
@@ -1638,7 +1641,8 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
-            .with_title("AuraStudio v0.1")
+            .with_title(APP_TITLE)
+            .with_window_icon(window_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1440u32, 900u32));
 
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
@@ -1959,6 +1963,14 @@ impl ApplicationHandler<AppEvent> for App {
             _ => {}
         }
     }
+}
+
+/// The logo, for the title bar and the taskbar.
+fn window_icon() -> Option<winit::window::Icon> {
+    let png = include_bytes!("../../../assets/logo/aurastudio-256.png");
+    let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
 }
 
 /// Send the whole merged image to the GPU, in bands of rows: the full

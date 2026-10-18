@@ -1,12 +1,12 @@
 [package]
 name = "aurastudio-ui"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 [dependencies]
 aurastudio-brush  = { path = "../aurastudio-brush" }
 aurastudio-brushes = { path = "../aurastudio-brushes" }
-aurastudio-canvas = { version = "0.1.0", path = "../aurastudio-canvas" }
+aurastudio-canvas = { path = "../aurastudio-canvas" }
 aurastudio-layers = { path = "../aurastudio-layers" }
 egui      = "0.30"
 egui_dock = "0.15"

@@ -49,7 +49,9 @@ layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangl
 **Layers** — Paper + Layer 1 for new documents, folders, opacity, blend,
 lock, rename, undo / redo with a memory budget.
 
-**View** — GPU zoom / pan / rotation, monitor ICC color management.
+**View** — GPU zoom / pan / rotation, monitor ICC color management;
+mipmapped canvas (thin lines stay visible zoomed out; +33 % GPU memory for
+the canvas texture).
 - High-density screens: 100 % follows the system's display scaling, so a
   picture has the same size on a 3K laptop and an HD monitor; moving the
   window to another monitor keeps it the same size. View menu: "1 image
@@ -115,6 +117,21 @@ cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png     
 
 ---
 
+## Versioning
+
+One version for the whole app (`[workspace.package]` in `Cargo.toml`),
+[Semantic Versioning](https://semver.org) MAJOR.MINOR.PATCH, tagged
+`vX.Y.Z` in git and listed in `CHANGELOG.md`:
+
+- **PATCH** (0.2.0 → 0.2.1): bug fixes only.
+- **MINOR** (0.2.x → 0.3.0): new features; files from older versions still
+  open.
+- **MAJOR** (0.x → 1.0, then 1.x → 2.0): 1.0 when AuraStudio is ready for
+  everyday work; after that, only for breaking changes (an `.aurs` format
+  older versions can't read...).
+
+---
+
 ## Code layout
 
 | Crate | Role |
@@ -160,8 +177,8 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Brush editor (MyPaint settings and curves); brush tilt / rotation input
       (WinTab orientation is already read).
 - [ ] Document tabs (the workspace already handles several documents).
-- [ ] Faster MyPaint compositing for very large brushes; mipmaps for zoomed
-      out views.
+- [ ] Faster MyPaint compositing for very large brushes.
+- [ ] Pressure setting for the geometry tools (they paint at full pressure).
 - [ ] Selection modes (add / subtract), invert, transform; undo for
       selection changes.
 - [ ] Rooms / workspaces (painting, animation…) with lazy loading.

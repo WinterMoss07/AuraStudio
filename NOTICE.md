@@ -42,6 +42,6 @@ upgraded.
 
 ## Lucide icons
 
-The toolbox icons (`crates/aurastudio-ui/icons/*.svg`) come from
+The interface icons (`crates/aurastudio-ui/icons/*.svg`) come from
 [Lucide](https://lucide.dev), ISC license (`crates/aurastudio-ui/icons/LICENSE-lucide`).
 Recolored to white and drawn with a thinner stroke.

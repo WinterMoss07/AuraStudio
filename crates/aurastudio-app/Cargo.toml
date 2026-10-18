@@ -1,6 +1,6 @@
 [package]
 name = "aurastudio"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 
 [[bin]]
@@ -8,7 +8,7 @@ name = "aurastudio"
 path = "src/main.rs"
 
 [dependencies]
-aurastudio-canvas = { version = "0.1.0", path = "../aurastudio-canvas" }
+aurastudio-canvas = { path = "../aurastudio-canvas" }
 aurastudio-brush  = { path = "../aurastudio-brush" }
 aurastudio-input  = { path = "../aurastudio-input" }
 aurastudio-gpu    = { path = "../aurastudio-gpu" }
@@ -21,12 +21,17 @@ raw-window-handle = "0.6"
 egui-wgpu = "0.30"
 egui = "0.30"
 egui-winit = "0.30"
-aurastudio-layers = { version = "0.1.0", path = "../aurastudio-layers" }
+aurastudio-layers = { path = "../aurastudio-layers" }
 aurastudio-document = { path = "../aurastudio-document" }
 aurastudio-file = { path = "../aurastudio-file" }
 dirs = "7"
 aurastudio-color    = { path = "../aurastudio-color" }
 aurastudio-brushes  = { path = "../aurastudio-brushes" }
-aurastudio-ui = { version = "0.1.0", path = "../aurastudio-ui" }
+aurastudio-ui = { path = "../aurastudio-ui" }
 rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
 tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
+
+# The .exe icon (Windows resource), see build.rs.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

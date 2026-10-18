@@ -18,10 +18,11 @@ pub const SURFACE:      Color32 = Color32::from_rgb(0x22, 0x22, 0x23);
 pub const WIDGET:       Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2f);
 pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x39, 0x39, 0x3b);
 pub const BORDER:       Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-/// Selection and slider fill: #0070E7 with 10 % less saturation (HSB).
-pub const ACCENT:       Color32 = Color32::from_rgb(0x17, 0x7c, 0xe7);
-/// The accent toned down (hovered separators, drop zones).
-pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x1f, 0x4a, 0x7a);
+/// Selection and slider fill: the logo's blue-violet.
+pub const ACCENT:       Color32 = Color32::from_rgb(0x72, 0x5e, 0xea);
+/// The accent toned down (selected tool, hovered separators, drop zones):
+/// 45 % of it over the panel gray.
+pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x44, 0x3b, 0x7a);
 pub const TEXT:         Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
 pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0xaf, 0xaf, 0xb3);
 
