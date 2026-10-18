@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # "Run workflow" button in the Actions tab; tick macOS to build it too.
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: "Also build macOS"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,7 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        exclude:
+          # macOS only on demand (it was most of the build time).
+          - os: ${{ (github.event_name == 'workflow_dispatch' && inputs.macos) && 'none' || 'macos-latest' }}
 
     runs-on: ${{ matrix.os }}
 
@@ -24,15 +34,12 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      # Keeps the compiled dependencies between runs (refreshed when they
+      # change): only our crates are rebuilt.
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          shared-key: ci
 
       - name: Install Linux deps
         if: runner.os == 'Linux'
@@ -43,14 +50,16 @@ jobs:
             libvulkan-dev mesa-vulkan-drivers \
             libudev-dev
 
+      # The "ci" profile (Cargo.toml): optimized like release, with thin
+      # LTO, much faster to build.
       - name: Build
-        run: cargo build --release
+        run: cargo build --profile ci
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: aurastudio-${{ runner.os }}
           path: |
-            target/release/aurastudio
-            target/release/aurastudio.exe
+            target/ci/aurastudio
+            target/ci/aurastudio.exe
           if-no-files-found: ignore

@@ -24,6 +24,13 @@ opt-level     = 3
 lto           = true
 codegen-units = 1
 
+# CI builds: optimized like release, thin LTO and parallel codegen (a few
+# % slower at most, several times faster to build).
+[profile.ci]
+inherits      = "release"
+lto           = "thin"
+codegen-units = 16
+
 [workspace.package]
 # One version for the whole app (see README, Versioning).
 version = "0.3.1"
