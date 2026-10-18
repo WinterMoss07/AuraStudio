@@ -2,7 +2,7 @@
 // window: the round brush.
 // Usage: cargo run --release -p aurastudio-brush --example bench_stroke
 use std::time::{Duration, Instant};
-use aurastudio_brush::{Brush, RoundBrush};
+use aurastudio_brush::{Brush, DabEngine};
 use aurastudio_canvas::PaintSurface;
 
 struct S { px: Vec<u8>, base: Vec<u8>, mask: Vec<u8>, w: u32, h: u32 }
@@ -35,7 +35,7 @@ fn main() {
             let mut b = Brush::new();
             b.radius = radius;
             b.hardness = hardness;
-            let mut d = RoundBrush::new();
+            let mut d = DabEngine::new();
             d.sync_from(&b);
             d.begin_stroke();
             let n = 200;
@@ -48,9 +48,6 @@ fn main() {
                 let pr = if steady { 0.8 + 0.02 * (t * 9.0).sin() } else { 0.3 + 0.7 * (t * 9.0).sin().abs() };
                 let t0 = Instant::now();
                 d.stroke_to(&mut s, p.0, p.1, pr);
-                // The brush front is shown once per batch of samples; here
-                // after every sample (a paint thread keeping up with the pen).
-                d.preview(&mut s);
                 let dt = t0.elapsed();
                 total += dt; worst = worst.max(dt);
             }

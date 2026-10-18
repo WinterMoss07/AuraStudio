@@ -19,14 +19,12 @@ UI stays quiet so the painting gets the room.
 ## What works today
 
 ### Painting
-- **Round brush** — one engine for every round brush: the brush is smeared
-  continuously along the pen path (no stamped dabs, so no beads or rings, even
-  very soft and at 1000 px), with Krita's "wash" accumulation: smooth soft
-  edges and clean crossings, no build-up within one stroke (crossing a 20 %
-  stroke at 30 % gives 30 %). Pressure-driven opacity, hardness (opaque out to
-  radius × hardness, then a soft fade), per-brush blend mode, distance-based
-  pressure smoothing. The path integral has a closed form, so the per-pixel
-  work is vectorized arithmetic (see `round_brush.rs`).
+- **Round brush** — one engine for every round brush: round dabs with
+  Krita's "wash" accumulation (alpha darken): smooth soft edges and clean
+  crossings, no build-up within one stroke (crossing a 20 % stroke at 30 %
+  gives 30 %). Pressure-driven opacity, hardness, per-brush blend mode,
+  distance-based pressure smoothing. Dab spacing grows with the size (as √r
+  past a point, like Krita's auto spacing), so 1000 px brushes stay fast.
 - **MyPaint brushes** — 196 brushes bundled (David Revoy, Ramón Miranda,
   Tanda, the classic MyPaint set…, all CC0), painted natively through
   [hokusai](https://crates.io/crates/hokusai) (a Rust port of libmypaint):
@@ -79,10 +77,10 @@ UI stays quiet so the painting gets the room.
   changed rectangles to the GPU. Changed areas travel as a list of rectangles,
   never one growing bounding box. The UI never waits for the brush (it
   redraws the canvas with the last UI when the document is busy).
-- **Round brush at 1000 px**: the area is updated every ~45 px of pen travel,
-  not on every pen sample; the round front at the pen is a preview drawn once
-  per batch of samples (benchmarks below).
-- **Idle = 0 % CPU**: frames are only drawn when something changes.
+- **Round brush at 1000 px**: one dab every ~45 px of pen travel, not on
+  every pen sample (benchmarks below).
+- **Idle = 0 % CPU**: frames are only drawn when something changes, at most
+  one per display refresh (a hovering pen must not drive the frame rate).
 - Low-latency presentation (Mailbox / Immediate, one frame in flight).
 
 ---
@@ -138,7 +136,7 @@ cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png     
 | Crate | Role |
 |---|---|
 | `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
-| `aurastudio-brush` | brush engines: the round brush, native MyPaint |
+| `aurastudio-brush` | brush engines: round dabs, native MyPaint |
 | `aurastudio-brushes` | brush library: built-in presets, bundled MyPaint collection, import |
 | `aurastudio-layers` | layer tree, folders, lock, compositing |
 | `aurastudio-document` | documents, workspace, undo history |

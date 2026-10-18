@@ -31,7 +31,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{Brush, RoundBrush, MyPaintEngine};
+use aurastudio_brush::{Brush, DabEngine, MyPaintEngine};
 use aurastudio_brushes::Engine;
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
@@ -111,7 +111,7 @@ struct Worker {
 
     brush:    Brush,
     engine:   Engine,
-    round:    RoundBrush,
+    dabs:     DabEngine,
     /// Engine of the current MyPaint stroke (built from its preset).
     mypaint:  Option<MyPaintEngine>,
     /// The stroke started on a paintable layer.
@@ -135,7 +135,7 @@ impl Worker {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
             brush: Brush::new(),
             engine: Engine::Round,
-            round: RoundBrush::new(),
+            dabs: DabEngine::new(),
             mypaint: None,
             active: false,
             layer: 0,
@@ -234,12 +234,6 @@ impl Worker {
             // latency), when asked to, or at least every UPDATE_PERIOD.
             queue.extend(rx.try_iter());
             let due = flush || queue.is_empty() || self.last_update.elapsed() >= UPDATE_PERIOD;
-            if due {
-                if let Some(r) = self.with_doc(|w, d| w.preview(d)).flatten() {
-                    add_rect(&mut self.pending, r);
-                    merge(&mut self.stroke_rect, Some(r));
-                }
-            }
             if due && !self.pending.is_empty() {
                 self.update_projection();
                 (self.notify)(Event::Painted);
@@ -298,9 +292,9 @@ impl Worker {
         self.mypaint = None;
         match &engine {
             Engine::Round => {
-                self.round.smoother.span = smoothing;
-                self.round.sync_from(&self.brush);
-                self.round.begin_stroke();
+                self.dabs.smoother.span = smoothing;
+                self.dabs.sync_from(&self.brush);
+                self.dabs.begin_stroke();
             }
             Engine::MyPaint(preset) => {
                 let mut e = MyPaintEngine::new((**preset).clone());
@@ -334,19 +328,11 @@ impl Worker {
             }
             _ => {
                 self.last = Some((x, y, pressure));
-                self.round.stroke_to(&mut surface, x, y, pressure)
+                self.dabs.stroke_to(&mut surface, x, y, pressure)
             }
         };
         self.stats.paint.add(t0.elapsed());
         rect
-    }
-
-    /// Before showing the painted samples: the round brush draws its
-    /// front where the pen is (temporary, redrawn as the pen moves on).
-    fn preview(&mut self, doc: &mut Document) -> Option<Rect> {
-        if !self.active || !matches!(self.engine, Engine::Round) { return None; }
-        let mut surface = doc.layers.layer_surface(self.layer)?;
-        self.round.preview(&mut surface)
     }
 
     /// Finish the stroke and record it for undo. Returns the last painted
@@ -363,7 +349,7 @@ impl Worker {
             if let Some(mut surface) = doc.layers.layer_surface(id) {
                 rect = match (&self.engine, &mut self.mypaint) {
                     (Engine::MyPaint(_), Some(e)) => e.end_stroke(&mut surface),
-                    _ => self.round.end_stroke(&mut surface),
+                    _ => self.dabs.end_stroke(&mut surface),
                 };
             }
         }

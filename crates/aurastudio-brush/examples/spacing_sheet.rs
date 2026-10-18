@@ -1,7 +1,7 @@
 // Straight strokes with big brushes at several hardness values: the dab
 // spacing must not show inside soft strokes (beads / ripples).
 // Usage: cargo run --release -p aurastudio-brush --example spacing_sheet -- out.png
-use aurastudio_brush::{Brush, RoundBrush};
+use aurastudio_brush::{Brush, DabEngine};
 use aurastudio_canvas::PaintSurface;
 
 const W: u32 = 1400;
@@ -24,7 +24,7 @@ fn main() {
         let mut b = Brush::new();
         b.radius = if std::env::var("SHEET_LOOP").is_ok() { 50 } else { 140 };
         b.hardness = *hardness;
-        let mut e = RoundBrush::new();
+        let mut e = DabEngine::new();
         if std::env::var("SHEET_RAW").is_ok() { e.smoother.span = 0.0; }
         e.sync_from(&b);
         e.begin_stroke();
