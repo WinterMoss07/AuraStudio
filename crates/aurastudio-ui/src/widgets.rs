@@ -200,6 +200,16 @@ pub fn elided_text(p: &egui::Painter, left_center: Pos2, text: &str, font: egui:
     p.galley(pos, galley, color);
 }
 
+/// What is being dragged, written next to the pointer.
+pub fn drag_ghost(ctx: &egui::Context, text: &str) {
+    let Some(p) = ctx.pointer_interact_pos() else { return };
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag_ghost")));
+    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), theme::TEXT);
+    let r = Rect::from_min_size(p + vec2(14.0, 6.0), galley.size() + vec2(12.0, 6.0));
+    painter.rect_filled(r, 4.0, theme::ACCENT_DIM);
+    painter.galley(r.min + vec2(6.0, 3.0), galley, theme::TEXT);
+}
+
 // --- Icons ---------------------------------------------------------------------
 
 /// Frameless toolbar button with an icon.

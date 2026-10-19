@@ -1229,6 +1229,11 @@ impl App {
         if let Some(cmd) = actions.select { self.select(cmd); }
         if let Some(cmd) = actions.edit { self.edit_cmd(cmd); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
+        if let Some((i, medium, before)) = actions.move_brush {
+            // The selected brush keeps its working settings.
+            self.library.presets[self.preset].settings = self.brush.clone();
+            self.library.move_preset(i, &medium, before);
+        }
         if let Some(choice) = actions.dialog { self.on_dialog(choice); }
         if let Some(cmd) = actions.file { self.file_cmd(cmd); }
         if let Some(spec) = actions.new_doc { self.request(Pending::Create(spec)); }
@@ -1872,6 +1877,9 @@ impl App {
                 if key.state != ElementState::Pressed || ui_typing { return; }
                 let ctrl  = self.modifiers.control_key() || self.modifiers.super_key();
                 let shift = self.modifiers.shift_key();
+                // Alt + a key is a combination, never the key's own shortcut
+                // (Alt+E must not pick the eraser).
+                let alt   = self.modifiers.alt_key();
                 if self.ui.has_dialog() { return; }
                 match key.logical_key.as_ref() {
                     Key::Character(c) if ctrl && !key.repeat && ["n", "o", "s", "e", "w"].iter().any(|k| c.eq_ignore_ascii_case(k)) => {
@@ -1888,7 +1896,7 @@ impl App {
                     }
                     // The start screen has nothing to edit or move.
                     _ if self.home => {}
-                    Key::Named(NamedKey::Delete) if !key.repeat => self.clear_active_layer(),
+                    Key::Named(NamedKey::Delete) if !key.repeat && !alt => self.clear_active_layer(),
                     // Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo (Krita, CSP,
                     // Photoshop). Holding the keys repeats, like everywhere.
                     // While building an arc outline, Ctrl+Z takes back its
@@ -1902,7 +1910,7 @@ impl App {
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("c") => self.edit_cmd(EditCmd::Copy),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("v") => self.edit_cmd(EditCmd::Paste),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::None),
-                    Key::Character(c) if !ctrl && !key.repeat && Group::from_key(c).is_some() => {
+                    Key::Character(c) if !ctrl && !alt && !key.repeat && Group::from_key(c).is_some() => {
                         if let Some(g) = Group::from_key(c) { self.select_group(g); }
                     }
                     // Arc outline: Enter paints it, Escape drops it.
@@ -1910,7 +1918,7 @@ impl App {
                     Key::Named(NamedKey::Escape) if self.arc.active() => self.cancel_arcs(),
                     // View keys (Krita): 1 = 100 %, 2 = fit, 4 / 6 = rotate
                     // by 15 degrees, 5 = reset rotation, + / - = zoom.
-                    Key::Character(c) if !ctrl => match c {
+                    Key::Character(c) if !ctrl && !alt => match c {
                         "1" => self.view_cmd(ViewCmd::ActualSize),
                         "2" => self.view_cmd(ViewCmd::Fit),
                         "4" => self.view_cmd(ViewCmd::RotateLeft),

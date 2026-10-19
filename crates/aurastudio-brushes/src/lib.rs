@@ -65,12 +65,14 @@ pub struct Preset {
     pub settings: Brush,
     /// The imported file, None for bundled brushes.
     pub file:   Option<PathBuf>,
+    /// Place in its medium's list (the user can drag brushes around).
+    pub order:  u32,
 }
 
 impl Preset {
     fn builtin(name: &str, medium: &str, radius: f32, hardness: f32) -> Self {
         let settings = Brush { radius, hardness, ..Brush::new() };
-        Self { name: name.into(), medium: medium.into(), author: "AuraStudio".into(), engine: Engine::Native, settings, file: None }
+        Self { name: name.into(), medium: medium.into(), author: "AuraStudio".into(), engine: Engine::Native, settings, file: None, order: 0 }
     }
 
     /// A preset from a .myb brush, at the size and hardness it was made
@@ -81,7 +83,15 @@ impl Preset {
             hardness: MyPaintEngine::native_hardness(&brush),
             ..Brush::new()
         };
-        Self { name, medium, author, engine: Engine::MyPaint(Arc::new(brush)), settings, file }
+        Self { name, medium, author, engine: Engine::MyPaint(Arc::new(brush)), settings, file, order: 0 }
+    }
+
+    /// Stable key in the saved layout.
+    fn key(&self) -> String {
+        match &self.file {
+            Some(f) => f.display().to_string(),
+            None => format!("bundled:{}", self.name),
+        }
     }
 }
 
@@ -108,7 +118,51 @@ impl Library {
             let n = lib.add_from(&dir, None);
             if n > 0 { log::info!("brushes: {n} imported brush(es) loaded from {}", dir.display()); }
         }
+        for (i, p) in lib.presets.iter_mut().enumerate() { p.order = i as u32; }
+        lib.load_layout();
         lib
+    }
+
+    /// Move brush `index` to `medium`, before brush `before` (None: at the
+    /// end), and save the layout.
+    pub fn move_preset(&mut self, index: usize, medium: &str, before: Option<usize>) {
+        let Some(p) = self.presets.get_mut(index) else { return };
+        p.medium = medium.to_owned();
+        let mut list: Vec<usize> = (0..self.presets.len()).filter(|&i| i != index && self.presets[i].medium == medium).collect();
+        list.sort_by_key(|&i| self.presets[i].order);
+        let at = before.and_then(|b| list.iter().position(|&i| i == b)).unwrap_or(list.len());
+        list.insert(at, index);
+        for (k, &i) in list.iter().enumerate() { self.presets[i].order = k as u32; }
+        self.save_layout();
+    }
+
+    /// The brushes of `medium`, in their order.
+    pub fn in_medium(presets: &[Preset], medium: &str) -> Vec<usize> {
+        let mut v: Vec<usize> = (0..presets.len()).filter(|&i| presets[i].medium == medium).collect();
+        v.sort_by_key(|&i| presets[i].order);
+        v
+    }
+
+    /// Mediums and order the user gave the brushes (layout.txt in the
+    /// brush folder: key, medium, order per line).
+    fn load_layout(&mut self) {
+        let Some(text) = layout_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return };
+        for line in text.lines() {
+            let mut f = line.split('\t');
+            let (Some(key), Some(medium), Some(order)) = (f.next(), f.next(), f.next()) else { continue };
+            let (Ok(order), true) = (order.parse(), MEDIUMS.contains(&medium)) else { continue };
+            if let Some(p) = self.presets.iter_mut().find(|p| p.key() == key) {
+                p.medium = medium.to_owned();
+                p.order = order;
+            }
+        }
+    }
+
+    fn save_layout(&self) {
+        let Some(path) = layout_path() else { return };
+        if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+        let text: String = self.presets.iter().map(|p| format!("{}\t{}\t{}\n", p.key(), p.medium, p.order)).collect();
+        if let Err(e) = std::fs::write(&path, text) { log::warn!("brush layout: {e}"); }
     }
 
     /// Import a .myb file or a folder of them (recursively): copied into
@@ -156,6 +210,10 @@ impl Library {
     }
 }
 
+fn layout_path() -> Option<PathBuf> {
+    user_dir().map(|d| d.join("layout.txt"))
+}
+
 /// Where imported brushes are kept (e.g. %APPDATA%\AuraStudio\brushes).
 pub fn user_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("AURASTUDIO_BRUSH_DIR") {
@@ -191,8 +249,12 @@ fn myb_files(path: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Tests reading or setting AURASTUDIO_BRUSH_DIR take turns.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn catalog_loads_by_medium() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let lib = Library::load();
         let n = lib.presets.len();
         assert!((50..=70).contains(&n), "{n} bundled brushes");
@@ -208,6 +270,23 @@ mod tests {
     }
 
     #[test]
+    fn brushes_move_and_the_layout_is_kept() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("aura_layout_test_{}", std::process::id()));
+        std::env::set_var("AURASTUDIO_BRUSH_DIR", &tmp);
+        let mut lib = Library::load();
+        let find = |lib: &Library, n: &str| lib.presets.iter().position(|p| p.name == n).unwrap();
+        let (w, oil) = (find(&lib, "Thin watercolor"), find(&lib, "Oil"));
+        lib.move_preset(w, "Paint", Some(oil));
+        let paint = Library::in_medium(&lib.presets, "Paint");
+        assert_eq!(paint[paint.iter().position(|&i| i == oil).unwrap() - 1], w);
+        let lib = Library::load();
+        assert_eq!(lib.presets[find(&lib, "Thin watercolor")].medium, "Paint", "saved");
+        std::env::remove_var("AURASTUDIO_BRUSH_DIR");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn imported_brushes_get_a_medium_from_their_name() {
         assert_eq!(guess_medium("Big Soft Eraser"), "Eraser");
         assert_eq!(guess_medium("2B pencil HB"), "Pencil");
@@ -219,6 +298,7 @@ mod tests {
 
     #[test]
     fn import_copies_brushes_into_the_user_folder() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("aura_brush_test_{}", std::process::id()));
         let src = tmp.join("My pack");
         let user = tmp.join("user");

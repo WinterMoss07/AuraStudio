@@ -1,10 +1,11 @@
 //! Layers docker (CSP / Krita): blend mode + opacity of the active node,
-//! action icons at the top, then the layer tree with eye on the left,
-//! thumbnail / folder icon, "100 % Normal" above the name, lock on the right.
+//! action icons, then the layer tree: eye, thumbnail / folder, "100 %
+//! Normal" over the name, lock. Rows drag and drop above, below, or into
+//! a folder.
 
 use std::collections::{HashMap, HashSet};
 
-use aurastudio_layers::{FolderBlend, LayerStack, Node, Row};
+use aurastudio_layers::{FolderBlend, LayerStack, Node, Place, Row};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, Sense, Stroke, Ui};
 
 use crate::widgets::*;
@@ -80,12 +81,17 @@ pub fn new_folder(m: &mut Model, a: &mut Actions) {
 }
 
 pub fn delete_layer(notice: &mut Notice, m: &mut Model, a: &mut Actions) {
-    if m.layers.remove_active() {
-        a.recomposite = true;
-    } else {
-        notice.set("Can't delete the last layer");
+    match m.layers.removal_refused() {
+        Some(why) => notice.set(why),
+        None => {
+            m.layers.remove_active();
+            a.recomposite = true;
+        }
     }
 }
+
+/// A layer row being dragged (egui drag and drop payload).
+struct LayerDrag(u64);
 
 // --- Docker ---------------------------------------------------------------
 
@@ -125,7 +131,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
             a.recomposite = true;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if icon_button(ui, Icon::Delete, "Delete", m.layers.layer_count() > 1) {
+            if icon_button(ui, Icon::Delete, "Delete", m.layers.removal_refused().is_none()) {
                 delete_layer(notice, m, a);
             }
         });
@@ -138,17 +144,24 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
 
     let list_h = ui.available_height().max(ROW_H);
     let mut event = None;
+    let mut dropped = None;
     Frame::none().fill(theme::DESK).rounding(6.0).show(ui, |ui| {
         ui.set_min_height(list_h);
         egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             for row in m.layers.rows() {
-                if let Some(e) = layer_row(ui, st, m, &row) {
-                    event = Some((row.id, e));
-                }
+                let (e, resp) = layer_row(ui, st, m, &row);
+                if let Some(e) = e { event = Some((row.id, e)); }
+                if let Some(d) = drop_target(ui, &resp, &row) { dropped = Some(d); }
             }
         });
     });
+    if let Some(d) = egui::DragAndDrop::payload::<LayerDrag>(ui.ctx()) {
+        if let Some(n) = m.layers.node(d.0) { drag_ghost(ui.ctx(), n.name()); }
+    }
+    if let Some((id, target, place)) = dropped {
+        if m.layers.move_node(id, target, place) { a.recomposite = true; }
+    }
 
     // Applied after the loop: the rows borrow the stack while drawing.
     if let Some((id, e)) = event {
@@ -201,14 +214,43 @@ fn node_blend_combo(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
 
 enum RowEvent { Select, ToggleVisible, ToggleLock, ToggleCollapse, Renamed }
 
-fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> Option<RowEvent> {
+/// Drag and drop on a row: where the dragged layer would land (a line, or
+/// the folder outlined), and the move once released there.
+fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row) -> Option<(u64, u64, Place)> {
+    let dragged = resp.dnd_hover_payload::<LayerDrag>()?;
+    if dragged.0 == row.id { return None; }
+    let pointer = ui.ctx().pointer_interact_pos()?;
+    let r = resp.rect;
+    let t = (pointer.y - r.top()) / r.height();
+    let place = match (row.is_folder, t) {
+        (true, t) if (0.25..0.75).contains(&t) => Place::Inside,
+        (_, t) if t < 0.5 => Place::Above,
+        _ => Place::Below,
+    };
+    let p = ui.painter();
+    let stroke = Stroke::new(2.0_f32, theme::ACCENT);
+    match place {
+        Place::Inside => { p.rect_stroke(r.shrink(1.0), 5.0, stroke); }
+        Place::Above => { p.hline(r.x_range(), r.top(), stroke); }
+        Place::Below => { p.hline(r.x_range(), r.bottom(), stroke); }
+    }
+    let released = resp.dnd_release_payload::<LayerDrag>()?;
+    Some((released.0, row.id, place))
+}
+
+fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> (Option<RowEvent>, egui::Response) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
+    if resp.drag_started() { resp.dnd_set_drag_payload(LayerDrag(row.id)); }
+    let event = row_content(ui, st, m, row, rect, &resp);
+    (event, resp)
+}
+
+fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect: Rect, resp: &egui::Response) -> Option<RowEvent> {
     let node = m.layers.node(row.id)?;
     let (name, visible, opacity, locked) = (node.name().to_owned(), node.visible(), node.opacity(), node.locked());
     let blend = node.blend_name();
     let active = m.layers.active_id() == row.id;
 
-    let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click());
     let painter = ui.painter_at(rect);
 
     let bg = if active { theme::ACCENT } else if resp.hovered() { theme::WIDGET } else { Color32::TRANSPARENT };

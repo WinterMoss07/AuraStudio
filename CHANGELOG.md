@@ -3,6 +3,26 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.6.3 — 2026-10-19
+
+**New**
+- Layers drag and drop: above, below, or into a folder (a line or the
+  folder outlined shows where; the name follows the pointer).
+- Brushes drag and drop in the Tools docker: to another place in the
+  list, or onto another medium's icon (a watercolor brush into Paint).
+  The order and mediums are kept (layout.txt in the brush folder).
+
+**Fixed**
+- Alt + a letter no longer triggers the letter's shortcut (Alt+E picked
+  the eraser).
+- Locked layers could be deleted; now refused, also a layer in a locked
+  folder or a folder with a locked layer inside ("Locked: unlock it
+  first"), and the delete button is greyed out.
+
+**Changed**
+- Geometry tools in the Tools docker: fixed thin outlines, like CSP; the
+  brush they paint with shows in Tool options (its usual stroke preview).
+
 ## 0.6.2 — 2026-10-19
 
 **Fixed**

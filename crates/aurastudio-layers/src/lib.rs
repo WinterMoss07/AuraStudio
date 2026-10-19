@@ -146,6 +146,10 @@ impl Layer {
     }
 }
 
+/// Where a dragged node lands relative to the one it is dropped on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place { Above, Below, Inside }
+
 /// One row of the layer list, top to bottom, as the UI shows it.
 pub struct Row {
     pub id:        u64,
@@ -496,17 +500,24 @@ impl LayerStack {
         id
     }
 
-    /// Remove the active node (a folder with its content). Refused if it
-    /// would leave the document without any paint layer.
+    /// Why the active node can't be deleted: locked (itself, a parent, or
+    /// something inside a folder), or the last paint layer.
+    pub fn removal_refused(&self) -> Option<&'static str> {
+        fn any_locked(n: &Node) -> bool {
+            n.locked() || matches!(n, Node::Folder(f) if f.children.iter().any(any_locked))
+        }
+        let node = self.active_node();
+        if self.is_locked(self.active) || any_locked(node) { return Some("Locked: unlock it first"); }
+        let removed = match node { Node::Layer(_) => 1, Node::Folder(f) => count_layers(&f.children) };
+        (self.layer_count() == removed).then_some("Can't delete the last layer")
+    }
+
+    /// Remove the active node (a folder with its content), unless
+    /// `removal_refused`.
     pub fn remove_active(&mut self) -> bool {
+        if self.removal_refused().is_some() { return false; }
         let path = self.path(self.active).unwrap();
         let (last, parent) = path.split_last().unwrap();
-        let removed_layers = match &siblings_mut(&mut self.root, parent)[*last] {
-            Node::Layer(_) => 1,
-            Node::Folder(f) => count_layers(&f.children),
-        };
-        if self.layer_count() - removed_layers == 0 { return false; }
-
         let siblings = siblings_mut(&mut self.root, parent);
         siblings.remove(*last);
         // Next active: the node that was below, else above, else the parent.
@@ -562,6 +573,34 @@ impl LayerStack {
             }
             None => {}
         }
+    }
+
+    /// Move node `id` next to `target` (drag and drop in the layer list),
+    /// and make it active. False if it can't go there (into itself).
+    pub fn move_node(&mut self, id: u64, target: u64, place: Place) -> bool {
+        if id == target { return false; }
+        let (Some(from), Some(to)) = (self.path(id), self.path(target)) else { return false };
+        // A folder can't go inside itself.
+        if to.starts_with(&from) { return false; }
+        let (last, parent) = from.split_last().unwrap();
+        let node = siblings_mut(&mut self.root, parent).remove(*last);
+        let to = self.path(target).unwrap();
+        let (t_last, t_parent) = to.split_last().unwrap();
+        match place {
+            Place::Inside => {
+                let folder = &mut siblings_mut(&mut self.root, t_parent)[*t_last];
+                if let Node::Folder(f) = folder {
+                    f.collapsed = false;
+                    f.children.push(node);
+                } else {
+                    siblings_mut(&mut self.root, t_parent).insert(t_last + 1, node);
+                }
+            }
+            Place::Above => siblings_mut(&mut self.root, t_parent).insert(t_last + 1, node),
+            Place::Below => siblings_mut(&mut self.root, t_parent).insert(*t_last, node),
+        }
+        self.active = id;
+        true
     }
 
     /// Erase the active layer's content (Delete key). No-op on folders and
@@ -982,6 +1021,24 @@ fn fill_run(fill: [u8; 4]) -> [u8; (TILE * 4) as usize] {
 mod tests {
     use super::*;
 
+    #[test]
+    fn drag_and_drop_moves_nodes() {
+        let mut s = LayerStack::new(8, 8);
+        let a = s.add_layer("A");
+        let f = s.add_folder("F");
+        let b = s.add_layer("B"); // inside F
+        let ids = |s: &LayerStack| s.rows().iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(&s), vec![f, b, a, 1]);
+        assert!(s.move_node(a, f, Place::Inside));
+        assert_eq!(ids(&s), vec![f, a, b, 1]);
+        assert!(s.move_node(a, 1, Place::Below));
+        assert_eq!(ids(&s), vec![f, b, 1, a]);
+        assert!(s.move_node(a, f, Place::Above));
+        assert_eq!(ids(&s), vec![a, f, b, 1]);
+        assert!(!s.move_node(f, b, Place::Above), "a folder into itself");
+        assert_eq!(s.active_id(), a);
+    }
+
     fn layer_px(stack: &LayerStack, id: u64, x: u32, y: u32) -> [u8; 4] {
         match stack.node(id).unwrap() {
             Node::Layer(l) => l.tiles.pixel(x, y),
@@ -1138,6 +1195,14 @@ mod tests {
         s.add_layer("L");
         s.set_active(f);
         assert!(s.remove_active()); // folder with its content
+
+        // Locked: refused, also through a parent folder.
+        let a = s.add_layer("A");
+        *s.node_mut(a).unwrap().locked_mut() = true;
+        assert_eq!(s.removal_refused(), Some("Locked: unlock it first"));
+        assert!(!s.remove_active());
+        *s.node_mut(a).unwrap().locked_mut() = false;
+        assert!(s.remove_active());
         assert_eq!(names_top_down(&s), ["Background"]);
         assert_eq!(s.active_id(), 1);
         assert!(s.begin_stroke(1));

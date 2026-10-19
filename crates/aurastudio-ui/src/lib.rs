@@ -98,6 +98,9 @@ pub struct Actions {
     pub view:        Option<ViewCmd>,
     /// Open a file dialog to import MyPaint brushes.
     pub import_brushes: Option<ImportBrushes>,
+    /// A brush dragged: (brush, its new medium, before which brush; None:
+    /// at the end).
+    pub move_brush:  Option<(usize, String, Option<usize>)>,
     /// The document changed without needing a recomposite (lock, rename).
     pub modified:    bool,
     /// File menu / shortcut.
