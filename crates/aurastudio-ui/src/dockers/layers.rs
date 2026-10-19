@@ -228,7 +228,7 @@ fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row) -> Option<(u64, u64, P
         _ => Place::Below,
     };
     let p = ui.painter();
-    let stroke = Stroke::new(2.0_f32, theme::ACCENT);
+    let stroke = Stroke::new(2.0_f32, theme::DROP);
     match place {
         Place::Inside => { p.rect_stroke(r.shrink(1.0), 5.0, stroke); }
         Place::Above => { p.hline(r.x_range(), r.top(), stroke); }

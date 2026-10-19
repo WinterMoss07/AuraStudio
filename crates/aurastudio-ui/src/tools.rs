@@ -82,6 +82,18 @@ impl Tool {
         }
     }
 
+    /// The stroke preview's shape for this tool.
+    pub fn stroke_shape(self) -> aurastudio_brushes::stroke_preview::Shape {
+        use aurastudio_brushes::stroke_preview::Shape;
+        match self {
+            Tool::Line => Shape::Line,
+            Tool::Rectangle => Shape::Rectangle,
+            Tool::Ellipse => Shape::Ellipse,
+            Tool::Arc => Shape::Arc,
+            _ => Shape::S,
+        }
+    }
+
     /// Paints with the brush (size, opacity... apply; outline cursor).
     pub fn paints(self) -> bool { matches!(self, Tool::Brush | Tool::Eraser) || self.is_shape() }
 
@@ -308,7 +320,7 @@ pub fn fill_options(ui: &mut Ui, m: &mut Model, w: f32) {
     if let Some(v) = fill_slider(ui, "fill_tolerance", crate::widgets::percent("Tolerance"), tol, w) {
         m.fill.tolerance = (v / 100.0 * 255.0).round() as u8;
     }
-    let expand = Fill { label: "Expand", range: 0.0..=8.0, log: false, format: &|v| format!("{v:.0} px") };
+    let expand = Fill { label: "Expand", range: 0.0..=8.0, mid: None, format: &|v| format!("{v:.0} px") };
     if let Some(v) = fill_slider(ui, "fill_expand", expand, m.fill.expand as f32, w) {
         m.fill.expand = v as u32;
     }
@@ -370,33 +382,6 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
     }
     for &h in overlay.handles {
         painter.circle(pt(h), 4.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));
-    }
-}
-
-/// A geometry tool's shape, thin, in `rect` (Tools docker).
-pub fn draw_shape(painter: &egui::Painter, tool: Tool, rect: Rect) {
-    let stroke = Stroke::new(1.5_f32, theme::TEXT);
-    let r = Rect::from_center_size(rect.center(), vec2((rect.height() * 1.6).min(rect.width()), rect.height()) * 0.6);
-    match tool {
-        Tool::Line => { painter.line_segment([r.left_bottom(), r.right_top()], stroke); }
-        Tool::Rectangle => { painter.rect_stroke(r, 0.0, stroke); }
-        Tool::Ellipse => {
-            let pts = (0..=48).map(|i| {
-                let a = i as f32 / 48.0 * std::f32::consts::TAU;
-                pos2(r.center().x + r.width() / 2.0 * a.cos(), r.center().y + r.height() / 2.0 * a.sin())
-            }).collect();
-            painter.add(Shape::line(pts, stroke));
-        }
-        Tool::Arc => {
-            let (a, b, k) = (r.left_bottom(), r.right_bottom(), pos2(r.center().x, r.top() - r.height()));
-            let pts = (0..=32).map(|i| {
-                let t = i as f32 / 32.0;
-                let u = 1.0 - t;
-                pos2(u * u * a.x + 2.0 * u * t * k.x + t * t * b.x, u * u * a.y + 2.0 * u * t * k.y + t * t * b.y)
-            }).collect();
-            painter.add(Shape::line(pts, stroke));
-        }
-        _ => {}
     }
 }
 

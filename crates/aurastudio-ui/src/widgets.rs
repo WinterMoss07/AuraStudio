@@ -230,8 +230,9 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool) -> boo
 pub struct Fill<'a> {
     pub label:  &'a str,
     pub range:  std::ops::RangeInclusive<f32>,
-    /// Logarithmic scale (brush size).
-    pub log:    bool,
+    /// The value at the middle of the bar (brush size: 100 of 1..1000);
+    /// None: linear.
+    pub mid:    Option<f32>,
     pub format: &'a dyn Fn(f32) -> String,
 }
 
@@ -239,10 +240,10 @@ pub struct Fill<'a> {
 /// inside. Click or drag sets it, right-click types one in. Returns the
 /// new value when changed.
 pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f32) -> Option<f32> {
-    let Fill { label, range, log, format } = spec;
+    let Fill { label, range, mid, format } = spec;
     let (lo, hi) = (*range.start(), *range.end());
-    let to_t = |v: f32| if log { (v.max(lo) / lo).ln() / (hi / lo).ln() } else { (v - lo) / (hi - lo) };
-    let from_t = |t: f32| if log { lo * (hi / lo).powf(t) } else { lo + t * (hi - lo) };
+    let to_t = |v: f32| match mid { Some(m) => size_curve::to_t(v, lo, m, hi), None => (v - lo) / (hi - lo) };
+    let from_t = |t: f32| match mid { Some(m) => size_curve::from_t(t, lo, m, hi), None => lo + t * (hi - lo) };
 
     let id = ui.id().with(("fill_slider", id_salt));
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click_and_drag());
@@ -315,14 +316,29 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
 
 /// A 0..100 % slider.
 pub fn percent(label: &str) -> Fill<'_> {
-    Fill { label, range: 0.0..=100.0, log: false, format: &|v| format!("{v:.0} %") }
+    Fill { label, range: 0.0..=100.0, mid: None, format: &|v| format!("{v:.0} %") }
 }
 
-/// Brush size as a diameter, logarithmic so 1..1000 px stays precise.
+/// Slider position -> value for a slider with `mid` at its middle:
+/// `lo × (hi / lo)^(t^k)`, k chosen so t = 0.5 gives `mid`. Exponential
+/// (each step a ratio, precise for small brushes), smooth all along.
+mod size_curve {
+    fn k(lo: f32, mid: f32, hi: f32) -> f32 {
+        ((mid / lo).ln() / (hi / lo).ln()).ln() / 0.5f32.ln()
+    }
+    pub fn from_t(t: f32, lo: f32, mid: f32, hi: f32) -> f32 {
+        lo * (hi / lo).powf(t.clamp(0.0, 1.0).powf(k(lo, mid, hi)))
+    }
+    pub fn to_t(v: f32, lo: f32, mid: f32, hi: f32) -> f32 {
+        ((v.clamp(lo, hi) / lo).ln() / (hi / lo).ln()).powf(1.0 / k(lo, mid, hi))
+    }
+}
+
+/// Brush size as a diameter: 1..1000 px, 100 at the middle.
 pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
     let max = crate::MAX_BRUSH_SIZE as f32;
     let d = (brush.radius * 2.0).round().clamp(1.0, max);
-    if let Some(v) = fill_slider(ui, id, Fill { label: "Size", range: 1.0..=max, log: true, format: &|v| format!("{v:.0} px") }, d, width) {
+    if let Some(v) = fill_slider(ui, id, Fill { label: "Size", range: 1.0..=max, mid: Some(100.0), format: &|v| format!("{v:.0} px") }, d, width) {
         // Whole diameters, odd ones included (1, 3, 5 px...).
         brush.radius = v.round().max(1.0) / 2.0;
     }
@@ -370,6 +386,17 @@ mod tests {
         // Without snapping it was tinted: (204, 203, 203).
         let raw = hsv_to_rgb([0.0, 0.004, 0.8]).map(|v| (v * 255.0).round() as u8);
         assert_ne!(raw[0], raw[1]);
+    }
+
+    #[test]
+    fn size_slider_has_100_px_in_the_middle() {
+        let (lo, mid, hi) = (1.0, 100.0, 1000.0);
+        assert!((size_curve::from_t(0.5, lo, mid, hi) - 100.0).abs() < 0.01);
+        assert!((size_curve::from_t(0.0, lo, mid, hi) - 1.0).abs() < 1e-4);
+        assert!((size_curve::from_t(1.0, lo, mid, hi) - 1000.0).abs() < 0.01);
+        for v in [1.0, 7.0, 50.0, 100.0, 333.0, 1000.0] {
+            assert!((size_curve::from_t(size_curve::to_t(v, lo, mid, hi), lo, mid, hi) - v).abs() < 0.01 * v);
+        }
     }
 
     #[test]

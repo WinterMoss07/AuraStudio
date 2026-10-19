@@ -5,14 +5,14 @@
 //! - Brush groups (Draw, Paint, Eraser): a row of icons, one per medium
 //!   (pencil, ink...), then that medium's brushes. Search looks in every
 //!   brush; picking one from another group switches to it.
-//! - Geometry: the shape tools, as thin outlines.
+//! - Geometry: the shape tools, drawn with the current brush (1 to 10 px).
 //! - Fill, Picker, Selection: their tools by icon and name.
 //!
 //! Click selects; each brush keeps its own size / opacity / blend mode,
 //! and the selected one's stroke follows its settings. Brushes drag and
 //! drop to another place in the list, or onto another medium's icon.
 
-use aurastudio_brushes::stroke_preview::Mode;
+use aurastudio_brushes::stroke_preview::{Mode, Shape};
 use aurastudio_brushes::{Engine, Library, Preset};
 use egui::{vec2, RichText, Sense, Stroke, Ui};
 
@@ -63,7 +63,7 @@ pub fn show(ui: &mut Ui, st: &mut ToolListState, m: &mut Model, a: &mut Actions)
     if group.is_brushes() {
         brushes(ui, st, group, m, a);
     } else {
-        tools(ui, group, m);
+        tools(ui, st, group, m);
     }
 }
 
@@ -86,8 +86,9 @@ fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: 
                 if let Some(d) = resp.dnd_release_payload::<BrushDrag>() {
                     a.move_brush = Some((d.0, md.to_string(), None));
                 }
-                let bg = if on || drop_here { Some(theme::ACCENT) } else if resp.hovered() { Some(theme::WIDGET_HOVER) } else { None };
+                let bg = if on { Some(theme::ACCENT) } else if resp.hovered() { Some(theme::WIDGET_HOVER) } else { None };
                 if let Some(bg) = bg { ui.painter().rect_filled(rect, 5.0, bg); }
+                if drop_here { ui.painter().rect_stroke(rect.shrink(1.0), 5.0, Stroke::new(2.0_f32, theme::DROP)); }
                 crate::icons::paint(ui, medium_icon(md), rect, 17.0, if on { theme::TEXT } else { theme::TEXT_WEAK });
                 if resp.clicked() {
                     st.medium.insert(group, md.to_string());
@@ -159,7 +160,7 @@ fn drop_on_row(ui: &Ui, resp: &egui::Response, i: usize, presets: &[Preset]) -> 
     if dragged.0 == i { return None; }
     let below = ui.ctx().pointer_interact_pos()?.y > resp.rect.center().y;
     let y = if below { resp.rect.bottom() + 1.5 } else { resp.rect.top() - 1.5 };
-    ui.painter().hline(resp.rect.x_range(), y, Stroke::new(2.0_f32, theme::ACCENT));
+    ui.painter().hline(resp.rect.x_range(), y, Stroke::new(2.0_f32, theme::DROP));
     let moved = resp.dnd_release_payload::<BrushDrag>()?;
     let medium = &presets[i].medium;
     let before = if below {
@@ -173,7 +174,7 @@ fn drop_on_row(ui: &Ui, resp: &egui::Response, i: usize, presets: &[Preset]) -> 
 }
 
 /// The tools of a group that isn't brushes.
-fn tools(ui: &mut Ui, group: Group, m: &mut Model) {
+fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
     ui.label(RichText::new(group.name()).strong());
     ui.add_space(2.0);
     ui.spacing_mut().item_spacing.y = 3.0;
@@ -183,10 +184,11 @@ fn tools(ui: &mut Ui, group: Group, m: &mut Model) {
         let resp = resp.on_hover_text(t.hint());
         ui.painter().rect_filled(rect, 4.0, if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE });
         if t.is_shape() {
-            // A fixed thin outline: the brush shows in Tool options.
-            crate::tools::draw_shape(&ui.painter_at(rect), t, rect);
-            ui.painter().text(rect.right_bottom() - vec2(6.0, 4.0), egui::Align2::RIGHT_BOTTOM, t.name(),
-                egui::FontId::proportional(11.0), theme::TEXT_WEAK);
+            if let Some(p) = m.presets.get(*m.preset) {
+                let settings = aurastudio_brush::Brush { erase: false, ..m.brush.clone() };
+                let spec = StrokeSpec { preset: p, settings: &settings, shape: t.stroke_shape(), mode: Mode::List };
+                st.previews.show(ui, rect.shrink(1.0), Slot::Shape(t.stroke_shape()), spec, Some(t.name()));
+            }
         } else {
             crate::icons::paint(ui, t.icon(), egui::Rect::from_min_size(rect.min, vec2(ROW, ROW)), 22.0, theme::TEXT);
             ui.painter().text(rect.left_center() + vec2(ROW + 4.0, 0.0), egui::Align2::LEFT_CENTER, t.name(),
@@ -206,7 +208,7 @@ fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, sele
     ui.painter().rect_filled(rect, 4.0, bg);
     // The selected brush is shown with its current settings.
     let settings = if selected { current } else { &p.settings };
-    let spec = StrokeSpec { preset: p, settings, mode: Mode::List };
+    let spec = StrokeSpec { preset: p, settings, shape: Shape::S, mode: Mode::List };
     st.previews.show(ui, rect.shrink(1.0), Slot::Brush(index), spec, Some(&p.name));
     if selected {
         ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5_f32, theme::ACCENT));

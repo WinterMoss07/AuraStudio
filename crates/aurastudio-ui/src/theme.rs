@@ -23,6 +23,8 @@ pub const ACCENT:       Color32 = Color32::from_rgb(0x72, 0x5e, 0xea);
 /// The accent toned down (selected tool, hovered separators, drop zones):
 /// 45 % of it over the panel gray.
 pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x44, 0x3b, 0x7a);
+/// Where a dragged item would land (CSP: a thin red line).
+pub const DROP:         Color32 = Color32::from_rgb(0xe5, 0x48, 0x4d);
 pub const TEXT:         Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
 pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0xaf, 0xaf, 0xb3);
 
