@@ -70,6 +70,15 @@ fuzz test), and float literals the compiler would infer as `f32` are written
 `[patch.crates-io]` in the workspace `Cargo.toml`; to drop once egui is
 upgraded.
 
+## vendor/egui_dock — egui_dock 0.15.0, patched
+
+Copy of `egui_dock` 0.15.0 (https://github.com/Adanos020/egui_dock), ©
+Adam Gąsior and the egui_dock contributors, licensed under MIT (its
+LICENSE file is kept). Changes, marked "AuraStudio patch": a dock being
+dragged shows a bar on the edge where it would be inserted, and the tab
+bar of the dock it would join lights up (`drag_and_drop.rs`); float
+literals written `_f32`, as in egui. Used through `[patch.crates-io]`.
+
 ## Lucide icons
 
 The interface icons (`crates/aurastudio-ui/icons/*.svg`) come from

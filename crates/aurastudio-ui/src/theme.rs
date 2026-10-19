@@ -153,6 +153,13 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
         t.outline_color = bg;
         t.rounding = pill;
     }
-    d.overlay.selection_color = ACCENT.linear_multiply(0.35);
+    // Dragging a dock (patched egui_dock): a red bar where it would go
+    // between docks, the red tab bar of the dock it would join (CSP).
+    d.overlay.overlay_type = egui_dock::OverlayType::HighlightedAreas;
+    d.overlay.selection_color = DROP;
+    d.overlay.selection_stroke_width = 3.0;
+    d.overlay.feel.center_drop_coverage = 0.5;
+    d.overlay.hovered_leaf_highlight.color = Color32::TRANSPARENT;
+    d.overlay.hovered_leaf_highlight.stroke = Stroke::NONE;
     d
 }

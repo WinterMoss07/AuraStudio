@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use aurastudio_brushes::Preset;
+use aurastudio_brushes::{Kind, Preset};
 use egui::{pos2, vec2, Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui};
 
 use crate::widgets::{fill_slider, Fill};
@@ -160,28 +160,27 @@ impl Group {
         }
     }
 
-    /// Brush mediums of the group: dry techniques to Draw, wet ones to
-    /// Paint. Empty: not a brush group.
-    pub fn mediums(self) -> &'static [&'static str] {
+    /// The kind of brush mediums the group lists (None: not a brush group).
+    pub fn kind(self) -> Option<Kind> {
         match self {
-            Group::Draw => &["Pencil", "Ink", "Charcoal & pastel", "Misc"],
-            Group::Paint => &["Paint", "Watercolor", "Airbrush", "Blend & smudge", "Texture & FX"],
-            Group::Eraser => &["Eraser"],
-            _ => &[],
+            Group::Draw => Some(Kind::Draw),
+            Group::Paint => Some(Kind::Paint),
+            Group::Eraser => Some(Kind::Eraser),
+            _ => None,
         }
     }
 
-    pub fn is_brushes(self) -> bool { !self.mediums().is_empty() }
+    pub fn is_brushes(self) -> bool { self.kind().is_some() }
 
-    /// The group of a brush medium.
-    pub fn of_medium(medium: &str) -> Group {
-        [Group::Paint, Group::Eraser].into_iter().find(|g| g.mediums().contains(&medium)).unwrap_or(Group::Draw)
+    /// The group of a kind of brushes.
+    pub fn of_kind(kind: Kind) -> Group {
+        match kind { Kind::Draw => Group::Draw, Kind::Paint => Group::Paint, Kind::Eraser => Group::Eraser }
     }
 
     /// The group the current tool (and brush) belongs to.
     pub fn current(tool: Tool, preset: usize, presets: &[Preset]) -> Group {
         match tool {
-            Tool::Brush => presets.get(preset).map_or(Group::Draw, |p| match Group::of_medium(&p.medium) {
+            Tool::Brush => presets.get(preset).map_or(Group::Draw, |p| match Group::of_kind(p.kind) {
                 // An eraser brush with the Brush tool: still a brush.
                 Group::Eraser => Group::Draw,
                 g => g,
@@ -225,7 +224,7 @@ impl ToolMemory {
         }
         *tool = self.tool.get(&g).copied().unwrap_or(tools[0]);
         if g.is_brushes() {
-            let first = || presets.iter().position(|p| g.mediums().contains(&p.medium.as_str()));
+            let first = || presets.iter().position(|p| Some(p.kind) == g.kind());
             if let Some(p) = self.preset.get(&g).copied().or_else(first) { *preset = p; }
         }
     }
@@ -396,11 +395,12 @@ pub fn shape_options(ui: &mut Ui, m: &mut Model) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurastudio_brushes::{Library, MEDIUMS};
+    use aurastudio_brushes::{mediums_of, Library, MEDIUMS};
 
     #[test]
     fn every_medium_has_a_group() {
-        let all: Vec<&str> = Group::ALL.iter().flat_map(|g| g.mediums().iter().copied()).collect();
+        let lib = Library::load_bundled();
+        let all: Vec<&str> = Group::ALL.iter().filter_map(|g| g.kind()).flat_map(|k| mediums_of(&lib.mediums, k)).collect();
         for m in MEDIUMS { assert_eq!(all.iter().filter(|x| *x == m).count(), 1, "{m}"); }
     }
 

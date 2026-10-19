@@ -17,7 +17,7 @@ pub enum Icon {
     // Toolbar.
     FileNew, FileOpen, Save, Copy, Paste,
     // Tools docker: the brush mediums.
-    Pencil, Ink, Charcoal, Paint, Watercolor, Airbrush, Blend, Effects, Misc,
+    Pencil, Ink, Charcoal, Paint, Watercolor, Airbrush, Blend, Effects, Misc, Plus,
     // Toolbox groups.
     Shapes,
 }
@@ -64,6 +64,7 @@ impl Icon {
             Icon::Blend      => svg!("../icons/blend.svg"),
             Icon::Effects    => svg!("../icons/sparkles.svg"),
             Icon::Misc       => svg!("../icons/ellipsis.svg"),
+            Icon::Plus       => svg!("../icons/plus.svg"),
             Icon::Shapes     => svg!("../icons/shapes.svg"),
         }
     }

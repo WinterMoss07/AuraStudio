@@ -38,6 +38,8 @@ pub struct Model<'a> {
     pub brush:              &'a mut Brush,
     /// Brush presets (Tools docker) and the selected one.
     pub presets:            &'a [Preset],
+    /// Every brush medium, in order.
+    pub mediums:            &'a [aurastudio_brushes::Medium],
     pub preset:             &'a mut usize,
     pub layers:             &'a mut LayerStack,
     /// Width / height typed in the Canvas dock, applied by "Resize".
@@ -101,6 +103,13 @@ pub struct Actions {
     /// A brush dragged: (brush, its new medium, before which brush; None:
     /// at the end).
     pub move_brush:  Option<(usize, String, Option<usize>)>,
+    /// A medium dragged: (medium, before which medium; None: last).
+    pub move_medium: Option<(String, Option<String>)>,
+    /// The + after the medium icons: a new medium of that kind.
+    pub add_medium:  Option<aurastudio_brushes::Kind>,
+    /// (medium, new name).
+    pub rename_medium: Option<(String, String)>,
+    pub remove_medium: Option<String>,
     /// The document changed without needing a recomposite (lock, rename).
     pub modified:    bool,
     /// File menu / shortcut.
@@ -238,6 +247,11 @@ impl UiState {
         self.layers.invalidate_all();
     }
 
+    /// A medium was just made: show it and edit its name.
+    pub fn rename_medium(&mut self, name: &str) {
+        self.tool_list.rename(name);
+    }
+
     /// Show a short message in the tool options bar for a few seconds.
     pub fn notify(&mut self, text: &str) {
         self.notice.set(text);
@@ -269,6 +283,8 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         // A little room on the left: the tabs no longer touch the canvas.
         .frame(Frame::none().fill(theme::PANEL).inner_margin(egui::Margin { left: 6.0, ..Default::default() }))
         .show(ctx, |ui| {
+            // No document open: grayed out, like the toolbox.
+            if model.home { ui.disable(); }
             let style = theme::dock_style(ui.style());
             let mut viewer = dockers::Viewer {
                 color:  &mut state.color,

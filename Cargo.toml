@@ -18,6 +18,9 @@ members = [
 # compare_order). Drop this once egui is upgraded to 0.31 or later.
 [patch.crates-io]
 egui = { path = "vendor/egui" }
+# egui_dock 0.15 with AuraStudio's drop indicators (red bar between docks,
+# red tab bar to join one), see NOTICE.md.
+egui_dock = { path = "vendor/egui_dock" }
 
 [profile.release]
 opt-level     = 3
@@ -33,4 +36,4 @@ codegen-units = 16
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.7.1"
+version = "0.7.2"

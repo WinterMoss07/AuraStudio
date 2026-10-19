@@ -1113,6 +1113,7 @@ impl App {
         let doc        = &self.doc;
         let brush      = &mut self.brush;
         let presets    = &self.library.presets[..];
+        let mediums    = &self.library.mediums[..];
         let preset_before = self.preset;
         let mut preset = self.preset;
         let canvas_edit = &mut self.canvas_edit;
@@ -1141,6 +1142,7 @@ impl App {
             let mut model = Model {
                 brush,
                 presets,
+                mediums,
                 preset: &mut preset,
                 layers: &mut d.layers,
                 tool,
@@ -1238,6 +1240,17 @@ impl App {
             // The selected brush keeps its working settings.
             self.library.presets[self.preset].settings = self.brush.clone();
             self.library.move_preset(i, &medium, before);
+        }
+        if let Some((medium, before)) = actions.move_medium { self.library.move_medium(&medium, before.as_deref()); }
+        if let Some(kind) = actions.add_medium {
+            let name = self.library.add_medium(kind);
+            self.ui.rename_medium(&name);
+        }
+        if let Some((old, new)) = actions.rename_medium {
+            if !self.library.rename_medium(&old, &new) { self.ui.notify("That name is empty or taken"); }
+        }
+        if let Some(name) = actions.remove_medium {
+            if !self.library.remove_medium(&name) { self.ui.notify("Only an empty medium can be removed"); }
         }
         if let Some(choice) = actions.dialog { self.on_dialog(choice); }
         if let Some(cmd) = actions.file { self.file_cmd(cmd); }
@@ -1711,10 +1724,24 @@ impl ApplicationHandler<AppEvent> for App {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let attrs = Window::default_attributes()
+        // Opens maximized. Restored, it fits the screen and is centered
+        // (1440 x 900 is wider than an HD screen at 150 % scaling).
+        let mut attrs = Window::default_attributes()
             .with_title(APP_TITLE)
             .with_window_icon(window_icon())
+            .with_maximized(true)
             .with_inner_size(winit::dpi::LogicalSize::new(1440u32, 900u32));
+        if let Some(m) = event_loop.primary_monitor() {
+            let (screen, pos) = (m.size(), m.position());
+            let w = (1440.0 * m.scale_factor()).min(screen.width as f64 * 0.85);
+            let h = (900.0 * m.scale_factor()).min(screen.height as f64 * 0.85);
+            attrs = attrs
+                .with_inner_size(winit::dpi::PhysicalSize::new(w, h))
+                .with_position(winit::dpi::PhysicalPosition::new(
+                    pos.x as f64 + (screen.width as f64 - w) / 2.0,
+                    pos.y as f64 + (screen.height as f64 - h) / 2.0,
+                ));
+        }
 
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         let size   = {

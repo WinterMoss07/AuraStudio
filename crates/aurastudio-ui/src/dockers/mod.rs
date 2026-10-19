@@ -51,7 +51,13 @@ impl TabViewer for Viewer<'_, '_> {
         }.into()
     }
 
+    // Docks stay in the dock column (no floating windows).
+    fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool { false }
+
     fn ui(&mut self, ui: &mut Ui, tab: &mut Tab) {
+        // No document open: grayed out (egui_dock gives each tab a fresh
+        // ui, which doesn't inherit the dock's).
+        if self.m.home { ui.disable(); }
         // Drawn in a scope to measure the content alone (the tab's own ui
         // is at least as tall as the dock).
         let content = ui.scope(|ui| match tab {

@@ -23,6 +23,49 @@ include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 /// The mediums, in the Tools docker's order.
 pub const MEDIUMS: &[&str] = &["Pencil", "Ink", "Charcoal & pastel", "Paint", "Watercolor", "Airbrush", "Blend & smudge", "Eraser", "Texture & FX", "Misc"];
 
+/// Which toolbox group a medium's brushes belong to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind { Draw, Paint, Eraser }
+
+impl Kind {
+    fn key(self) -> &'static str {
+        match self { Kind::Draw => "draw", Kind::Paint => "paint", Kind::Eraser => "eraser" }
+    }
+
+    fn from_key(k: &str) -> Option<Kind> {
+        [Kind::Draw, Kind::Paint, Kind::Eraser].into_iter().find(|x| x.key() == k)
+    }
+
+    /// Group of a bundled medium: dry techniques to Draw, wet ones to Paint.
+    fn of_bundled(medium: &str) -> Kind {
+        match medium {
+            "Paint" | "Watercolor" | "Airbrush" | "Blend & smudge" | "Texture & FX" => Kind::Paint,
+            "Eraser" => Kind::Eraser,
+            _ => Kind::Draw,
+        }
+    }
+}
+
+/// A medium: a folder of brushes in the Tools docker, shown as an icon.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Medium {
+    pub name:   String,
+    pub kind:   Kind,
+    /// Made by the user (can be renamed, and removed once empty).
+    pub custom: bool,
+}
+
+/// The mediums of `kind`, in their order.
+pub fn mediums_of(mediums: &[Medium], kind: Kind) -> Vec<&str> {
+    mediums.iter().filter(|m| m.kind == kind).map(|m| m.name.as_str()).collect()
+}
+
+fn default_mediums() -> Vec<Medium> {
+    // In the toolbox's order: Draw's, then Paint's, then the eraser.
+    let order = ["Pencil", "Ink", "Charcoal & pastel", "Misc", "Paint", "Watercolor", "Airbrush", "Blend & smudge", "Texture & FX", "Eraser"];
+    order.iter().map(|&n| Medium { name: n.into(), kind: Kind::of_bundled(n), custom: false }).collect()
+}
+
 /// Medium of an imported brush, from words in its name (Misc if none).
 pub fn guess_medium(name: &str) -> &'static str {
     let n = name.to_lowercase();
@@ -73,13 +116,15 @@ pub struct Preset {
     pub file:   Option<PathBuf>,
     /// Place in its medium's list (the user can drag brushes around).
     pub order:  u32,
+    /// Its medium's group (kept by the Library).
+    pub kind:   Kind,
 }
 
 impl Preset {
     fn builtin(name: &str, medium: &str, radius: f32, hardness: f32) -> Self {
         let settings = Brush { radius, hardness, ..Brush::new() };
         Self { name: name.into(), medium: medium.into(), author: "AuraStudio".into(), origin: Origin::Forge,
-            brush: Arc::new(ForgeBrush::round()), settings, file: None, order: 0 }
+            brush: Arc::new(ForgeBrush::round()), settings, file: None, order: 0, kind: Kind::of_bundled(medium) }
     }
 
     /// A Forge engine for a stroke with this preset.
@@ -97,7 +142,8 @@ impl Preset {
             hardness: Forge::native_hardness(&brush),
             ..Brush::new()
         };
-        Self { name, medium, author, origin: Origin::MyPaint, brush: Arc::new(brush), settings, file, order: 0 }
+        let kind = Kind::of_bundled(&medium);
+        Self { name, medium, author, origin: Origin::MyPaint, brush: Arc::new(brush), settings, file, order: 0, kind }
     }
 
     /// Stable key in the saved layout.
@@ -111,6 +157,8 @@ impl Preset {
 
 pub struct Library {
     pub presets: Vec<Preset>,
+    /// Every medium, in order (the Tools docker shows those of a group).
+    pub mediums: Vec<Medium>,
 }
 
 impl Library {
@@ -122,6 +170,7 @@ impl Library {
             if n > 0 { log::info!("brushes: {n} imported brush(es) loaded from {}", dir.display()); }
         }
         for (i, p) in lib.presets.iter_mut().enumerate() { p.order = i as u32; }
+        lib.load_mediums();
         lib.load_layout();
         lib
     }
@@ -139,14 +188,16 @@ impl Library {
                 },
             }
         }
-        Self { presets }
+        Self { presets, mediums: default_mediums() }
     }
 
     /// Move brush `index` to `medium`, before brush `before` (None: at the
     /// end), and save the layout.
     pub fn move_preset(&mut self, index: usize, medium: &str, before: Option<usize>) {
+        let kind = self.kind_of(medium);
         let Some(p) = self.presets.get_mut(index) else { return };
         p.medium = medium.to_owned();
+        p.kind = kind;
         let mut list: Vec<usize> = (0..self.presets.len()).filter(|&i| i != index && self.presets[i].medium == medium).collect();
         list.sort_by_key(|&i| self.presets[i].order);
         let at = before.and_then(|b| list.iter().position(|&i| i == b)).unwrap_or(list.len());
@@ -169,10 +220,12 @@ impl Library {
         for line in text.lines() {
             let mut f = line.split('\t');
             let (Some(key), Some(medium), Some(order)) = (f.next(), f.next(), f.next()) else { continue };
-            let (Ok(order), true) = (order.parse(), MEDIUMS.contains(&medium)) else { continue };
+            let (Ok(order), true) = (order.parse(), self.mediums.iter().any(|m| m.name == medium)) else { continue };
+            let kind = self.kind_of(medium);
             if let Some(p) = self.presets.iter_mut().find(|p| p.key() == key) {
                 p.medium = medium.to_owned();
                 p.order = order;
+                p.kind = kind;
             }
         }
     }
@@ -182,6 +235,86 @@ impl Library {
         if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
         let text: String = self.presets.iter().map(|p| format!("{}\t{}\t{}\n", p.key(), p.medium, p.order)).collect();
         if let Err(e) = std::fs::write(&path, text) { log::warn!("brush layout: {e}"); }
+    }
+
+    /// The group of a medium (Draw for an unknown one).
+    pub fn kind_of(&self, medium: &str) -> Kind {
+        self.mediums.iter().find(|m| m.name == medium).map_or(Kind::Draw, |m| m.kind)
+    }
+
+    /// Move medium `name` before `before` (None: last of its group).
+    pub fn move_medium(&mut self, name: &str, before: Option<&str>) {
+        let Some(from) = self.mediums.iter().position(|m| m.name == name) else { return };
+        let m = self.mediums.remove(from);
+        let at = before.and_then(|b| self.mediums.iter().position(|x| x.name == b))
+            .or_else(|| self.mediums.iter().rposition(|x| x.kind == m.kind).map(|i| i + 1))
+            .unwrap_or(self.mediums.len());
+        self.mediums.insert(at, m);
+        self.save_mediums();
+    }
+
+    /// A new empty medium at the end of `kind`'s; returns its name.
+    pub fn add_medium(&mut self, kind: Kind) -> String {
+        let name = (1..).map(|n| if n == 1 { "New medium".to_string() } else { format!("New medium {n}") })
+            .find(|n| !self.mediums.iter().any(|m| &m.name == n)).unwrap();
+        let at = self.mediums.iter().rposition(|m| m.kind == kind).map_or(self.mediums.len(), |i| i + 1);
+        self.mediums.insert(at, Medium { name: name.clone(), kind, custom: true });
+        self.save_mediums();
+        name
+    }
+
+    /// Rename a medium made by the user (its brushes follow). False if
+    /// the name is empty or taken.
+    pub fn rename_medium(&mut self, old: &str, new: &str) -> bool {
+        let new = new.trim();
+        if new.is_empty() || self.mediums.iter().any(|m| m.name == new) { return false; }
+        let Some(m) = self.mediums.iter_mut().find(|m| m.name == old && m.custom) else { return false };
+        m.name = new.to_owned();
+        for p in self.presets.iter_mut().filter(|p| p.medium == old) { p.medium = new.to_owned(); }
+        self.save_mediums();
+        self.save_layout();
+        true
+    }
+
+    /// Remove an empty medium made by the user.
+    pub fn remove_medium(&mut self, name: &str) -> bool {
+        if self.presets.iter().any(|p| p.medium == name) { return false; }
+        let before = self.mediums.len();
+        self.mediums.retain(|m| !(m.name == name && m.custom));
+        if self.mediums.len() == before { return false; }
+        self.save_mediums();
+        true
+    }
+
+    /// The mediums' order and the user's own (mediums.txt in the brush
+    /// folder: group, name, and "custom" for the user's, per line). Bundled
+    /// mediums missing from it go last of their group.
+    fn load_mediums(&mut self) {
+        let Some(text) = mediums_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return };
+        let defaults = std::mem::take(&mut self.mediums);
+        for line in text.lines() {
+            let mut f = line.split('\t');
+            let (Some(kind), Some(name)) = (f.next().and_then(Kind::from_key), f.next()) else { continue };
+            if name.is_empty() || self.mediums.iter().any(|m| m.name == name) { continue; }
+            let custom = f.next() == Some("custom");
+            if !custom && !defaults.iter().any(|d| d.name == name) { continue; }
+            // A bundled medium keeps its own group.
+            let kind = if custom { kind } else { Kind::of_bundled(name) };
+            self.mediums.push(Medium { name: name.to_owned(), kind, custom });
+        }
+        for d in defaults {
+            if self.mediums.iter().any(|m| m.name == d.name) { continue; }
+            let at = self.mediums.iter().rposition(|m| m.kind == d.kind).map_or(self.mediums.len(), |i| i + 1);
+            self.mediums.insert(at, d);
+        }
+    }
+
+    fn save_mediums(&self) {
+        let Some(path) = mediums_path() else { return };
+        if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+        let text: String = self.mediums.iter()
+            .map(|m| format!("{}\t{}{}\n", m.kind.key(), m.name, if m.custom { "\tcustom" } else { "" })).collect();
+        if let Err(e) = std::fs::write(&path, text) { log::warn!("brush mediums: {e}"); }
     }
 
     /// Import a .myb file or a folder of them (recursively): copied into
@@ -227,6 +360,10 @@ impl Library {
         }
         added
     }
+}
+
+fn mediums_path() -> Option<PathBuf> {
+    user_dir().map(|d| d.join("mediums.txt"))
 }
 
 fn layout_path() -> Option<PathBuf> {
@@ -306,6 +443,30 @@ mod tests {
     }
 
     #[test]
+    fn mediums_move_get_added_renamed_and_are_kept() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!("aura_mediums_test_{}", std::process::id()));
+        std::env::set_var("AURASTUDIO_BRUSH_DIR", &tmp);
+        let mut lib = Library::load();
+        assert_eq!(mediums_of(&lib.mediums, Kind::Draw), ["Pencil", "Ink", "Charcoal & pastel", "Misc"]);
+        lib.move_medium("Misc", Some("Pencil"));
+        let name = lib.add_medium(Kind::Draw);
+        assert!(lib.rename_medium(&name, "Mine"));
+        assert!(!lib.rename_medium("Mine", "Ink"), "taken");
+        assert!(!lib.rename_medium("Ink", "Inks"), "bundled");
+        let pen = lib.presets.iter().position(|p| p.name == "Round pen").unwrap();
+        lib.move_preset(pen, "Mine", None);
+        assert!(!lib.remove_medium("Mine"), "not empty");
+
+        let lib = Library::load();
+        assert_eq!(mediums_of(&lib.mediums, Kind::Draw), ["Misc", "Pencil", "Ink", "Charcoal & pastel", "Mine"]);
+        let pen = lib.presets.iter().find(|p| p.name == "Round pen").unwrap();
+        assert_eq!((pen.medium.as_str(), pen.kind), ("Mine", Kind::Draw));
+        std::env::remove_var("AURASTUDIO_BRUSH_DIR");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn imported_brushes_get_a_medium_from_their_name() {
         assert_eq!(guess_medium("Big Soft Eraser"), "Eraser");
         assert_eq!(guess_medium("2B pencil HB"), "Pencil");
@@ -326,7 +487,7 @@ mod tests {
         std::fs::write(src.join("broken.myb"), "not json").unwrap();
         std::env::set_var("AURASTUDIO_BRUSH_DIR", &user);
 
-        let mut lib = Library { presets: Vec::new() };
+        let mut lib = Library { presets: Vec::new(), mediums: default_mediums() };
         let added = lib.import(&src).unwrap();
         assert_eq!(added, 1);
         assert!(user.join("My pack/inky.myb").is_file());

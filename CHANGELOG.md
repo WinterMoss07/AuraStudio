@@ -3,6 +3,23 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.7.2 — 2026-10-19
+
+**New**
+- Mediums of the Tools docker: their icons drag and drop to reorder them
+  (a red line shows where); the + after the last one makes a medium of
+  one's own (named right away; right click: rename, or remove once
+  empty). Order and own mediums are kept (`mediums.txt` in the brush
+  folder).
+- Moving a dock: a red bar shows where it goes between docks, the red tab
+  bar the dock it would join as a tab (CSP), instead of egui_dock's drop
+  buttons. Docks no longer float out as windows.
+
+**Fixed**
+- Without a document, the docks are grayed out like the toolbox.
+- AuraStudio opens maximized; restored, its window fits the screen and is
+  centered (it opened half off an HD screen at 150 %).
+
 ## 0.7.1 — 2026-10-19
 
 **Fixed**

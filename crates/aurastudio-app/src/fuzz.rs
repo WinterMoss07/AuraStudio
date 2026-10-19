@@ -234,6 +234,7 @@ fn fuzz() {
                     let mut model = Model {
                         brush: &mut brush,
                         presets: &lib.presets,
+                        mediums: &lib.mediums,
                         preset: &mut p,
                         layers: &mut d.layers,
                         can_undo,

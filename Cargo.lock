@@ -185,7 +185,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "arboard",
  "aurastudio-brush",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brush"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aurastudio-canvas",
  "png 0.18.1",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brushes"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-canvas",
@@ -238,14 +238,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-canvas"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "wgpu",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "log",
  "moxcms 0.9.1",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-document"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-layers",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-document",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aurastudio-canvas",
  "bytemuck",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-input"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "crossbeam-queue",
  "windows",
@@ -300,14 +300,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aurastudio-canvas",
 ]
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-brushes",
@@ -816,8 +816,6 @@ dependencies = [
 [[package]]
 name = "egui_dock"
 version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a2e6e4f8bc019bcd7cee5240c6c76a9eed421b364307739561c92acc4cc0f22"
 dependencies = [
  "duplicate",
  "egui",

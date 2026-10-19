@@ -32,7 +32,8 @@ UI stays quiet so the painting gets the room.
   Fill, Picker, Geometry, Selection. The Tools docker lists the group's
   tools or brushes (by medium); each group remembers its last tool and
   brush; its key pressed again goes to its next tool. Imported brushes
-  get a medium from their name.
+  get a medium from their name. Brushes and medium icons drag and drop;
+  + makes a medium of one's own.
 - Stroke previews, painted by the brush itself: in the Tools docker, the
   stroke's shape (geometry tools: their shape with the current brush);
   in Tool options, like Clip Studio Paint, a stroke leaving a light gray
