@@ -78,6 +78,11 @@ pub struct GpuState {
     egui_cursor:     egui::CursorIcon,
     /// Last UI primitives, redrawn as-is by render_cached_ui.
     last_ui:         Option<(Vec<egui::ClippedPrimitive>, f32)>,
+    /// Textures egui dropped in the frame `last_ui` comes from: that frame
+    /// may still draw them (a dialog closing draws its pictures one last
+    /// time), and so may its cached redraws. Freed once a newer UI frame
+    /// has been submitted.
+    textures_to_free: Vec<egui::TextureId>,
     view_bind_group: BindGroup,
     canvas_bgl:      BindGroupLayout,
     pub canvas:      Canvas,
@@ -322,6 +327,7 @@ impl GpuState {
             nearest_sampler, nearest_bind_group,
             view: CanvasView::default(),
             last_ui: None,
+            textures_to_free: Vec::new(),
             cursor_pipeline, cursor_buffer, cursor_bind,
             brush_cursor: None,
             egui_cursor: egui::CursorIcon::Default,
@@ -654,7 +660,9 @@ impl GpuState {
                 for (id, delta) in &full_output.textures_delta.set {
                     self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
                 }
-                textures_free = full_output.textures_delta.free;
+                // Free what the previous frame dropped (this frame no longer
+                // draws it); keep what this one dropped for later.
+                textures_free = std::mem::replace(&mut self.textures_to_free, full_output.textures_delta.free);
                 (tris, ppp)
             }
             None => match self.last_ui.take() {
@@ -673,7 +681,8 @@ impl GpuState {
                 } else {
                     log::error!("Surface error: {e:?}");
                 }
-                // No frame this time: textures egui dropped are still freed.
+                // No frame this time: what the previous frame dropped can go
+                // all the same (this one's waits).
                 for id in &textures_free {
                     self.egui_renderer.free_texture(id);
                 }
@@ -765,12 +774,14 @@ impl GpuState {
             pass.draw(0..6, 0..1);
         }
 
-        for id in &textures_free {
-            self.egui_renderer.free_texture(id);
-        }
         self.last_ui = Some((tris, ppp));
 
         self.queue.submit(std::iter::once(enc.finish()));
+        // (After the submit: wgpu refuses a submit using a texture already
+        // destroyed.)
+        for id in &textures_free {
+            self.egui_renderer.free_texture(id);
+        }
         let suboptimal = output.suboptimal;
         output.present();
 

@@ -89,6 +89,42 @@ impl Tiles {
         b
     }
 
+    /// Bounds of the stored tiles with a visible pixel (alpha > 0) on the
+    /// canvas: a tile erased to transparency, or left after an undo,
+    /// counts as empty (`content_bounds` counts it). None: nothing shows.
+    pub fn visible_bounds(&self) -> Option<Rect> {
+        let mut b: Option<Rect> = None;
+        for (tx, ty, t) in self.iter() {
+            let r = (tx * TILE, ty * TILE, ((tx + 1) * TILE).min(self.width), ((ty + 1) * TILE).min(self.height));
+            if !Self::shows(t, (0, 0, r.2 - r.0, r.3 - r.1)) { continue; }
+            b = Some(b.map_or(r, |b| (b.0.min(r.0), b.1.min(r.1), b.2.max(r.2), b.3.max(r.3))));
+        }
+        b
+    }
+
+    /// A pixel of `rect` shows (alpha > 0; the fill's when no tile).
+    pub fn any_visible_in(&self, rect: Rect) -> bool {
+        let rect = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
+        if rect.2 <= rect.0 || rect.3 <= rect.1 { return false; }
+        for ty in rect.1 / TILE..rect.3.div_ceil(TILE) {
+            for tx in rect.0 / TILE..rect.2.div_ceil(TILE) {
+                let local = (rect.0.max(tx * TILE) - tx * TILE, rect.1.max(ty * TILE) - ty * TILE,
+                             rect.2.min((tx + 1) * TILE) - tx * TILE, rect.3.min((ty + 1) * TILE) - ty * TILE);
+                let shows = match self.tile(tx, ty) { Some(t) => Self::shows(t, local), None => self.fill[3] > 0 };
+                if shows { return true; }
+            }
+        }
+        false
+    }
+
+    /// A pixel of tile `t` inside `local` (tile coordinates) has alpha.
+    fn shows(t: &Tile, local: Rect) -> bool {
+        (local.1..local.3).any(|y| {
+            let row = &t[((y * TILE + local.0) * 4) as usize..((y * TILE + local.2) * 4) as usize];
+            row.chunks_exact(4).any(|p| p[3] > 0)
+        })
+    }
+
     /// Put a tile read from a file (or None to drop one).
     pub fn set_tile(&mut self, tx: u32, ty: u32, tile: Option<Tile>) {
         if tx < self.cols && ty < self.rows {

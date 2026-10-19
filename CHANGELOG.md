@@ -3,6 +3,39 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.9.1 — 2026-10-19
+
+**Fixed**
+1. Apply or Cancel in a filter dialog closed the app: textures egui let go
+   of were destroyed before the frame still drawing them went to the GPU.
+   They are now freed once a newer frame has been sent (this also covers
+   the frames redrawn mid-stroke).
+2. The preview's "After" label flickered ("After" / "After …") while a
+   value moved: it stays put; three dots show beside it only when a result
+   keeps you waiting more than 0.3 s.
+3. The dialog's preview froze while a slider moved fast and caught up only
+   when it stopped (every result came back already outdated and was
+   thrown away): each one is shown as it comes. Zoomed out, the preview
+   filters a thumbnail sized to the screen (a copy reduced 2, 4, 8…
+   times) instead of a 900 px copy.
+4. The hand stayed open while it held something: the filter preview's
+   hand closes while dragging (even past the view's edge), and so does
+   the cursor while dragging a layer, a brush or a medium.
+5. Graphs that told a painter nothing are gone: the edge and line curves
+   (Gaussian blur, Unsharp mask, Thicken / Thin lines, Find edges), the
+   histogram and curve of Invert and Posterize, Posterize's tone strip,
+   Sepia's gray ramp, Black & White's hue strip. Brightness / Contrast
+   keeps its histogram (before / after, no curve); Levels, Threshold, Hue
+   / Saturation keep theirs (they have handles); the colors before /
+   after and the Emboss / Drop shadow samples stay.
+6. A layer painted then erased counted as painted (its transparent tiles
+   stay in memory): the Filter menu now looks at what shows, and inside
+   the selection when there is one.
+
+**Tests**
+- The fuzz test opens filter dialogs (random clicks seldom found one) and
+  takes a time limit: `FUZZ_SECS=60`.
+
 ## 0.9.0 — 2026-10-19
 
 **Filter dialogs that show what they do**

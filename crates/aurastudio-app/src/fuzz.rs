@@ -9,6 +9,10 @@
 //! pan. Any panic, on any thread, fails the run.
 //!
 //!     FUZZ_STEPS=1000000 FUZZ_SEED=7 cargo test --release -p aurastudio fuzz -- --ignored --nocapture
+//!
+//! FUZZ_SECS stops it after that many seconds instead (steps then only
+//! cap it). Filter dialogs are opened now and then as their menu does
+//! (random clicks seldom find one).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -174,7 +178,8 @@ fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (
 #[test]
 #[ignore]
 fn fuzz() {
-    let steps: u64 = std::env::var("FUZZ_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(20_000);
+    let secs: Option<f64> = std::env::var("FUZZ_SECS").ok().and_then(|s| s.parse().ok());
+    let steps: u64 = std::env::var("FUZZ_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(if secs.is_some() { u64::MAX } else { 20_000 });
     let seed: u64 = std::env::var("FUZZ_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -209,8 +214,11 @@ fn fuzz() {
     let t0 = Instant::now();
     let trace = std::env::var("FUZZ_TRACE").is_ok();
 
+    let mut done = 0u64;
     for step in 0..steps {
         if PANICKED.load(Ordering::SeqCst) { break; }
+        if secs.is_some_and(|s| t0.elapsed().as_secs_f64() >= s) { break; }
+        done = step + 1;
         let kind = r.below(100);
         let step_start = Instant::now();
         if trace { eprintln!("step {step} kind {kind} size {size:?} rss {} MB", rss_mb()); }
@@ -230,6 +238,7 @@ fn fuzz() {
                 let to_points = |p: (f32, f32)| { let q = view.canvas_to_screen(p, size, area); (q.0, q.1) };
                 let mut actions = Actions::default();
                 let mut p = preset;
+                let open_filter = (r.below(40) == 0).then(|| r.below(64) as usize);
                 let _ = ctx.run(input, |ctx| {
                     let mut model = Model {
                         brush: &mut brush,
@@ -255,6 +264,7 @@ fn fuzz() {
                         overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None, shape: None, handles: &[], guide: &[] },
                         to_points: &to_points,
                     };
+                    if let Some(n) = open_filter { ui.open_filter_dialog(ctx, n, &model); }
                     aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
                 });
                 ui_frames += 1;
@@ -433,7 +443,20 @@ fn fuzz() {
         }
     }
     if stroke_open { pt.send(Cmd::End); }
-    drop(pt); // joins the paint thread: everything queued is processed
+    // Join the paint thread (everything queued is processed: the fuzz
+    // queues faster than it paints), taking the merged pieces as the UI
+    // does meanwhile: left there, those of the queued filter previews (a
+    // whole layer each) filled the memory.
+    let drained = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| while !drained.load(Ordering::SeqCst) {
+            projection.lock().unwrap().take_patches();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        });
+        drop(pt);
+        drained.store(true, Ordering::SeqCst);
+    });
+    let steps = done;
     println!("fuzz seed {seed}: {steps} steps in {:.1} s | {ui_frames} UI frames, {strokes} strokes, {ops} other ops, {resets} memory resets, {slow} slow steps | layers {}",
         t0.elapsed().as_secs_f64(), doc.lock().map(|d| d.layers.layer_count()).unwrap_or(0));
     assert!(!PANICKED.load(Ordering::SeqCst), "a panic happened (see above)");

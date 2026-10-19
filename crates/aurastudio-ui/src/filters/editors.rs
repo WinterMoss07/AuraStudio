@@ -49,14 +49,12 @@ pub fn show(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State) -> Vec<St
         Kind::BlackWhite => black_white(ui, f, src, st),
         Kind::Invert => {
             amount(ui, f, "Amount", Track::Colors(&[draw::gray(128), Color32::WHITE]));
-            tone_view(ui, f, src, &mut info);
             palette(ui, f, src, st);
         }
         Kind::Posterize => posterize(ui, f, src, st, &mut info),
         Kind::Threshold => threshold(ui, f, src, st, &mut info),
         Kind::Sepia => {
             amount(ui, f, "Amount", Track::Colors(&[draw::gray(150), Color32::from_rgb(196, 160, 110)]));
-            ramp(ui, f, "Grays before / after");
             palette(ui, f, src, st);
         }
         Kind::Opacity => {
@@ -67,14 +65,12 @@ pub fn show(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State) -> Vec<St
         Kind::GaussianBlur => {
             let mut r = f.v(0);
             if draw::slider(ui, "radius", Spec::new("Radius", 0.0, 250.0, 4.0, "px").step(0.1).pow(2.5), &mut r) { f.values[0] = r; }
-            profile(ui, f, Sample::Edge, (3.0 * r + 6.0) as usize);
             info.push(format!("σ {r:.1} px: the blur reaches {} px around (three box blurs, W3C feGaussianBlur)", f.reach()));
         }
         Kind::UnsharpMask => unsharp(ui, f, &mut info),
         Kind::Thicken | Kind::Thin => lines(ui, f, &mut info),
         Kind::FindEdges => {
             amount(ui, f, "Strength", Track::Fill(0.0));
-            profile(ui, f, Sample::Band, 12);
             info.push("Sobel gradient of each color: dark where the image changes, white elsewhere".into());
         }
         Kind::Emboss => emboss(ui, f, st, &mut info),
@@ -135,7 +131,7 @@ fn clip_line(info: &mut Vec<String>, (lo, hi): (f64, f64)) {
 /// The histogram before (gray) and after (outline), the curve over them.
 fn tone_graph(ui: &mut Ui, before: &[u32; 256], after: &[u32; 256], curves: &[(&[u8; 256], Color32)], h: f32) -> (Rect, egui::Response, egui::Painter) {
     let (r, resp, p) = draw::graph(ui, h, Sense::click_and_drag());
-    draw::grid(&p, r, true);
+    draw::grid(&p, r, !curves.is_empty());
     let top = draw::hist_top(before).max(draw::hist_top(after));
     draw::histogram(&p, r, before, top, draw::BEFORE);
     draw::histogram_line(&p, r, after, top, draw::AFTER);
@@ -144,13 +140,14 @@ fn tone_graph(ui: &mut Ui, before: &[u32; 256], after: &[u32; 256], curves: &[(&
     (r, resp, p)
 }
 
-/// For the filters that are a tone table on each channel: histogram,
-/// curve, clipping.
+/// The layer's histogram before and after a filter that is a tone table
+/// on each channel (a viewer of the painting, no curve), and the
+/// clipping.
 fn tone_view(ui: &mut Ui, f: &Filter, src: &Source, info: &mut Vec<String>) {
     let Some(t) = f.tone_tables() else { return };
     let after = rgb_after(src, &t);
-    let (r, _, p) = tone_graph(ui, &src.hist.rgb, &after, &[(&t[0], Color32::WHITE)], 120.0);
-    draw::corner(&p, r, Align2::LEFT_TOP, "Histogram: before (gray), after (line) · curve");
+    let (r, _, p) = tone_graph(ui, &src.hist.rgb, &after, &[], 120.0);
+    draw::corner(&p, r, Align2::LEFT_TOP, "Histogram: before (gray), after (line)");
     gray_bar(ui);
     clip_line(info, clipped(&[&src.hist.chan[0], &src.hist.chan[1], &src.hist.chan[2]], &[&t[0], &t[1], &t[2]]));
 }
@@ -302,11 +299,6 @@ fn handles(ui: &mut Ui, st: &mut State, id: usize, xs: &[f32], fills: &[Color32]
 fn posterize(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut Vec<String>) {
     let mut n = f.v(0);
     if draw::slider(ui, "levels", Spec::new("Levels", 2.0, 64.0, 4.0, "per channel").track(Track::Fill(2.0)).pow(1.6), &mut n) { f.values[0] = n; }
-    tone_view(ui, f, src, info);
-    let t = tone::posterize(n.round() as u32);
-    draw::caption(ui, "The tones left");
-    let (r, _) = ui.allocate_exact_size(vec2(WIDTH, 12.0), Sense::hover());
-    draw::cells(ui.painter(), r, 256, |i| draw::gray(t[i]));
     let k = n.round() as u64;
     info.push(format!("{k} tones per channel: at most {} colors", k * k * k));
     palette(ui, f, src, st);
@@ -337,24 +329,12 @@ fn threshold(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &m
     let _ = st;
 }
 
-/// A gray ramp before and after the filter (sepia).
-fn ramp(ui: &mut Ui, f: &Filter, caption: &str) {
-    draw::caption(ui, caption);
-    let n = 64;
-    let src: Vec<u8> = (0..n).flat_map(|i| { let v = (i * 255 / (n - 1)) as u8; [v, v, v, 255] }).collect();
-    let out = f.apply(&src, n, 1);
-    let (r, _) = ui.allocate_exact_size(vec2(WIDTH, 22.0), Sense::hover());
-    let (a, b) = (Rect::from_min_max(r.min, pos2(r.right(), r.center().y - 1.0)), Rect::from_min_max(pos2(r.left(), r.center().y + 1.0), r.max));
-    draw::cells(ui.painter(), a, n, |i| draw::gray(src[i * 4]));
-    draw::cells(ui.painter(), b, n, |i| Color32::from_rgb(out[i * 4], out[i * 4 + 1], out[i * 4 + 2]));
-}
-
 // --- Colors ---------------------------------------------------------------
 
 /// Up to 14 of the painting's main colors, dark to light (once per
 /// dialog).
 fn main_colors(src: &Source) -> Vec<[u8; 3]> {
-    let l = src.level(src.k);
+    let l = src.level_under(1024);
     let mut buckets = vec![(0u64, [0u64; 3]); 4096];
     for (i, p) in l.px.chunks_exact(4).enumerate() {
         if p[3] < 128 || l.mask.as_ref().is_some_and(|m| !m[i]) { continue; }
@@ -499,13 +479,6 @@ fn black_white(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State) {
             if ui.small_button("Default").on_hover_text("Photoshop's default weights").clicked() { f.values[..6].copy_from_slice(&BW_DEFAULTS); }
         });
     });
-    draw::caption(ui, "Every hue, and the gray it becomes");
-    let (bars, _) = ui.allocate_exact_size(vec2(WIDTH, 24.0), Sense::hover());
-    let top = Rect::from_min_max(bars.min, pos2(bars.right(), bars.center().y - 1.0));
-    let bottom = Rect::from_min_max(pos2(bars.left(), bars.center().y + 1.0), bars.max);
-    draw::cells(ui.painter(), top, 120, |i| draw::hue(i as f32 * 3.0));
-    let after = spectrum_after(f, 120);
-    draw::cells(ui.painter(), bottom, 120, |i| after[i]);
     palette(ui, f, src, st);
 }
 
@@ -517,13 +490,11 @@ enum Sample {
     Edge,
     /// A dark line this many px wide on light.
     Line(usize),
-    /// A dark band.
-    Band,
 }
 
-/// A hard edge or a line across, before (gray) and after (accent):
-/// `span` px each side of the middle.
-fn profile(ui: &mut Ui, f: &Filter, sample: Sample, span: usize) -> (Vec<u8>, Vec<u8>) {
+/// A hard edge or a line across, before and after the filter (the
+/// luminosity of each pixel): for the numbers under the controls.
+fn profile(f: &Filter, sample: Sample, span: usize) -> (Vec<u8>, Vec<u8>) {
     let span = span.clamp(6, 400);
     let pad = f.reach() as usize + 2;
     let n = 2 * (span + pad);
@@ -532,40 +503,10 @@ fn profile(ui: &mut Ui, f: &Filter, sample: Sample, span: usize) -> (Vec<u8>, Ve
     let before: Vec<u8> = (0..n).map(|x| match sample {
         Sample::Edge => if x < c { dark } else { light },
         Sample::Line(w) => if x >= c - w / 2 && x < c - w / 2 + w { dark } else { light },
-        Sample::Band => if (c - 3..c + 3).contains(&x) { dark } else { light },
     }).collect();
     let px: Vec<u8> = before.iter().flat_map(|&v| [v, v, v, 255]).collect();
     let out = f.apply(&px, n, 1);
     let after: Vec<u8> = out.chunks_exact(4).map(|p| tone::luminosity([p[0], p[1], p[2]])).collect();
-    let (r, _, p) = draw::graph(ui, 92.0, Sense::hover());
-    let x0 = c - span;
-    let xof = |x: f32| r.left() + (x - x0 as f32) / (2 * span) as f32 * r.width();
-    let yof = |v: u8| r.bottom() - 8.0 - v as f32 / 255.0 * (r.height() - 16.0);
-    // Ticks every round number of px.
-    let tick = [1usize, 2, 5, 10, 20, 50, 100, 200].into_iter().find(|t| span / t <= 5).unwrap_or(200);
-    let mut k = 0;
-    while k <= span {
-        for x in [c + k, c - k] {
-            let sx = xof(x as f32);
-            p.line_segment([pos2(sx, r.top()), pos2(sx, r.bottom())], Stroke::new(1.0_f32, Color32::from_white_alpha(if k == 0 { 26 } else { 12 })));
-        }
-        k += tick;
-    }
-    let line = |vals: &[u8], color: Color32, w: f32| {
-        let mut pts = Vec::with_capacity(4 * span + 2);
-        for x in x0..x0 + 2 * span {
-            let y = yof(vals[x]);
-            pts.push(pos2(xof(x as f32), y));
-            pts.push(pos2(xof(x as f32 + 1.0), y));
-        }
-        p.add(egui::Shape::line(pts, Stroke::new(w, color)));
-    };
-    line(&before, draw::gray(110), 1.2);
-    line(&after, draw::AFTER, 1.8);
-    draw::frame(&p, r);
-    let what = match sample { Sample::Edge => "A hard edge", Sample::Line(_) => "A line", Sample::Band => "A dark band" };
-    draw::corner(&p, r, Align2::LEFT_TOP, &format!("{what}: before (gray), after"));
-    draw::corner(&p, r, Align2::RIGHT_BOTTOM, &format!("grid {tick} px"));
     (before, after)
 }
 
@@ -574,7 +515,7 @@ fn unsharp(ui: &mut Ui, f: &mut Filter, info: &mut Vec<String>) {
     if draw::slider(ui, "amount", Spec::new("Amount", 1.0, 500.0, 80.0, "%").pow(1.5), &mut a) { f.values[0] = a; }
     if draw::slider(ui, "radius", Spec::new("Radius", 0.1, 100.0, 2.0, "px").step(0.1).pow(2.5), &mut r) { f.values[1] = r; }
     if draw::slider(ui, "threshold", Spec::new("Threshold", 0.0, 255.0, 0.0, "levels").pow(1.5), &mut t) { f.values[2] = t; }
-    let (before, after) = profile(ui, f, Sample::Edge, (3.0 * r + 6.0) as usize);
+    let (before, after) = profile(f, Sample::Edge, (3.0 * r + 6.0) as usize);
     let over = after.iter().zip(&before).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
     info.push(format!("Halos up to {over} levels, about {:.0} px wide on each side of an edge", (2.0 * r).max(1.0)));
     if t > 0.0 { info.push(format!("Differences under {t:.0} levels are left alone (skin, paper grain)")); }
@@ -588,7 +529,7 @@ fn lines(ui: &mut Ui, f: &mut Filter, info: &mut Vec<String>) {
         f.values[idx::ROUND] = if round { 1.0 } else { 0.0 };
     }
     let w = 6;
-    let (before, after) = profile(ui, f, Sample::Line(w), (w + 2 * r.ceil() as usize + 6).max(10));
+    let (before, after) = profile(f, Sample::Line(w), (w + 2 * r.ceil() as usize + 6).max(10));
     let width = |v: &[u8]| v.iter().filter(|&&x| x < 128).count();
     info.push(format!("A {} px line becomes {} px", width(&before), width(&after)));
     info.push("Works on line art on a transparent layer as on paper".into());

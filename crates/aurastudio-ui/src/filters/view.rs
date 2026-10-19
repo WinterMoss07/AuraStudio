@@ -37,12 +37,14 @@ pub struct View {
     before: Option<(Crop, TextureHandle)>,
     after:  Option<(u64, Crop, TextureHandle)>,
     asked:  Option<u64>,
+    /// Since when (egui time, s) the shown result is behind the values.
+    behind: Option<f64>,
     worker: Worker,
 }
 
 impl View {
     pub fn new(ctx: &egui::Context) -> View {
-        View { zoom: None, center: None, split: 0.5, drag: None, before: None, after: None, asked: None, worker: Worker::new(ctx) }
+        View { zoom: None, center: None, split: 0.5, drag: None, before: None, after: None, asked: None, behind: None, worker: Worker::new(ctx) }
     }
 
     pub fn show(&mut self, ui: &mut Ui, src: &Arc<Source>, filter: &Filter, height: f32) {
@@ -117,8 +119,9 @@ impl View {
         if self.zoom.is_some() || self.center.is_some() { self.center = Some((cx, cy)); }
         let (x0, y0) = (cx - vw / 2.0, cy - vh / 2.0);
 
-        // Which pixels: the reduced copy while it has more than enough.
-        let k = if src.k > 1 && s * src.k as f32 <= 1.0 { src.k } else { 1 };
+        // Which pixels: the smallest reduced copy that still has a pixel
+        // per screen pixel (a thumbnail at Fit), the layer's own from 100 %.
+        let k = src.k_for(s, ui.ctx().pixels_per_point());
         let level = src.level(k);
         let kf = k as f32;
         let shown = (
@@ -146,15 +149,24 @@ impl View {
             self.worker.ask(key, fl, crop, Arc::clone(src));
             self.asked = Some(key);
         }
-        if let Some((k2, sw, sh, px)) = self.worker.take() {
-            if Some(k2) == self.asked {
-                let img = egui::ColorImage::from_rgba_unmultiplied([sw, sh], &px);
-                match &mut self.after {
-                    Some((k, c, t)) => { t.set(img, options); *k = k2; *c = crop; }
-                    None => self.after = Some((k2, crop, ui.ctx().load_texture("filter-after", img, options))),
-                }
+        // Every result for this crop is shown, even one for values already
+        // changed again: the preview follows a moving slider instead of
+        // waiting for it to stop.
+        for (k2, c2, px) in self.worker.take() {
+            if c2 != crop { continue; }
+            let (sw, sh) = c2.shown_size();
+            let img = egui::ColorImage::from_rgba_unmultiplied([sw, sh], &px);
+            match &mut self.after {
+                Some((k, c, t)) => { t.set(img, options); *k = k2; *c = c2; }
+                None => self.after = Some((k2, c2, ui.ctx().load_texture("filter-after", img, options))),
             }
         }
+        let now = ui.input(|i| i.time);
+        let busy = !empty && self.after.as_ref().map(|a| a.0) != Some(key);
+        self.behind = if busy { Some(self.behind.unwrap_or(now)) } else { None };
+        // A working sign only when the result keeps you waiting.
+        let slow = self.behind.is_some_and(|t| now - t > 0.3);
+        if busy && !slow { ui.ctx().request_repaint_after(std::time::Duration::from_millis(320)); }
 
         // Draw.
         let p = ui.painter_at(r);
@@ -180,7 +192,6 @@ impl View {
                     ui.painter_at(right).image(t.id(), dest, uv, Color32::from_white_alpha(120));
                 },
             }
-            let busy = self.after.as_ref().map(|a| a.0) != Some(key);
             // The line, with its grip.
             p.line_segment([pos2(split_x, r.top()), pos2(split_x, r.bottom())], Stroke::new(1.5_f32, Color32::WHITE));
             p.line_segment([pos2(split_x + 1.5, r.top()), pos2(split_x + 1.5, r.bottom())], Stroke::new(1.0_f32, Color32::from_black_alpha(120)));
@@ -191,15 +202,35 @@ impl View {
                 p.add(egui::Shape::convex_polygon(vec![tip, grip + vec2(1.5 * d, -3.5), grip + vec2(1.5 * d, 3.5)], theme::TEXT, Stroke::NONE));
             }
             if self.split > 0.12 { draw::corner(&p, r, Align2::LEFT_TOP, "Before"); }
-            if self.split < 0.88 { draw::corner(&p, r, Align2::RIGHT_TOP, if busy { "After …" } else { "After" }); }
+            if self.split < 0.88 { draw::corner(&p, r, Align2::RIGHT_TOP, "After"); }
+            if slow {
+                // Three dots turning, left of the label (which keeps its
+                // size).
+                let c = r.right_top() + vec2(-52.0, 11.0);
+                let phase = (now * 3.0) as usize;
+                for i in 0..3 {
+                    let on = i == phase % 3;
+                    p.circle_filled(c + vec2(i as f32 * 6.0 - 6.0, 0.0), 2.0, if on { Color32::WHITE } else { Color32::from_white_alpha(90) });
+                }
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
         } else {
             p.text(r.center(), Align2::CENTER_CENTER, "Nothing painted here", egui::FontId::proportional(12.0), theme::TEXT_WEAK);
         }
         p.rect_stroke(r, 3.0, Stroke::new(1.0_f32, theme::BORDER));
-        if resp.hovered() {
-            let near = pointer.is_some_and(|q| (q.x - split_x).abs() < 10.0);
-            ui.ctx().set_cursor_icon(if near || self.drag == Some(Drag::Split) { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grab });
-        }
+        // The hand opens over the picture and closes on it while it is
+        // dragged (even out of the view); the line gets the resize arrows.
+        let holding = resp.dragged() || resp.is_pointer_button_down_on();
+        let cursor = match self.drag {
+            Some(Drag::Split) if holding => Some(egui::CursorIcon::ResizeHorizontal),
+            Some(Drag::Pan) if holding => Some(egui::CursorIcon::Grabbing),
+            _ if resp.hovered() => {
+                let near = pointer.is_some_and(|q| (q.x - split_x).abs() < 10.0);
+                Some(if near { egui::CursorIcon::ResizeHorizontal } else if holding { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab })
+            }
+            _ => None,
+        };
+        if let Some(c) = cursor { ui.ctx().set_cursor_icon(c); }
     }
 }
 

@@ -9,8 +9,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use aurastudio_filters::{Filter, Histogram};
 use aurastudio_layers::{LayerStack, Selection};
 
-/// Longest side of the reduced copy.
-const PROXY_SIDE: usize = 900;
+/// The smallest reduced copy's longest side, about.
+const SMALLEST_SIDE: usize = 128;
 
 /// A level of the source: the pixels, straight RGBA, and the selected
 /// ones (None: all).
@@ -26,9 +26,10 @@ pub struct Source {
     /// the preview frames at first.
     pub area:      (u32, u32, u32, u32),
     pub full:      Level,
-    /// `full` reduced `k` times (k = 1: the same size, not copied).
-    pub proxy:     Option<Level>,
-    pub k:         usize,
+    /// `full` reduced 2, 4, 8… times, down to about 128 px: the preview
+    /// filters the smallest one that still has a pixel per screen pixel
+    /// (a thumbnail when zoomed out: fast).
+    pub reduced:   Vec<Level>,
     pub hist:      Histogram,
     pub selection: bool,
     /// The layer's empty parts are transparent (line art) rather than a
@@ -53,15 +54,35 @@ impl Source {
         let hist = match &mask { Some(m) => Histogram::of(&px, |i| m[i]), None => Histogram::of(&px, |_| true) };
         let transparent = matches!(layers.node(id), Some(aurastudio_layers::Node::Layer(l)) if l.tiles.fill()[3] == 0);
         let full = Level { w, h, px, mask };
-        let k = w.max(h).div_ceil(PROXY_SIDE).max(1);
-        let proxy = (k > 1).then(|| reduce(&full, k));
+        let mut reduced: Vec<Level> = Vec::new();
+        while reduced.last().unwrap_or(&full).w.max(reduced.last().unwrap_or(&full).h) > SMALLEST_SIDE * 2 {
+            let next = reduce(reduced.last().unwrap_or(&full), 2);
+            reduced.push(next);
+        }
         let area = (inner.0 - rect.0, inner.1 - rect.1, inner.2 - rect.0, inner.3 - rect.1);
-        Some(Source { area, full, proxy, k, hist, selection: sel.is_some(), transparent })
+        Some(Source { area, full, reduced, hist, selection: sel.is_some(), transparent })
     }
 
-    /// Level `k` (1: full size).
+    /// The level reduced `k` times (a power of two; 1: full size).
     pub fn level(&self, k: usize) -> &Level {
-        match (&self.proxy, k > 1) { (Some(p), true) => p, _ => &self.full }
+        match k.trailing_zeros() as usize { 0 => &self.full, n => &self.reduced[(n - 1).min(self.reduced.len() - 1)] }
+    }
+
+    /// The largest level no longer than `side` on a side (or the
+    /// smallest).
+    pub fn level_under(&self, side: usize) -> &Level {
+        std::iter::once(&self.full).chain(&self.reduced).find(|l| l.w.max(l.h) <= side).unwrap_or(self.reduced.last().unwrap_or(&self.full))
+    }
+
+    /// The most a level is reduced.
+    pub fn max_k(&self) -> usize { 1 << self.reduced.len() }
+
+    /// The smallest level with at least one pixel per screen pixel at
+    /// `s` points per layer pixel (`ppp` pixels per point): its factor.
+    pub fn k_for(&self, s: f32, ppp: f32) -> usize {
+        let mut k = 1;
+        while k < self.max_k() && s * (k * 2) as f32 * ppp <= 1.0 { k *= 2; }
+        k
     }
 
     /// How many pixels the filter changes (painted, selected).
@@ -162,8 +183,8 @@ struct Job { key: u64, filter: Filter, crop: Crop, source: Arc<Source> }
 /// The next job, and "the dialog closed".
 type Slot = Arc<(Mutex<(Option<Job>, bool)>, Condvar)>;
 
-/// A filtered crop: its key, size and pixels.
-pub type Done = (u64, usize, usize, Vec<u8>);
+/// A filtered crop: its key, the crop, and its pixels.
+pub type Done = (u64, Crop, Vec<u8>);
 
 /// The thread filtering the preview's crops: only the latest request
 /// counts (dragging a slider asks every frame); it ends with the dialog.
@@ -189,8 +210,7 @@ impl Worker {
             };
             let level = job.source.level(job.crop.k);
             let px = filter_crop(&job.filter, level, &job.crop);
-            let (w, h) = job.crop.shown_size();
-            if send.send((job.key, w, h, px)).is_err() { return; }
+            if send.send((job.key, job.crop, px)).is_err() { return; }
             ctx.request_repaint();
         });
         if let Err(e) = spawned { log::error!("filter preview thread: {e}"); }
@@ -203,8 +223,8 @@ impl Worker {
         wake.notify_one();
     }
 
-    /// The latest result, if one came.
-    pub fn take(&self) -> Option<Done> { self.done.try_iter().last() }
+    /// The results that came since the last call, oldest first.
+    pub fn take(&self) -> Vec<Done> { self.done.try_iter().collect() }
 }
 
 impl Drop for Worker {

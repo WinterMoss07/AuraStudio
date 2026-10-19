@@ -117,7 +117,7 @@ the canvas texture).
   `painter.rs`: a painting session (sketch, big brushes, smudge, ink,
   fills, lasso copy / paste, undo, saves) with per-stroke timings
   (`PAINT_SECS=1200 cargo test --release -p aurastudio painter_session --
-  --ignored --nocapture`).
+  --ignored --nocapture`). `FUZZ_SECS=60` runs the fuzz test for a minute.
 
 ---
 

@@ -202,6 +202,8 @@ pub fn elided_text(p: &egui::Painter, left_center: Pos2, text: &str, font: egui:
 
 /// What is being dragged, written next to the pointer.
 pub fn drag_ghost(ctx: &egui::Context, text: &str) {
+    // The hand closes on what it carries (as on the canvas when panning).
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     let Some(p) = ctx.pointer_interact_pos() else { return };
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag_ghost")));
     let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), theme::TEXT);

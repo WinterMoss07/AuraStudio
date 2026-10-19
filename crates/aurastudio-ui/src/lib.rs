@@ -259,6 +259,14 @@ impl UiState {
         if self.prefs_open.is_none() { self.prefs_open = Some(prefs::Section::default()); }
     }
 
+    /// Open the dialog of filter `n` (any number: taken modulo their count)
+    /// on the active layer, as its menu entry does. For the fuzz test.
+    #[doc(hidden)]
+    pub fn open_filter_dialog(&mut self, ctx: &egui::Context, n: usize, m: &Model) {
+        let kinds: Vec<aurastudio_filters::Kind> = aurastudio_filters::GROUPS.iter().flat_map(|g| g.1.iter().copied()).collect();
+        if self.filter.is_none() { self.filter = filters::new_dialog(ctx, kinds[n % kinds.len()], m); }
+    }
+
     /// A filter dialog is open (the layer shows its preview: no painting).
     pub fn filtering(&self) -> bool { self.filter.is_some() }
 

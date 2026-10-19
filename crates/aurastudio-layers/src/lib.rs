@@ -419,11 +419,14 @@ impl LayerStack {
         let id = self.active;
         let Node::Layer(l) = self.node(id)? else { return None };
         let (w, h) = (self.width, self.height);
-        let area = match (selection, l.tiles.fill()[3], l.tiles.content_bounds()) {
-            (Some(s), _, _) => s.bbox(),
-            (None, 0, Some(b)) => b,
-            (None, 0, None) => return Some((id, (0, 0, 0, 0))),
-            (None, _, _) => (0, 0, w, h),
+        // What shows counts, not the tiles in memory: a layer painted then
+        // erased, or a stroke undone, keeps transparent tiles.
+        let transparent = l.tiles.fill()[3] == 0;
+        let area = match (selection, transparent) {
+            (Some(s), true) if !l.tiles.any_visible_in(s.bbox()) => return Some((id, (0, 0, 0, 0))),
+            (Some(s), _) => s.bbox(),
+            (None, true) => match l.tiles.visible_bounds() { Some(b) => b, None => return Some((id, (0, 0, 0, 0))) },
+            (None, false) => (0, 0, w, h),
         };
         if area.2 <= area.0 || area.3 <= area.1 { return Some((id, (0, 0, 0, 0))); }
         let m = margin;
@@ -1324,5 +1327,37 @@ mod tests {
         s.end_stroke();
         let Some(Node::Layer(l)) = s.node(id) else { panic!() };
         assert_eq!(l.tiles.stored(), 0);
+    }
+}
+
+#[cfg(test)]
+mod filter_area_tests {
+    use super::*;
+
+    #[test]
+    fn an_erased_layer_counts_as_empty() {
+        let mut l = LayerStack::new_document(256, 256);
+        let id = l.add_layer("ink");
+        l.set_active(id);
+        assert_eq!(l.filter_area(None, 0), Some((id, (0, 0, 0, 0))), "new layer: empty");
+        let ink: Vec<u8> = [0u8, 0, 0, 255].repeat(10 * 10);
+        l.set_layer_rect(id, (100, 100, 110, 110), &ink);
+        let (_, r) = l.filter_area(None, 0).unwrap();
+        assert!(r.2 > r.0 && r.0 <= 100 && r.2 >= 110, "{r:?}");
+        // Erased: transparent pixels that keep a color, tile still stored.
+        let erased: Vec<u8> = [0u8, 0, 0, 0].repeat(10 * 10);
+        l.set_layer_rect(id, (100, 100, 110, 110), &erased);
+        assert_eq!(l.filter_area(None, 0), Some((id, (0, 0, 0, 0))), "erased: empty");
+        // A selection: what shows inside it counts.
+        l.set_layer_rect(id, (100, 100, 110, 110), &ink);
+        let off = Selection::rect(256, 256, (0, 0, 50, 50)).unwrap();
+        let on = Selection::rect(256, 256, (105, 105, 200, 200)).unwrap();
+        assert_eq!(l.filter_area(Some(&off), 0), Some((id, (0, 0, 0, 0))));
+        assert_eq!(l.filter_area(Some(&on), 0), Some((id, (105, 105, 200, 200))));
+        // The paper shows everywhere.
+        let paper = l.add_layer("paper");
+        if let Some(Node::Layer(p)) = l.node_mut(paper) { p.tiles = Tiles::new(256, 256, [255, 255, 255, 255]); }
+        l.set_active(paper);
+        assert_eq!(l.filter_area(Some(&off), 0), Some((paper, (0, 0, 50, 50))));
     }
 }

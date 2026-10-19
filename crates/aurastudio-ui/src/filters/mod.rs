@@ -61,22 +61,27 @@ pub fn menu(ui: &mut Ui, open: &mut Option<FilterDialog>, m: &Model) {
         ui.label(RichText::new(*group).small().color(theme::TEXT_WEAK));
         for &kind in *kinds {
             if ui.add_enabled(why.is_none(), egui::Button::new(format!("{}…", kind.name()))).on_hover_text(kind.hint()).clicked() {
-                if let Some(source) = Source::capture(m.layers, m.selection) {
-                    let color = match kind { Kind::BlackWhite => Filter::new(kind).color, _ => m.brush.color };
-                    *open = Some(FilterDialog {
-                        filter: Filter { color, ..Filter::new(kind) },
-                        preview: true,
-                        shown: None,
-                        source: Arc::new(source),
-                        view: view::View::new(ui.ctx()),
-                        state: editors::State::default(),
-                        frames: 0,
-                    });
-                }
+                *open = new_dialog(ui.ctx(), kind, m);
                 ui.close_menu();
             }
         }
     }
+}
+
+/// A dialog for `kind` on the active layer (None: nothing to filter
+/// there).
+pub fn new_dialog(ctx: &egui::Context, kind: Kind, m: &Model) -> Option<FilterDialog> {
+    let source = Source::capture(m.layers, m.selection)?;
+    let color = match kind { Kind::BlackWhite => Filter::new(kind).color, _ => m.brush.color };
+    Some(FilterDialog {
+        filter: Filter { color, ..Filter::new(kind) },
+        preview: true,
+        shown: None,
+        source: Arc::new(source),
+        view: view::View::new(ctx),
+        state: editors::State::default(),
+        frames: 0,
+    })
 }
 
 /// The dialog, if open. Returns false once closed.
@@ -174,7 +179,7 @@ mod tests {
         assert_eq!((s.full.w, s.full.h), (300, 200));
         // (Whole tiles of 64 px.)
         assert_eq!(s.area, (0, 0, 256, 192));
-        assert!(s.transparent && s.proxy.is_none());
+        assert!(s.transparent && s.reduced.len() == 1 && s.k_for(0.5, 1.0) == 2 && s.k_for(1.0, 1.0) == 1);
         let sel = Selection::rect(300, 200, (50, 40, 60, 50)).unwrap();
         let s = Source::capture(&l, Some(&sel)).unwrap();
         assert_eq!(s.hist.count, 100 - 10, "selected painted pixels: {}", s.hist.count);
