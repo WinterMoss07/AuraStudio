@@ -38,7 +38,9 @@ UI stays quiet so the painting gets the room.
   stroke's shape (geometry tools: their shape with the current brush);
   in Tool options, like Clip Studio Paint, a stroke leaving a light gray
   half (erasers cut it, blenders drag it out), repainted as size,
-  hardness, opacity or blend mode change (on a thread of its own).
+  hardness, opacity or blend mode change (on a thread of its own). A size
+  change only grows the dabs, which keep their places and their grain:
+  no shimmering.
 - Mouse button bounce filtered for everything (a worn switch no longer
   drops a slider drag or ends a stroke); Windows' Alt menu mode is off.
 

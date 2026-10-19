@@ -3,6 +3,28 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.7.3 — 2026-10-19
+
+**Stroke previews: steady while the size changes**
+- A size change only grows or shrinks the dabs, like Clip Studio Paint:
+  they keep their places along the preview's path (the brush's own
+  density, rounded to a spacing of ½, 1, 2, 4... px, with a fade between
+  two steps), and each dab's random numbers come from its place: textures
+  grow instead of being redrawn. Before, the dabs slid along the stroke
+  (it seemed to move back and forth) and MyPaint textures were redrawn at
+  every step.
+- Brushes whose dynamics paint past their radius get a smaller preview
+  size continuously (measured once per brush), instead of jumping to 60 %.
+- Geometry previews: 1 to 15 px thick for what the brush really paints
+  (a pressure-growing brush no longer draws donuts), no more jumps.
+- The previews sit on whole screen pixels, drawn without filtering: no
+  more shimmering edges.
+- Measured over the whole Size slider (197 steps), steps where the
+  preview jumps: Round pen 11 → 0, Liner 63 → 0, Fine charcoal 169 → 7,
+  Watercolor 167 → 9, Oil 194 → 47 (its bristles grow in place).
+- Forge: `Spacing::Fixed` and `ForgeOptions::seeds_by_place`, used by the
+  previews only (strokes on the canvas are unchanged).
+
 ## 0.7.2 — 2026-10-19
 
 **New**

@@ -53,6 +53,9 @@ pub enum Spacing {
     /// Krita's auto spacing: `coefficient × √diameter` px (an even edge at
     /// any size, few dabs for big brushes).
     Auto(f32),
+    /// A fixed distance in px, whatever the size (stroke previews: the
+    /// dabs stay in place while the size changes).
+    Fixed(f32),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -61,6 +64,13 @@ pub struct ForgeOptions {
     pub spacing: Spacing,
     /// A dab where the pen lands (Krita); libmypaint waits for a move.
     pub dab_on_press: bool,
+    /// Stroke previews: each dab's random numbers come from its place on
+    /// the path (dab n draws from seed n × this stride), each pen event's
+    /// from its number, instead of one sequence for the stroke. With
+    /// `Spacing::Fixed`, a size change then keeps every dab's grain,
+    /// offset and angle: the texture grows in place instead of being
+    /// redrawn. Dropping every other dab (stride doubled) keeps the rest.
+    pub seeds_by_place: Option<u32>,
 }
 
 impl ForgeBrush {
@@ -89,7 +99,7 @@ impl ForgeBrush {
             combine: Combine::Multiply,
             ..SettingValue::default()
         });
-        b.options = ForgeOptions { painting: Painting::Wash, spacing: Spacing::Auto(0.8), dab_on_press: true };
+        b.options = ForgeOptions { painting: Painting::Wash, spacing: Spacing::Auto(0.8), dab_on_press: true, seeds_by_place: None };
         b
     }
 

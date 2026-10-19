@@ -22,6 +22,7 @@ use crate::forge::brush::ForgeBrush;
 use crate::forge::color::{hsv_to_rgb, Hsv};
 use crate::forge::evaluator::{evaluate, InputValues, SettingValues};
 use crate::forge::brush::Spacing;
+use crate::forge::rng::BrushRng;
 use crate::forge::setting::BrushSetting;
 use crate::forge::state::BrushState;
 use crate::forge::surface::{Dab, TiledSurface};
@@ -44,6 +45,10 @@ impl ForgeBrush {
         dtime: f64,
     ) -> bool {
         let pressure = pressure.clamp(0.0, 1.0);
+        if self.options.seeds_by_place.is_some() {
+            state.event_index += 1;
+            state.rng = BrushRng::new(mix32(state.event_index ^ 0x8000_0000));
+        }
         // libmypaint clamps non-positive dtime to 0.0001 *before* the skip
         // accumulation and reset check (mypaint-brush.c:1341).
         let mut dtime = if dtime <= 0.0 { 0.0001 } else { dtime };
@@ -294,7 +299,11 @@ impl ForgeBrush {
             // before the cursor has travelled `0.5 * noise` pixels get
             // coalesced. Setting the bookkeeping fields before the RNG
             // calls matches libmypaint's order in `mypaint-brush.c`.
-            state.skip_distance = 0.5 * noise_mag;
+            // (Not with seeds by place: which events the window drops
+            // depends on the size, the stroke's noise would be redrawn.)
+            if self.options.seeds_by_place.is_none() {
+                state.skip_distance = 0.5 * noise_mag;
+            }
             state.skip_last_x = x;
             state.skip_last_y = y;
             noisy_x += state.rng.next_gauss() * noise_mag;
@@ -378,6 +387,11 @@ impl ForgeBrush {
         // so the accumulator picks up wherever the previous event left off.
         loop {
             let drawing = dabs_moved + dabs_todo >= 1.0;
+            if let (true, Some(stride)) = (drawing, self.options.seeds_by_place) {
+                state.dab_index += 1;
+                state.rng = BrushRng::new(mix32(state.dab_index * stride));
+                state.random_input = state.rng.next_unit();
+            }
             let (step_ddab, frac) = if drawing {
                 let step_ddab = if dabs_moved > 0.0 {
                     1.0 - dabs_moved
@@ -1318,10 +1332,20 @@ fn count_dabs_to(
         brush.get(BrushSetting::DabsPerSecond).base_value
     };
 
+    if let Spacing::Fixed(px) = brush.options.spacing {
+        return (tgt_x - cur_x).hypot(tgt_y - cur_y) / px.max(0.05);
+    }
     if let Spacing::Auto(k) = brush.options.spacing {
         return dist / (k * (2.0 * state.actual_radius).sqrt()).max(0.5);
     }
     dist / state.actual_radius * dpar + dist / base_radius * dpbr + dt_left * dps
+}
+
+/// A well-mixed seed from a number (never 0).
+fn mix32(mut x: u32) -> u32 {
+    x = (x ^ (x >> 16)).wrapping_mul(0x7feb_352d);
+    x = (x ^ (x >> 15)).wrapping_mul(0x846c_a68b);
+    (x ^ (x >> 16)) | 1
 }
 
 /// Port of libmypaint's `directional_offsets`. Sums the constant

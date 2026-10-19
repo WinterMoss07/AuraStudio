@@ -96,16 +96,11 @@ impl Forge {
 
     fn washes(&self) -> bool { self.brush.options.painting == Painting::Wash }
 
-    /// Dabs spaced in proportion to the size (stroke previews: a size
-    /// change scales the stroke instead of shifting its dabs). Brushes
-    /// spaced by their radius already keep theirs.
-    pub fn proportional_spacing(&mut self) {
-        if let Spacing::Auto(_) = self.brush.options.spacing {
-            self.brush.options.spacing = Spacing::Settings;
-            self.brush.get_mut(BrushSetting::DabsPerActualRadius).base_value = 12.5;
-            self.brush.get_mut(BrushSetting::DabsPerBasicRadius).base_value = 0.0;
-            self.brush.get_mut(BrushSetting::DabsPerSecond).base_value = 0.0;
-        }
+    /// Stroke previews: a dab every `px` along the path whatever the
+    /// size, random numbers by place (`ForgeOptions::seeds_by_place`).
+    pub fn preview_spacing(&mut self, px: f32, stride: u32) {
+        self.brush.options.spacing = Spacing::Fixed(px);
+        self.brush.options.seeds_by_place = Some(stride);
     }
 
     /// Size (diameter, px) the .myb file was made with, to show it in the

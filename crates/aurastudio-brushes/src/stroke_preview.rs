@@ -12,8 +12,21 @@
 //!
 //! The size follows the brush's (true size for small brushes, compressed
 //! for big ones); the path stays the same whatever the size. Geometry
-//! tools draw their shape, 1 to 10 px thick whatever the brush size.
+//! tools draw their shape 1 to 15 px thick (what the brush really paints,
+//! dynamics included), whatever the brush size.
+//!
+//! A size change only grows or shrinks the dabs, like Clip Studio Paint:
+//! - the dabs keep their places along the path (`Spacing::Fixed`): the
+//!   brush's own density (dabs per radius, at its real size) rounded to
+//!   a spacing of ½, 1, 2, 4... px, with a fade into the next step (every
+//!   other dab dropped, the rest in place) when it gets near it;
+//! - each dab's random numbers come from its place
+//!   (`ForgeOptions::seeds_by_place`): textures grow instead of being
+//!   redrawn;
+//! - a brush whose dynamics paint past its radius gets a smaller size,
+//!   continuously: how far past is measured once per brush (`overflow`).
 
+use aurastudio_brush::forge::{BrushSetting, Spacing};
 use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_canvas::FlatSurface;
 
@@ -32,10 +45,10 @@ pub enum Mode { List, Detail }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shape { S, Line, Rectangle, Ellipse, Arc }
 
-/// Thickness (diameter, preview points) of a geometry tool's shape for a
-/// brush of diameter `d`: 1 to 10, logarithmic over 1..1000 px.
+/// Thickness (diameter, preview pixels) of a geometry tool's shape for a
+/// brush of diameter `d`: 1 to 15, logarithmic over 1..1000 px.
 pub fn shape_thickness(d: f32) -> f32 {
-    1.0 + 9.0 * (d.clamp(1.0, 1000.0).ln() / 1000f32.ln())
+    1.0 + 14.0 * (d.clamp(1.0, 1000.0).ln() / 1000f32.ln())
 }
 
 /// Radius (preview pixels) of a brush of radius `r` (canvas pixels) in a
@@ -51,21 +64,29 @@ pub fn shown_radius(r: f32, h: u32, scale: f32) -> f32 {
     r0 + (rmax - r0) * ((true_r / r0).ln() / (top / r0).ln()).min(1.0)
 }
 
+/// Finest dab spacing of the previews, px.
+const FINEST: f32 = 0.5;
+
 /// Paint the preview: `w` × `h` straight RGBA (transparent where nothing
 /// is). `settings.erase`: the Eraser tool.
 pub fn render(brush: &ForgeBrush, settings: &Brush, shape: Shape, mode: Mode, w: u32, h: u32, scale: f32) -> Vec<u8> {
     let mut b = settings.clone();
     b.color = INK;
+    // The list shows the stroke's shape: everything paints.
+    let painting = Forge::painting_only(brush);
+    let over = overflow(brush, &painting, &b, shape, w, h);
     b.radius = match shape {
-        Shape::S => shown_radius(settings.radius, h, scale),
-        _ => shape_thickness(settings.radius * 2.0) * scale / 2.0,
-    };
+        Shape::S => {
+            let room = h as f32 * MAX_RADIUS + 1.0;
+            shown_radius(settings.radius, h, scale).min(room / over)
+        }
+        _ => shape_thickness(settings.radius * 2.0) / 2.0 / over,
+    }.max(0.5);
     let mut blank = FlatSurface::new(w, h, [255, 255, 255, 0]);
     let brush = match mode {
-        // The list shows the stroke's shape: everything paints.
         Mode::List => {
             b.erase = false;
-            Forge::painting_only(brush)
+            painting
         }
         Mode::Detail => {
             paper(&mut blank);
@@ -73,41 +94,99 @@ pub fn render(brush: &ForgeBrush, settings: &Brush, shape: Shape, mode: Mode, w:
         }
     };
 
-    // Brushes whose dynamics grow the dab well past its radius (pressure,
-    // random offsets) would spill out of the strip: smaller until it fits.
-    let mut out = stroke(&brush, &b, shape, &blank);
-    for _ in 0..3 {
-        if fits(&out, &blank.pixels, w, h) || b.radius <= 0.5 { break; }
-        b.radius = (b.radius * 0.6).max(0.5);
-        let smaller = stroke(&brush, &b, shape, &blank);
-        // Too small to paint anything (dynamics): keep the last one.
-        if smaller == blank.pixels { break; }
-        out = smaller;
-    }
-    out
+    // Spacing step: the brush's own spacing rounded down to ½, 1, 2...
+    // px; near the next step, a fade into it.
+    let steps = (natural_spacing(&brush, b.radius, settings.radius) / FINEST).max(1.0).log2();
+    let level = steps.floor();
+    let spacing = FINEST * level.exp2();
+    let stride = 1u32 << (level as u32).min(16);
+    let out = stroke(&brush, &b, shape, &blank, spacing, stride);
+    let t = ((steps - level - 0.6) / 0.4).clamp(0.0, 1.0);
+    let fade = t * t * (3.0 - 2.0 * t);
+    if fade <= 0.0 { return out; }
+    let next = stroke(&brush, &b, shape, &blank, spacing * 2.0, stride * 2);
+    mix(&out, &next, fade)
 }
 
-fn stroke(brush: &ForgeBrush, b: &Brush, shape: Shape, blank: &FlatSurface) -> Vec<u8> {
+/// Dab spacing for a dab of radius `r` (px), as dense (dabs per radius)
+/// as the brush paints at its real radius `real` (overlapping dabs add
+/// up: a soft brush gets harder with denser dabs).
+fn natural_spacing(brush: &ForgeBrush, r: f32, real: f32) -> f32 {
+    let per_radius = match brush.options.spacing {
+        Spacing::Auto(k) => { let real = real.max(0.5); real / (k * (2.0 * real).sqrt()).max(0.5) }
+        _ => brush.get(BrushSetting::DabsPerActualRadius).base_value + brush.get(BrushSetting::DabsPerBasicRadius).base_value,
+    };
+    if per_radius > 0.0 { r / per_radius } else { r / 2.0 }
+}
+
+fn stroke(brush: &ForgeBrush, b: &Brush, shape: Shape, blank: &FlatSurface, spacing: f32, stride: u32) -> Vec<u8> {
     let (w, h) = (blank.width, blank.height);
     let mut s = FlatSurface::new(w, h, [0; 4]);
     s.pixels.copy_from_slice(&blank.pixels);
     s.next_stroke();
-    let path = path(shape, w, h);
-    Forge::reset_random();
-    let mut e = Forge::new(brush.clone());
-    e.sync_from(b);
-    e.proportional_spacing();
-    e.begin_stroke();
-    for &(x, y, p, t) in &path { e.stroke_to(&mut s, PenSample::new(x, y, p, t)); }
-    e.end_stroke(&mut s);
+    paint(brush, b, &mut s, &path(shape, w, h), spacing, stride, 0.0);
     s.pixels
 }
 
-/// The stroke stays off the strip's top and bottom rows.
-fn fits(px: &[u8], blank: &[u8], w: u32, h: u32) -> bool {
-    let row = (w * 4) as usize;
-    let touched = |y: u32| { let r = y as usize * row..(y as usize + 1) * row; px[r.clone()] != blank[r] };
-    h < 4 || !(touched(0) || touched(1) || touched(h - 1) || touched(h - 2))
+fn paint(brush: &ForgeBrush, b: &Brush, s: &mut FlatSurface, path: &[(f32, f32, f32, f64)], spacing: f32, stride: u32, dy: f32) {
+    Forge::reset_random();
+    let mut e = Forge::new(brush.clone());
+    e.sync_from(b);
+    e.preview_spacing(spacing, stride);
+    e.begin_stroke();
+    for &(x, y, p, t) in path { e.stroke_to(s, PenSample::new(x, y + dy, p, t)); }
+    e.end_stroke(s);
+}
+
+/// `a` faded into `b` (straight RGBA, by premultiplied colors).
+fn mix(a: &[u8], b: &[u8], t: f32) -> Vec<u8> {
+    a.chunks(4).zip(b.chunks(4)).flat_map(|(p, q)| {
+        let (pa, qa) = (p[3] as f32 * (1.0 - t), q[3] as f32 * t);
+        let al = pa + qa;
+        let c = |k: usize| if al > 0.0 { ((p[k] as f32 * pa + q[k] as f32 * qa) / al).round() as u8 } else { 0 };
+        [c(0), c(1), c(2), al.round().min(255.0) as u8]
+    }).collect()
+}
+
+/// How far the brush paints from its path, in radii (1 for a plain round
+/// brush; more with dynamics growing the dab or scattering it). Measured
+/// once per brush (and hardness, shape kind), on the stroke's own path in
+/// a strip tall enough not to clip it.
+fn overflow(brush: &ForgeBrush, painting: &ForgeBrush, b: &Brush, shape: Shape, w: u32, h: u32) -> f32 {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    /// (brush, hardness, S or shape, strip size) -> overflow.
+    type Key = (usize, u32, bool, u32, u32);
+    static CACHE: Mutex<Option<HashMap<Key, f32>>> = Mutex::new(None);
+    let key = (brush as *const ForgeBrush as usize, b.hardness.to_bits(), shape == Shape::S, w, h);
+    if let Some(&v) = CACHE.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) { return v; }
+
+    const R: f32 = 6.0;
+    let probe = Brush { radius: R, erase: false, ..b.clone() };
+    // A straight line stands for the shapes (drawn at full pressure).
+    let line = |w: u32, h: u32| vec![(4.0, h as f32 / 2.0, 1.0, 0.0), (w as f32 - 4.0, h as f32 / 2.0, 1.0, 0.1)];
+    let (path, half) = match shape {
+        Shape::S => {
+            let margin = h as f32 * MAX_RADIUS + 3.0;
+            (path(Shape::S, w, h), (h as f32 / 2.0 - margin).max(0.0) * 0.9)
+        }
+        _ => (line(w, h), 0.0),
+    };
+    let tall = (h * 4).max(64);
+    let dy = (tall - h) as f32 / 2.0;
+    let mut s = FlatSurface::new(w, tall, [255, 255, 255, 0]);
+    paint(painting, &probe, &mut s, &path, natural_spacing(painting, R, R).max(FINEST), 1, dy);
+    let row = |y: u32| s.pixels[(y * w * 4) as usize..((y + 1) * w * 4) as usize].chunks(4).any(|c| c[3] > 8);
+    let center = h as f32 / 2.0 + dy;
+    let v = match ((0..tall).find(|&y| row(y)), (0..tall).rev().find(|&y| row(y))) {
+        (Some(top), Some(bottom)) => {
+            let reach = ((center - half) - top as f32).max(bottom as f32 + 1.0 - (center + half));
+            (reach / R).max(1.0)
+        }
+        _ => 1.0,
+    };
+    CACHE.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, v);
+    v
 }
 
 /// Pen samples (x, y, pressure, time) at 200 Hz. The S crosses the strip
@@ -195,7 +274,7 @@ mod tests {
         let hard = full(&render(&ForgeBrush::round(), &b, Shape::S, Mode::List, 240, 64, 1.0));
         b.hardness = 0.0;
         let soft = full(&render(&ForgeBrush::round(), &b, Shape::S, Mode::List, 240, 64, 1.0));
-        assert!(soft < hard / 2, "hard {hard} soft {soft}");
+        assert!((soft as f32) < hard as f32 * 0.6, "hard {hard} soft {soft}");
     }
 
     #[test]
@@ -214,7 +293,7 @@ mod tests {
     #[test]
     fn shapes_stay_thin_and_follow_the_size() {
         assert_eq!(shape_thickness(1.0), 1.0);
-        assert!((shape_thickness(1000.0) - 10.0).abs() < 1e-4);
+        assert!((shape_thickness(1000.0) - 15.0).abs() < 1e-4);
         assert!(shape_thickness(100.0) < shape_thickness(500.0));
         let cov = |d: f32, shape| {
             let b = Brush { radius: d / 2.0, ..Brush::new() };

@@ -142,6 +142,9 @@ pub struct BrushState {
     pub prev_col_recentness: f32,
 
     pub rng: BrushRng,
+    /// Dabs drawn and pen events so far (`ForgeOptions::seeds_by_place`).
+    pub dab_index: u32,
+    pub event_index: u32,
 
     /// Pressure of the most recent stroke event. Used by `finish_stroke` to
     /// keep the trailing catch-up dabs at the same ink density the user was
@@ -224,6 +227,8 @@ impl BrushState {
             prev_col_a: 0.0,
             prev_col_recentness: 0.0,
             rng: BrushRng::new(seed),
+            dab_index: 0,
+            event_index: 0,
             last_pressure: 0.0,
             random_input: 0.0,
             started: false,

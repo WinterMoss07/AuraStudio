@@ -5,7 +5,7 @@
 //! - Brush groups (Draw, Paint, Eraser): a row of icons, one per medium
 //!   (pencil, ink...), then that medium's brushes. Search looks in every
 //!   brush; picking one from another group switches to it.
-//! - Geometry: the shape tools, drawn with the current brush (1 to 10 px).
+//! - Geometry: the shape tools, drawn with the current brush (1 to 15 px thick).
 //! - Fill, Picker, Selection: their tools by icon and name.
 //!
 //! Click selects; each brush keeps its own size / opacity / blend mode,

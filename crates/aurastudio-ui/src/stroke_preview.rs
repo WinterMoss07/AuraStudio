@@ -71,7 +71,11 @@ impl StrokePreviews {
         self.start(ctx);
         self.receive(ctx);
         let ppp = ctx.pixels_per_point();
+        // On whole screen pixels, one texel each (drawn without
+        // filtering): edges don't shimmer from one picture to the next.
+        let min = (rect.min.to_vec2() * ppp).round() / ppp;
         let (w, h) = ((rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32);
+        let rect = Rect::from_min_size(min.to_pos2(), vec2(w as f32, h as f32) / ppp);
         let key = key_of(&stroke, w, h, ppp);
         let shown = self.slots.get(&slot).map(|(k, _)| *k);
         if shown != Some(key) && self.asked.get(&slot) != Some(&key) && w > 0 && h > 0 {
@@ -130,11 +134,11 @@ impl StrokePreviews {
             let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
             match self.slots.get_mut(&slot) {
                 Some((k, tex)) => {
-                    tex.set(image, egui::TextureOptions::LINEAR);
+                    tex.set(image, egui::TextureOptions::NEAREST);
                     *k = key;
                 }
                 None => {
-                    let tex = ctx.load_texture(format!("stroke-preview-{slot:?}"), image, egui::TextureOptions::LINEAR);
+                    let tex = ctx.load_texture(format!("stroke-preview-{slot:?}"), image, egui::TextureOptions::NEAREST);
                     self.slots.insert(slot, (key, tex));
                 }
             }
