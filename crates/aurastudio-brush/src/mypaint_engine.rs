@@ -1,15 +1,12 @@
-//! Native MyPaint brushes (.myb files) through hokusai, a Rust port of
-//! libmypaint.
+//! MyPaint brushes (.myb) through hokusai, a Rust port of libmypaint.
 //!
-//! Unlike the "wash" engine (hokusai_engine.rs, our CSP-like round brush,
-//! which paints on an empty stroke surface), a MyPaint brush works on the
-//! layer itself: the tiles it touches are loaded from the layer as it was
-//! before the stroke, and libmypaint's own dab blending applies (normal,
-//! eraser, lock alpha, colorize...). That is what smudge, blender and
-//! eraser brushes need: they read the colors already on the canvas.
+//! Unlike the dab engine (dab_engine.rs), a MyPaint brush works on the
+//! layer itself: the tiles it touches are loaded from the layer as before
+//! the stroke, and libmypaint's dab blending applies (eraser, smudge,
+//! colorize...: they read the colors already there).
 //!
-//! Tiles are 64x64 premultiplied RGBA in fix15 (1.0 = 1 << 15), holding
-//! sRGB-encoded values like our layers (see hokusai_engine.rs).
+//! Tiles: 64x64 premultiplied RGBA in fix15 (1.0 = 1 << 15), sRGB-encoded
+//! values like our layers.
 
 use std::collections::{HashMap, HashSet};
 
@@ -73,12 +70,6 @@ impl MyPaintEngine {
     /// shimmer from one repaint to the next).
     pub fn reset_random() {
         hokusai::brushmodes::reset_get_color_rng();
-    }
-
-    /// The brush works on paint already there (eraser, smudge, colorize,
-    /// posterize, lock alpha), as the .myb file sets it.
-    pub fn uses_paint(brush: &hokusai::Brush) -> bool {
-        PAINT_SETTINGS.into_iter().any(|k| brush.get(k).base_value > 0.3 || !brush.get(k).inputs.is_empty())
     }
 
     /// A copy that only paints (no erasing, smudging, colorizing...): the

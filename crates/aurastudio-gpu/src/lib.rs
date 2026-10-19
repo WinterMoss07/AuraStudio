@@ -157,19 +157,10 @@ impl GpuState {
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
 
-        // Latency, best first:
-        // - Mailbox: newest frame shown at the next vsync, never queued, no
-        //   tearing. Not offered by every driver (Intel Vulkan on Windows
-        //   only has Immediate + Fifo).
-        // - Immediate: presented right away, no wait for vsync. In a normal
-        //   window the Windows compositor (DWM) still syncs to the display,
-        //   so it doesn't tear there.
-        // - Fifo: classic vsync. Rendering blocks until the next refresh, and
-        //   pen samples arriving meanwhile wait one more frame: measured as
-        //   ~14 ms per frame on an Intel Arc 140T, the main remaining lag.
-        // Rendering only happens on demand (ControlFlow::Wait), so neither
-        // Mailbox nor Immediate makes the GPU spin when idle.
-        // AURASTUDIO_PRESENT=mailbox|immediate|fifo overrides the choice.
+        // Lowest latency first: Mailbox (newest frame at the next vsync),
+        // then Immediate (DWM still syncs a window), Fifo last (blocks until
+        // the refresh: ~14 ms more lag measured). Frames are on demand: no
+        // spinning. AURASTUDIO_PRESENT=mailbox|immediate|fifo overrides.
         let wanted = match std::env::var("AURASTUDIO_PRESENT").ok().as_deref() {
             Some("mailbox")   => vec![PresentMode::Mailbox],
             Some("immediate") => vec![PresentMode::Immediate],
@@ -615,6 +606,9 @@ impl GpuState {
     }
 
     fn render_impl(&mut self, ui_fn: Option<impl FnOnce(&egui::Context)>) {
+        // Minimized: nothing to show (frames are drawn on demand, not only
+        // on the window system's request).
+        if self.window.is_minimized() == Some(true) { return; }
         let mut textures_free = Vec::new();
         let (tris, ppp) = match ui_fn {
             Some(f) => {

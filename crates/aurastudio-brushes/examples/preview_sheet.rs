@@ -6,7 +6,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let filter = args.get(1).map(|s| s.to_lowercase());
     let lib = Library::load();
-    let presets: Vec<_> = lib.presets.iter().filter(|p| filter.as_ref().is_none_or(|f| p.name.to_lowercase().contains(f) || p.group.to_lowercase().contains(f))).collect();
+    let presets: Vec<_> = lib.presets.iter().filter(|p| filter.as_ref().is_none_or(|f| p.name.to_lowercase().contains(f) || p.medium.to_lowercase().contains(f))).collect();
     let (w, h, cols) = (360u32, 72u32, 4u32);
     let rows = (presets.len() as u32).div_ceil(cols);
     let (sw, sh) = (cols * (w + 6), rows * (h + 6));
@@ -26,7 +26,7 @@ fn main() {
         }
     }
     eprintln!("{} previews in {:?}", presets.len(), t.elapsed());
-    for p in &presets { println!("{}/{}", p.group, p.name); }
+    for p in &presets { println!("{}/{}", p.medium, p.name); }
     let f = std::fs::File::create(&args[0]).unwrap();
     let mut e = png::Encoder::new(std::io::BufWriter::new(f), sw, sh);
     e.set_color(png::ColorType::Rgba);

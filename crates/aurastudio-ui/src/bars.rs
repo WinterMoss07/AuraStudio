@@ -1,5 +1,5 @@
-//! The two bars at the top: the menu bar, and the Photoshop-like tool
-//! options bar under it (size and opacity of the current tool).
+//! The two bars at the top: the menu bar, and the toolbar under it (file
+//! and clipboard actions, notices).
 
 use egui::{Align, Frame, Layout, Margin, RichText};
 
@@ -104,7 +104,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     });
                     ui.separator();
                     ui.checkbox(m.hidpi_scaling, "HiDPI image scaling")
-                        .on_hover_text("On: at 100 %, a picture has the same size on a 3K / 4K screen and on an HD one (it follows Windows' display scaling). Off: one image pixel per physical screen pixel, much smaller on 3K / 4K.");
+                        .on_hover_text("100 % follows Windows' display scaling");
                     ui.menu_button("Interface size", |ui| {
                         for s in crate::UI_SCALES {
                             let label = format!("{:.0} %", s * 100.0);
@@ -115,7 +115,6 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         }
                     });
                     ui.menu_button("Mouse click debounce", |ui| {
-                        ui.label(RichText::new("A worn mouse button can let go for a few ms while held:\nthat short a release is ignored.").small().color(theme::TEXT_WEAK));
                         for ms in [0u32, 10, 20, 30, 40, 60, 80] {
                             let label = if ms == 0 { "Off".to_string() } else { format!("{ms} ms") };
                             if ui.radio(*m.debounce_ms == ms, label).clicked() {
@@ -146,9 +145,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
         });
 }
 
-/// Toolbar under the menu, part of the same surface as the menu bar and
-/// the docks: fixed actions (each room will get its own toolbar); the
-/// current tool's settings live in the Tool options docker.
+/// Toolbar under the menu: fixed actions, and the notices on the right.
 pub fn toolbar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
     use crate::icons::Icon;
     use crate::widgets::icon_button;

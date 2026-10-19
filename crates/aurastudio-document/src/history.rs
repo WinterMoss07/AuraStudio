@@ -45,7 +45,7 @@ impl Step {
     }
 
     fn change(&self) -> Change {
-        Change { layer_id: self.layer_id, rect: self.rect, label: self.label }
+        Change { layer_id: self.layer_id, rect: self.rect }
     }
 }
 

@@ -211,11 +211,8 @@ impl PaintSurface for LayerSurface<'_> {
     }
 }
 
-/// Layer tree + active node. Composite is on the CPU for now.
-///
-/// Memory: the per-stroke buffers (snapshot of the layer before the
-/// stroke + stroke coverage) are only needed by the layer being painted,
-/// so they live here once instead of in every layer.
+/// Layer tree + active node, and the stroke buffers of the layer being
+/// painted (kept here once, not in every layer).
 pub struct LayerStack {
     /// Bottom to top.
     pub root:   Vec<Node>,
@@ -575,13 +572,9 @@ impl LayerStack {
         true
     }
 
-    /// Call when a stroke starts on paint layer `id`: snapshot it and reset
-    /// the stroke coverage, so the new stroke never blends with itself but
-    /// still paints over earlier strokes. False if `id` is not a paint layer.
-    ///
-    /// A stroke targets a layer by id, not "the active layer": strokes are
-    /// painted on another thread, possibly a little after the pen, and the
-    /// user may select or delete another layer meanwhile.
+    /// A stroke starts on paint layer `id` (by id: another may get selected
+    /// while it is painted): fresh snapshot and coverage, so it never blends
+    /// with itself. False if `id` is not a paint layer.
     pub fn begin_stroke(&mut self, id: u64) -> bool {
         if !matches!(node_in(&self.root, id), Some(Node::Layer(_))) { return false; }
         let tiles = (self.width.div_ceil(TILE) * self.height.div_ceil(TILE)) as usize;
@@ -785,11 +778,6 @@ impl LayerStack {
         self.height = height;
     }
 
-    /// Composite every visible layer into `out` (`width * height * 4`).
-    pub fn composite_into(&self, out: &mut [u8]) {
-        self.composite_rect_to((0, 0, self.width, self.height), out);
-    }
-
     /// The merged image of `rect` (clipped to the canvas), RGBA rows
     /// tightly packed.
     pub fn composite_rect(&self, rect: Rect) -> Vec<u8> {
@@ -800,15 +788,10 @@ impl LayerStack {
         out
     }
 
-    /// Composite of `rect` (inside the canvas) into `out`, its RGBA rows
-    /// tightly packed.
-    ///
-    /// The result is always opaque (white under everything), so the main
-    /// path blends straight into the output bytes: Normal layers in integer
-    /// math, other modes simplified for an opaque backdrop. No temporary
-    /// row, no un-premultiply per pixel. Only isolated folders go through
-    /// the general premultiplied path. (~5 ns/px, see
-    /// examples/bench_composite.rs.)
+    /// Composite of `rect` (inside the canvas) into `out`, RGBA rows tightly
+    /// packed. Always opaque (white under everything): blended straight
+    /// into the bytes, Normal in integer math; only isolated folders take
+    /// the premultiplied path. ~5 ns/px (examples/bench_composite.rs).
     pub fn composite_rect_to(&self, rect: Rect, out: &mut [u8]) {
         let (x0, y0, x1, y1) = rect;
         if x0 >= x1 || y0 >= y1 { return; }
@@ -1012,9 +995,7 @@ mod tests {
     }
 
     fn composite(stack: &LayerStack) -> [u8; 4] {
-        let mut out = vec![0u8; (stack.width * stack.height * 4) as usize];
-        stack.composite_into(&mut out);
-        out[0..4].try_into().unwrap()
+        stack.composite_rect((0, 0, 1, 1)).try_into().unwrap()
     }
 
     fn names_top_down(stack: &LayerStack) -> Vec<String> {
@@ -1224,7 +1205,7 @@ mod tests {
         let id = s.active_id();
         assert!(s.set_layer_rect(id, (50, 40, 250, 160), &[10, 20, 30, 255].repeat(200 * 120)));
         let mut whole = vec![0u8; 300 * 200 * 4];
-        s.composite_into(&mut whole);
+        whole.copy_from_slice(&s.composite_rect((0, 0, s.width, s.height)));
         let piece = s.composite_rect((40, 30, 400, 100));
         assert_eq!(piece.len(), 260 * 70 * 4, "clipped to the canvas");
         for (row, y) in piece.chunks_exact(260 * 4).zip(30..100) {

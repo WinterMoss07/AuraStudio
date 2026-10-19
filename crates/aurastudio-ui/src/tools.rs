@@ -66,6 +66,22 @@ impl Tool {
         }
     }
 
+    /// A few words shown on hover.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Tool::Brush      => "Paint",
+            Tool::Eraser     => "Erase",
+            Tool::Picker     => "Click: take the color",
+            Tool::Fill       => "Click: fill an area",
+            Tool::Lasso      => "Drag: freehand selection",
+            Tool::RectSelect => "Drag: rectangle selection",
+            Tool::Line       => "Drag. Shift: 15° steps",
+            Tool::Rectangle  => "Drag. Shift: square, Alt: centered",
+            Tool::Ellipse    => "Drag. Shift: circle, Alt: centered",
+            Tool::Arc        => "Start, end, bend. Enter: done",
+        }
+    }
+
     /// Paints with the brush (size, opacity... apply; outline cursor).
     pub fn paints(self) -> bool { matches!(self, Tool::Brush | Tool::Eraser) || self.is_shape() }
 
@@ -165,7 +181,7 @@ impl Group {
     /// The group the current tool (and brush) belongs to.
     pub fn current(tool: Tool, preset: usize, presets: &[Preset]) -> Group {
         match tool {
-            Tool::Brush => presets.get(preset).map_or(Group::Draw, |p| match Group::of_medium(&p.group) {
+            Tool::Brush => presets.get(preset).map_or(Group::Draw, |p| match Group::of_medium(&p.medium) {
                 // An eraser brush with the Brush tool: still a brush.
                 Group::Eraser => Group::Draw,
                 g => g,
@@ -209,7 +225,7 @@ impl ToolMemory {
         }
         *tool = self.tool.get(&g).copied().unwrap_or(tools[0]);
         if g.is_brushes() {
-            let first = || presets.iter().position(|p| g.mediums().contains(&p.group.as_str()));
+            let first = || presets.iter().position(|p| g.mediums().contains(&p.medium.as_str()));
             if let Some(p) = self.preset.get(&g).copied().or_else(first) { *preset = p; }
         }
     }
@@ -218,13 +234,12 @@ impl ToolMemory {
 /// Settings of the geometry tools.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShapeOptions {
-    /// Arc: once validated, the next arc starts at its end point (closed,
-    /// clean outlines for coloring).
-    pub chain_arcs:   bool,
+    /// Arc: each arc starts where the last one ended (one outline).
+    pub multipoint: bool,
 }
 
 impl Default for ShapeOptions {
-    fn default() -> Self { Self { chain_arcs: true } }
+    fn default() -> Self { Self { multipoint: true } }
 }
 
 /// Width of the toolbox.
@@ -290,21 +305,12 @@ fn tool_button(ui: &mut Ui, group: Group, selected: bool, enabled: bool) -> bool
 
 /// Options of the tools that are not brushes (Tool options docker).
 pub fn options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
-    let hint = |ui: &mut Ui, t: &str| { ui.label(RichText::new(t).small().color(theme::TEXT_WEAK)); };
-    ui.label(RichText::new(m.tool.name()).strong());
+    ui.label(RichText::new(m.tool.name()).strong()).on_hover_text(m.tool.hint());
     ui.add_space(4.0);
-    let w = ui.available_width();
     match *m.tool {
-        Tool::Fill => {
-            fill_options(ui, m, w);
-            hint(ui, "Fills with the brush color. Alt+click picks a color.");
-        }
-        Tool::Picker => hint(ui, "Click or drag on the canvas: takes the color of the merged image. With the brush, hold Alt."),
-        Tool::Lasso | Tool::RectSelect => {
-            selection_buttons(ui, m, a);
-            hint(ui, "Drag to select; a click without dragging deselects. Painting, fill and Delete then only change the selection.");
-        }
-        Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => {}
+        Tool::Fill => fill_options(ui, m, ui.available_width()),
+        Tool::Lasso | Tool::RectSelect => selection_buttons(ui, m, a),
+        _ => {}
     }
 }
 
@@ -319,7 +325,7 @@ pub fn fill_options(ui: &mut Ui, m: &mut Model, w: f32) {
         m.fill.expand = v as u32;
     }
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut m.fill.merged, true, "All layers").on_hover_text("Find the area on the merged image (lines on another layer stop the fill)");
+        ui.selectable_value(&mut m.fill.merged, true, "All layers").on_hover_text("Lines on any layer stop the fill");
         ui.selectable_value(&mut m.fill.merged, false, "This layer");
     });
 }
@@ -381,18 +387,9 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
 
 /// Options of the geometry tools, under the brush settings.
 pub fn shape_options(ui: &mut Ui, m: &mut Model) {
-    let hint = |ui: &mut Ui, t: &str| { ui.label(RichText::new(t).small().color(theme::TEXT_WEAK)); };
-    ui.add_space(4.0);
-    match *m.tool {
-        Tool::Line => hint(ui, "Drag to draw. Shift: steps of 15°. Drawn with the current brush."),
-        Tool::Rectangle => hint(ui, "Drag to draw. Shift: square, Alt: from the center."),
-        Tool::Ellipse => hint(ui, "Drag to draw. Shift: circle, Alt: from the center."),
-        Tool::Arc => {
-            ui.checkbox(&mut m.shape.chain_arcs, "Chain: next arc starts at the end point")
-                .on_hover_text("Arcs follow each other as one line, painted when the outline is done: Enter, a click on the last point, or an end dropped on the first point (closed, ready for coloring).");
-            hint(ui, "Drag (or click twice) from start to end; the cursor then pulls the curve, click to validate. Shift: 15° steps. Ctrl+Z: last arc back, Escape: cancel.");
-        }
-        _ => {}
+    if *m.tool == Tool::Arc {
+        ui.add_space(4.0);
+        ui.checkbox(&mut m.shape.multipoint, "Multipoint").on_hover_text("Arcs follow each other. Enter: done");
     }
 }
 
@@ -421,7 +418,7 @@ mod tests {
         preset = find("Oil");
         mem.select(Group::Eraser, &mut tool, &mut preset, p);
         assert_eq!(tool, Tool::Eraser);
-        assert_eq!(p[preset].group, "Eraser");
+        assert_eq!(p[preset].medium, "Eraser");
         mem.select(Group::Geometry, &mut tool, &mut preset, p);
         assert_eq!(tool, Tool::Line);
         // U again: the next shape.

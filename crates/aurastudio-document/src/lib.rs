@@ -1,9 +1,5 @@
-//! Documents: one open image each (its layers + its own undo history), and
-//! the workspace holding every open document.
-//!
-//! Each document is its own `Arc<Mutex<Document>>`: painting, undo or a
-//! resize in one document never locks or touches another, and Ctrl+Z only
-//! ever walks back the history of the document it is pressed in.
+//! Documents (layers + their own undo history), each its own
+//! `Arc<Mutex<Document>>`, and the workspace holding the open ones.
 
 mod history;
 
@@ -18,14 +14,11 @@ pub use history::{History, SavedStep, DEFAULT_BUDGET};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DocId(pub u64);
 
-/// What an undo / redo changed, so the app can recomposite and refresh the
-/// layer thumbnail.
+/// What an undo / redo changed (to recomposite, refresh the thumbnail).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Change {
     pub layer_id: u64,
     pub rect:     Rect,
-    /// Name of the undone / redone action ("Brush stroke"...).
-    pub label:    &'static str,
 }
 
 pub struct Document {
@@ -212,12 +205,9 @@ pub const DEFAULT_DPI: f32 = 300.0;
 
 pub type SharedDoc = Arc<Mutex<Document>>;
 
-/// Every open document, and which one is shown.
+/// Every open document (ids kept beside them: finding one never locks it).
 pub struct Workspace {
-    /// Ids kept next to the documents: finding one never locks them (a
-    /// document can be busy being painted on the paint thread).
     docs:    Vec<(DocId, SharedDoc)>,
-    active:  usize,
     next_id: u64,
 }
 
@@ -227,12 +217,13 @@ impl Default for Workspace {
 
 impl Workspace {
     pub fn new() -> Self {
-        Self { docs: Vec::new(), active: 0, next_id: 1 }
+        Self { docs: Vec::new(), next_id: 1 }
     }
 
-    /// Open a new blank document and make it the active one.
+    /// Open a new blank document.
     pub fn new_document(&mut self, name: &str, width: u32, height: u32) -> SharedDoc {
-        self.insert(|id| Document::new(id, name, width, height))
+        let id = self.reserve_id();
+        self.add(Document::new(id, name, width, height))
     }
 
     /// Id for a document about to be built (a file being opened); add it
@@ -243,43 +234,19 @@ impl Workspace {
         id
     }
 
-    /// Add a document (its id from `reserve_id`) and make it the active one.
+    /// Add a document (its id from `reserve_id`).
     pub fn add(&mut self, doc: Document) -> SharedDoc {
+        self.next_id = self.next_id.max(doc.id().0 + 1);
         let id = doc.id();
-        self.next_id = self.next_id.max(id.0 + 1);
         let doc = Arc::new(Mutex::new(doc));
         self.docs.push((id, Arc::clone(&doc)));
-        self.active = self.docs.len() - 1;
         doc
-    }
-
-    /// Add a document built with its new id and make it the active one.
-    pub fn insert(&mut self, make: impl FnOnce(DocId) -> Document) -> SharedDoc {
-        let id = DocId(self.next_id);
-        self.next_id += 1;
-        let doc = Arc::new(Mutex::new(make(id)));
-        self.docs.push((id, Arc::clone(&doc)));
-        self.active = self.docs.len() - 1;
-        doc
-    }
-
-    /// The document being shown (None when nothing is open).
-    pub fn active(&self) -> Option<SharedDoc> {
-        self.docs.get(self.active).map(|(_, d)| Arc::clone(d))
-    }
-
-    pub fn set_active(&mut self, id: DocId) -> bool {
-        match self.docs.iter().position(|(d, _)| *d == id) {
-            Some(i) => { self.active = i; true }
-            None => false,
-        }
     }
 
     /// Close a document; its memory (layers + history) goes with it.
     pub fn close(&mut self, id: DocId) -> bool {
         let Some(i) = self.docs.iter().position(|(d, _)| *d == id) else { return false };
         self.docs.remove(i);
-        self.active = self.active.min(self.docs.len().saturating_sub(1));
         true
     }
 
@@ -318,7 +285,7 @@ mod tests {
         assert_eq!(px(&doc, id, 16, 16), [0, 0, 255, 255]);
 
         let c = doc.undo().unwrap();
-        assert_eq!((c.layer_id, c.rect, c.label), (id, (15, 15, 30, 30), "Brush stroke"));
+        assert_eq!((c.layer_id, c.rect), (id, (15, 15, 30, 30)));
         assert_eq!(px(&doc, id, 16, 16), [255, 0, 0, 255]);
         assert_eq!(px(&doc, id, 25, 25), [255, 255, 255, 0]);
         doc.undo().unwrap();
@@ -406,7 +373,6 @@ mod tests {
         let b_id = b.lock().unwrap().id();
         assert!(ws.close(b_id));
         assert_eq!(ws.len(), 1);
-        assert_eq!(ws.active().unwrap().lock().unwrap().name, "a");
     }
 
     /// Copy the selected pixels, paste them: same place, on a new active

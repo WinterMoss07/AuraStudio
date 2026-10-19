@@ -157,7 +157,7 @@ fn name_label(painter: &egui::Painter, rect: Rect, name: &str) {
 fn key_of(s: &Stroke, w: u32, h: u32, ppp: f32) -> u64 {
     let (p, b) = (s.preset, s.settings);
     let mut h_ = std::collections::hash_map::DefaultHasher::new();
-    (&p.name, &p.group, &p.author, w, h, ppp.to_bits(), s.shape, s.mode).hash(&mut h_);
+    (&p.name, &p.medium, &p.author, w, h, ppp.to_bits(), s.shape, s.mode).hash(&mut h_);
     (b.radius.to_bits(), b.opacity.to_bits(), b.hardness.to_bits(), b.erase, format!("{:?}", b.blend)).hash(&mut h_);
     h_.finish()
 }

@@ -29,7 +29,7 @@ pub struct Ctx {
     /// Shift held: the end snaps to 15° steps.
     pub shift: bool,
     /// Chain mode: the next arc starts where the last one ended.
-    pub chain_arcs: bool,
+    pub multipoint: bool,
 }
 
 #[derive(Default)]
@@ -87,7 +87,7 @@ impl ArcTool {
                 self.chain.extend(path_of(a).into_iter().skip(skip));
                 self.skip_release = true;
                 let closed = self.chain.len() > 2 && self.chain.first() == Some(&end);
-                if !cx.chain_arcs || closed {
+                if !cx.multipoint || closed {
                     painted = self.finish();
                     None
                 } else {
@@ -180,8 +180,8 @@ fn dist(a: P, b: P) -> f32 { ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() 
 mod tests {
     use super::*;
 
-    const CX: Ctx = Ctx { zoom: 1.0, shift: false, chain_arcs: true };
-    const SINGLE: Ctx = Ctx { zoom: 1.0, shift: false, chain_arcs: false };
+    const CX: Ctx = Ctx { zoom: 1.0, shift: false, multipoint: true };
+    const SINGLE: Ctx = Ctx { zoom: 1.0, shift: false, multipoint: false };
 
     use crate::debounce::{Debounce, Kind, BOUNCE};
     use std::time::{Duration, Instant};

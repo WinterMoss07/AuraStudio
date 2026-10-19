@@ -148,7 +148,7 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                         ui.end_row();
                         ui.label("Height");
                         ui.add(egui::DragValue::new(&mut form.h).range(0.01..=100_000.0).speed(speed).max_decimals(digits));
-                        if ui.button("Swap").on_hover_text("Swap width and height (portrait / landscape)").clicked() {
+                        if ui.button("Swap").on_hover_text("Portrait / landscape").clicked() {
                             std::mem::swap(&mut form.w, &mut form.h);
                             form.preset = None;
                         }
@@ -284,7 +284,7 @@ fn recent_grid(ui: &mut Ui, recent: &mut [RecentFile], a: &mut Actions) {
                 ui.label(RichText::new("Recent").strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let clear = egui::Button::new(RichText::new("Clear list").small().color(theme::TEXT_WEAK)).frame(false);
-                    if ui.add(clear).on_hover_text("Forget the recent files (the files stay on disk)").clicked() {
+                    if ui.add(clear).on_hover_text("The files stay on disk").clicked() {
                         a.clear_recent = true;
                     }
                 });

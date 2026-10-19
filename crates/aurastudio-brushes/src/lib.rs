@@ -1,18 +1,14 @@
-//! Brush library: the presets listed in the Tools docker, by medium
-//! (pencil, ink, paint...).
+//! Brush library: the presets of the Tools docker, by medium.
 //!
-//! - The bundled brushes, listed in assets/brushes/catalog.txt: our own
-//!   engine's round brushes and a selection of the MyPaint collection
-//!   (CC0, assets/brushes/mypaint), embedded in the binary at build time.
-//! - Brushes the user imports (.myb files or folders of them), copied into
-//!   the user's data folder so they are there at the next launch; their
-//!   medium is guessed from their name.
+//! - Bundled: assets/brushes/catalog.txt (our round brushes and a choice of
+//!   the MyPaint collection, CC0), embedded at build time.
+//! - Imported .myb files, copied to the user's data folder; their medium
+//!   is guessed from their name.
 //!
-//! Each preset keeps its own settings (size, opacity, hardness, blend
-//! mode): changing them while a brush is selected only changes
-//! that brush, like CSP.
+//! Each preset keeps its own size, opacity, hardness and blend mode.
 
-use std::borrow::Cow;
+pub mod stroke_preview;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -42,15 +38,12 @@ pub fn guess_medium(name: &str) -> &'static str {
     else { "Misc" }
 }
 
-pub mod stroke_preview;
-
 /// Which engine paints a preset.
 #[derive(Clone)]
 pub enum Engine {
-    /// AuraStudio's brush engine (aurastudio_brush::DabEngine); presets
-    /// only differ by their settings.
+    /// AuraStudio's dab engine: presets only differ by their settings.
     Native,
-    /// A MyPaint brush, painted natively by libmypaint's rules.
+    /// A MyPaint brush, painted by libmypaint's rules.
     MyPaint(Arc<MyPaintBrush>),
 }
 
@@ -60,85 +53,35 @@ impl Engine {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Source {
-    BuiltIn,
-    Bundled,
-    Imported(PathBuf),
-}
-
 #[derive(Clone)]
 pub struct Preset {
     pub name:   String,
-    /// Medium (one of MEDIUMS).
-    pub group:  String,
-    /// Who made it (shown on hover).
+    /// One of MEDIUMS.
+    pub medium: String,
+    /// Who made it (or the imported pack).
     pub author: String,
     pub engine: Engine,
-    /// Size, opacity, hardness and blend mode of this brush (the color is
-    /// global and ignored here).
-    pub settings:  Brush,
-    /// PNG preview (MyPaint brushes come with one).
-    pub preview:   Option<Cow<'static, [u8]>>,
-    pub source:    Source,
+    /// Size, opacity, hardness and blend mode (the color is global).
+    pub settings: Brush,
+    /// The imported file, None for bundled brushes.
+    pub file:   Option<PathBuf>,
 }
 
 impl Preset {
     fn builtin(name: &str, medium: &str, radius: f32, hardness: f32) -> Self {
-        let mut settings = Brush::new();
-        settings.radius = radius;
-        settings.hardness = hardness;
-        Self {
-            name: name.into(),
-            group: medium.into(),
-            author: "AuraStudio".into(),
-            engine: Engine::Native,
-            settings,
-            preview: None,
-            source: Source::BuiltIn,
-        }
+        let settings = Brush { radius, hardness, ..Brush::new() };
+        Self { name: name.into(), medium: medium.into(), author: "AuraStudio".into(), engine: Engine::Native, settings, file: None }
     }
 
-    /// A preset from a parsed .myb brush, with the size / opacity /
-    /// hardness it was made with.
-    fn mypaint(name: String, group: String, author: String, brush: MyPaintBrush, preview: Option<Cow<'static, [u8]>>, source: Source) -> Self {
-        let size = MyPaintEngine::native_size(&brush);
-        let mut settings = Brush::new();
-        settings.radius = (size as f32 / 2.0).max(0.5);
-        // The Opacity slider multiplies the brush's own opacity: 100 %,
-        // the brush as made.
-        settings.opacity = 1.0;
-        settings.hardness = MyPaintEngine::native_hardness(&brush);
-        Self { name, group, author, engine: Engine::MyPaint(Arc::new(brush)), settings, preview, source }
-    }
-
-    /// Decode the preview, downscaled to at most `max` px: (w, h, RGBA).
-    pub fn decode_preview(&self, max: u32) -> Option<(u32, u32, Vec<u8>)> {
-        let bytes = self.preview.as_ref()?;
-        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes.as_ref()));
-        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let mut reader = decoder.read_info().ok()?;
-        let mut buf = vec![0; reader.output_buffer_size()?];
-        let info = reader.next_frame(&mut buf).ok()?;
-        let (w, h) = (info.width, info.height);
-        let rgba: Vec<u8> = match info.color_type {
-            png::ColorType::Rgba => buf[..(w * h * 4) as usize].to_vec(),
-            png::ColorType::Rgb => buf[..(w * h * 3) as usize].chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
-            png::ColorType::GrayscaleAlpha => buf[..(w * h * 2) as usize].chunks(2).flat_map(|c| [c[0], c[0], c[0], c[1]]).collect(),
-            png::ColorType::Grayscale => buf[..(w * h) as usize].iter().flat_map(|&g| [g, g, g, 255]).collect(),
-            png::ColorType::Indexed => return None,
+    /// A preset from a .myb brush, at the size and hardness it was made
+    /// with; opacity 100 % (the slider multiplies the brush's own).
+    fn mypaint(name: String, medium: String, author: String, brush: MyPaintBrush, file: Option<PathBuf>) -> Self {
+        let settings = Brush {
+            radius: (MyPaintEngine::native_size(&brush) as f32 / 2.0).max(0.5),
+            hardness: MyPaintEngine::native_hardness(&brush),
+            ..Brush::new()
         };
-        // Nearest downscale: previews are small already (128 px).
-        let k = (max as f32 / w.max(h) as f32).min(1.0);
-        let (tw, th) = (((w as f32 * k) as u32).max(1), ((h as f32 * k) as u32).max(1));
-        let mut out = Vec::with_capacity((tw * th * 4) as usize);
-        for y in 0..th {
-            for x in 0..tw {
-                let i = (((y * h / th) * w + x * w / tw) * 4) as usize;
-                out.extend_from_slice(&rgba[i..i + 4]);
-            }
-        }
-        Some((tw, th, out))
+        Self { name, medium, author, engine: Engine::MyPaint(Arc::new(brush)), settings, file }
     }
 }
 
@@ -147,8 +90,7 @@ pub struct Library {
 }
 
 impl Library {
-    /// The bundled brushes (catalog.txt), then what the user imported
-    /// before.
+    /// The bundled brushes, then those imported before.
     pub fn load() -> Self {
         let mut presets = Vec::new();
         for (medium, name, author, brush) in BUNDLED {
@@ -156,7 +98,7 @@ impl Library {
                 BundledBrush::Round => presets.push(Preset::builtin(name, medium, 25.0, 1.0)),
                 BundledBrush::Soft => presets.push(Preset::builtin(name, medium, 60.0, 0.0)),
                 BundledBrush::MyPaint(json) => match parse_myb(json) {
-                    Ok(b) => presets.push(Preset::mypaint(name.to_string(), medium.to_string(), author.to_string(), b, None, Source::Bundled)),
+                    Ok(b) => presets.push(Preset::mypaint(name.to_string(), medium.to_string(), author.to_string(), b, None)),
                     Err(e) => log::warn!("bundled brush {medium}/{name}: {e:?}"),
                 },
             }
@@ -169,66 +111,45 @@ impl Library {
         lib
     }
 
-    /// Mediums in use, in display order.
-    pub fn groups(&self) -> Vec<&str> {
-        let mut out: Vec<&str> = Vec::new();
-        for p in &self.presets {
-            if !out.contains(&p.group.as_str()) { out.push(&p.group); }
-        }
-        out
-    }
-
-    /// Import a .myb file or a folder of them (searched recursively): the
-    /// files are copied into the user's brush folder, so they stay
-    /// available, and added to the library. Returns how many were added.
+    /// Import a .myb file or a folder of them (recursively): copied into
+    /// the user's brush folder and added. Returns how many were added.
     pub fn import(&mut self, path: &Path) -> Result<usize, String> {
         let dest_root = user_dir().ok_or("no user data folder on this system")?;
-        let group = if path.is_dir() {
-            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Imported".into())
-        } else {
-            "Imported".into()
+        let pack = match path.is_dir() {
+            true => path.file_name().map_or_else(|| "Imported".into(), |n| n.to_string_lossy().into_owned()),
+            false => "Imported".into(),
         };
-        let dest = dest_root.join(&group);
+        let dest = dest_root.join(&pack);
         std::fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
         let mut copied = 0;
         for f in myb_files(path) {
-            let Some(stem) = f.file_stem() else { continue };
             let target = dest.join(f.file_name().unwrap());
-            // Already in the library folder (imported from there): copying a
-            // file onto itself would empty it.
+            // Already there (imported from the library folder itself):
+            // copying a file onto itself would empty it.
             let same = f.canonicalize().ok().zip(target.canonicalize().ok()).is_some_and(|(a, b)| a == b);
-            if same || std::fs::copy(&f, &target).is_ok() {
-                copied += 1;
-                let prev = f.with_file_name(format!("{}_prev.png", stem.to_string_lossy()));
-                if prev.is_file() {
-                    let _ = std::fs::copy(&prev, dest.join(prev.file_name().unwrap()));
-                }
-            }
+            if same || std::fs::copy(&f, &target).is_ok() { copied += 1; }
         }
         if copied == 0 { return Err("no .myb brush found there".into()); }
-        Ok(self.add_from(&dest, Some(&group)))
+        Ok(self.add_from(&dest, Some(&pack)))
     }
 
-    /// Add the .myb files under `dir`; group = their folder name (or
-    /// `group`). Already present brushes (same file) are skipped.
-    fn add_from(&mut self, dir: &Path, group: Option<&str>) -> usize {
+    /// Add the .myb files under `dir` not added yet; author: `pack`, else
+    /// their folder's name.
+    fn add_from(&mut self, dir: &Path, pack: Option<&str>) -> usize {
         let mut added = 0;
         for f in myb_files(dir) {
-            if self.presets.iter().any(|p| p.source == Source::Imported(f.clone())) { continue; }
+            if self.presets.iter().any(|p| p.file.as_ref() == Some(&f)) { continue; }
             let Ok(json) = std::fs::read_to_string(&f) else { continue };
             let brush = match parse_myb(&json) {
                 Ok(b) => b,
                 Err(e) => { log::warn!("brush {}: {e:?}", f.display()); continue; }
             };
             let name = f.file_stem().map(|s| s.to_string_lossy().replace('_', " ")).unwrap_or_default();
-            // The pack (its folder) as the author; the medium from the name.
-            let pack = group.map(str::to_owned).unwrap_or_else(|| {
-                f.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Imported".into())
+            let author = pack.map(str::to_owned).unwrap_or_else(|| {
+                f.parent().and_then(|p| p.file_name()).map_or_else(|| "Imported".into(), |n| n.to_string_lossy().into_owned())
             });
-            let prev = f.with_file_name(format!("{}_prev.png", f.file_stem().unwrap().to_string_lossy()));
-            let preview = std::fs::read(prev).ok().map(Cow::Owned);
             let medium = guess_medium(&name).to_string();
-            self.presets.push(Preset::mypaint(name, medium, pack, brush, preview, Source::Imported(f)));
+            self.presets.push(Preset::mypaint(name, medium, author, brush, Some(f)));
             added += 1;
         }
         added
@@ -275,12 +196,14 @@ mod tests {
         let lib = Library::load();
         let n = lib.presets.len();
         assert!((50..=70).contains(&n), "{n} bundled brushes");
-        assert!(lib.presets.iter().all(|p| MEDIUMS.contains(&p.group.as_str())), "unknown medium");
+        assert!(lib.presets.iter().all(|p| MEDIUMS.contains(&p.medium.as_str())), "unknown medium");
         // Every medium has brushes, in MEDIUMS order.
-        assert_eq!(lib.groups(), MEDIUMS);
-        assert_eq!(lib.presets[0].group, "Pencil");
+        let mut used: Vec<&str> = lib.presets.iter().map(|p| p.medium.as_str()).collect();
+        used.dedup();
+        assert_eq!(used, MEDIUMS);
+        assert_eq!(lib.presets[0].medium, "Pencil");
         let round = lib.presets.iter().find(|p| p.name == "Round pen").unwrap();
-        assert!(matches!(round.engine, Engine::Native) && round.group == "Ink");
+        assert!(matches!(round.engine, Engine::Native) && round.medium == "Ink");
         assert_eq!(lib.presets.iter().find(|p| p.name == "Liner").unwrap().author, "David Revoy");
     }
 
@@ -309,7 +232,7 @@ mod tests {
         assert_eq!(added, 1);
         assert!(user.join("My pack/inky.myb").is_file());
         assert_eq!(lib.presets[0].author, "My pack");
-        assert_eq!(lib.presets[0].group, "Ink");
+        assert_eq!(lib.presets[0].medium, "Ink");
         assert_eq!(lib.presets[0].name, "inky");
         // Importing again doesn't duplicate.
         assert_eq!(lib.import(&src).unwrap(), 0);

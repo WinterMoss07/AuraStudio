@@ -1,30 +1,16 @@
-//! Brush painting on its own thread.
+//! Brush painting on its own thread: the main thread reads the pen and
+//! displays, samples queue up here and are painted in batches.
 //!
-//! The main thread only reads the pen, forwards samples here and displays.
-//! Before, a big brush (3-10 ms per sample at 1000 px) blocked the event
-//! loop: pen packets and UI frames waited behind the painting. Now samples
-//! queue up while one is being painted, and are painted in batches.
+//! Rule: a brush paints on this ONE thread. Splitting a stroke or a dab
+//! across threads was measured slower (gathering the pieces costs more).
 //!
-//! Rule: a brush always paints on this ONE thread. Never split a stroke or
-//! a dab across threads (rayon, tiles...): the pieces must be gathered and
-//! reconciled afterwards, which costs more than it saves. Measured here:
-//! a parallel round pen made every stroke slower, dab engines included. This
-//! thread exists to keep painting off the input / UI thread, not to split it.
+//! Undo, redo, clear... go through the same queue: they apply after the
+//! samples sent before them (Ctrl+Z right after a stroke undoes it).
 //!
-//! Undo, redo and clear go through the same queue, so they always apply
-//! after the samples sent before them: Ctrl+Z right after lifting the pen
-//! undoes that stroke, even if it is still being painted.
-//!
-//! Display pipeline, modeled on Krita (FreehandStrokeStrategy +
-//! KisCanvas2): after painting, this thread also merges the layers of the
-//! changed areas into the projection (Krita does that merge on worker
-//! threads too, never on the GUI thread). The UI thread only uploads the
-//! finished rectangles to the GPU. Changed areas travel as a list of
-//! rectangles, never one ever-growing bounding box.
-//!
-//! When painting keeps up with the pen, the projection is updated after
-//! every batch (lowest latency). When it falls behind (huge brush), it is
-//! updated at most every UPDATE_PERIOD, so the time goes to painting.
+//! Like Krita, this thread also merges the changed areas into the
+//! projection (a list of rectangles); the UI thread only uploads them.
+//! Keeping up with the pen: updated after every batch; behind (huge
+//! brush): every UPDATE_PERIOD at most.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -131,9 +117,8 @@ struct Worker {
     mypaint:  Option<MyPaintEngine>,
     /// The stroke started on a paintable layer.
     active:   bool,
-    /// Layer the stroke paints on, fixed at Begin (not "the active layer":
-    /// the user may select or delete another one while the backlog of a
-    /// big brush is still being painted).
+    /// Layer the stroke paints on, fixed at Begin (another may get selected
+    /// while a big brush's backlog is painted).
     layer:    u64,
     /// Canvas size at Begin: a resize meanwhile ends the stroke.
     size:     (u32, u32),
@@ -206,9 +191,8 @@ impl Worker {
                         flush = true;
                     }
                     Cmd::Save { doc, path, origin, auto } => {
-                        // Under the locks only as long as it takes to copy
-                        // the compressed layers; the file is written by a
-                        // thread of its own.
+                        // Locked only to copy the layers; compressed and
+                        // written on a thread of its own.
                         let (snap, doc_id) = {
                             let d = doc.lock().unwrap();
                             (aurastudio_file::snapshot(&d, origin.as_deref()), d.id())
@@ -229,20 +213,20 @@ impl Worker {
                         events.push(Event::Notice("Finish the stroke first"));
                     }
                     Cmd::Undo(doc) => {
-                        let c = doc.lock().unwrap().undo();
+                        let c = doc.lock().unwrap().undo().map(|c| (c.layer_id, c.rect));
+                        self.report(c, "Nothing to undo", &mut events);
                         self.doc = Some(doc);
-                        self.report_change(c, "Nothing to undo", &mut events);
                         flush = true;
                     }
                     Cmd::Redo(doc) => {
-                        let c = doc.lock().unwrap().redo();
+                        let c = doc.lock().unwrap().redo().map(|c| (c.layer_id, c.rect));
+                        self.report(c, "Nothing to redo", &mut events);
                         self.doc = Some(doc);
-                        self.report_change(c, "Nothing to redo", &mut events);
                         flush = true;
                     }
                     Cmd::Clear(doc) => {
                         let cleared = doc.lock().unwrap().clear_active();
-                        self.report_edit(cleared, "Layer is locked or is a folder", &mut events);
+                        self.report(cleared, "Layer is locked or is a folder", &mut events);
                         self.doc = Some(doc);
                         flush = true;
                     }
@@ -253,7 +237,7 @@ impl Worker {
                     }
                     Cmd::Paste { doc, clip } => {
                         let pasted = doc.lock().unwrap().paste(&clip);
-                        self.report_edit(pasted, "Nothing to paste", &mut events);
+                        self.report(pasted, "Nothing to paste", &mut events);
                         self.doc = Some(doc);
                         flush = true;
                     }
@@ -261,12 +245,12 @@ impl Worker {
                         let t = Instant::now();
                         let filled = {
                             let mut d = doc.lock().unwrap();
-                            if d.layers.can_paint() { Ok(d.fill(x, y, color, params)) } else { Err(()) }
+                            d.layers.can_paint().then(|| d.fill(x, y, color, params))
                         };
                         log::info!("fill: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
                         match filled {
-                            Ok(f) => self.report_edit(f, "Outside the selection", &mut events),
-                            Err(()) => events.push(Event::Notice("Layer is locked or is a folder")),
+                            Some(f) => self.report(f, "Outside the selection", &mut events),
+                            None => events.push(Event::Notice("Layer is locked or is a folder")),
                         }
                         self.doc = Some(doc);
                         flush = true;
@@ -303,9 +287,8 @@ impl Worker {
         let rects = std::mem::take(&mut self.pending);
         let Some(doc) = self.doc.clone() else { return };
         let mut d = doc.lock().unwrap();
-        // Merged outside the projection lock: the UI thread never waits for
-        // the merge, only for the handover. During a stroke, from the
-        // merges kept under / over the painted layer (stroke_cache.rs).
+        // Merged outside the projection lock (the UI only waits for the
+        // handover); mid-stroke from the cached merges (stroke_cache.rs).
         let (w, h) = (d.layers.width, d.layers.height);
         let patches: Vec<_> = rects.into_iter().map(|r| (r, d.layers.composite_rect_stroke(r))).collect();
         let mut p = self.projection.lock().unwrap();
@@ -315,26 +298,16 @@ impl Worker {
         }
     }
 
-    /// Run `f` with the stroke's document locked. The lock is taken per
-    /// command (cheap, uncontended): the main thread can composite between
-    /// two samples.
+    /// Run `f` with the document locked (per command: the main thread gets
+    /// it between two samples).
     fn with_doc<R>(&mut self, f: impl FnOnce(&mut Self, &mut Document) -> R) -> Option<R> {
         let doc = self.doc.clone()?;
         let mut d = doc.lock().unwrap();
         Some(f(self, &mut d))
     }
 
-    fn report_change(&mut self, c: Option<aurastudio_document::Change>, none_msg: &'static str, events: &mut Vec<Event>) {
-        match c {
-            Some(c) => {
-                add_rect(&mut self.pending, c.rect);
-                events.push(Event::LayerChanged { layer_id: c.layer_id });
-            }
-            None => events.push(Event::Notice(none_msg)),
-        }
-    }
-
-    fn report_edit(&mut self, edit: Option<(u64, Rect)>, none_msg: &'static str, events: &mut Vec<Event>) {
+    /// An edit of layer `id` in `rect` to show, or `none_msg`.
+    fn report(&mut self, edit: Option<(u64, Rect)>, none_msg: &'static str, events: &mut Vec<Event>) {
         match edit {
             Some((id, r)) => {
                 add_rect(&mut self.pending, r);
@@ -388,10 +361,8 @@ impl Worker {
         };
         let now = (x, y, pressure, time);
         let prev = self.last.replace(now);
-        // Only the part of the path over the canvas (plus a margin for the
-        // brush) goes to the engine. Zoomed out, the pen can travel
-        // hundreds of thousands of canvas pixels off the canvas: every dab
-        // there is invisible, and a MyPaint brush spent seconds on them.
+        // Only the path over the canvas (plus a margin) goes to the engine:
+        // zoomed out, dabs far off it cost seconds and show nothing.
         let (w, h) = self.size;
         let m = (4.0 * self.brush.radius).max(256.0);
         let area = (-m, -m, w as f32 + m, h as f32 + m);

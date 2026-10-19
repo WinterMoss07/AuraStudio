@@ -7,6 +7,8 @@ build = "build.rs"
 [dependencies]
 aurastudio-brush  = { path = "../aurastudio-brush" }
 aurastudio-canvas = { path = "../aurastudio-canvas" }
-png  = "0.18"
 dirs = "7"
 log  = "0.4"
+
+[dev-dependencies]
+png = "0.18"

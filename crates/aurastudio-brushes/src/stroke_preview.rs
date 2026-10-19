@@ -219,9 +219,9 @@ mod tests {
         paper(&mut detail_blank);
         for p in &lib.presets {
             let list = render(&p.engine, &p.settings, Shape::S, Mode::List, 160, 48, 1.0);
-            assert!(coverage(&list) > 20, "{} / {}: empty list preview", p.group, p.name);
+            assert!(coverage(&list) > 20, "{} / {}: empty list preview", p.medium, p.name);
             let detail = render(&p.engine, &p.settings, Shape::S, Mode::Detail, 160, 48, 1.0);
-            assert!(detail != detail_blank.pixels, "{} / {}: empty detail preview", p.group, p.name);
+            assert!(detail != detail_blank.pixels, "{} / {}: empty detail preview", p.medium, p.name);
         }
     }
 

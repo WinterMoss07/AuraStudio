@@ -29,8 +29,10 @@ use crate::projection::{Projection, SharedProjection};
 /// Window title: the name and version.
 const APP_TITLE: &str = concat!("AuraStudio ", env!("CARGO_PKG_VERSION"));
 
-/// Shortest time between two frames that only update the UI.
+/// Shortest time between two frames that only update the UI, and while
+/// painting (new paint shows sooner than one display refresh).
 const UI_FRAME: Duration = Duration::from_micros(16_667);
+const PAINT_FRAME: Duration = Duration::from_millis(4);
 
 /// Size of the empty stand-in document while the start screen shows.
 const PLACEHOLDER: (u32, u32) = (1, 1);
@@ -50,10 +52,8 @@ fn autosave_after() -> Duration {
 #[derive(Clone, Debug)]
 enum Pending { Create(aurastudio_ui::NewDoc), Open(PathBuf), Close, Quit }
 
-/// Where unsaved work is saved automatically (one file: AuraStudio has one
-/// document open at a time for now). One per version, so two versions
-/// running side by side (to compare them) don't overwrite or delete each
-/// other's autosave.
+/// Where unsaved work is autosaved: one file per version, so two versions
+/// side by side don't overwrite each other's.
 fn recovery_path() -> Option<PathBuf> {
     let name = format!("autosave-{}.{EXTENSION}", env!("CARGO_PKG_VERSION"));
     dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(name))
@@ -149,7 +149,6 @@ enum Gesture {
 /// arc's control lines (start, control point, end).
 type Preview = (Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<(f32, f32)>);
 
-
 impl Gesture {
     /// The outline being drawn, canvas pixels.
     fn outline(&self) -> Option<Vec<(f32, f32)>> {
@@ -174,9 +173,8 @@ pub enum AppEvent {
     Painted,
     /// A layer's pixels changed for good (stroke done, undo, clear).
     LayerChanged(u64),
-    /// Message for the options bar, from the paint thread.
-    Notice(&'static str),
-    Message(String),
+    /// A message for the options bar.
+    Notice(String),
     /// A start screen thumbnail was decoded.
     Thumbnail { path: PathBuf, w: u32, h: u32, rgba: Vec<u8> },
     /// A save finished (see paint_thread::Event::Saved).
@@ -253,14 +251,11 @@ pub struct App {
     nav_button: MouseButton,
     /// Fixed point of the zoom / rotation drag (window pixels).
     nav_pivot:  (f32, f32),
-    /// Set once the native pen sent samples during the current stroke:
-    /// the CursorMoved events Windows synthesizes for the same pen are then
-    /// ignored, otherwise the stroke gets two slightly offset position
-    /// streams (wavy / zigzag edges).
+    /// The native pen sent samples this stroke: the CursorMoved events
+    /// Windows derives from it are ignored (two offset streams: zigzags).
     pen_active: bool,
-    /// Where the button went down, painted as the stroke's first point
-    /// with the first mouse move (otherwise a mouse stroke started at its
-    /// first move, a few pixels off). Dropped if the pen sends its own.
+    /// Where the button went down: the mouse stroke's first point, sent
+    /// with the first move (dropped if the pen sends its own).
     press_point: Option<(f32, f32)>,
     /// Last known cursor position, physical window pixels.
     cursor:     (f32, f32),
@@ -295,26 +290,21 @@ pub struct App {
     layers_dirty: bool,
     last_frame:   Option<Instant>,
     /// Shortest time between two frames outside strokes: one display
-    /// refresh. Without it, anything asking for "a frame right away" on
-    /// every frame (egui does, for animations and tooltips) runs as fast as
-    /// the GPU goes with the Immediate present mode.
+    /// refresh (egui asks for frames "right away" when animating).
     frame_interval: Duration,
     /// A frame wanted before `frame_interval` was over: drawn at this time.
     deferred_frame: Option<Instant>,
     /// Since when the UI couldn't run (document held by the paint thread).
     ui_blocked_since: Option<Instant>,
-    /// A frame is needed. The actual window redraw request is made in
-    /// about_to_wait: winit drops requests made while handling a redraw.
+    /// A frame is needed: drawn in about_to_wait, or right away by
+    /// render_if_due.
     redraw_wanted: bool,
-    /// The next frame must run the UI. Frames that only move the brush
-    /// outline or show new paint reuse the last UI as it was (no egui
-    /// layout): a pen hovering over the canvas costs a GPU pass, not a
-    /// full UI frame.
+    /// The next frame must run the UI. Frames that only move the outline
+    /// or show new paint reuse the last UI (a GPU pass, no egui layout).
     ui_dirty:     bool,
     /// The cursor was over the canvas at the last full UI frame.
     ui_saw_canvas: bool,
-    /// What woke the app lately, logged when it keeps drawing while
-    /// nothing is being painted (idle CPU hunt).
+    /// What woke the app lately (logged when it keeps busy idle).
     activity:     Activity,
     /// Delayed frame asked by egui (tooltip, notice fade-out).
     repaint_at:   Option<Instant>,
@@ -325,7 +315,7 @@ pub struct App {
 impl App {
     pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
         let library = Library::load();
-        log::info!("brushes: {} presets ({} groups)", library.presets.len(), library.groups().len());
+        log::info!("brushes: {} presets", library.presets.len());
         let mut workspace = Workspace::new();
         let doc = workspace.new_document("", PLACEHOLDER.0, PLACEHOLDER.1);
         let projection = Arc::new(std::sync::Mutex::new(Projection::new(PLACEHOLDER.0, PLACEHOLDER.1)));
@@ -334,7 +324,7 @@ impl App {
             let _ = worker_proxy.send_event(match e {
                 paint_thread::Event::Painted => AppEvent::Painted,
                 paint_thread::Event::LayerChanged { layer_id } => AppEvent::LayerChanged(layer_id),
-                paint_thread::Event::Notice(text) => AppEvent::Notice(text),
+                paint_thread::Event::Notice(text) => AppEvent::Notice(text.into()),
                 paint_thread::Event::Saved { doc, path, revision, auto, result } => AppEvent::Saved { doc, path, revision, auto, result },
             });
         });
@@ -436,10 +426,8 @@ impl App {
         self.update_cursor();
     }
 
-    /// Fixed point of a zoom or rotation drag, chosen when it starts (or
-    /// switches mode): zoom around where the drag began (CSP); rotate
-    /// around the picture's center while all of it is in view, else around
-    /// the middle of the canvas area.
+    /// Fixed point of a zoom drag (where it began, CSP) or rotation drag
+    /// (the picture's center if all in view, else the area's).
     fn set_nav_pivot(&mut self, mode: Nav) {
         let Some(gpu) = &self.gpu else { return };
         self.nav_pivot = match mode {
@@ -453,9 +441,8 @@ impl App {
         self.update_cursor();
     }
 
-    /// Shift is down, from the modifier state or the Shift keys
-    /// themselves (whichever Windows reported last: with the pen, the
-    /// modifier state alone was seen missing Shift).
+    /// Shift is down, from the modifier state or the keys themselves (with
+    /// the pen, the modifier state alone missed Shift).
     fn shift_held(&self) -> bool {
         self.modifiers.shift_key() || self.shift_down
     }
@@ -493,9 +480,8 @@ impl App {
         self.request_redraw();
     }
 
-    /// Brush outline under the cursor over the canvas (Krita style), in
-    /// place of the OS arrow; the arrow / hand comes back over the dockers
-    /// and while navigating.
+    /// Brush outline under the cursor over the canvas, in place of the OS
+    /// cursor (back over the docks and while navigating).
     fn update_outline(&mut self) {
         let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
             && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none();
@@ -538,10 +524,8 @@ impl App {
         cursors.apply(window, wanted);
     }
 
-    /// Follow the scaling of the monitor the window is on. Asked from
-    /// Windows directly on every move / resize / focus: winit only updates
-    /// its own value on WM_DPICHANGED, which did not come when switching
-    /// from the 200 % laptop screen to a 100 % HD screen.
+    /// Follow the scaling of the window's monitor, asked from Windows on
+    /// every move / resize / focus (winit missed a 200 % -> 100 % move).
     fn refresh_dpi(&mut self, why: &str) {
         // AURASTUDIO_DPI=96...: pretend Windows reports this DPI (testing).
         let forced = std::env::var("AURASTUDIO_DPI").ok().and_then(|v| v.parse::<u32>().ok());
@@ -723,7 +707,7 @@ impl App {
 
     fn arc_ctx(&self) -> ArcCtx {
         let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
-        ArcCtx { zoom, shift: self.shift_held(), chain_arcs: self.shape.chain_arcs }
+        ArcCtx { zoom, shift: self.shift_held(), multipoint: self.shape.multipoint }
     }
 
     fn arc_press(&mut self, at: (f32, f32)) {
@@ -786,8 +770,8 @@ impl App {
         self.paint.send(Cmd::End);
     }
 
-    /// Why the active layer can't be painted, if it can't. try_lock: if
-    /// the paint thread is busy, don't wait; it checks again itself.
+    /// Why the active layer can't be painted (paint thread busy: don't
+    /// wait, it checks too).
     fn paint_refusal(&self) -> Option<&'static str> {
         match self.doc.try_lock() {
             Ok(doc) if doc.layers.can_paint() => None,
@@ -798,8 +782,6 @@ impl App {
     }
 
     fn set_selection(&mut self, sel: Option<Selection>) {
-        // The paint thread reads it at its next stroke: taken under the
-        // document lock (a stroke still painting keeps the lock briefly).
         self.doc.lock().unwrap().selection = sel;
         self.request_redraw();
     }
@@ -847,7 +829,7 @@ impl App {
     }
 
     fn set_tool(&mut self, tool: Tool) {
-        if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
+        if tool == self.tool || self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
         self.finish_arcs();
         self.arc.reset_release();
         self.tool = tool;
@@ -965,10 +947,8 @@ impl App {
         self.request_redraw();
     }
 
-    /// Ask for a frame. The window redraw request itself is made in
-    /// about_to_wait: one made while handling a redraw is dropped (Windows
-    /// validates the window after WM_PAINT; X11 has already chosen how long
-    /// to sleep). Posting Wake makes sure the loop gets there right away.
+    /// Ask for a frame (drawn in about_to_wait; posting Wake makes sure the
+    /// loop gets there right away).
     fn request_redraw(&mut self) {
         self.ui_dirty = true;
         self.request_canvas_frame();
@@ -1058,12 +1038,10 @@ impl App {
         self.request_redraw();
     }
 
-    /// Native pen samples (WinTab or Windows Ink). Press / release still
-    /// comes from MouseInput, which Windows always synthesizes for the pen;
-    /// only position and pressure come from here.
+    /// Native pen samples (WinTab or Windows Ink): position and pressure;
+    /// press / release come from MouseInput.
     fn drain_stylus(&mut self) {
-        // A release is held back (debounce.rs): the pen may be up, its
-        // hover packets must not paint. Left in the queue meanwhile.
+        // A release held back (debounce.rs): the pen may be up.
         if self.debounce.holding() { return; }
         let Some(stylus) = &self.stylus else { return };
         for s in stylus.drain() {
@@ -1072,8 +1050,6 @@ impl App {
                 self.pen_active = true;
                 self.press_point = None;
                 self.pressure   = s.pressure;
-                // The outline follows the pen's own samples (newer than
-                // the mouse events Windows derives from them).
                 self.cursor     = (s.x, s.y);
                 self.draw_at(s.x, s.y, Some(s.time_ms));
                 self.request_canvas_frame();
@@ -1088,18 +1064,18 @@ impl App {
         self.render_if_due();
     }
 
-    /// Render now if a frame is pending and the last one is old enough.
-    ///
-    /// We can't rely on RedrawRequested alone while drawing: on Windows it
-    /// comes from WM_PAINT, which the OS only sends once the message queue
-    /// is empty. With big brushes each pen packet takes a few ms, packets
-    /// keep arriving, the queue never empties and nothing was displayed
-    /// until the pen was lifted. Krita likewise refreshes the canvas on its
-    /// own timer rather than waiting for the window system.
+    /// Render now if a frame is wanted and the last one is old enough,
+    /// instead of waiting for the window system: on Windows, RedrawRequested
+    /// comes from WM_PAINT, sent only once the message queue is empty. Pen
+    /// packets or a fast mouse keep it busy: strokes showed nothing until
+    /// the pen was lifted, sliders froze then jumped. New paint: every 4 ms
+    /// at most; anything else: one frame per display refresh.
     fn render_if_due(&mut self) {
-        const MIN_FRAME: Duration = Duration::from_millis(4);
-        if !self.painted { return; }
-        if self.last_frame.is_some_and(|t| t.elapsed() < MIN_FRAME) { return; }
+        let min = if self.painted { PAINT_FRAME } else { self.frame_interval };
+        if !self.painted && !self.redraw_wanted { return; }
+        if self.last_frame.is_some_and(|t| t.elapsed() < min) { return; }
+        self.redraw_wanted = false;
+        self.deferred_frame = None;
         self.render_frame();
     }
 
@@ -1145,9 +1121,8 @@ impl App {
         let snap = gpu.view_snapshot();
         let to_points = move |p: (f32, f32)| snap.to_points(p);
         let mut actions = Actions::default();
-        // Never wait for the brush: if the paint thread holds the document
-        // (mid-stroke), redraw the canvas with the last UI as it was, and
-        // try the UI again a moment later.
+        // Never wait for the brush: document busy, redraw with the last UI
+        // and try again in a moment.
         let mut doc_busy = false;
         let run_ui = std::mem::take(&mut self.ui_dirty) || !gpu.has_cached_ui();
         let ui_saw_canvas = &mut self.ui_saw_canvas;
@@ -1217,8 +1192,6 @@ impl App {
             self.frame_stats.add(t0.elapsed());
         }
         self.activity.main_time += t0.elapsed();
-        // A frame this long is a visible hitch (a slider stops following
-        // the cursor): say so, with whether the UI ran.
         if t0.elapsed() > Duration::from_millis(100) {
             log::warn!("slow frame: {:.0} ms (UI {})", t0.elapsed().as_secs_f64() * 1000.0, if run_ui { "run" } else { "cached" });
         }
@@ -1249,8 +1222,8 @@ impl App {
             save_settings(self.settings);
         }
         if self.tool != tool_before {
-            self.finish_arcs();
-            self.update_cursor();
+            let tool = std::mem::replace(&mut self.tool, tool_before);
+            self.set_tool(tool);
         }
         self.tool_memory.remember(self.tool, self.preset, &self.library.presets);
         if let Some(cmd) = actions.select { self.select(cmd); }
@@ -1528,7 +1501,7 @@ impl App {
                 Ok(()) => format!("Exported {file}"),
                 Err(e) => format!("Export failed: {e}"),
             };
-            let _ = proxy.send_event(AppEvent::Message(msg));
+            let _ = proxy.send_event(AppEvent::Notice(msg));
         });
         self.request_redraw();
     }
@@ -1670,10 +1643,6 @@ impl ApplicationHandler<AppEvent> for App {
                 self.request_redraw();
             }
             AppEvent::Notice(text) => {
-                self.ui.notify(text);
-                self.request_redraw();
-            }
-            AppEvent::Message(text) => {
                 self.ui.notify(&text);
                 self.request_redraw();
             }
@@ -1685,10 +1654,8 @@ impl ApplicationHandler<AppEvent> for App {
         }
     }
 
-    /// Called once winit has dispatched every pending OS message, right
-    /// before it waits for new ones. WinTab packets arrive as their own
-    /// window messages, which produce no winit event: draining here paints
-    /// them immediately instead of waiting for the next mouse event.
+    /// Every pending OS message handled. WinTab packets come as messages
+    /// without a winit event: drained here.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.quit {
             event_loop.exit();
@@ -1713,22 +1680,19 @@ impl ApplicationHandler<AppEvent> for App {
             self.redraw_wanted = true;
         }
         if std::mem::take(&mut self.redraw_wanted) {
-            // At most one frame per display refresh (strokes have their own
-            // pacing, see render_if_due).
-            // UI-only frames (a pen hovering over the docks moves the
-            // pointer all the time) at most 60 per second: hover effects
-            // don't need more. The canvas and the brush outline follow the
-            // display refresh, and so does the UI while something is
-            // dragged.
+            // One frame per display refresh; UI-only hover frames 60 per
+            // second at most (a hovering pen moves all the time).
             let dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
-            let interval = if self.ui_dirty && !dragging && self.nav.is_none() {
+            let interval = if self.is_drawing {
+                PAINT_FRAME
+            } else if self.ui_dirty && !dragging && self.nav.is_none() {
                 self.frame_interval.max(UI_FRAME)
             } else {
                 self.frame_interval
             };
             let due = self.last_frame.map_or(now, |t| t + interval);
-            if now >= due || self.is_drawing {
-                if let Some(w) = &self.window { w.request_redraw(); }
+            if now >= due {
+                self.render_frame();
             } else {
                 self.deferred_frame = Some(self.deferred_frame.map_or(due, |t| t.min(due)));
             }
@@ -1815,13 +1779,8 @@ impl ApplicationHandler<AppEvent> for App {
 
 impl App {
     fn handle_event(&mut self, event: WindowEvent) {
-        // egui sees every event and says when it needs a new frame (hover,
-        // slider drag...). Whether a press starts a stroke is decided by
-        // GpuState::is_canvas_at, see there for why egui can't decide it.
-        //
-        // RedrawRequested itself must never ask for another redraw here:
-        // that made an endless loop (1.6 CPU cores while idle with the
-        // cursor over a docker).
+        // egui says when it needs a frame. RedrawRequested must not ask for
+        // another (that looped: 1.6 cores idle over a docker).
         let ui_needs_frame = self.gpu.as_mut()
             .map(|gpu| gpu.egui_handle_event(&event))
             .unwrap_or(false);
@@ -1834,9 +1793,7 @@ impl App {
             .unwrap_or(false);
         let ui_dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
         let is_redraw = matches!(event, WindowEvent::RedrawRequested);
-        // Moving over the canvas, when the last UI frame already had the
-        // cursor there, changes nothing in the UI (no hover can change):
-        // only the outline moves.
+        // Moving over the canvas changes no hover: only the outline moves.
         let canvas_move = matches!(event, WindowEvent::CursorMoved { .. })
             && over_canvas && self.ui_saw_canvas && !ui_dragging;
         if !is_redraw && (ui_needs_frame || ui_dragging) && !canvas_move {
@@ -1885,10 +1842,7 @@ impl App {
             WindowEvent::Focused(false) => self.reset_input(),
             WindowEvent::Focused(true) => self.refresh_dpi("focused"),
 
-            // The window may now be on another monitor (other profile).
-            // The window may be on another monitor now (other profile,
-            // other scaling: Windows sends WM_DPICHANGED, which winit turns
-            // into ScaleFactorChanged; the picture keeps its size on screen).
+            // Maybe on another monitor now: other profile, other scaling.
             WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 self.refresh_dpi("moved");
                 self.refresh_display_profile();
@@ -2092,6 +2046,8 @@ impl App {
 
             _ => {}
         }
+        // A slider or the view being dragged follows the pointer now.
+        if (ui_dragging || self.nav.is_some()) && !is_redraw { self.render_if_due(); }
     }
 }
 
@@ -2117,9 +2073,8 @@ fn upload_all(layers: &aurastudio_layers::LayerStack, gpu: &mut GpuState) {
     }
 }
 
-/// Counts what makes the app work, over a few seconds. Logged when the app
-/// keeps drawing frames while no stroke or view drag is going on, to find
-/// what wakes it (pen hovering, egui timers, OS events...).
+/// What makes the app work, over 5 s: logged when it keeps drawing with no
+/// stroke or view drag going on.
 struct Activity {
     since:         Instant,
     ui_frames:     u32,
@@ -2134,8 +2089,7 @@ struct Activity {
 
 impl Activity {
     const WINDOW: Duration = Duration::from_secs(5);
-    /// Main-thread time per window above which the activity is logged
-    /// (10 % of a core: a real problem, not the pointer moving).
+    /// Logged above this (10 % of a core).
     const BUSY_TIME: Duration = Duration::from_millis(500);
 
     fn new() -> Self {

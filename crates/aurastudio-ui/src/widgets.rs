@@ -1,6 +1,5 @@
-//! Custom widgets: gradient channel sliders (Krita / CSP color sliders),
-//! vertical tabs (CSP), and toolbar icons drawn with shapes (crisp at any
-//! scale, no dependency on font glyphs).
+//! Shared widgets: color channel sliders, fill sliders (size, opacity...),
+//! icon buttons, elided text.
 
 pub use crate::icons::Icon;
 use egui::{epaint, pos2, vec2, Color32, Pos2, Rect, Sense, Shape, Stroke, Ui};
@@ -116,10 +115,8 @@ fn paint_gradient(painter: &egui::Painter, rect: Rect, color_at: &dyn Fn(f32) ->
 
 // --- Gradient channel slider ----------------------------------------------
 
-/// Snap a 0..1 slider position to the step shown in its number box
-/// (1/255, 1° or 1 %). Without it the bar kept the raw pointer position:
-/// S could be 0.4 % while the box showed "0", and "grays" picked that way
-/// were slightly tinted by the previous hue.
+/// Snap a 0..1 slider position to the step its number box shows (an S of
+/// 0.4 % shown as 0 gave tinted "grays").
 pub fn snap(t: f32, display_max: f32) -> f32 {
     (t * display_max).round() / display_max
 }
@@ -137,14 +134,10 @@ pub fn channel_row(
     display_max: f32,
     color_at: &dyn Fn(f32) -> Color32,
 ) -> bool {
-    // The whole row is allocated at once and split by hand: letting egui
-    // size the number box made each row overflow a little more than the
-    // previous one, so the three bars ended at different x.
+    // The row is allocated whole and split by hand, `width` measured once
+    // for all rows: egui sizing the box made the bars end at different x.
     let gap = 7.0;
     let (label_w, box_w, h, bar_h) = (12.0, 38.0, 24.0, 14.0);
-    // `width` is measured once by the caller for all rows: if anything
-    // overflowed, egui would widen the column and the next row would get a
-    // longer bar (staircase).
     let (row, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     // Label and number box are centered on the bar, not on the row (the
     // marker triangle hangs under the bar).
@@ -232,11 +225,9 @@ pub struct Fill<'a> {
     pub format: &'a dyn Fn(f32) -> String,
 }
 
-/// Krita-style slider: a rounded bar filled with the accent up to the
-/// value, with the label and value written inside (no separate number box
-/// that grows with the digits). Click or drag anywhere sets the value;
-/// right-click types one in. `log`: logarithmic scale (brush size).
-/// Returns the new value when the user changed it.
+/// Krita-style slider: a bar filled up to the value, label and value
+/// inside. Click or drag sets it, right-click types one in. Returns the
+/// new value when changed.
 pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f32) -> Option<f32> {
     let Fill { label, range, log, format } = spec;
     let (lo, hi) = (*range.start(), *range.end());

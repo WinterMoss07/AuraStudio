@@ -23,9 +23,8 @@
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use aurastudio_canvas::BlendMode;
+use aurastudio_canvas::{BlendMode, TILE};
 use aurastudio_document::{DocId, Document, History, SavedStep, DEFAULT_BUDGET};
-use aurastudio_canvas::TILE;
 use aurastudio_layers::{Folder, FolderBlend, Layer, LayerStack, Node, Tiles, TILE_BYTES};
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
@@ -99,9 +98,8 @@ fn blend_from(name: &str) -> BlendMode {
 
 // --- Saving ---------------------------------------------------------------
 
-/// Everything a save writes, taken from the document in one go (the
-/// pixels already compressed), so the slow part (writing the file) can run
-/// on another thread while painting goes on.
+/// Everything a save writes, copied from the document in one go: the slow
+/// part (compressing, writing) runs on another thread meanwhile.
 pub struct Snapshot {
     json:     DocJson,
     /// (layer id, a copy of its tiles). Compressed (`pack_tiles`) when

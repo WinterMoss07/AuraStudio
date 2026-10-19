@@ -1,14 +1,9 @@
-//! AuraStudio user interface (egui): menu bar, Photoshop-like tool options
-//! bar under it, CSP-like dock column on the right (tabs can be rearranged,
-//! resized and dragged out as floating windows), canvas in the middle.
+//! AuraStudio user interface (egui): menu and options bars, the toolbox,
+//! the dock column (tabs rearrangeable, floatable), the canvas card.
 //!
-//! The app owns the data (brush, layers...) and lends it through `Model`
-//! each frame; the UI edits it directly and reports anything the app must
-//! act on (recomposite, canvas resize) in `Actions`.
-//!
-//! Layout of this crate: `bars` = menu bar + options bar, `dockers/` = one
-//! file per dock tab, `widgets` = shared custom widgets, `theme` = colors.
-//! Data crates (layers, brush, canvas) know nothing about the UI.
+//! The app lends its data through `Model` each frame; the UI edits it and
+//! reports what the app must do in `Actions`. `bars`: menu + options bar,
+//! `dockers/`: one file per tab, `widgets`: shared widgets, `theme`.
 
 pub mod theme;
 mod bars;
@@ -294,14 +289,11 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
             state.dock_layout.enforce(&mut state.dock, bar, sep);
         });
 
-    canvas_card(ctx, model);
-    let card = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(CANVAS_RECT_ID)));
-    if let (Some(card), false) = (card, model.home) {
-        tools::draw_overlay(ctx, card, &model.overlay, model.to_points);
-    }
-    if model.home {
-        if let Some(area) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(CANVAS_RECT_ID))) {
-            home::start_screen(ctx, area, &mut state.recent, actions);
+    if let Some(card) = canvas_card(ctx, model) {
+        if model.home {
+            home::start_screen(ctx, card, &mut state.recent, actions);
+        } else {
+            tools::draw_overlay(ctx, card, &model.overlay, model.to_points);
         }
     }
     if let Some(form) = &mut state.new_form {
@@ -367,26 +359,23 @@ fn dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
 /// place the canvas viewport.
 pub const CANVAS_RECT_ID: &str = "aurastudio_canvas_rect";
 
-/// The canvas is the one rounded element: what is left of the window,
-/// right against the bars, the toolbox and the docks, with a thin frame of
-/// UI surface below it. The surface is painted around it and
-/// over its corners (the GPU draws the canvas below the whole UI).
-fn canvas_card(ctx: &egui::Context, model: &mut Model) {
+/// The canvas card: what is left of the window, rounded (the UI surface is
+/// painted over its corners; the GPU draws the canvas under the UI).
+fn canvas_card(ctx: &egui::Context, model: &mut Model) -> Option<egui::Rect> {
     use egui::{pos2, Rect, Shape};
     let free = ctx.available_rect();
     let g = theme::CANVAS_FRAME;
     // From the window's left edge (the toolbox sits on it).
     let card = Rect::from_min_max(free.min, pos2(free.right(), free.bottom() - g));
-    if card.width() <= 0.0 || card.height() <= 0.0 { return; }
+    if card.width() <= 0.0 || card.height() <= 0.0 { return None; }
     ctx.data_mut(|d| d.insert_temp(egui::Id::new(CANVAS_RECT_ID), card));
     let tools = tools::toolbox(ctx, card.left_center(), model);
 
     let painter = ctx.layer_painter(egui::LayerId::background());
     let fill = theme::PANEL;
     painter.rect_filled(Rect::from_min_max(pos2(card.left(), card.bottom()), free.max), 0.0, fill);
-    // Each rounded corner of the canvas: the area between the corner and a
-    // quarter circle, as a fan of triangles from the corner. The canvas is
-    // also rounded where it meets the toolbox, above and below it.
+    // Each rounded corner (the toolbox's too): a fan of triangles between
+    // the corner and a quarter circle.
     let r = theme::CANVAS_ROUNDING;
     for (corner, sx, sy) in [
         (card.left_top(), 1.0, 1.0),
@@ -407,4 +396,5 @@ fn canvas_card(ctx: &egui::Context, model: &mut Model) {
         }
         painter.add(Shape::mesh(mesh));
     }
+    Some(card)
 }

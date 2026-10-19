@@ -1,31 +1,17 @@
-//! The brush engine: dabs placed along the pen path, with Krita's "wash"
-//! accumulation (alpha darken). Every brush that is not a MyPaint brush
-//! goes through it; the round brush is one preset of it, and each brush
-//! keeps its own settings (Tool options).
+//! The dab engine (every non-MyPaint brush): dabs along the pen path with
+//! Krita's "wash" accumulation.
 //!
-//! Each dab moves the pixels it covers toward its opacity (brush opacity ×
-//! pressure) by the dab's shape value, never past it:
+//! Each dab pulls the pixels it covers toward its opacity (opacity ×
+//! pressure), never past it: `if mask < cap: mask += (cap - mask) × shape`.
+//! A stroke never gets more opaque than its strongest dab, soft edges add
+//! up smoothly.
 //!
-//!   if mask < cap: mask += (cap - mask) × shape
+//! Falling pressure: Krita's averaged opacity (a target that follows a
+//! rise at once, decays 10 % of the gap per dab); without it the front of
+//! each stronger dab stayed visible ("beads").
 //!
-//! so a stroke never gets more opaque than its strongest dab (crossing a
-//! 20 % stroke at 30 % gives 30 %), while overlapping soft edges add up
-//! smoothly (clean crossings: a per-pixel max leaves a crease).
-//!
-//! When the pressure falls, Krita's averaged opacity (KisPainter::
-//! blendAverageOpacity + the "creamy" alpha darken): the stroke aims at an
-//! average that follows a rise at once but decays by 10 % of the gap per
-//! dab, and pixels already painted keep being pulled toward it. Without
-//! it, the front of every stronger dab stayed visible as an arc ("beads")
-//! wherever the pressure went down.
-//!
-//! Spacing as Krita's auto spacing: 0.8 × √diameter (Krita's Basic presets
-//! use 0.8). The straight edge of a hard stroke then ripples by
-//! s² / 8r = 0.16 px whatever the size, and a 1000 px brush paints a dab
-//! every ~25 px of pen travel, not on every pen sample.
-//!
-//! Dab shape: opaque out to `radius × hardness`, then a smoothstep fade to
-//! the edge (1 px of anti-aliasing at 100 %).
+//! Spacing: Krita's auto spacing, 0.8 × √diameter (edge ripple 0.16 px at
+//! any size). Shape: opaque to `radius × hardness`, then a smoothstep fade.
 
 use aurastudio_canvas::{blend::unit_to_u8, tile_run, PaintSurface, Rect};
 

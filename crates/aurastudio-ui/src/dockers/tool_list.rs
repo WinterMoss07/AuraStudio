@@ -66,7 +66,7 @@ pub fn show(ui: &mut Ui, st: &mut ToolListState, m: &mut Model, a: &mut Actions)
 fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: &mut Actions) {
     let presets = m.presets;
     let mediums = group.mediums();
-    let selected_medium = presets.get(*m.preset).map(|p| p.group.clone()).filter(|md| mediums.contains(&md.as_str()));
+    let selected_medium = presets.get(*m.preset).map(|p| p.medium.clone()).filter(|md| mediums.contains(&md.as_str()));
     let medium = st.medium.get(&group).cloned().or(selected_medium).unwrap_or_else(|| mediums[0].to_string());
 
     // One icon per medium (none for a single one).
@@ -111,14 +111,14 @@ fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: 
         let mut pick = |st: &mut ToolListState, ui: &mut Ui, i: usize| {
             if brush_row(ui, st, &presets[i], i, i == *m.preset, m.brush).clicked() {
                 // A brush of another group (search): go there.
-                let g = Group::of_medium(&presets[i].group);
+                let g = Group::of_medium(&presets[i].medium);
                 *m.tool = if g == Group::Eraser { Tool::Eraser } else { Tool::Brush };
                 *m.preset = i;
             }
         };
         if filter.is_empty() {
             ui.label(RichText::new(&medium).strong());
-            for i in (0..presets.len()).filter(|&i| presets[i].group == medium) { pick(st, ui, i); }
+            for i in (0..presets.len()).filter(|&i| presets[i].medium == medium) { pick(st, ui, i); }
             return;
         }
         // Searching: every brush, by medium.
@@ -126,7 +126,7 @@ fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: 
         for g in [Group::Draw, Group::Paint, Group::Eraser] {
             for &md in g.mediums() {
                 let hits: Vec<usize> = (0..presets.len())
-                    .filter(|&i| presets[i].group == md && presets[i].name.to_lowercase().contains(&filter)).collect();
+                    .filter(|&i| presets[i].medium == md && presets[i].name.to_lowercase().contains(&filter)).collect();
                 if hits.is_empty() { continue; }
                 any = true;
                 ui.label(RichText::new(md).strong());
@@ -146,7 +146,7 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
     for &t in group.tools() {
         let selected = t == *m.tool;
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-        let resp = resp.on_hover_text(t.name());
+        let resp = resp.on_hover_text(t.hint());
         ui.painter().rect_filled(rect, 4.0, if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE });
         if t.is_shape() {
             // Drawn with the current brush.

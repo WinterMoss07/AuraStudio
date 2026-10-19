@@ -1,16 +1,9 @@
-//! Minimum heights for stacked docks.
+//! Minimum heights for stacked docks: a separator dragged into a dock at
+//! its minimum (its content, or a fixed one for scrolling lists) pushes the
+//! docks beyond it (CSP / Krita), instead of squashing it.
 //!
-//! egui_dock lets a separator squash a dock down to its tab bar, hiding its
-//! content. Here every dock has a minimum height (its content, measured
-//! while drawing it, or a fixed minimum for lists that scroll), and a
-//! separator dragged into a dock that is at its minimum pushes the docks
-//! beyond it instead (CSP / Krita behaviour); once they are all at their
-//! minimum, the separator stops.
-//!
-//! Docks stacked in one column are nested vertical splits whose fractions
-//! are relative to their parent. They are handled as a flat list of items
-//! with absolute heights: the drag moved one boundary, every other boundary
-//! stays where it was, and the fractions are recomputed from the heights.
+//! The column's nested splits are handled as a flat list of absolute
+//! heights; the fractions are recomputed from them.
 
 use std::collections::HashMap;
 

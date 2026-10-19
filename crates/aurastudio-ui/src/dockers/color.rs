@@ -1,4 +1,4 @@
-//! Color docker: RGB / HSV gradient sliders behind CSP-like vertical tabs,
+//! Color docker: HSV / RGB gradient sliders (tabs),
 //! a preview swatch and a hex field.
 
 use egui::{pos2, vec2, Align, Rect, Sense, Stroke, Ui};

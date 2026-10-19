@@ -3,6 +3,28 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.6.2 — 2026-10-19
+
+**Fixed**
+- Sliders lagging behind the cursor, freezing then jumping: frames waited
+  for WM_PAINT, which Windows only sends once the message queue is empty,
+  and winit registered raw mouse input (a message per mouse report, 1000
+  per second on many mice) that kept it busy. Raw input is off (unused),
+  and frames are drawn as soon as they are due instead of waiting for the
+  window system; a slider or the view being dragged is redrawn right in
+  the pointer event. Frames while painting stay capped at one per 4 ms.
+
+**Changed**
+- Tool options: no tool descriptions; a few words on hover instead (the
+  tool's name in Tools and Tool options). "Chain" is now "Multipoint".
+  Shorter hover texts elsewhere (View menu, New dialog, start screen).
+- Code review: dead code removed (MyPaint PNG previews and their decoder,
+  unused workspace / document API, undo step labels nobody read, an unused
+  MyPaint helper, a test-only merge function), duplicate code merged (one
+  notice event, one edit report on the paint thread, one place where the
+  tool changes), outdated comments fixed, long comments shortened. The
+  brush field `group` is now `medium`.
+
 ## 0.6.1 — 2026-10-19
 
 - Stroke preview trembling while the size changed: the dabs were spaced
