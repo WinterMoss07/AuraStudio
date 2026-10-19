@@ -16,8 +16,10 @@ pub enum Icon {
     Eye, EyeClosed, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
     // Toolbar.
     FileNew, FileOpen, Save, Copy, Paste,
-    // Brushes docker: the mediums.
+    // Tools docker: the brush mediums.
     Pencil, Ink, Charcoal, Paint, Watercolor, Airbrush, Blend, Effects, Misc,
+    // Toolbox groups.
+    Shapes,
 }
 
 impl Icon {
@@ -61,7 +63,8 @@ impl Icon {
             Icon::Airbrush   => svg!("../icons/spray-can.svg"),
             Icon::Blend      => svg!("../icons/blend.svg"),
             Icon::Effects    => svg!("../icons/sparkles.svg"),
-            Icon::Misc       => svg!("../icons/shapes.svg"),
+            Icon::Misc       => svg!("../icons/ellipsis.svg"),
+            Icon::Shapes     => svg!("../icons/shapes.svg"),
         }
     }
 }

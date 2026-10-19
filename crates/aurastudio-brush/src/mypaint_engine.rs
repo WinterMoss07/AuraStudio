@@ -26,18 +26,8 @@ const TS: i32 = TILE_SIZE as i32;
 // one run of a layer tile.
 const _: () = assert!(TILE_SIZE as u32 == aurastudio_canvas::TILE);
 
-/// How a brush uses the paint already on the layer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PaintUse {
-    /// Paints its color only.
-    None,
-    /// Paints, mixing with what is there (wet paint).
-    Mixes,
-    /// Only moves or changes what is there (blender, smudge, colorize...).
-    Moves,
-    /// Takes paint away.
-    Erases,
-}
+/// Settings by which a brush works on the paint already on the layer.
+const PAINT_SETTINGS: [BrushSetting; 5] = [BrushSetting::Smudge, BrushSetting::Eraser, BrushSetting::Posterize, BrushSetting::Colorize, BrushSetting::LockAlpha];
 
 pub struct MyPaintEngine {
     /// The preset's brush, with color / size / opacity bases set from
@@ -75,20 +65,22 @@ impl MyPaintEngine {
         (d, brush.get(BrushSetting::Opaque).base_value.clamp(0.0, 1.0))
     }
 
-    /// How the brush depends on the paint already there, as the .myb file
-    /// sets it (brush previews give such brushes a stroke to work on).
-    pub fn paint_use(brush: &hokusai::Brush) -> PaintUse {
-        let base = |k| brush.get(k).base_value;
-        if base(BrushSetting::Eraser) > 0.5 {
-            PaintUse::Erases
-        } else if base(BrushSetting::Smudge) >= 0.9
-            || [BrushSetting::Posterize, BrushSetting::Colorize, BrushSetting::LockAlpha].into_iter().any(|k| base(k) > 0.5) {
-            PaintUse::Moves
-        } else if base(BrushSetting::Smudge) > 0.3 {
-            PaintUse::Mixes
-        } else {
-            PaintUse::None
+    /// The brush works on paint already there (eraser, smudge, colorize,
+    /// posterize, lock alpha), as the .myb file sets it.
+    pub fn uses_paint(brush: &hokusai::Brush) -> bool {
+        PAINT_SETTINGS.into_iter().any(|k| brush.get(k).base_value > 0.3 || !brush.get(k).inputs.is_empty())
+    }
+
+    /// A copy that only paints (no erasing, smudging, colorizing...): the
+    /// shape of its stroke, for the brush lists' stroke previews.
+    pub fn painting_only(brush: &hokusai::Brush) -> hokusai::Brush {
+        let mut b = brush.clone();
+        for k in PAINT_SETTINGS {
+            let v = b.get_mut(k);
+            v.base_value = 0.0;
+            v.inputs.clear();
         }
+        b
     }
 
     /// Edge hardness the .myb file was made with.

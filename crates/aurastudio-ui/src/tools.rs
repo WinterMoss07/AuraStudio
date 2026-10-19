@@ -1,7 +1,15 @@
 //! Tools: the vertical toolbox on the left of the canvas (fused with its
 //! edge, like Krita's), each tool's options, and what the tools draw over
 //! the canvas (selection outline, lasso being drawn).
+//!
+//! The toolbox shows groups of tools (Draw, Paint, Eraser, Fill, Picker,
+//! Geometry, Selection); the Tools docker lists the chosen group's tools
+//! (or brushes). New tools join a group, the toolbox stays short. Each
+//! group remembers the tool (and brush) last used in it.
 
+use std::collections::HashMap;
+
+use aurastudio_brushes::Preset;
 use egui::{pos2, vec2, Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui};
 
 use crate::widgets::{fill_slider, Fill};
@@ -23,14 +31,6 @@ pub enum Tool {
 }
 
 impl Tool {
-    /// Toolbox order. No hand or zoom tool: Space / Ctrl+Space drags and
-    /// the wheel do that from any tool.
-    pub const ALL: [Tool; 10] = [
-        Tool::Brush, Tool::Eraser, Tool::Fill, Tool::Picker,
-        Tool::Line, Tool::Rectangle, Tool::Ellipse, Tool::Arc,
-        Tool::RectSelect, Tool::Lasso,
-    ];
-
     /// Geometry tools: they draw a shape with the current brush. U cycles
     /// through them (Photoshop).
     pub const SHAPES: [Tool; 4] = [Tool::Line, Tool::Rectangle, Tool::Ellipse, Tool::Arc];
@@ -50,30 +50,7 @@ impl Tool {
         }
     }
 
-    /// Shortcut key (Krita / Photoshop letters).
-    pub fn key(self) -> &'static str {
-        match self {
-            Tool::Brush      => "B",
-            Tool::Eraser     => "E",
-            Tool::Picker     => "I",
-            Tool::Fill       => "G",
-            Tool::Lasso      => "L",
-            Tool::RectSelect => "M",
-            Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => "U",
-        }
-    }
-
-    /// The tool of a shortcut key, if any (U: the next geometry tool after
-    /// `current`).
-    pub fn from_key(c: &str, current: Tool) -> Option<Tool> {
-        if c.eq_ignore_ascii_case("u") {
-            let i = Tool::SHAPES.iter().position(|&t| t == current).map_or(0, |i| (i + 1) % Tool::SHAPES.len());
-            return Some(Tool::SHAPES[i]);
-        }
-        Tool::ALL.into_iter().find(|t| t.key().eq_ignore_ascii_case(c))
-    }
-
-    fn icon(self) -> crate::icons::Icon {
+    pub fn icon(self) -> crate::icons::Icon {
         use crate::icons::Icon;
         match self {
             Tool::Brush      => Icon::Brush,
@@ -94,8 +71,148 @@ impl Tool {
 
     pub fn is_shape(self) -> bool { Tool::SHAPES.contains(&self) }
 
-    /// Separator above it in the toolbox.
-    fn group_start(self) -> bool { matches!(self, Tool::Line | Tool::RectSelect) }
+    /// The stroke preview's shape for this tool.
+    pub fn stroke_shape(self) -> aurastudio_brushes::stroke_preview::Shape {
+        use aurastudio_brushes::stroke_preview::Shape;
+        match self {
+            Tool::Line => Shape::Line,
+            Tool::Rectangle => Shape::Rectangle,
+            Tool::Ellipse => Shape::Ellipse,
+            Tool::Arc => Shape::Arc,
+            _ => Shape::S,
+        }
+    }
+}
+
+/// A toolbox entry: a set of tools listed in the Tools docker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Group { Draw, Paint, Eraser, Fill, Picker, Geometry, Selection }
+
+impl Group {
+    /// Toolbox order. No hand or zoom tool: Space / Ctrl+Space drags and
+    /// the wheel do that from any tool.
+    pub const ALL: [Group; 7] = [Group::Draw, Group::Paint, Group::Eraser, Group::Fill, Group::Picker, Group::Geometry, Group::Selection];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Group::Draw => "Draw",
+            Group::Paint => "Paint",
+            Group::Eraser => "Eraser",
+            Group::Fill => "Fill",
+            Group::Picker => "Color picker",
+            Group::Geometry => "Geometry",
+            Group::Selection => "Selection",
+        }
+    }
+
+    /// Shortcut key; pressed again, it goes to the group's next tool.
+    pub fn key(self) -> &'static str {
+        match self {
+            Group::Draw => "B",
+            Group::Paint => "P",
+            Group::Eraser => "E",
+            Group::Fill => "G",
+            Group::Picker => "I",
+            Group::Geometry => "U",
+            Group::Selection => "M",
+        }
+    }
+
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Group::Draw => Icon::Pencil,
+            Group::Paint => Icon::Paint,
+            Group::Eraser => Icon::Eraser,
+            Group::Fill => Icon::Fill,
+            Group::Picker => Icon::Picker,
+            Group::Geometry => Icon::Shapes,
+            Group::Selection => Icon::RectSelect,
+        }
+    }
+
+    /// The tools listed in the Tools docker (the brush groups list their
+    /// brushes instead).
+    pub fn tools(self) -> &'static [Tool] {
+        match self {
+            Group::Draw | Group::Paint => &[Tool::Brush],
+            Group::Eraser => &[Tool::Eraser],
+            Group::Fill => &[Tool::Fill],
+            Group::Picker => &[Tool::Picker],
+            Group::Geometry => &Tool::SHAPES,
+            Group::Selection => &[Tool::RectSelect, Tool::Lasso],
+        }
+    }
+
+    /// Brush mediums of the group: dry techniques to Draw, wet ones to
+    /// Paint. Empty: not a brush group.
+    pub fn mediums(self) -> &'static [&'static str] {
+        match self {
+            Group::Draw => &["Pencil", "Ink", "Charcoal & pastel", "Misc"],
+            Group::Paint => &["Paint", "Watercolor", "Airbrush", "Blend & smudge", "Texture & FX"],
+            Group::Eraser => &["Eraser"],
+            _ => &[],
+        }
+    }
+
+    pub fn is_brushes(self) -> bool { !self.mediums().is_empty() }
+
+    /// The group of a brush medium.
+    pub fn of_medium(medium: &str) -> Group {
+        [Group::Paint, Group::Eraser].into_iter().find(|g| g.mediums().contains(&medium)).unwrap_or(Group::Draw)
+    }
+
+    /// The group the current tool (and brush) belongs to.
+    pub fn current(tool: Tool, preset: usize, presets: &[Preset]) -> Group {
+        match tool {
+            Tool::Brush => presets.get(preset).map_or(Group::Draw, |p| match Group::of_medium(&p.group) {
+                // An eraser brush with the Brush tool: still a brush.
+                Group::Eraser => Group::Draw,
+                g => g,
+            }),
+            Tool::Eraser => Group::Eraser,
+            Tool::Fill => Group::Fill,
+            Tool::Picker => Group::Picker,
+            Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => Group::Geometry,
+            Tool::RectSelect | Tool::Lasso => Group::Selection,
+        }
+    }
+
+    pub fn from_key(c: &str) -> Option<Group> {
+        Group::ALL.into_iter().find(|g| g.key().eq_ignore_ascii_case(c))
+    }
+}
+
+/// The tool and brush last used in each group.
+#[derive(Default)]
+pub struct ToolMemory {
+    tool:   HashMap<Group, Tool>,
+    preset: HashMap<Group, usize>,
+}
+
+impl ToolMemory {
+    /// Note what is in use now (called after every change).
+    pub fn remember(&mut self, tool: Tool, preset: usize, presets: &[Preset]) {
+        let g = Group::current(tool, preset, presets);
+        self.tool.insert(g, tool);
+        if g.is_brushes() { self.preset.insert(g, preset); }
+    }
+
+    /// Switch to group `g`: its last tool and brush. The same group again
+    /// goes to its next tool (U: line, rectangle, ellipse, arc...).
+    pub fn select(&mut self, g: Group, tool: &mut Tool, preset: &mut usize, presets: &[Preset]) {
+        self.remember(*tool, *preset, presets);
+        let tools = g.tools();
+        if Group::current(*tool, *preset, presets) == g {
+            if let Some(i) = tools.iter().position(|t| t == tool) { *tool = tools[(i + 1) % tools.len()]; }
+            return;
+        }
+        *tool = self.tool.get(&g).copied().unwrap_or(tools[0]);
+        if g.is_brushes() {
+            let first = || presets.iter().position(|p| g.mediums().contains(&p.group.as_str()));
+            if let Some(p) = self.preset.get(&g).copied().or_else(first) { *preset = p; }
+        }
+    }
 }
 
 /// Settings of the geometry tools.
@@ -134,14 +251,17 @@ pub fn toolbox(ctx: &egui::Context, at: Pos2, m: &mut Model) -> Rect {
                 .show(ui, |ui| {
                     ui.set_width(TOOLBOX_WIDTH - 8.0);
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    for t in Tool::ALL {
-                        if t.group_start() {
+                    let current = Group::current(*m.tool, *m.preset, m.presets);
+                    for g in Group::ALL {
+                        if matches!(g, Group::Fill | Group::Geometry) {
                             ui.add_space(3.0);
                             let (r, _) = ui.allocate_exact_size(vec2(TOOLBOX_WIDTH - 8.0, 1.0), Sense::hover());
                             ui.painter().rect_filled(r.shrink2(vec2(4.0, 0.0)), 0.0, theme::BORDER);
                             ui.add_space(3.0);
                         }
-                        if tool_button(ui, t, *m.tool == t, !m.home) { *m.tool = t; }
+                        if tool_button(ui, g, current == g, !m.home) && current != g {
+                            m.tools.select(g, m.tool, m.preset, m.presets);
+                        }
                     }
                 });
         })
@@ -149,9 +269,9 @@ pub fn toolbox(ctx: &egui::Context, at: Pos2, m: &mut Model) -> Rect {
         .rect
 }
 
-fn tool_button(ui: &mut Ui, tool: Tool, selected: bool, enabled: bool) -> bool {
+fn tool_button(ui: &mut Ui, group: Group, selected: bool, enabled: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(TOOLBOX_WIDTH - 8.0, 30.0), if enabled { Sense::click() } else { Sense::hover() });
-    let resp = resp.on_hover_text(format!("{} ({})", tool.name(), tool.key()));
+    let resp = resp.on_hover_text(format!("{} ({})", group.name(), group.key()));
     let p = ui.painter_at(rect);
     if selected {
         p.rect_filled(rect, 6.0, theme::ACCENT_DIM);
@@ -163,7 +283,7 @@ fn tool_button(ui: &mut Ui, tool: Tool, selected: bool, enabled: bool) -> bool {
         (true, true) => theme::TEXT,
         (true, false) => Color32::from_gray(0xc8),
     };
-    crate::icons::paint(ui, tool.icon(), rect, 20.0, col);
+    crate::icons::paint(ui, group.icon(), rect, 20.0, col);
     enabled && resp.clicked()
 }
 
@@ -273,5 +393,45 @@ pub fn shape_options(ui: &mut Ui, m: &mut Model) {
             hint(ui, "Drag (or click twice) from start to end; the cursor then pulls the curve, click to validate. Shift: 15° steps. Ctrl+Z: last arc back, Escape: cancel.");
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aurastudio_brushes::{Library, MEDIUMS};
+
+    #[test]
+    fn every_medium_has_a_group() {
+        let all: Vec<&str> = Group::ALL.iter().flat_map(|g| g.mediums().iter().copied()).collect();
+        for m in MEDIUMS { assert_eq!(all.iter().filter(|x| *x == m).count(), 1, "{m}"); }
+    }
+
+    #[test]
+    fn groups_remember_their_tool_and_brush() {
+        let lib = Library::load();
+        let p = &lib.presets;
+        let find = |n: &str| p.iter().position(|x| x.name == n).unwrap();
+        let (mut tool, mut preset) = (Tool::Brush, find("Liner"));
+        let mut mem = ToolMemory::default();
+        assert_eq!(Group::current(tool, preset, p), Group::Draw);
+
+        mem.select(Group::Paint, &mut tool, &mut preset, p);
+        assert_eq!((tool, Group::current(tool, preset, p)), (Tool::Brush, Group::Paint));
+        preset = find("Oil");
+        mem.select(Group::Eraser, &mut tool, &mut preset, p);
+        assert_eq!(tool, Tool::Eraser);
+        assert_eq!(p[preset].group, "Eraser");
+        mem.select(Group::Geometry, &mut tool, &mut preset, p);
+        assert_eq!(tool, Tool::Line);
+        // U again: the next shape.
+        mem.select(Group::Geometry, &mut tool, &mut preset, p);
+        assert_eq!(tool, Tool::Rectangle);
+        mem.select(Group::Draw, &mut tool, &mut preset, p);
+        assert_eq!((tool, preset), (Tool::Brush, find("Liner")));
+        mem.select(Group::Paint, &mut tool, &mut preset, p);
+        assert_eq!(preset, find("Oil"));
+        mem.select(Group::Geometry, &mut tool, &mut preset, p);
+        assert_eq!(tool, Tool::Rectangle);
     }
 }

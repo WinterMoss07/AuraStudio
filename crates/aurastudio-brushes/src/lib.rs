@@ -1,4 +1,4 @@
-//! Brush library: the presets listed in the Brushes docker, by medium
+//! Brush library: the presets listed in the Tools docker, by medium
 //! (pencil, ink, paint...).
 //!
 //! - The bundled brushes, listed in assets/brushes/catalog.txt: our own
@@ -23,7 +23,7 @@ pub enum BundledBrush { Round, Soft, MyPaint(&'static str) }
 
 include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
-/// The mediums, in the Brushes docker's order.
+/// The mediums, in the Tools docker's order.
 pub const MEDIUMS: &[&str] = &["Pencil", "Ink", "Charcoal & pastel", "Paint", "Watercolor", "Airbrush", "Blend & smudge", "Eraser", "Texture & FX", "Misc"];
 
 /// Medium of an imported brush, from words in its name (Misc if none).
@@ -42,7 +42,7 @@ pub fn guess_medium(name: &str) -> &'static str {
     else { "Misc" }
 }
 
-pub mod preview;
+pub mod stroke_preview;
 
 /// Which engine paints a preset.
 #[derive(Clone)]

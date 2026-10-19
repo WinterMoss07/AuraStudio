@@ -4,7 +4,7 @@ mod dab_engine;
 mod mypaint_engine;
 mod raster;
 pub use dab_engine::DabEngine;
-pub use mypaint_engine::{MyPaintEngine, PaintUse};
+pub use mypaint_engine::MyPaintEngine;
 /// hokusai's brush type (a parsed .myb), for the brush library.
 pub use hokusai::Brush as MyPaintBrush;
 pub use hokusai::myb::from_str as parse_myb;

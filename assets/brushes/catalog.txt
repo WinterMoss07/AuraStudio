@@ -57,6 +57,7 @@ Blend & smudge | ramon/Smear | Smear
 Blend & smudge | classic/blending_knife | Blending knife
 Blend & smudge | ramon/Blur_Fast | Blur
 
+Eraser | @round | Round eraser
 Eraser | deevad/thin_hard_eraser | Thin hard eraser
 Eraser | deevad/large_hard_eraser | Large hard eraser
 Eraser | deevad/kneaded_eraser | Kneaded eraser

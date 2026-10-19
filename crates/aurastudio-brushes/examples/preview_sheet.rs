@@ -1,6 +1,6 @@
 // Every brush preview on the dockers' background, to check them by eye.
 // Usage: cargo run --release -p aurastudio-brushes --example preview_sheet -- out.png [filter]
-use aurastudio_brushes::{preview, Library};
+use aurastudio_brushes::{stroke_preview::{self, Mode, Shape}, Library};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -10,10 +10,11 @@ fn main() {
     let (w, h, cols) = (360u32, 72u32, 4u32);
     let rows = (presets.len() as u32).div_ceil(cols);
     let (sw, sh) = (cols * (w + 6), rows * (h + 6));
-    let mut out = [0x22u8, 0x22, 0x23, 255].repeat((sw * sh) as usize);
+    let mut out = [0x18u8, 0x18, 0x18, 255].repeat((sw * sh) as usize);
     let t = std::time::Instant::now();
     for (k, p) in presets.iter().enumerate() {
-        let px = preview::render(&p.engine, &p.settings, w, h, 2.0);
+        let mode = if std::env::var("DETAIL").is_ok() { Mode::Detail } else { Mode::List };
+        let px = stroke_preview::render(&p.engine, &p.settings, Shape::S, mode, w, h, 2.0);
         let (ox, oy) = ((k as u32 % cols) * (w + 6), (k as u32 / cols) * (h + 6));
         for y in 0..h {
             for x in 0..w {

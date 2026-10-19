@@ -25,13 +25,16 @@ UI stays quiet so the painting gets the room.
   `.myb` import. Each brush keeps its own size / opacity / hardness / blend
   mode; 13 blend modes. GPU brush outline cursor, app-drawn hand / rotate
   cursors.
-- Brushes by medium: Pencil, Ink, Charcoal & pastel, Paint, Watercolor,
-  Airbrush, Blend & smudge, Eraser, Texture & FX, Misc (one icon each in
-  the Brushes docker; search looks in all; imported brushes get a medium
-  from their name).
-- Brush previews: each brush as a stroke painted by the brush itself
-  (name in the corner; erasers and blenders over a first stroke); Tool
-  options shows the selected brush's stroke, repainted as its size,
+- Toolbox by groups: Draw (pencil, ink, charcoal & pastel, misc), Paint
+  (paint, watercolor, airbrush, blend & smudge, texture & FX), Eraser,
+  Fill, Picker, Geometry, Selection. The Tools docker lists the group's
+  tools or brushes (by medium); each group remembers its last tool and
+  brush; its key pressed again goes to its next tool. Imported brushes
+  get a medium from their name.
+- Stroke previews, painted by the brush itself: in the Tools docker, the
+  stroke's shape (geometry tools: their shape with the current brush);
+  in Tool options, like Clip Studio Paint, a stroke leaving a light gray
+  half (erasers cut it, blenders drag it out), repainted as size,
   hardness, opacity or blend mode change (on a thread of its own).
 - Mouse button bounce filtered for everything (a worn switch no longer
   drops a slider drag or ends a stroke); Windows' Alt menu mode is off.
@@ -208,7 +211,7 @@ See `NOTICE.md` for third-party code and assets.
 **Missing / planned**
 - [ ] Smudge / blend strength sliders in Tool options (MyPaint brushes
       smudge too weakly by default).
-- [x] Brushes docker: list of brush strokes (0.4.0), by medium (0.5.0).
+- [x] Brushes docker: list of brush strokes (0.4.0), by medium (0.5.0), tool groups and Tools docker (0.6.0).
 - [ ] Krita brush bundles (.bundle) import.
 - [ ] Redesign of the New document dialog.
 - [ ] PSD / ORA export.

@@ -201,6 +201,7 @@ fn fuzz() {
     let mut held = None;
     let mut stroke_open = false;
     let mut tool = Tool::default();
+    let mut tool_memory = aurastudio_ui::ToolMemory::default();
     let mut fill = FillParams::default();
     let mut shape = ShapeOptions::default();
     let (mut hidpi_scaling, mut ui_scale) = (true, 1.0f32);
@@ -246,6 +247,7 @@ fn fuzz() {
                         max_canvas: 4096,
                         home: false,
                         tool: &mut tool,
+                        tools: &mut tool_memory,
                         fill: &mut fill,
                         shape: &mut shape,
                         has_selection: sel_outlines.is_some(),

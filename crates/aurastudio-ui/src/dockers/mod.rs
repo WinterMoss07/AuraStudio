@@ -2,10 +2,10 @@
 //! lends it through `Model`; the data itself lives in the data crates
 //! (aurastudio-layers, aurastudio-brush...), which know nothing about egui.
 
-pub mod brushes;
 pub mod canvas;
 pub mod color;
 pub mod layers;
+pub mod tool_list;
 pub mod tool_options;
 
 use egui::Ui;
@@ -14,12 +14,12 @@ use egui_dock::{DockState, NodeIndex, TabViewer};
 use crate::{Actions, Model, Notice};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Tab { Color, ToolOptions, Brushes, Layers, Canvas }
+pub enum Tab { Color, ToolOptions, Tools, Layers, Canvas }
 
-/// Right column, top to bottom: Color + Brushes, Tool options, Layers +
+/// Right column, top to bottom: Color + Tools, Tool options, Layers +
 /// Canvas.
 pub fn default_dock() -> DockState<Tab> {
-    let mut dock = DockState::new(vec![Tab::Color, Tab::Brushes]);
+    let mut dock = DockState::new(vec![Tab::Color, Tab::Tools]);
     let surface = dock.main_surface_mut();
     let [_, rest] = surface.split_below(NodeIndex::root(), 0.25, vec![Tab::ToolOptions]);
     surface.split_below(rest, 0.45, vec![Tab::Layers, Tab::Canvas]);
@@ -30,7 +30,7 @@ pub fn default_dock() -> DockState<Tab> {
 pub struct Viewer<'s, 'a> {
     pub color:  &'s mut color::ColorState,
     pub layers: &'s mut layers::LayersState,
-    pub brushes: &'s mut brushes::BrushesState,
+    pub tool_list: &'s mut tool_list::ToolListState,
     pub notice: &'s mut Notice,
     pub m:      &'s mut Model<'a>,
     pub a:      &'s mut Actions,
@@ -45,7 +45,7 @@ impl TabViewer for Viewer<'_, '_> {
         match tab {
             Tab::Color       => "Color",
             Tab::ToolOptions => "Tool options",
-            Tab::Brushes     => "Brushes",
+            Tab::Tools       => "Tools",
             Tab::Layers      => "Layers",
             Tab::Canvas      => "Canvas",
         }.into()
@@ -56,8 +56,8 @@ impl TabViewer for Viewer<'_, '_> {
         // is at least as tall as the dock).
         let content = ui.scope(|ui| match tab {
             Tab::Color       => color::show(ui, self.color, self.m),
-            Tab::ToolOptions => tool_options::show(ui, &mut self.brushes.previews, self.m, self.a),
-            Tab::Brushes     => brushes::show(ui, self.brushes, self.m, self.a),
+            Tab::ToolOptions => tool_options::show(ui, &mut self.tool_list.previews, self.m, self.a),
+            Tab::Tools       => tool_list::show(ui, self.tool_list, self.m, self.a),
             Tab::Layers | Tab::Canvas if self.m.home => {
                 ui.label(egui::RichText::new("No document").color(crate::theme::TEXT_WEAK));
             }
@@ -75,6 +75,6 @@ impl TabViewer for Viewer<'_, '_> {
         // has a fixed size, kept as its dock's minimum height (a scroll bar
         // showed there, by a pixel, with everything in view); nothing
         // scrolls sideways.
-        [false, !matches!(tab, Tab::Layers | Tab::Brushes | Tab::Color)]
+        [false, !matches!(tab, Tab::Layers | Tab::Tools | Tab::Color)]
     }
 }

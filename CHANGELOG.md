@@ -3,6 +3,31 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.6.0 — 2026-10-19
+
+**New**
+- The toolbox shows groups of tools: Draw, Paint, Eraser, Fill, Picker,
+  Geometry, Selection (7 icons instead of 10; new tools join a group).
+  The Brushes docker becomes **Tools**: it lists the chosen group's
+  brushes (Draw: pencil, ink, charcoal & pastel, misc; Paint: paint,
+  watercolor, airbrush, blend & smudge, texture & FX; Eraser) or tools
+  (Geometry: line, rectangle, ellipse, arc drawn with the current brush;
+  Selection: rectangle, lasso). Each group remembers its last tool and
+  brush. Keys: B Draw, P Paint, E Eraser, G Fill, I Picker, U Geometry,
+  M Selection; pressed again, the group's next tool.
+- A round eraser (AuraStudio engine) in the Eraser group.
+
+**Changed / fixed**
+- Stroke previews (renamed from brush previews), like Clip Studio Paint.
+  Tools docker: the stroke alone (erasers and blenders shown as if they
+  painted: their shape). Tool options: the left half is light gray paint,
+  the right half the canvas desk (#181818); the stroke leaves the paint:
+  brushes paint over both, erasers cut through, blenders drag it out.
+  No more colored first stroke.
+- The selected brush's row in the Tools docker lagged behind Tool options
+  while dragging a slider (Tool options always went first); they are now
+  painted in turn, one request per strip per frame.
+
 ## 0.5.0 — 2026-10-18
 
 **New**

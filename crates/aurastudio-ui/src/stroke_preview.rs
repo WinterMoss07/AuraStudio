@@ -1,13 +1,15 @@
-//! Brush preview textures for the Brushes and Tool options dockers: a
-//! stroke painted by the brush itself (aurastudio_brushes::preview), kept
-//! until the brush's settings or the strip's size change.
+//! Stroke previews in the Tools and Tool options dockers: a stroke painted
+//! by the brush itself (aurastudio_brushes::stroke_preview), kept until
+//! the brush's settings or the strip's size change.
 //!
-//! Painting one takes 2 to 50 ms (textured MyPaint brushes): done on the
-//! interface thread, a slider drag stuttered. A preview thread paints
-//! them instead, one at a time (each brush still paints on one thread),
-//! the Tool options strip first; it sleeps when there is nothing to do.
-//! Only the latest request per strip counts: dragging a slider doesn't
-//! queue a preview per frame. The old picture stays until the new one.
+//! Painting one takes 2 to 50 ms (textured MyPaint brushes): a thread of
+//! its own paints them, one at a time (each brush still paints on one
+//! thread), and sleeps when there is nothing to do. Only the latest
+//! request per strip counts, and a strip asked for again keeps its place
+//! in the queue: dragging a slider, the Tool options strip and the
+//! selected brush's row in the Tools docker are painted in turn (the row
+//! used to wait until the slider was let go). One request per strip per
+//! frame at most. The old picture stays until the new one.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -15,23 +17,34 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
 use aurastudio_brush::Brush;
-use aurastudio_brushes::{preview, Engine, Preset};
+use aurastudio_brushes::stroke_preview::{self, Mode, Shape};
+use aurastudio_brushes::{Engine, Preset};
 use egui::{pos2, vec2, Color32, FontId, Rect, TextureHandle, Ui};
 
 use crate::theme;
 
+/// Which strip: a row of the Tools docker (brush or geometry tool), or
+/// the Tool options one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Slot { List(usize), ToolOptions }
+pub enum Slot { Brush(usize), Shape(Shape), ToolOptions }
 
-struct Job { slot: Slot, key: u64, engine: Engine, settings: Brush, w: u32, h: u32, scale: f32 }
+struct Job { slot: Slot, key: u64, engine: Engine, settings: Brush, shape: Shape, mode: Mode, w: u32, h: u32, scale: f32 }
 
 /// A painted preview: slot, settings key, size, straight RGBA.
 type Done = (Slot, u64, u32, u32, Vec<u8>);
 
-/// Waiting jobs, at most one per slot (a new request replaces it).
+/// Waiting jobs, at most one per slot (a new request replaces it in place).
 type Queue = Arc<(Mutex<Vec<Job>>, Condvar)>;
 
-pub struct PreviewCache {
+/// What a strip shows.
+pub struct Stroke<'a> {
+    pub preset:   &'a Preset,
+    pub settings: &'a Brush,
+    pub shape:    Shape,
+    pub mode:     Mode,
+}
+
+pub struct StrokePreviews {
     /// Per slot: the settings key its picture shows, and the texture.
     slots:   HashMap<Slot, (u64, TextureHandle)>,
     /// Per slot: the key last asked for (painting or waiting).
@@ -42,34 +55,37 @@ pub struct PreviewCache {
     send:    Option<Sender<Done>>,
 }
 
-impl Default for PreviewCache {
+impl Default for StrokePreviews {
     fn default() -> Self {
         let (send, done) = channel();
         Self { slots: HashMap::new(), asked: HashMap::new(), queue: Arc::new((Mutex::new(Vec::new()), Condvar::new())), done, send: Some(send) }
     }
 }
 
-impl PreviewCache {
-    /// Draw the preview of `preset` with `settings` in `rect`, the name in
-    /// its bottom right corner; ask for a new one if the settings or the
-    /// size changed.
-    pub fn show(&mut self, ui: &Ui, rect: Rect, slot: Slot, preset: &Preset, settings: &Brush, name: &str) {
+impl StrokePreviews {
+    /// Draw the stroke preview in `rect` (`name` in its bottom right
+    /// corner, if any); ask for a new one if the settings or the size
+    /// changed.
+    pub fn show(&mut self, ui: &Ui, rect: Rect, slot: Slot, stroke: Stroke, name: Option<&str>) {
         let ctx = ui.ctx();
         self.start(ctx);
         self.receive(ctx);
         let ppp = ctx.pixels_per_point();
         let (w, h) = ((rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32);
-        let key = key_of(preset, settings, w, h, ppp);
+        let key = key_of(&stroke, w, h, ppp);
         let shown = self.slots.get(&slot).map(|(k, _)| *k);
         if shown != Some(key) && self.asked.get(&slot) != Some(&key) && w > 0 && h > 0 {
             self.asked.insert(slot, key);
             // Canvas pixels at true size: one per screen pixel at 100 %
             // zoom (HiDPI image scaling).
-            let job = Job { slot, key, engine: preset.engine.clone(), settings: settings.clone(), w, h, scale: ppp };
+            let job = Job { slot, key, engine: stroke.preset.engine.clone(), settings: stroke.settings.clone(),
+                shape: stroke.shape, mode: stroke.mode, w, h, scale: ppp };
             let (lock, wake) = &*self.queue;
             let mut q = lock.lock().unwrap();
-            q.retain(|j| j.slot != slot);
-            q.push(job);
+            match q.iter_mut().find(|j| j.slot == slot) {
+                Some(j) => *j = job,
+                None => q.push(job),
+            }
             wake.notify_one();
         }
 
@@ -77,34 +93,33 @@ impl PreviewCache {
         if let Some((_, tex)) = self.slots.get(&slot) {
             painter.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
-        name_label(&painter, rect, name);
+        if let Some(name) = name { name_label(&painter, rect, name); }
     }
 
-    /// Drop the list's previews (the brush list changed: an import).
-    pub fn clear_list(&mut self) {
-        self.slots.retain(|s, _| *s == Slot::ToolOptions);
-        self.asked.retain(|s, _| *s == Slot::ToolOptions);
-        self.queue.0.lock().unwrap().retain(|j| j.slot == Slot::ToolOptions);
+    /// Drop the brush rows' previews (the brush list changed: an import).
+    pub fn clear_brushes(&mut self) {
+        let keep = |s: &Slot| !matches!(s, Slot::Brush(_));
+        self.slots.retain(|s, _| keep(s));
+        self.asked.retain(|s, _| keep(s));
+        self.queue.0.lock().unwrap().retain(|j| keep(&j.slot));
     }
 
     /// The preview thread, started the first time a preview is shown.
     fn start(&mut self, ctx: &egui::Context) {
         let Some(send) = self.send.take() else { return };
         let (queue, ctx) = (Arc::clone(&self.queue), ctx.clone());
-        let spawned = std::thread::Builder::new().name("brush previews".into()).spawn(move || loop {
+        let spawned = std::thread::Builder::new().name("stroke previews".into()).spawn(move || loop {
             let job = {
                 let (lock, wake) = &*queue;
                 let mut q = lock.lock().unwrap();
                 while q.is_empty() { q = wake.wait(q).unwrap(); }
-                // The Tool options strip first (the one being adjusted).
-                let i = q.iter().position(|j| j.slot == Slot::ToolOptions).unwrap_or(0);
-                q.remove(i)
+                q.remove(0)
             };
-            let px = preview::render(&job.engine, &job.settings, job.w, job.h, job.scale);
+            let px = stroke_preview::render(&job.engine, &job.settings, job.shape, job.mode, job.w, job.h, job.scale);
             if send.send((job.slot, job.key, job.w, job.h, px)).is_err() { return; }
             ctx.request_repaint();
         });
-        if let Err(e) = spawned { log::error!("brush preview thread: {e}"); }
+        if let Err(e) = spawned { log::error!("stroke preview thread: {e}"); }
     }
 
     /// Previews painted since the last frame: into their textures.
@@ -119,7 +134,7 @@ impl PreviewCache {
                     *k = key;
                 }
                 None => {
-                    let tex = ctx.load_texture(format!("brush-stroke-{slot:?}"), image, egui::TextureOptions::LINEAR);
+                    let tex = ctx.load_texture(format!("stroke-preview-{slot:?}"), image, egui::TextureOptions::LINEAR);
                     self.slots.insert(slot, (key, tex));
                 }
             }
@@ -139,9 +154,10 @@ fn name_label(painter: &egui::Painter, rect: Rect, name: &str) {
 }
 
 /// Everything the picture depends on.
-fn key_of(p: &Preset, b: &Brush, w: u32, h: u32, ppp: f32) -> u64 {
-    let mut s = std::collections::hash_map::DefaultHasher::new();
-    (&p.name, &p.group, w, h, ppp.to_bits()).hash(&mut s);
-    (b.radius.to_bits(), b.opacity.to_bits(), b.hardness.to_bits(), b.erase, format!("{:?}", b.blend)).hash(&mut s);
-    s.finish()
+fn key_of(s: &Stroke, w: u32, h: u32, ppp: f32) -> u64 {
+    let (p, b) = (s.preset, s.settings);
+    let mut h_ = std::collections::hash_map::DefaultHasher::new();
+    (&p.name, &p.group, &p.author, w, h, ppp.to_bits(), s.shape, s.mode).hash(&mut h_);
+    (b.radius.to_bits(), b.opacity.to_bits(), b.hardness.to_bits(), b.erase, format!("{:?}", b.blend)).hash(&mut h_);
+    h_.finish()
 }

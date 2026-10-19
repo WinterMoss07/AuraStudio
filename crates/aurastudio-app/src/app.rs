@@ -19,7 +19,7 @@ use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent
 use aurastudio_document::{Document, SharedDoc, Workspace};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_layers::{FillParams, Selection};
-use aurastudio_ui::{Actions, Dialog, DialogChoice, EditCmd, FileCmd, ImportBrushes, Model, Overlay, SelectCmd, ShapeOptions, Tool, UiState, ViewCmd};
+use aurastudio_ui::{Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, SelectCmd, ShapeOptions, Tool, ToolMemory, UiState, ViewCmd};
 
 use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
 use crate::debounce::{Debounce, Kind as DebounceKind};
@@ -278,6 +278,8 @@ pub struct App {
     fill:       FillParams,
     shape:      ShapeOptions,
     gesture:    Option<Gesture>,
+    /// The tool and brush last used in each toolbox group.
+    tool_memory: ToolMemory,
     /// The arc tool between clicks (arc_tool.rs).
     arc:        ArcTool,
     /// Left button releases held back BOUNCE (debounce.rs).
@@ -386,6 +388,7 @@ impl App {
             fill:       FillParams::default(),
             shape:      ShapeOptions::default(),
             gesture:    None,
+            tool_memory: ToolMemory::default(),
             arc:        ArcTool::default(),
             debounce:   Debounce::default(),
 
@@ -825,6 +828,17 @@ impl App {
         (p.width, p.height)
     }
 
+    /// A toolbox group's shortcut: its last tool and brush (pressed again:
+    /// its next tool).
+    fn select_group(&mut self, g: Group) {
+        if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
+        let (mut tool, mut preset) = (self.tool, self.preset);
+        self.tool_memory.select(g, &mut tool, &mut preset, &self.library.presets);
+        self.select_preset(preset);
+        self.set_tool(tool);
+        self.tool_memory.remember(self.tool, self.preset, &self.library.presets);
+    }
+
     fn set_tool(&mut self, tool: Tool) {
         if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
         self.finish_arcs();
@@ -1116,6 +1130,7 @@ impl App {
         let home = self.home;
         let tool_before = self.tool;
         let tool = &mut self.tool;
+        let tool_memory = &mut self.tool_memory;
         let fill = &mut self.fill;
         let drawing = self.gesture.as_ref().and_then(Gesture::outline);
         let shape = &mut self.shape;
@@ -1141,6 +1156,7 @@ impl App {
                 preset: &mut preset,
                 layers: &mut d.layers,
                 tool,
+                tools: tool_memory,
                 fill,
                 has_selection: d.selection.is_some(),
                 overlay: Overlay {
@@ -1210,6 +1226,7 @@ impl App {
             self.finish_arcs();
             self.update_cursor();
         }
+        self.tool_memory.remember(self.tool, self.preset, &self.library.presets);
         if let Some(cmd) = actions.select { self.select(cmd); }
         if let Some(cmd) = actions.edit { self.edit_cmd(cmd); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
@@ -1898,8 +1915,8 @@ impl App {
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("c") => self.edit_cmd(EditCmd::Copy),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("v") => self.edit_cmd(EditCmd::Paste),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::None),
-                    Key::Character(c) if !ctrl && !key.repeat && Tool::from_key(c, self.tool).is_some() => {
-                        if let Some(t) = Tool::from_key(c, self.tool) { self.set_tool(t); }
+                    Key::Character(c) if !ctrl && !key.repeat && Group::from_key(c).is_some() => {
+                        if let Some(g) = Group::from_key(c) { self.select_group(g); }
                     }
                     // Arc outline: Enter paints it, Escape drops it.
                     Key::Named(NamedKey::Enter) if self.arc.active() => self.finish_arcs(),

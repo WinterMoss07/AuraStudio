@@ -12,7 +12,7 @@
 
 pub mod theme;
 mod bars;
-mod brush_preview;
+mod stroke_preview;
 mod dock_layout;
 mod dockers;
 mod home;
@@ -31,7 +31,7 @@ use egui_dock::{DockArea, DockState};
 pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
 pub use home::{NewDoc, RecentFile};
-pub use tools::{Overlay, SelectCmd, ShapeOptions, Tool};
+pub use tools::{Group, Overlay, SelectCmd, ShapeOptions, Tool, ToolMemory};
 pub use widgets::set_display_transform;
 
 /// Brush size range, as a diameter in pixels.
@@ -41,7 +41,7 @@ pub const MAX_BRUSH_SIZE: u32 = 1000;
 pub struct Model<'a> {
     /// Settings of the selected brush (the color is global).
     pub brush:              &'a mut Brush,
-    /// Brush presets (Brushes docker) and the selected one.
+    /// Brush presets (Tools docker) and the selected one.
     pub presets:            &'a [Preset],
     pub preset:             &'a mut usize,
     pub layers:             &'a mut LayerStack,
@@ -64,6 +64,8 @@ pub struct Model<'a> {
     pub home:               bool,
     /// Selected tool and the fill tool's settings.
     pub tool:               &'a mut Tool,
+    /// The tool and brush last used in each toolbox group.
+    pub tools:              &'a mut ToolMemory,
     pub fill:               &'a mut FillParams,
     pub shape:              &'a mut ShapeOptions,
     pub has_selection:      bool,
@@ -173,7 +175,7 @@ pub struct UiState {
     notice:        Notice,
     color:         dockers::color::ColorState,
     layers:        dockers::layers::LayersState,
-    brushes:       dockers::brushes::BrushesState,
+    tool_list:     dockers::tool_list::ToolListState,
     dock_layout:   dock_layout::DockLayout,
     dialog:        Option<Dialog>,
     new_form:      Option<home::NewForm>,
@@ -193,7 +195,7 @@ impl UiState {
             notice:        Notice::default(),
             color:         Default::default(),
             layers:        Default::default(),
-            brushes:       Default::default(),
+            tool_list:     Default::default(),
             dock_layout:   Default::default(),
             dialog:        None,
             new_form:      None,
@@ -271,7 +273,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
             let mut viewer = dockers::Viewer {
                 color:  &mut state.color,
                 layers: &mut state.layers,
-                brushes: &mut state.brushes,
+                tool_list: &mut state.tool_list,
                 notice: &mut state.notice,
                 m:      model,
                 a:      actions,
