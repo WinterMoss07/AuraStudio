@@ -3,6 +3,21 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.7.1 — 2026-10-19
+
+**Fixed**
+- Big brushes faster (1000 px: ~25 to 35 % less time per dab): the opaque
+  core of a dab skips the edge math. Same pixels.
+- MyPaint brushes start their stroke from no pressure, like in MyPaint
+  (whose brushes always get the pen's hover events at pressure 0): a stroke
+  fades in over its first sample instead of starting with a full dab.
+
+**Checked**
+- Forge against the real libmypaint (1.6): the 56 catalog brushes paint
+  like it (oil, acrylic, wet paint... included). New tools for it:
+  `tools/mypaint-reference/ref.c` and the `myb_compare` example. Not
+  checked yet: the pigment mode of the 5 Dieterle brushes.
+
 ## 0.7.0 — 2026-10-19
 
 **Forge, one brush engine**

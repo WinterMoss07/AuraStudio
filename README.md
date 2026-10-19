@@ -142,6 +142,7 @@ cargo run --release -p aurastudio-brush  --example bench_myb -- brush.myb 300  #
 cargo test  --release -p aurastudio -- --ignored pipeline --nocapture # paint thread + UI model
 cargo run --release -p aurastudio-brush  --example myb_sheet -- out.png a.myb b.myb  # MyPaint sample sheet
 cargo run --release -p aurastudio-brushes --example preview_sheet -- out.png [filter] # every brush preview
+cargo run --release -p aurastudio-brush  --example myb_compare -- a.myb out.ppm     # Forge vs real libmypaint (tools/mypaint-reference/ref.c)
 cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png        # round brush strokes (SHEET_LOOP=1, SHEET_RAW=1, SHEET_CONST=1)
 ```
 
@@ -214,9 +215,12 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Advanced tool options popup (gear at the bottom right of Tool
       options, F5): every Forge setting and its curves; Tool options keeps
       the common ones.
-- [ ] Oil / acrylic closer to MyPaint: compare with MyPaint's own renders
-      (the size / hardness sliders override the brush's base values today;
-      a global pressure curve).
+- [x] MyPaint brushes compared with the real libmypaint (0.7.1): the 56
+      catalog brushes paint like it (`myb_compare`).
+- [ ] The 5 Dieterle brushes in pigment mode (Posterizer paints almost
+      nothing): compare with libmypaint's pigment path (`stroke_to_2`).
+- [ ] A global pressure curve (preferences); the size / hardness sliders
+      override the brush's base values today.
 - [ ] Krita brushes: .kpp / .bundle reader, brush tips and textures,
       Krita's Color Smudge; then a smudge / blend as strong as CSP's.
 

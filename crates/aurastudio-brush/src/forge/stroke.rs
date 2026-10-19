@@ -196,6 +196,13 @@ impl ForgeBrush {
             // for later seed steps (state.X / state.Y).
             let _ = (xtilt, ytilt, m);
             state.started = true;
+            // libmypaint's reset leaves STATE(PRESSURE) at 0: the first
+            // segment ramps up from no pressure (a mouse stroke fades in
+            // instead of starting with a full dab). Krita-style brushes
+            // start at the pen's pressure.
+            if !self.options.dab_on_press {
+                state.last_pressure = 0.0;
+            }
             return self.options.dab_on_press && self.dab_at_rest(state, surface, seed_x, seed_y, pressure);
         }
 

@@ -540,7 +540,10 @@ mod tests {
         e.sync_from(&Brush::new());
         let mut s = surface([255, 255, 255, 255]);
         e.begin_stroke();
-        e.stroke_to(&mut s, PenSample::new(100.0, 64.0, 1.0, 0.0));
+        // (MyPaint strokes ramp up from no pressure: a few samples first.)
+        for (k, x) in [90.0, 95.0, 100.0].into_iter().enumerate() {
+            e.stroke_to(&mut s, PenSample::new(x, 64.0, 1.0, k as f64 * 0.005));
+        }
         e.stroke_to(&mut s, PenSample::new(200_000.0, -150_000.0, 1.0, 0.01));
         e.stroke_to(&mut s, PenSample::new(-90_000.0, 300_000.0, 1.0, 0.02));
         let canvas_tiles = (W.div_ceil(TS as u32) * H.div_ceil(TS as u32)) as usize;

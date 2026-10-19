@@ -34,6 +34,9 @@ impl Wash {
         let reach = r + 0.5;
         let soft = (r * (1.0 - dab.hardness.clamp(0.0, 1.0))).max(1.0);
         let smooth_edge = (soft > 1.0).then_some(1.0 / soft);
+        // Inside this distance the shape is full (256).
+        let core = reach - soft;
+        let core2 = if core > 0.0 { core * core } else { -1.0 };
         let erase = dab.alpha_eraser < 0.5;
         let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         let color = [c(dab.color.r), c(dab.color.g), c(dab.color.b)];
@@ -86,7 +89,11 @@ impl Wash {
                 let mut shape = [0u16; CHUNK];
                 let shape = &mut shape[..n];
                 let dx0 = x as f32 + 0.5 - cx;
-                if let Some(inv_soft) = smooth_edge {
+                let dx1 = dx0 + (n - 1) as f32;
+                if dx0.abs().max(dx1.abs()).powi(2) + dy2 <= core2 {
+                    // All of the run in the opaque core (most of a big dab).
+                    shape.fill(256);
+                } else if let Some(inv_soft) = smooth_edge {
                     for (v, &j) in shape.iter_mut().zip(IOTA.iter()) {
                         let dx = dx0 + j;
                         let t = ((reach - (dx * dx + dy2).sqrt()) * inv_soft).clamp(0.0, 1.0);
