@@ -53,6 +53,9 @@ pub struct Model<'a> {
     /// The document's history has something to undo / redo.
     pub can_undo:           bool,
     pub can_redo:           bool,
+    /// What they would undo / redo ("Brush stroke", "Clip to layer below").
+    pub undo_label:         Option<&'static str>,
+    pub redo_label:         Option<&'static str>,
     /// Current view, for display: zoom (1.0 = 100 %) and angle in degrees.
     pub view_zoom:          f32,
     pub view_angle:         f32,
@@ -129,6 +132,11 @@ pub struct Actions {
     pub select:      Option<SelectCmd>,
     /// Copy / paste pixels.
     pub edit:        Option<EditCmd>,
+    /// The Layers docker changed the tree: the undo step's name.
+    pub layer_edit:  Option<&'static str>,
+    /// No layer edit is under way (nothing held, no name being typed, no
+    /// filter layer's dialog open): one done can be recorded for undo.
+    pub layers_idle: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -369,6 +377,10 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         if !home::new_dialog(ctx, form, model.max_canvas, actions) { state.new_form = None; }
     }
     dialog(ctx, state, actions);
+    // An opacity being dragged, a name typed, a filter layer being tuned:
+    // one undo step once done.
+    let filter_layer = state.filter.as_ref().is_some_and(|d| !d.targets_layer());
+    actions.layers_idle = !ctx.input(|i| i.pointer.any_down()) && !ctx.wants_keyboard_input() && !filter_layer;
 }
 
 /// The open dialog, if any: modal, the rest of the UI is dimmed.

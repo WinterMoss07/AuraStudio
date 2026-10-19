@@ -212,6 +212,30 @@ pub fn drag_ghost(ctx: &egui::Context, text: &str) {
     painter.galley(r.min + vec2(6.0, 3.0), galley, theme::TEXT);
 }
 
+/// Inside a scroll area's content: while something is dragged near (or
+/// past) its top or bottom edge, scroll that way, faster the farther out
+/// (Krita, CSP), to drop it on a row out of sight.
+pub fn drag_autoscroll(ui: &Ui) {
+    let ctx = ui.ctx();
+    if !egui::DragAndDrop::has_any_payload(ctx) { return; }
+    let Some(p) = ctx.pointer_latest_pos() else { return };
+    let r = ui.clip_rect();
+    if p.x < r.left() - 60.0 || p.x > r.right() + 60.0 { return; }
+    const EDGE: f32 = 36.0;
+    let dt = ctx.input(|i| i.stable_dt).clamp(0.001, 0.05);
+    // Points per second: up to ~1500 well past the edge.
+    let speed = |d: f32| (d / EDGE).clamp(0.0, 3.0) * 500.0 * dt;
+    let dy = if p.y < r.top() + EDGE {
+        speed(r.top() + EDGE - p.y)
+    } else if p.y > r.bottom() - EDGE {
+        -speed(p.y - (r.bottom() - EDGE))
+    } else {
+        return;
+    };
+    ui.scroll_with_delta_animation(vec2(0.0, dy), egui::style::ScrollAnimation::none());
+    ctx.request_repaint();
+}
+
 // --- Icons ---------------------------------------------------------------------
 
 /// Frameless toolbar button with an icon.

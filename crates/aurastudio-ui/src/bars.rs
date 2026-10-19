@@ -34,11 +34,13 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     }
                 });
                 ui.menu_button("Edit", |ui| {
-                    if ui.add_enabled(m.can_undo, egui::Button::new("Undo").shortcut_text("Ctrl+Z")).clicked() {
+                    let undo = m.undo_label.map_or("Undo".to_owned(), |l| format!("Undo {l}"));
+                    let redo = m.redo_label.map_or("Redo".to_owned(), |l| format!("Redo {l}"));
+                    if ui.add_enabled(m.can_undo, egui::Button::new(undo).shortcut_text("Ctrl+Z")).clicked() {
                         a.undo = true;
                         ui.close_menu();
                     }
-                    if ui.add_enabled(m.can_redo, egui::Button::new("Redo").shortcut_text("Ctrl+Y")).clicked() {
+                    if ui.add_enabled(m.can_redo, egui::Button::new(redo).shortcut_text("Ctrl+Y")).clicked() {
                         a.redo = true;
                         ui.close_menu();
                     }
@@ -59,8 +61,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     if ui.button("New layer").clicked() { layers::new_layer(m, a); ui.close_menu(); }
                     if ui.button("New folder").clicked() { layers::new_folder(m, a); ui.close_menu(); }
                     if ui.button("Duplicate").clicked() {
-                        m.layers.duplicate_active();
-                        a.recomposite = true;
+                        layers::duplicate(&mut state.layers, m, a);
                         ui.close_menu();
                     }
                     if ui.add(egui::Button::new("Clear").shortcut_text("Del")).clicked() {
@@ -69,7 +70,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         ui.close_menu();
                     }
                     if ui.button("Delete").clicked() {
-                        layers::delete_layer(&mut state.notice, m, a);
+                        layers::delete_layer(&mut state.layers, &mut state.notice, m, a);
                         ui.close_menu();
                     }
                     ui.separator();

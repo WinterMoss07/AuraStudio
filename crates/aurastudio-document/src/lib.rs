@@ -19,6 +19,9 @@ pub struct DocId(pub u64);
 pub struct Change {
     pub layer_id: u64,
     pub rect:     Rect,
+    /// The layer tree changed (a layer step): everything to merge again,
+    /// the layer list to refresh.
+    pub tree:     bool,
 }
 
 pub struct Document {
@@ -38,6 +41,9 @@ pub struct Document {
     pub selection:  Option<Selection>,
     /// A filter being previewed (its dialog is open).
     filter:     Option<FilterSession>,
+    /// The layer tree as the history last saw it: a different one is a
+    /// layer step to record (`record_tree`).
+    tree:       aurastudio_layers::TreeState,
 }
 
 /// A filter shown on the active layer while its dialog is open: the
@@ -64,7 +70,8 @@ impl Document {
     /// A document from its parts (a file being opened). It counts as
     /// saved.
     pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
-        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, filter: None }
+        let tree = layers.tree_state();
+        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, filter: None, tree }
     }
 
     /// Something changed (the layer panel edits the stack directly and
@@ -87,6 +94,8 @@ impl Document {
     /// snapshot, so only that rectangle is copied (and compressed).
     pub fn commit_stroke(&mut self, layer_id: u64, rect: Rect) {
         let before = self.layers.stroke_base_rect(rect);
+        // (A layer edit not recorded yet goes first: undone after it.)
+        self.record_tree("Layers");
         self.history.push("Brush stroke", layer_id, rect, &before);
         self.touch();
     }
@@ -106,6 +115,7 @@ impl Document {
             Some(s) => { self.layers.clear_selected(id, s)?; }
             None => { self.layers.clear_active(); }
         }
+        self.record_tree("Layers");
         self.history.push("Clear layer", id, rect, &before);
         self.touch();
         Some((id, rect))
@@ -119,6 +129,7 @@ impl Document {
         let area = aurastudio_layers::flood(&self.layers, id, x, y, p, self.selection.as_ref())?;
         let before = self.layers.layer_rect(id, area.bbox)?;
         let rect = self.layers.fill_area(id, &area, color)?;
+        self.record_tree("Layers");
         self.history.push("Fill", id, rect, &before);
         self.touch();
         Some((id, rect))
@@ -176,6 +187,7 @@ impl Document {
         let changed = self.filter_preview(Some(filter))?;
         let s = self.filter.take()?;
         if changed.1.2 > changed.1.0 {
+            self.record_tree("Layers");
             self.history.push(filter.kind.name(), s.layer, s.rect, &s.before);
             self.touch();
         }
@@ -192,15 +204,42 @@ impl Document {
     /// A filter dialog is open on this document.
     pub fn filtering(&self) -> bool { self.filter.is_some() }
 
+    /// Record what was done to the layer tree since the last time (the
+    /// Layers docker edits the stack directly; the app calls this once
+    /// the edit is over: the button released, the name typed), as one
+    /// undo step named `label`. False if nothing changed.
+    pub fn record_tree(&mut self, label: &'static str) -> bool {
+        let now = self.layers.tree_state();
+        let removed = self.layers.take_removed();
+        if now == self.tree { return false; }
+        let before = std::mem::replace(&mut self.tree, now);
+        self.history.push_tree(label, before, removed);
+        self.touch();
+        true
+    }
+
     pub fn undo(&mut self) -> Option<Change> {
+        // (A layer edit not recorded yet comes first.)
+        self.record_tree("Layers");
         let c = self.history.undo(&mut self.layers);
-        if c.is_some() { self.touch(); }
-        c
+        self.after_history(c)
     }
 
     pub fn redo(&mut self) -> Option<Change> {
+        if self.record_tree("Layers") { return None; }
         let c = self.history.redo(&mut self.layers);
-        if c.is_some() { self.touch(); }
+        self.after_history(c)
+    }
+
+    fn after_history(&mut self, c: Option<Change>) -> Option<Change> {
+        if let Some(c) = c {
+            self.touch();
+            if c.tree {
+                self.tree = self.layers.tree_state();
+                // A selection or filter preview of a layer gone.
+                if self.filter.as_ref().is_some_and(|s| self.layers.node(s.layer).is_none()) { self.filter = None; }
+            }
+        }
         c
     }
 
@@ -213,6 +252,9 @@ impl Document {
         self.filter_cancel();
         self.layers.resize(width, height);
         self.history.clear();
+        // (Deleted layers kept for undo have the old size.)
+        self.layers.take_removed();
+        self.tree = self.layers.tree_state();
         self.selection = None;
         self.touch();
     }
@@ -268,13 +310,17 @@ impl Document {
     /// undoable. Returns the new layer and the area painted.
     pub fn paste(&mut self, clip: &Clip) -> Option<(u64, Rect)> {
         if clip.rgba.len() != clip.width as usize * clip.height as usize * 4 { return None; }
+        // One step: undoing the paste takes its layer away.
+        self.record_tree("Layers");
         let (w, h) = (self.layers.width as i64, self.layers.height as i64);
         let (x0, y0) = (clip.x.max(0), clip.y.max(0));
         let (x1, y1) = ((clip.x + clip.width as i64).min(w), (clip.y + clip.height as i64).min(h));
         let id = self.layers.add_layer("Pasted");
         self.layers.set_active(id);
-        self.touch();
-        if x0 >= x1 || y0 >= y1 { return Some((id, (0, 0, 0, 0))); }
+        if x0 >= x1 || y0 >= y1 {
+            self.record_tree("Paste");
+            return Some((id, (0, 0, 0, 0)));
+        }
         let rect = (x0 as u32, y0 as u32, x1 as u32, y1 as u32);
         let (rw, rh) = ((x1 - x0) as usize, (y1 - y0) as usize);
         let mut px = Vec::with_capacity(rw * rh * 4);
@@ -282,9 +328,8 @@ impl Document {
             let row = ((y - clip.y) as usize * clip.width as usize + (x0 - clip.x) as usize) * 4;
             px.extend_from_slice(&clip.rgba[row..row + rw * 4]);
         }
-        let before = self.layers.layer_rect(id, rect)?;
         self.layers.set_layer_rect(id, rect, &px);
-        self.history.push("Paste", id, rect, &before);
+        self.record_tree("Paste");
         Some((id, rect))
     }
 }
@@ -443,8 +488,12 @@ mod tests {
         assert_eq!(px(&doc, id, 25, 25), [255, 255, 255, 0]);
         doc.undo().unwrap();
         assert_eq!(px(&doc, id, 12, 12), [255, 255, 255, 0]);
+        // Then the new layer itself.
+        assert!(doc.undo().unwrap().tree);
+        assert!(doc.layers.node(id).is_none());
         assert!(doc.undo().is_none());
 
+        assert!(doc.redo().unwrap().tree);
         doc.redo().unwrap();
         doc.redo().unwrap();
         assert_eq!(px(&doc, id, 16, 16), [0, 0, 255, 255]);
@@ -460,7 +509,7 @@ mod tests {
         doc.undo().unwrap();
         paint(&mut doc, id, (8, 8, 12, 12), [4, 5, 6, 255]);
         assert!(doc.redo().is_none());
-        assert_eq!(doc.history().undo_len(), 1);
+        assert_eq!(doc.history().undo_len(), 2, "the new layer, the stroke");
     }
 
     #[test]
@@ -507,8 +556,53 @@ mod tests {
         paint(&mut doc, gone, (0, 0, 4, 4), [2, 2, 2, 255]);
         doc.layers.set_active(gone);
         doc.layers.remove_active();
+        // The deletion is undone first, the layer back with its pixels.
+        assert!(doc.undo().unwrap().tree);
+        assert_eq!(px(&doc, gone, 1, 1), [2, 2, 2, 255]);
+        // A step of a layer deleted for good is skipped.
+        let mut doc = Document::new(DocId(1), "a", 32, 32);
+        let keep = doc.layers.add_layer("keep");
+        paint(&mut doc, keep, (0, 0, 4, 4), [1, 1, 1, 255]);
+        let gone = doc.layers.add_layer("gone");
+        paint(&mut doc, gone, (0, 0, 4, 4), [2, 2, 2, 255]);
+        doc.history.clear();
+        paint(&mut doc, keep, (0, 0, 4, 4), [3, 3, 3, 255]);
+        paint(&mut doc, gone, (0, 0, 4, 4), [4, 4, 4, 255]);
+        doc.layers.set_active(gone);
+        doc.layers.remove_active();
+        doc.layers.take_removed();
+        doc.tree = doc.layers.tree_state();
         let c = doc.undo().unwrap();
         assert_eq!(c.layer_id, keep);
+    }
+
+    /// The Layers docker's edits are undone one at a time, newest first,
+    /// between the strokes.
+    #[test]
+    fn layer_edits_are_undone_in_order() {
+        let mut doc = Document::new(DocId(1), "a", 32, 32);
+        let base = doc.layers.active_id();
+        paint(&mut doc, base, (0, 0, 8, 8), [1, 1, 1, 255]);
+        let new = doc.layers.add_layer("new");
+        assert!(doc.record_tree("New layer"));
+        doc.layers.node_mut(new).unwrap().props_mut().clip = true;
+        assert!(doc.record_tree("Clip"));
+        assert!(!doc.record_tree("Nothing"), "no change, no step");
+        assert_eq!(doc.history().undo_label(), Some("Clip"));
+        doc.undo().unwrap();
+        assert!(!doc.layers.node(new).unwrap().props().clip, "unclipped");
+        doc.undo().unwrap();
+        assert!(doc.layers.node(new).is_none(), "the new layer gone");
+        doc.undo().unwrap();
+        assert_eq!(px(&doc, base, 1, 1)[3], 0, "then the stroke");
+        doc.redo().unwrap();
+        doc.redo().unwrap();
+        doc.redo().unwrap();
+        assert!(doc.layers.node(new).unwrap().props().clip);
+        assert_eq!(doc.layers.active_id(), new);
+        // Saved: the pixel steps only.
+        let (undo, redo) = doc.history().export(100);
+        assert_eq!((undo.len(), redo.len()), (1, 0));
     }
 
     #[test]
@@ -549,7 +643,10 @@ mod tests {
         let off = Clip { x: -5, y: 60, ..clip.clone() };
         assert!(d.paste(&off).is_some());
         d.undo();
+        assert!(d.layers.node(new).is_some());
         d.undo();
-        assert_eq!(px(&d, 12, 12)[3], 0);
+        assert!(d.layers.node(new).is_none(), "undoing the paste takes its layer away");
+        d.redo();
+        assert_eq!(px(&d, 12, 12), vec![9, 8, 7, 255], "and redo brings it back, pixels too");
     }
 }

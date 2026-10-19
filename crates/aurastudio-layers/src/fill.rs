@@ -18,7 +18,8 @@ pub enum Refer {
     /// Every visible layer, merged.
     #[default]
     All,
-    /// The reference layers, merged.
+    /// The reference layer of the filled layer's folder (or the nearest
+    /// folder around with one, up to the top level).
     References,
 }
 
@@ -40,12 +41,16 @@ impl Default for FillParams {
 }
 
 impl FillParams {
-    /// The merge looked at (None: the layer itself).
-    pub fn pick(&self) -> Option<Pick> {
+    /// The merge looked at to fill `layer` (None: the layer itself).
+    pub fn pick(&self, layers: &LayerStack, layer: u64) -> Option<Pick> {
         match self.refer {
             Refer::Layer => None,
             Refer::All => Some(Pick { skip_drafts: self.skip_drafts, ..Pick::ALL }),
-            Refer::References => Some(Pick { skip_drafts: self.skip_drafts, references_only: true, ..Pick::ALL }),
+            Refer::References => Some(Pick {
+                skip_drafts: self.skip_drafts,
+                reference: Some(layers.reference_for(layer).unwrap_or(0)),
+                ..Pick::ALL
+            }),
         }
     }
 }
@@ -154,7 +159,7 @@ fn similar(a: [u8; 4], b: [u8; 4], tol: u8) -> bool {
 /// The area to fill from (x, y) on `layer`, inside `selection` if any.
 /// None if the point is off the canvas or outside the selection.
 pub fn flood(layers: &LayerStack, layer: u64, x: u32, y: u32, p: FillParams, selection: Option<&Selection>) -> Option<Area> {
-    flood_with(layers, layer, x, y, p, selection, p.pick())
+    flood_with(layers, layer, x, y, p, selection, p.pick(layers, layer))
 }
 
 /// `flood`, looking at the merge `pick` takes (None: the layer itself).

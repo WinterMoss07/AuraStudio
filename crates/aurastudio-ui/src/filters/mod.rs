@@ -236,7 +236,7 @@ pub fn apply_layer_edit(id: u64, edit: LayerEdit, m: &mut Model, a: &mut Actions
     let Some(aurastudio_layers::Node::Filter(fl)) = m.layers.node_mut(id) else { return };
     match edit {
         LayerEdit::Set(f) | LayerEdit::Restore(f) => fl.filter = f,
-        LayerEdit::Keep(f) => { fl.filter = f; a.modified = true; }
+        LayerEdit::Keep(f) => { fl.filter = f; a.modified = true; a.layer_edit = Some("Filter layer"); }
         LayerEdit::Remove => {
             m.layers.set_active(id);
             m.layers.remove_active();

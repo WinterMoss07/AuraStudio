@@ -118,15 +118,16 @@ fn stay_inside(doc: &Document, layer: u64, x: f32, y: f32, p: aurastudio_layers:
     let (w, h) = (doc.layers.width, doc.layers.height);
     if !(x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32) { return None; }
     let (x, y) = (x as u32, y as u32);
-    let refs = doc.layers.has_reference();
-    let pick = Pick { skip_drafts: p.skip_drafts, references_only: refs, skip: layer, ..Pick::ALL };
+    let reference = doc.layers.reference_for(layer);
+    let refs = reference.is_some();
+    let pick = Pick { skip_drafts: p.skip_drafts, reference, skip: layer, ..Pick::ALL };
     // On a line itself: free (CSP: the brush's center decides).
     let under = doc.layers.composite_pick((x, y, x + 1, y + 1), pick, true);
     if under.get(3).is_some_and(|a| *a >= 128) { return None; }
     let t = Instant::now();
     let area = aurastudio_layers::flood_with(&doc.layers, layer, x, y, p, doc.selection.as_ref(), Some(pick))?;
     log::info!("stay inside the lines: area {:?} found in {:.0} ms ({})", area.bbox, t.elapsed().as_secs_f64() * 1000.0,
-        if refs { "reference layers" } else { "all the other layers" });
+        if refs { "its reference layer" } else { "all the other layers" });
     aurastudio_layers::Selection::from_area(w, h, &area)
 }
 
@@ -207,35 +208,7 @@ impl Worker {
                     Cmd::Filter { action: aurastudio_ui::FilterAction::Preview(_), .. }
                         if queue.iter().any(|c| matches!(c, Cmd::Filter { .. })) => {}
                     Cmd::Recomposite(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_))) => {}
-                    Cmd::Recomposite(doc) => {
-                        // Off the UI thread: with filter layers a whole
-                        // merge takes a while. What was waiting to be shown
-                        // is part of it.
-                        let t = Instant::now();
-                        let (w, h) = {
-                            let mut d = doc.lock().unwrap();
-                            d.layers.drop_stroke_cache();
-                            (d.layers.width, d.layers.height)
-                        };
-                        self.pending.clear();
-                        // By bands, the document locked for one at a time
-                        // (the UI runs between two), each shown as it comes.
-                        let bands = doc.lock().unwrap().layers.merge_bands((0, 0, w, h), 128);
-                        for r in bands {
-                            let rgba = {
-                                let d = doc.lock().unwrap();
-                                if (d.layers.width, d.layers.height) != (w, h) { break; }
-                                d.layers.composite_rect(r)
-                            };
-                            let mut p = self.projection.lock().unwrap();
-                            if (p.width, p.height) != (w, h) { break; }
-                            p.push(r, rgba);
-                            drop(p);
-                            (self.notify)(Event::Painted);
-                        }
-                        self.doc = Some(doc);
-                        log::info!("recomposite {w}x{h}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
-                    }
+                    Cmd::Recomposite(doc) => self.recomposite(doc),
                     Cmd::Filter { doc, action } => {
                         use aurastudio_ui::FilterAction as F;
                         let t = Instant::now();
@@ -307,15 +280,13 @@ impl Worker {
                         events.push(Event::Notice("Finish the stroke first"));
                     }
                     Cmd::Undo(doc) => {
-                        let c = doc.lock().unwrap().undo().map(|c| (c.layer_id, c.rect));
-                        self.report(c, "Nothing to undo", &mut events);
-                        self.doc = Some(doc);
+                        let c = doc.lock().unwrap().undo();
+                        self.history_step(doc, c, "Nothing to undo", &mut events);
                         flush = true;
                     }
                     Cmd::Redo(doc) => {
-                        let c = doc.lock().unwrap().redo().map(|c| (c.layer_id, c.rect));
-                        self.report(c, "Nothing to redo", &mut events);
-                        self.doc = Some(doc);
+                        let c = doc.lock().unwrap().redo();
+                        self.history_step(doc, c, "Nothing to redo", &mut events);
                         flush = true;
                     }
                     Cmd::Clear(doc) => {
@@ -363,6 +334,52 @@ impl Worker {
             }
             for e in events {
                 (self.notify)(e);
+            }
+        }
+    }
+
+    /// Merge the whole canvas again (filter layers make it slow: off the
+    /// UI thread), by bands, the document locked for one at a time (the UI
+    /// runs between two), each shown as it comes.
+    fn recomposite(&mut self, doc: SharedDoc) {
+        let t = Instant::now();
+        let (w, h) = {
+            let mut d = doc.lock().unwrap();
+            d.layers.drop_stroke_cache();
+            (d.layers.width, d.layers.height)
+        };
+        // (What was waiting to be shown is part of it.)
+        self.pending.clear();
+        let bands = doc.lock().unwrap().layers.merge_bands((0, 0, w, h), 128);
+        for r in bands {
+            let rgba = {
+                let d = doc.lock().unwrap();
+                if (d.layers.width, d.layers.height) != (w, h) { break; }
+                d.layers.composite_rect(r)
+            };
+            let mut p = self.projection.lock().unwrap();
+            if (p.width, p.height) != (w, h) { break; }
+            p.push(r, rgba);
+            drop(p);
+            (self.notify)(Event::Painted);
+            // Room for the UI to take the document (a mutex isn't fair:
+            // locking again at once, this thread would get it first).
+            std::thread::sleep(Duration::from_micros(800));
+        }
+        self.doc = Some(doc);
+        log::info!("recomposite {w}x{h}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    /// An undo / redo done: show what changed (a layer step: everything).
+    fn history_step(&mut self, doc: SharedDoc, c: Option<aurastudio_document::Change>, none_msg: &'static str, events: &mut Vec<Event>) {
+        match c {
+            Some(c) if c.tree => {
+                self.recomposite(doc);
+                events.push(Event::LayerChanged { layer_id: c.layer_id });
+            }
+            c => {
+                self.report(c.map(|c| (c.layer_id, c.rect)), none_msg, events);
+                self.doc = Some(doc);
             }
         }
     }
@@ -643,7 +660,8 @@ mod tests {
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         stroke(&pt, &doc, 40.0);
         drop(pt);
-        assert_eq!(doc.lock().unwrap().history().undo_len(), 2);
+        // (The new layer, then the two strokes.)
+        assert_eq!(doc.lock().unwrap().history().undo_len(), 3);
     }
 
     /// Deleting the layer mid-stroke stops the stroke; what was painted
@@ -701,7 +719,8 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(2), "took {:?}", t.elapsed());
             assert!(pixel(&doc, id, 20, 10)[3] > 0, "start not painted (engine {n})");
             assert!(pixel(&doc, id, 20, 50)[3] > 0, "end not painted (engine {n})");
-            assert_eq!(doc.lock().unwrap().history().undo_len(), 1);
+            // (The new layer, one stroke.)
+            assert_eq!(doc.lock().unwrap().history().undo_len(), 2);
         }
     }
 

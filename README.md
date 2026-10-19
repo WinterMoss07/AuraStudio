@@ -97,21 +97,29 @@ management and intent, brush outline cursor, click debounce, autosave
 delay. Kept in `settings.txt`.
 
 **Layers** — Paper + Layer 1 for new documents, folders, opacity, blend,
-lock, rename, undo / redo with a memory budget.
+lock, rename, undo / redo with a memory budget. What the Layers docker
+does is undoable too (new, delete, move, group, clip, marks, label,
+opacity, blend, name, filter layer values), a deleted layer coming back
+with its pixels; hiding a layer is not an undo step (Photoshop, CSP).
 - **Clipping masks** (CSP / Photoshop): a layer shows only where the
   layer (or folder) under it has pixels; several can clip to the same
-  base; the base's opacity fades the whole group (Ctrl+Alt+G).
+  base; the base's opacity fades the whole group (Ctrl+Alt+G). A sky blue
+  chain links the rows.
 - **Filter layers** (Krita): any filter kept editable over what is under
   it (double-click to change it), clipped too; a whole merge with them
   runs on the paint thread.
 - **Reference layers** (CSP's lighthouse): what the fill tool can refer
   to, and what "Stay inside the lines" keeps the brushes in (CSP's
   anti-overflow: paint the colors on their own layer without crossing the
-  line art). **Draft layers** (CSP's pencil): shown, but left out of
+  line art). One per folder: a folder's layers look at its own reference,
+  else at the one of the folder around it. **Draft layers** (CSP's pencil): shown, but left out of
   fills, references and exported images.
 - **Color labels** (Krita's eight colors), the list filtered by them
   (Krita, Label Box); folders stand out, Group / Ungroup (Ctrl+G,
-  Ctrl+Shift+G); a right click on a row for all of it.
+  Ctrl+Shift+G, one button); a right click on a row for all of it.
+- Several layers at once: Ctrl+click and Shift+click select them, to
+  group, drag, duplicate, delete, label, clip or mark them together.
+  Dragging a layer (or a brush) to the edge of its list scrolls it.
 
 **View** — GPU zoom / pan / rotation, monitor ICC color management;
 mipmapped canvas (thin lines stay visible zoomed out; +33 % GPU memory for
@@ -289,8 +297,9 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Krita brush bundles (.bundle) import.
 - [x] Redesign of the New document dialog (0.8.0).
 - [ ] PSD / ORA export.
-- [ ] Undo for structural layer changes (add, delete, move, opacity…) and
-      canvas resize (history is cleared today).
+- [x] Undo for the layer changes (0.10.1).
+- [ ] Undo for canvas resize (history is cleared today); layer steps are
+      not kept in the file (its pixel steps are).
 - [ ] Persist per-brush settings and UI layout between sessions.
 - [ ] Barrel rotation input (WinTab orientation is already read).
 - [ ] Document tabs (the workspace already handles several documents).

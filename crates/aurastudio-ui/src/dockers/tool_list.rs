@@ -121,6 +121,7 @@ fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: 
     let filter = st.filter.trim().to_lowercase();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 3.0;
+        crate::widgets::drag_autoscroll(ui);
         let mut pick = |st: &mut ToolListState, ui: &mut Ui, i: usize| {
             let resp = brush_row(ui, st, &presets[i], i, i == *m.preset, m.brush, m.prefs.brush_previews);
             if resp.clicked() {

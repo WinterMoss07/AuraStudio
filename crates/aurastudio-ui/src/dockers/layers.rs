@@ -1,8 +1,12 @@
-//! Layers docker (CSP / Krita): blend mode + opacity of the active node,
-//! action icons, the active node's marks, then the layer tree: eye, color
-//! label, thumbnail / folder / filter icon, "100 % Normal" over the name,
-//! marks, lock. Rows drag and drop above, below, or into a folder; a right
-//! click opens their menu.
+//! Layers docker (CSP / Krita): color label, blend mode and opacity of the
+//! active node; one row of actions (new and the other kinds under its
+//! arrow, duplicate, group / ungroup, clip, reference, draft, label
+//! filter, delete); then the layer tree: eye, color label, thumbnail /
+//! folder / filter icon, "100 % Normal" over the name, marks, lock, and a
+//! chain across clipped rows. Ctrl / Shift + click select several rows;
+//! rows drag and drop above, below, or into a folder (the list scrolls at
+//! its edges); a right click opens their menu. What it changes becomes an
+//! undo step once done (the app records it).
 //!
 //! Marks (`aurastudio_layers::Props`): a color label (Krita's colors, the
 //! list can be filtered by them, as Krita and the Label Box plugin do),
@@ -22,8 +26,10 @@ use crate::{theme, Actions, BlendMode, Model, Notice};
 const THUMB: f32 = 36.0;
 const ROW_H: f32 = 44.0;
 const INDENT: f32 = 14.0;
-/// Clipped rows: the thumbnail moves right, a hooked arrow before it.
-const CLIP_INDENT: f32 = 14.0;
+/// Clipped rows: the thumbnail moves right (the chain shows what to).
+const CLIP_INDENT: f32 = 10.0;
+/// The eye's center, from the row's left (the chains line up with it).
+const EYE_X: f32 = 17.0;
 /// CSP's draft blue.
 const DRAFT_BLUE: Color32 = Color32::from_rgb(86, 156, 255);
 
@@ -39,6 +45,9 @@ pub struct LayersState {
     pending:  Option<LayerCmd>,
     /// A filter layer's dialog to open (the docker can't reach it).
     pub(crate) edit_filter: Option<(u64, bool)>,
+    /// The layers picked with Ctrl / Shift, the active one with them
+    /// (empty: only the active one).
+    selected: Vec<u64>,
 }
 
 impl LayersState {
@@ -51,6 +60,15 @@ impl LayersState {
     }
 
     pub fn shortcut(&mut self, cmd: LayerCmd) { self.pending = Some(cmd); }
+
+    /// What the layer actions apply to: the selected nodes (the active one
+    /// among them), or the active one alone.
+    pub fn selection(&self, layers: &LayerStack) -> Vec<u64> {
+        let active = layers.active_id();
+        let mut v: Vec<u64> = self.selected.iter().copied().filter(|id| layers.node(*id).is_some()).collect();
+        if !v.contains(&active) { v.push(active); }
+        v
+    }
 
     /// Keep one small texture per paint layer, rebuilt when its pixels changed.
     pub fn refresh_thumbnails(&mut self, ctx: &egui::Context, layers: &LayerStack) {
@@ -93,11 +111,13 @@ pub fn new_layer(m: &mut Model, a: &mut Actions) {
     let n = m.layers.layer_count();
     m.layers.add_layer(&format!("Layer {n}"));
     a.recomposite = true;
+    a.layer_edit = Some("New layer");
 }
 
 pub fn new_folder(m: &mut Model, a: &mut Actions) {
     m.layers.add_folder("Folder");
     a.recomposite = true;
+    a.layer_edit = Some("New folder");
 }
 
 /// A new filter layer above the active node, its dialog opened (Cancel
@@ -105,24 +125,49 @@ pub fn new_folder(m: &mut Model, a: &mut Actions) {
 pub fn new_filter_layer(st: &mut LayersState, kind: aurastudio_filters::Kind, m: &mut Model, a: &mut Actions) {
     let color = match kind { aurastudio_filters::Kind::BlackWhite => Filter::new(kind).color, _ => m.brush.color };
     let id = m.layers.add_filter_layer(Filter { color, ..Filter::new(kind) });
+    st.selected.clear();
     st.edit_filter = Some((id, true));
     a.recomposite = true;
+    a.layer_edit = Some("New filter layer");
 }
 
-pub fn delete_layer(notice: &mut Notice, m: &mut Model, a: &mut Actions) {
-    match m.layers.removal_refused() {
-        Some(why) => notice.set(why),
-        None => {
-            m.layers.remove_active();
-            a.recomposite = true;
+/// Delete the selected nodes (those that can be: not locked, not the last
+/// paint layer).
+pub fn delete_layer(st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
+    let mut refused = None;
+    for id in st.selection(m.layers) {
+        // (Gone with a folder deleted before it.)
+        if m.layers.node(id).is_none() { continue; }
+        m.layers.set_active(id);
+        match m.layers.removal_refused() {
+            Some(why) => refused = Some(why),
+            None => {
+                m.layers.remove_active();
+                a.recomposite = true;
+                a.layer_edit = Some("Delete layer");
+            }
         }
     }
+    st.selected.clear();
+    if let Some(why) = refused { notice.set(why); }
+}
+
+/// Duplicate the selected nodes, each above itself.
+pub fn duplicate(st: &mut LayersState, m: &mut Model, a: &mut Actions) {
+    let mut copies = Vec::new();
+    for id in st.selection(m.layers) {
+        m.layers.set_active(id);
+        if m.layers.active_id() == id { copies.push(m.layers.duplicate_active()); }
+    }
+    st.selected = if copies.len() > 1 { copies } else { Vec::new() };
+    a.recomposite = true;
+    a.layer_edit = Some("Duplicate");
 }
 
 /// Layer commands with a shortcut (and a menu entry).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerCmd {
-    /// Put the active node in a new folder (Ctrl+G).
+    /// Put the selected nodes in a new folder (Ctrl+G).
     Group,
     /// Take a folder's content out (Ctrl+Shift+G).
     Ungroup,
@@ -152,10 +197,10 @@ impl LayerCmd {
     }
     pub fn hint(self) -> &'static str {
         match self {
-            LayerCmd::Group => "Put the layer in a new folder",
+            LayerCmd::Group => "Put the selected layers in a new folder (Ctrl+click, Shift+click to select several)",
             LayerCmd::Ungroup => "Take the folder's layers out and remove the folder",
-            LayerCmd::Clip => "Show only where the layer below has pixels (several layers can clip to the same one)",
-            LayerCmd::Reference => "What the fill tool and \"Stay inside the lines\" look at (CSP's reference layer): mark the line art",
+            LayerCmd::Clip => "Chain to the layer below: show only where it has pixels (several layers can chain to the same one)",
+            LayerCmd::Reference => "What the fill tool and \"Stay inside the lines\" look at (CSP's reference layer): mark the line art. One per folder: the layers of a folder look at its own",
             LayerCmd::Draft => "A sketch: shown, but left out of fills, references and exports (CSP's draft layer)",
         }
     }
@@ -177,16 +222,52 @@ impl LayerCmd {
     }
 }
 
-pub fn apply(cmd: LayerCmd, m: &mut Model, a: &mut Actions) {
+/// The folder button's command: ungroup a folder selected alone, else
+/// group what is selected.
+fn group_or_ungroup(st: &LayersState, layers: &LayerStack) -> LayerCmd {
+    let sel = st.selection(layers);
+    if sel.len() == 1 && layers.active_node().is_folder() { LayerCmd::Ungroup } else { LayerCmd::Group }
+}
+
+pub fn apply(cmd: LayerCmd, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
+    let sel = st.selection(m.layers);
+    let active = m.layers.active_id();
     match cmd {
-        LayerCmd::Group => { m.layers.group_active("Folder"); }
-        LayerCmd::Ungroup => { if !m.layers.ungroup_active() { return; } }
-        LayerCmd::Clip => { let p = m.layers.active_node_mut().props_mut(); p.clip = !p.clip; }
-        LayerCmd::Reference => { let p = m.layers.active_node_mut().props_mut(); p.reference = !p.reference; }
-        LayerCmd::Draft => { let p = m.layers.active_node_mut().props_mut(); p.draft = !p.draft; }
+        LayerCmd::Group => {
+            if sel.len() > 1 { m.layers.group_nodes(&sel, "Folder"); } else { m.layers.group_active("Folder"); }
+            st.selected.clear();
+        }
+        LayerCmd::Ungroup => {
+            if !m.layers.ungroup_active() { return; }
+            st.selected.clear();
+        }
+        // (The selected nodes follow the active one.)
+        LayerCmd::Clip => {
+            let on = !m.layers.active_node().props().clip;
+            for id in &sel { if let Some(n) = m.layers.node_mut(*id) { n.props_mut().clip = on; } }
+        }
+        LayerCmd::Draft => {
+            let on = !m.layers.active_node().props().draft;
+            for id in &sel { if let Some(n) = m.layers.node_mut(*id) { n.props_mut().draft = on; } }
+        }
+        // One per folder: the active node only.
+        LayerCmd::Reference => {
+            let on = !m.layers.active_node().props().reference;
+            m.layers.set_reference(active, on);
+        }
     }
+    a.layer_edit = Some(cmd.name());
     // (Reference and draft change no pixel, only what tools look at.)
     if matches!(cmd, LayerCmd::Reference | LayerCmd::Draft) { a.modified = true; } else { a.recomposite = true; }
+}
+
+/// Give the selected nodes color label `l`.
+fn set_label(st: &LayersState, l: u8, m: &mut Model, a: &mut Actions) {
+    for id in st.selection(m.layers) {
+        if let Some(n) = m.layers.node_mut(id) { n.props_mut().label = l; }
+    }
+    a.modified = true;
+    a.layer_edit = Some("Color label");
 }
 
 /// The Layer menu's entries for the marks and folders.
@@ -195,7 +276,7 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     ui.separator();
     for cmd in [LayerCmd::Group, LayerCmd::Ungroup] {
         if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(cmd.name()).shortcut_text(cmd.shortcut())).on_hover_text(cmd.hint()).clicked() {
-            apply(cmd, m, a);
+            apply(cmd, st, m, a);
             ui.close_menu();
         }
     }
@@ -203,12 +284,13 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     for cmd in [LayerCmd::Clip, LayerCmd::Reference, LayerCmd::Draft] {
         let label = format!("{} {}", if cmd.is_on(m.layers) { "✔" } else { "   " }, cmd.name());
         if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).on_hover_text(cmd.hint()).clicked() {
-            apply(cmd, m, a);
+            apply(cmd, st, m, a);
             ui.close_menu();
         }
     }
     ui.menu_button("Color label", |ui| {
-        if label_swatches(ui, m.layers.active_node().props().label) .map(|l| { m.layers.active_node_mut().props_mut().label = l; a.modified = true; }).is_some() {
+        if let Some(l) = label_list(ui, m.layers.active_node().props().label) {
+            set_label(st, l, m, a);
             ui.close_menu();
         }
     });
@@ -222,36 +304,56 @@ fn filter_layer_menu(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut A
         for &kind in *kinds {
             if ui.button(kind.name()).on_hover_text(kind.hint()).clicked() {
                 new_filter_layer(st, kind, m, a);
-                // (In the Layer menu or the docker's popup.)
                 ui.close_menu();
-                ui.memory_mut(|mem| mem.close_popup());
             }
         }
     }
 }
 
-/// The label colors as round swatches (the current one ringed); the one
-/// clicked, if any.
+/// The label colors as round swatches in a row (the current one ringed);
+/// the one clicked, if any.
 fn label_swatches(ui: &mut Ui, current: u8) -> Option<u8> {
     let mut picked = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 3.0;
-        for (i, (name, rgb)) in LABELS.iter().enumerate() {
+        for (i, (name, _)) in LABELS.iter().enumerate() {
             let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
             let resp = resp.on_hover_text(*name);
-            let p = ui.painter();
-            if i == 0 {
-                p.circle_stroke(r.center(), 7.0, Stroke::new(1.2_f32, theme::TEXT_WEAK));
-                p.line_segment([r.center() + vec2(-5.0, 5.0), r.center() + vec2(5.0, -5.0)], Stroke::new(1.2_f32, theme::TEXT_WEAK));
-            } else {
-                p.circle_filled(r.center(), 7.0, Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-            }
-            if current as usize == i { p.circle_stroke(r.center(), 9.5, Stroke::new(1.5_f32, theme::TEXT)); }
-            else if resp.hovered() { p.circle_stroke(r.center(), 9.5, Stroke::new(1.0_f32, theme::TEXT_WEAK)); }
+            swatch(ui.painter(), r.center(), i as u8, 7.0);
+            if current as usize == i { ui.painter().circle_stroke(r.center(), 9.5, Stroke::new(1.5_f32, theme::TEXT)); }
+            else if resp.hovered() { ui.painter().circle_stroke(r.center(), 9.5, Stroke::new(1.0_f32, theme::TEXT_WEAK)); }
             if resp.clicked() { picked = Some(i as u8); }
         }
     });
     picked
+}
+
+/// The label colors listed top to bottom, with their names (the docker's
+/// label button, the Layer menu).
+fn label_list(ui: &mut Ui, current: u8) -> Option<u8> {
+    let mut picked = None;
+    ui.set_min_width(120.0);
+    for (i, (name, _)) in LABELS.iter().enumerate() {
+        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(120.0), 22.0), Sense::click());
+        if resp.hovered() || current as usize == i {
+            ui.painter().rect_filled(r, 4.0, if current as usize == i { theme::ACCENT_DIM } else { theme::WIDGET_HOVER });
+        }
+        swatch(ui.painter(), pos2(r.left() + 13.0, r.center().y), i as u8, 6.0);
+        ui.painter().text(pos2(r.left() + 26.0, r.center().y), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(13.0), theme::TEXT);
+        if resp.clicked() { picked = Some(i as u8); }
+    }
+    picked
+}
+
+/// Label `i`'s dot (an empty circle crossed out for "none").
+fn swatch(p: &egui::Painter, c: egui::Pos2, i: u8, r: f32) {
+    match label_color(i) {
+        Some(col) => { p.circle_filled(c, r, col); }
+        None => {
+            p.circle_stroke(c, r, Stroke::new(1.2_f32, theme::TEXT_WEAK));
+            p.line_segment([c + vec2(-r * 0.7, r * 0.7), c + vec2(r * 0.7, -r * 0.7)], Stroke::new(1.2_f32, theme::TEXT_WEAK));
+        }
+    }
 }
 
 fn label_color(label: u8) -> Option<Color32> {
@@ -261,20 +363,46 @@ fn label_color(label: u8) -> Option<Color32> {
 /// A layer row being dragged (egui drag and drop payload).
 struct LayerDrag(u64);
 
+/// Clipped layers' chain (sky blue).
+const CHAIN: Color32 = Color32::from_rgb(110, 200, 255);
+
+/// Two links of a chain, upright around `c`: half on the clipped row,
+/// half on the one under it.
+fn chain(p: &egui::Painter, c: egui::Pos2) {
+    p.rect_filled(Rect::from_center_size(c, vec2(11.0, 21.0)), 5.5, Color32::from_black_alpha(150));
+    let s = Stroke::new(1.7_f32, CHAIN);
+    for dy in [-4.5, 4.5] {
+        p.rect_stroke(Rect::from_center_size(c + vec2(0.0, dy), vec2(6.5, 10.5)), 3.2, s);
+    }
+}
+
 // --- Docker ---------------------------------------------------------------
 
 pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
-    if let Some(cmd) = st.pending.take() { apply(cmd, m, a); }
+    if let Some(cmd) = st.pending.take() { apply(cmd, st, m, a); }
+    // (Deleted meanwhile: an undo, a filter layer's Cancel.)
+    st.selected.retain(|id| m.layers.node(*id).is_some());
+    if st.selected.len() < 2 { st.selected.clear(); }
 
-    // Active node settings (CSP / Krita): blend mode + opacity; a filter
+    // The active node's color label, blend mode and opacity; a filter
     // layer's filter instead of a blend mode.
     let full = ui.available_width();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let left = ui.cursor().left();
+        let label = m.layers.active_node().props().label;
+        let lr = icon_toggle(ui, Icon::Label, "Color label (of the selected layers)", true, false);
+        if let Some(c) = label_color(label) {
+            ui.painter().circle_filled(lr.rect.right_bottom() + vec2(-6.0, -6.0), 3.5, c);
+        }
+        let lid = egui::Id::new("layer_label_popup");
+        egui::popup::popup_below_widget(ui, lid, &lr, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+            if let Some(l) = label_list(ui, label) { set_label(st, l, m, a); }
+        });
+        if lr.clicked() { ui.memory_mut(|mem| mem.toggle_popup(lid)); }
         if let Node::Filter(f) = m.layers.active_node() {
             let id = f.id;
-            let b = egui::Button::new(format!("{}…", f.filter.kind.name())).min_size(vec2(104.0, 24.0));
+            let b = egui::Button::new(format!("{}…", f.filter.kind.name())).min_size(vec2(96.0, 24.0));
             if ui.add(b).on_hover_text("Edit the filter (or double-click the layer)").clicked() { st.edit_filter = Some((id, false)); }
         } else {
             node_blend_combo(ui, m, a);
@@ -287,68 +415,41 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         {
             *node.opacity_mut() = v / 100.0;
             a.recomposite = true;
+            a.layer_edit = Some("Opacity");
         }
     });
 
-    // Actions at the top, like CSP.
+    // The actions in one row (CSP): new (and the other kinds under the
+    // arrow), duplicate, folder, the marks; delete on the right.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         if icon_button(ui, Icon::NewLayer, "New layer", true) { new_layer(m, a); }
-        if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
-        let fl = icon_toggle(ui, Icon::FilterLayer, "New filter layer: an adjustment you can change later (Krita)", true, false);
-        egui::popup::popup_below_widget(ui, egui::Id::new("new_filter_layer"), &fl, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        let arrow = egui::Button::image(egui::Image::new(Icon::Expanded.source()).fit_to_exact_size(vec2(12.0, 12.0)).tint(Color32::from_gray(0xc8)))
+            .frame(false)
+            .min_size(vec2(14.0, 24.0));
+        egui::menu::menu_custom_button(ui, arrow, |ui| {
             ui.set_min_width(170.0);
-            // Flat entries, as in a menu.
-            ui.style_mut().visuals.button_frame = false;
-            filter_layer_menu(ui, st, m, a);
-        });
-        if fl.clicked() { ui.memory_mut(|mem| mem.toggle_popup(egui::Id::new("new_filter_layer"))); }
-        if icon_button(ui, Icon::Duplicate, "Duplicate", true) {
-            m.layers.duplicate_active();
-            a.recomposite = true;
-        }
-        if icon_button(ui, Icon::Up, "Move up", true) {
-            m.layers.move_active(true);
-            a.recomposite = true;
-        }
-        if icon_button(ui, Icon::Down, "Move down", true) {
-            m.layers.move_active(false);
-            a.recomposite = true;
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if icon_button(ui, Icon::Delete, "Delete", m.layers.removal_refused().is_none()) {
-                delete_layer(notice, m, a);
-            }
-        });
-    });
-
-    // The active node's marks, and the folder commands (CSP's palette
-    // icons); the color filter on the right.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
+            if ui.button("New paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
+            if ui.button("New folder").clicked() { new_folder(m, a); ui.close_menu(); }
+            ui.menu_button("New filter layer", |ui| filter_layer_menu(ui, st, m, a))
+                .response.on_hover_text("An adjustment of what is under it, kept editable (Krita)");
+        }).response.on_hover_text("Other kinds of layers");
+        ui.add_space(2.0);
+        if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
+        let g = group_or_ungroup(st, m.layers);
+        let (icon, tip) = match g {
+            LayerCmd::Ungroup => (Icon::Ungroup, format!("Ungroup ({})\n{}", g.shortcut(), g.hint())),
+            _ => (Icon::Group, format!("Group ({})\n{}", g.shortcut(), g.hint())),
+        };
+        if icon_toggle(ui, icon, &tip, true, false).clicked() { apply(g, st, m, a); }
+        ui.add_space(4.0);
         for (cmd, icon) in [(LayerCmd::Clip, Icon::Clip), (LayerCmd::Reference, Icon::Reference), (LayerCmd::Draft, Icon::Draft)] {
             let tip = format!("{}{}\n{}", cmd.name(), if cmd.shortcut().is_empty() { String::new() } else { format!(" ({})", cmd.shortcut()) }, cmd.hint());
-            if icon_toggle(ui, icon, &tip, true, cmd.is_on(m.layers)).clicked() { apply(cmd, m, a); }
-        }
-        let label = m.layers.active_node().props().label;
-        let lr = icon_toggle(ui, Icon::Label, "Color label", true, false);
-        if let Some(c) = label_color(label) {
-            ui.painter().circle_filled(lr.rect.right_bottom() + vec2(-6.0, -6.0), 3.5, c);
-        }
-        let lid = egui::Id::new("layer_label_popup");
-        egui::popup::popup_below_widget(ui, lid, &lr, egui::PopupCloseBehavior::CloseOnClick, |ui| {
-            if let Some(l) = label_swatches(ui, label) {
-                m.layers.active_node_mut().props_mut().label = l;
-                a.modified = true;
-            }
-        });
-        if lr.clicked() { ui.memory_mut(|mem| mem.toggle_popup(lid)); }
-        ui.add_space(6.0);
-        for (cmd, icon) in [(LayerCmd::Group, Icon::Group), (LayerCmd::Ungroup, Icon::Ungroup)] {
-            let tip = format!("{} ({})\n{}", cmd.name(), cmd.shortcut(), cmd.hint());
-            if icon_toggle(ui, icon, &tip, cmd.enabled(m.layers), false).clicked() { apply(cmd, m, a); }
+            if icon_toggle(ui, icon, &tip, true, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let deletable = st.selected.len() > 1 || m.layers.removal_refused().is_none();
+            if icon_button(ui, Icon::Delete, "Delete", deletable) { delete_layer(st, notice, m, a); }
             let fr = icon_toggle(ui, Icon::FilterBy, "Show only the layers with some color labels", true, st.label_filter != 0);
             let fid = egui::Id::new("layer_filter_popup");
             egui::popup::popup_below_widget(ui, fid, &fr, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
@@ -365,10 +466,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
             ui.label(RichText::new("Showing").small().color(theme::TEXT_WEAK));
             for (i, _) in LABELS.iter().enumerate().filter(|(i, _)| st.label_filter >> i & 1 == 1) {
                 let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
-                match label_color(i as u8) {
-                    Some(c) => { ui.painter().circle_filled(r.center(), 5.0, c); }
-                    None => { ui.painter().circle_stroke(r.center(), 5.0, Stroke::new(1.0_f32, theme::TEXT_WEAK)); }
-                }
+                swatch(ui.painter(), r.center(), i as u8, 5.0);
             }
             if icon_button(ui, Icon::Close, "Show all", true) { st.label_filter = 0; }
         });
@@ -383,69 +481,131 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     let mut event = None;
     let mut dropped = None;
     let mut menu_cmd = None;
+    let mut shown_ids = Vec::new();
     Frame::none().fill(theme::DESK).rounding(6.0).show(ui, |ui| {
         ui.set_min_height(list_h);
         egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             let active = m.layers.active_id();
+            let mut rects: HashMap<u64, Rect> = HashMap::new();
+            let mut chains = Vec::new();
             for row in m.layers.rows() {
                 // (The active layer always shows: a new layer has no label
                 // yet.)
                 if st.label_filter != 0 && row.id != active && !m.layers.node(row.id).is_some_and(|n| shown(n, st.label_filter)) { continue; }
                 let (e, resp) = layer_row(ui, st, m, &row);
                 if let Some(e) = e { event = Some((row.id, e)); }
-                if let Some(d) = drop_target(ui, &resp, &row) { dropped = Some(d); }
+                if let Some(d) = drop_target(ui, &resp, &row, &st.selected) { dropped = Some(d); }
                 resp.context_menu(|ui| {
                     if let Some(c) = row_menu(ui, m, row.id) { menu_cmd = Some((row.id, c)); }
                 });
+                rects.insert(row.id, resp.rect);
+                if let (true, Some(b)) = (row.clipped, row.below) { chains.push((row.id, b)); }
+                shown_ids.push(row.id);
             }
+            // The chains, over the rows' edges.
+            for (c, b) in chains {
+                let (Some(rc), Some(rb)) = (rects.get(&c), rects.get(&b)) else { continue };
+                let y = if rb.top() - rc.bottom() < 4.0 { (rc.bottom() + rb.top()) / 2.0 } else { rb.top() };
+                chain(ui.painter(), pos2(rc.left() + EYE_X, y));
+            }
+            drag_autoscroll(ui);
         });
     });
+    let multi = st.selected.len() > 1;
     if let Some(d) = egui::DragAndDrop::payload::<LayerDrag>(ui.ctx()) {
-        if let Some(n) = m.layers.node(d.0) { drag_ghost(ui.ctx(), n.name()); }
+        let n = st.selection(m.layers).len();
+        match m.layers.node(d.0) {
+            Some(_) if multi && st.selected.contains(&d.0) => drag_ghost(ui.ctx(), &format!("{n} layers")),
+            Some(node) => drag_ghost(ui.ctx(), node.name()),
+            None => {}
+        }
     }
     if let Some((id, target, place)) = dropped {
-        if m.layers.move_node(id, target, place) { a.recomposite = true; }
+        // The selected layers go together when one of them is dragged.
+        let ids = if multi && st.selected.contains(&id) { st.selection(m.layers) } else { vec![id] };
+        if m.layers.move_nodes(&ids, id, target, place) {
+            a.recomposite = true;
+            a.layer_edit = Some("Move layer");
+        }
+        if ids.len() < 2 { st.selected.clear(); }
     }
 
     if let Some((id, c)) = menu_cmd {
+        // A row of the selection: for all of it; another: for it alone.
+        if !st.selection(m.layers).contains(&id) { st.selected.clear(); }
         m.layers.set_active(id);
         match c {
-            RowMenu::Cmd(cmd) => apply(cmd, m, a),
-            RowMenu::Label(l) => { m.layers.active_node_mut().props_mut().label = l; a.modified = true; }
+            RowMenu::Cmd(cmd) => apply(cmd, st, m, a),
+            RowMenu::Label(l) => set_label(st, l, m, a),
             RowMenu::Rename => st.renaming = m.layers.node(id).map(|n| (id, n.name().to_owned(), true)),
-            RowMenu::Duplicate => { m.layers.duplicate_active(); a.recomposite = true; }
-            RowMenu::Delete => delete_layer(notice, m, a),
+            RowMenu::Duplicate => duplicate(st, m, a),
+            RowMenu::Delete => delete_layer(st, notice, m, a),
             RowMenu::EditFilter => st.edit_filter = Some((id, false)),
         }
     }
 
     // Applied after the loop: the rows borrow the stack while drawing.
     if let Some((id, e)) = event {
-        let node = m.layers.node_mut(id).expect("row node exists");
         match e {
-            RowEvent::Select => m.layers.set_active(id),
+            RowEvent::Select(mods) => select(st, m, id, mods, &shown_ids),
             RowEvent::ToggleVisible => {
-                *node.visible_mut() ^= true;
+                if let Some(node) = m.layers.node_mut(id) { *node.visible_mut() ^= true; }
                 a.recomposite = true;
             }
             RowEvent::ToggleLock => {
-                *node.locked_mut() ^= true;
+                if let Some(node) = m.layers.node_mut(id) { *node.locked_mut() ^= true; }
                 a.modified = true;
+                a.layer_edit = Some("Lock");
             }
-            RowEvent::Renamed => a.modified = true,
+            RowEvent::Renamed => {
+                a.modified = true;
+                a.layer_edit = Some("Rename");
+            }
             RowEvent::ToggleCollapse => {
-                if let Node::Folder(f) = node { f.collapsed ^= true; }
+                if let Some(Node::Folder(f)) = m.layers.node_mut(id) { f.collapsed ^= true; }
             }
             RowEvent::EditFilter => {
+                st.selected.clear();
                 m.layers.set_active(id);
                 st.edit_filter = Some((id, false));
             }
             RowEvent::Mark(cmd) => {
+                if !st.selection(m.layers).contains(&id) { st.selected.clear(); }
                 m.layers.set_active(id);
-                apply(cmd, m, a);
+                apply(cmd, st, m, a);
             }
         }
+    }
+}
+
+/// A click on row `id`: select it alone; with Ctrl, add or remove it;
+/// with Shift, everything from the active row to it (`shown`: the rows
+/// top to bottom).
+fn select(st: &mut LayersState, m: &mut Model, id: u64, mods: egui::Modifiers, shown: &[u64]) {
+    let active = m.layers.active_id();
+    if mods.command {
+        let mut sel = st.selection(m.layers);
+        match sel.iter().position(|x| *x == id) {
+            Some(i) if sel.len() > 1 => {
+                sel.remove(i);
+                if id == active { m.layers.set_active(*sel.last().unwrap()); }
+            }
+            Some(_) => {}
+            None => {
+                sel.push(id);
+                m.layers.set_active(id);
+            }
+        }
+        st.selected = if sel.len() > 1 { sel } else { Vec::new() };
+    } else if mods.shift {
+        let (Some(i), Some(j)) = (shown.iter().position(|x| *x == active), shown.iter().position(|x| *x == id)) else { return };
+        let (i, j) = (i.min(j), i.max(j));
+        st.selected = if i < j { shown[i..=j].to_vec() } else { Vec::new() };
+        m.layers.set_active(id);
+    } else {
+        st.selected.clear();
+        m.layers.set_active(id);
     }
 }
 
@@ -513,7 +673,7 @@ fn node_blend_combo(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
         });
 }
 
-enum RowEvent { Select, ToggleVisible, ToggleLock, ToggleCollapse, Renamed, EditFilter, Mark(LayerCmd) }
+enum RowEvent { Select(egui::Modifiers), ToggleVisible, ToggleLock, ToggleCollapse, Renamed, EditFilter, Mark(LayerCmd) }
 
 enum RowMenu { Cmd(LayerCmd), Label(u8), Rename, Duplicate, Delete, EditFilter }
 
@@ -537,7 +697,7 @@ fn row_menu(ui: &mut Ui, m: &Model, id: u64) -> Option<RowMenu> {
         if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).on_hover_text(cmd.hint()).clicked() { out = Some(RowMenu::Cmd(cmd)); }
     }
     ui.separator();
-    if ui.add(egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
+    if ui.add(egui::Button::new("Group").shortcut_text("Ctrl+G")).on_hover_text(LayerCmd::Group.hint()).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
     if node.is_folder() && ui.add(egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
     if out.is_some() { ui.close_menu(); }
     out
@@ -545,9 +705,11 @@ fn row_menu(ui: &mut Ui, m: &Model, id: u64) -> Option<RowMenu> {
 
 /// Drag and drop on a row: where the dragged layer would land (a line, or
 /// the folder outlined), and the move once released there.
-fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row) -> Option<(u64, u64, Place)> {
+fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row, selected: &[u64]) -> Option<(u64, u64, Place)> {
     let dragged = resp.dnd_hover_payload::<LayerDrag>()?;
     if dragged.0 == row.id { return None; }
+    // (Several dragged together: not onto one of them.)
+    if selected.contains(&dragged.0) && selected.contains(&row.id) { return None; }
     let pointer = ui.ctx().pointer_interact_pos()?;
     let r = resp.rect;
     let t = (pointer.y - r.top()) / r.height();
@@ -585,6 +747,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     let props = node.props();
     let blend = node.blend_name();
     let active = m.layers.active_id() == row.id;
+    let picked = !active && st.selected.contains(&row.id);
     let is_filter = matches!(node, Node::Filter(_));
     let folder_size = match node { Node::Folder(f) => Some(count(&f.children)), _ => None };
     let label = label_color(props.label);
@@ -594,6 +757,8 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     // Folders stand out (Layer Kit); a color label tints the row lightly.
     let bg = if active {
         theme::ACCENT
+    } else if picked {
+        theme::ACCENT.gamma_multiply(if resp.hovered() { 0.6 } else { 0.5 })
     } else if let Some(c) = label {
         c.gamma_multiply(if resp.hovered() { 0.32 } else { 0.22 })
     } else if row.is_folder {
@@ -614,7 +779,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     }
 
     // Eye, at the far left whatever the depth (CSP / Krita).
-    let eye = Rect::from_center_size(pos2(rect.left() + 17.0, rect.center().y), vec2(22.0, 22.0));
+    let eye = Rect::from_center_size(pos2(rect.left() + EYE_X, rect.center().y), vec2(22.0, 22.0));
     let (eye_icon, eye_col) = if visible { (Icon::Eye, theme::TEXT) } else { (Icon::EyeClosed, if active { Color32::from_white_alpha(170) } else { theme::TEXT_WEAK }) };
     crate::icons::paint(ui, eye_icon, eye, 16.0, eye_col);
 
@@ -654,12 +819,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
 
     // Content, indented by folder depth (and clipping).
     let mut x = eye.right() + 4.0 + row.depth as f32 * INDENT;
-    if row.clipped {
-        // A hooked arrow pointing down at the base (CSP / Photoshop).
-        let arrow = Rect::from_min_size(pos2(x - 2.0, rect.center().y - 9.0), vec2(16.0, 16.0));
-        crate::icons::paint(ui, Icon::Clip, arrow, 13.0, if active { theme::TEXT } else { Color32::from_rgb(240, 120, 120) });
-        x += CLIP_INDENT;
-    }
+    if row.clipped { x += CLIP_INDENT; }
     let mut toggle_rect = Rect::NOTHING;
     let icon_box = if row.is_folder {
         // Disclosure triangle + folder icon.
@@ -757,7 +917,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         if lock.contains(pt) { return Some(RowEvent::ToggleLock); }
         if toggle_rect.contains(pt) { return Some(RowEvent::ToggleCollapse); }
         if let Some((_, cmd)) = mark_rects.iter().find(|(r, _)| r.contains(pt)) { return Some(RowEvent::Mark(*cmd)); }
-        return Some(RowEvent::Select);
+        return Some(RowEvent::Select(ui.input(|i| i.modifiers)));
     }
     None
 }

@@ -14,11 +14,13 @@ pub mod fill;
 mod selection;
 mod stroke_cache;
 mod tiles;
+mod tree;
 
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
 
 pub use compose::Pick;
+pub use tree::TreeState;
 pub use fill::{flood, flood_with, FillParams, Refer};
 pub use selection::Selection;
 pub use tiles::{new_tile, Tile, Tiles, TILE_BYTES};
@@ -211,6 +213,8 @@ pub struct Row {
     /// Reference / draft through a parent folder.
     pub reference_by_parent: bool,
     pub draft_by_parent: bool,
+    /// The node right under it in its folder (a clipped node's chain).
+    pub below:     Option<u64>,
 }
 
 /// Coverage of one tile in the stroke mask (one byte per pixel).
@@ -278,6 +282,9 @@ pub struct LayerStack {
     pub height: u32,
     stroke:      StrokeBuffers,
     next_id:     u64,
+    /// Nodes deleted since the history last took them (to undo the
+    /// deletion with their pixels).
+    removed:     Vec<Node>,
 }
 
 /// Where a node sits: the path of indices from the root.
@@ -347,6 +354,7 @@ impl LayerStack {
             height,
             stroke: StrokeBuffers::default(),
             next_id: 2,
+            removed: Vec::new(),
         }
     }
 
@@ -403,8 +411,10 @@ impl LayerStack {
         walk(&root, (width, height), &mut ids)?;
         if count_layers(&root) == 0 { return Err("no paint layer".into()); }
         let next_id = ids.iter().max().copied().unwrap_or(0) + 1;
-        let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id };
+        let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id, removed: Vec::new() };
         s.active = if ids.contains(&active) { active } else { first_layer_id(&s.root).unwrap_or(0) };
+        // (Files from 0.10.0 could mark several references in a folder.)
+        s.one_reference_per_folder(s.active);
         Ok(s)
     }
 
@@ -576,8 +586,103 @@ impl LayerStack {
         let top = f.children.last().map(|n| n.id());
         for (k, child) in f.children.into_iter().enumerate() { siblings.insert(last + k, child); }
         self.active = top.or_else(|| first_layer_id(&self.root)).unwrap_or(0);
+        // (Its reference may meet another one there.)
+        self.one_reference_per_folder(0);
         true
     }
+
+    /// Put `ids` in a new folder (Ctrl+G on several layers), where the
+    /// topmost of them was, keeping their order; the folder is active. A
+    /// node inside another one of them goes with it. Returns the folder,
+    /// or None if none of them exists.
+    pub fn group_nodes(&mut self, ids: &[u64], name: &str) -> Option<u64> {
+        let tops = self.outermost(ids);
+        let (&first, rest) = tops.split_first()?;
+        self.active = first;
+        let folder = self.group_active(name);
+        let mut prev = first;
+        for &id in rest {
+            if self.move_node(id, prev, Place::Below) { prev = id; }
+        }
+        self.active = folder;
+        Some(folder)
+    }
+
+    /// Move `ids` together next to `target` (several layers dragged),
+    /// keeping their order, `dragged` active. False if they can't go there
+    /// (onto or into one of them).
+    pub fn move_nodes(&mut self, ids: &[u64], dragged: u64, target: u64, place: Place) -> bool {
+        if ids.len() < 2 { return self.move_node(dragged, target, place); }
+        let tops = self.outermost(ids);
+        let Some(to) = self.path(target) else { return false };
+        if tops.iter().any(|&id| self.path(id).is_some_and(|p| to.starts_with(&p))) { return false; }
+        let Some((&first, rest)) = tops.split_first() else { return false };
+        if !self.move_node(first, target, place) { return false; }
+        let mut prev = first;
+        for &id in rest {
+            if self.move_node(id, prev, Place::Below) { prev = id; }
+        }
+        self.set_active(dragged);
+        true
+    }
+
+    /// `ids` that exist, top to bottom as listed, without those inside
+    /// another one of them (they come along with it).
+    fn outermost(&self, ids: &[u64]) -> Vec<u64> {
+        fn walk(nodes: &[Node], ids: &[u64], out: &mut Vec<u64>) {
+            for n in nodes.iter().rev() {
+                if ids.contains(&n.id()) {
+                    out.push(n.id());
+                } else if let Node::Folder(f) = n {
+                    walk(&f.children, ids, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, ids, &mut out);
+        out
+    }
+
+    /// The reference `id` looks at (fill, "stay inside the lines"): the
+    /// visible reference of its folder, else of the folder around it, up
+    /// to the top level (one per folder, CSP). Never `id` itself.
+    pub fn reference_for(&self, id: u64) -> Option<u64> {
+        let path = self.path(id)?;
+        let mut levels: Vec<&[Node]> = vec![&self.root];
+        for &i in &path[..path.len() - 1] {
+            if let Node::Folder(f) = &levels.last().unwrap()[i] { levels.push(&f.children); }
+        }
+        levels.iter().rev().find_map(|nodes| {
+            nodes.iter().find(|n| n.props().reference && n.visible() && n.id() != id).map(|n| n.id())
+        })
+    }
+
+    /// Mark `id` as its folder's reference (the other one there, if any,
+    /// isn't any more), or unmark it.
+    pub fn set_reference(&mut self, id: u64, on: bool) {
+        let Some(path) = self.path(id) else { return };
+        let (last, parent) = path.split_last().unwrap();
+        for (i, n) in siblings_mut(&mut self.root, parent).iter_mut().enumerate() {
+            if i == *last { n.props_mut().reference = on; } else if on { n.props_mut().reference = false; }
+        }
+    }
+
+    /// At most one reference per folder (after a move, an ungroup, a
+    /// file): `keep` stays one, else the topmost.
+    fn one_reference_per_folder(&mut self, keep: u64) {
+        fn walk(nodes: &mut [Node], keep: u64) {
+            let mine = nodes.iter().position(|n| n.id() == keep && n.props().reference)
+                .or_else(|| nodes.iter().rposition(|n| n.props().reference));
+            for (i, n) in nodes.iter_mut().enumerate() {
+                if Some(i) != mine { n.props_mut().reference = false; }
+                if let Node::Folder(f) = n { walk(&mut f.children, keep); }
+            }
+        }
+        walk(&mut self.root, keep);
+    }
+
+    /// The deleted nodes not taken yet (the history keeps them).
+    pub fn take_removed(&mut self) -> Vec<Node> { std::mem::take(&mut self.removed) }
 
     /// The node `id` is clipped and shows only where its base does: the
     /// base, or None if it isn't clipped or has nothing under it.
@@ -652,6 +757,10 @@ impl LayerStack {
         let original = siblings_mut(&mut self.root, parent).remove(*last);
         let mut copy = self.clone_node(&original);
         *copy.name_mut() = format!("{} copy", original.name());
+        // A copy is no reference (one per folder) nor a draft: it's a new
+        // layer to work on (CSP).
+        copy.props_mut().reference = false;
+        copy.props_mut().draft = false;
         let siblings = siblings_mut(&mut self.root, parent);
         siblings.insert(*last, original);
         let id = copy.id();
@@ -679,7 +788,7 @@ impl LayerStack {
         let path = self.path(self.active).unwrap();
         let (last, parent) = path.split_last().unwrap();
         let siblings = siblings_mut(&mut self.root, parent);
-        siblings.remove(*last);
+        let gone = siblings.remove(*last);
         // Next active: the node that was below, else above, else the parent.
         self.active = if *last > 0 {
             siblings[last - 1].id()
@@ -696,6 +805,7 @@ impl LayerStack {
         } else {
             first_layer_id(&self.root).unwrap()
         };
+        self.removed.push(gone);
         true
     }
 
@@ -760,6 +870,8 @@ impl LayerStack {
             Place::Below => siblings_mut(&mut self.root, t_parent).insert(*t_last, node),
         }
         self.active = id;
+        // A reference moved into a folder that has one: it stays the one.
+        self.one_reference_per_folder(id);
         true
     }
 
@@ -945,7 +1057,8 @@ impl LayerStack {
                 };
                 let clipped = n.props().clip && nodes[..i].iter().any(|b| !b.props().clip);
                 out.push(Row { id: n.id(), depth, is_folder, collapsed, locked_by_parent: up.locked, clipped,
-                               reference_by_parent: up.reference, draft_by_parent: up.draft });
+                               reference_by_parent: up.reference, draft_by_parent: up.draft,
+                               below: i.checked_sub(1).map(|b| nodes[b].id()) });
                 if let Node::Folder(f) = n {
                     if !f.collapsed {
                         let p = f.props;
@@ -1577,4 +1690,72 @@ mod layer_tree_tests {
         let sel = Selection::from_area(64, 64, &a).unwrap();
         assert!(sel.contains(5, 5) && !sel.contains(40, 5));
     }
+
+    #[test]
+    fn one_reference_per_folder_and_each_folder_its_own() {
+        let mut s = LayerStack::new_document(32, 32);
+        let ink = s.active_id();
+        let color = s.add_layer("color");
+        let other = s.add_layer("other");
+        s.set_reference(ink, true);
+        s.set_reference(other, true);
+        assert!(!s.node(ink).unwrap().props().reference, "one per folder");
+        assert_eq!(s.reference_for(color), Some(other));
+        assert_eq!(s.reference_for(other), None, "never itself");
+        // A folder with its own reference: its layers look at it only;
+        // the layers outside still look at theirs.
+        let g = s.group_nodes(&[ink, color], "g").unwrap();
+        s.set_reference(ink, true);
+        assert!(s.node(other).unwrap().props().reference, "another folder: both stay");
+        assert_eq!(s.reference_for(color), Some(ink));
+        assert_eq!(s.reference_for(other), None);
+        assert_eq!(s.reference_for(g), Some(other));
+        // Without one, a folder's layers look at the folder around.
+        s.set_reference(ink, false);
+        assert_eq!(s.reference_for(color), Some(other));
+        // Hidden: none.
+        *s.node_mut(other).unwrap().visible_mut() = false;
+        assert_eq!(s.reference_for(color), None);
+        // Moved next to another reference, the one moved stays one.
+        *s.node_mut(other).unwrap().visible_mut() = true;
+        s.set_reference(ink, true);
+        assert!(s.move_node(other, color, Place::Above));
+        assert!(s.node(other).unwrap().props().reference && !s.node(ink).unwrap().props().reference);
+    }
+
+    #[test]
+    fn copies_are_neither_reference_nor_draft() {
+        let mut s = LayerStack::new_document(32, 32);
+        let a = s.active_id();
+        let p = s.node_mut(a).unwrap().props_mut();
+        (p.reference, p.draft, p.clip, p.label) = (true, true, true, 3);
+        *s.node_mut(a).unwrap().locked_mut() = true;
+        let c = s.duplicate_active();
+        let p = s.node(c).unwrap().props();
+        assert!(!p.reference && !p.draft);
+        assert!(p.clip && p.label == 3 && s.node(c).unwrap().locked(), "the rest is copied");
+    }
+
+    #[test]
+    fn several_layers_group_and_move_together() {
+        let mut s = LayerStack::new_document(32, 32);
+        let one = s.active_id();
+        let two = s.add_layer("two");
+        let three = s.add_layer("three");
+        let names = |s: &LayerStack| s.rows().iter().map(|r| s.node(r.id).unwrap().name().to_owned()).collect::<Vec<_>>();
+        // Two apart, grouped where the top one was, in order.
+        let g = s.group_nodes(&[one, three], "g").unwrap();
+        assert_eq!(names(&s), ["g", "three", "Layer 1", "two", "Paper"]);
+        assert_eq!(s.active_id(), g);
+        // Dragged together under "two", in order; not into themselves.
+        assert!(!s.move_nodes(&[one, three], one, three, Place::Below));
+        assert!(s.move_nodes(&[three, one], one, two, Place::Below));
+        assert_eq!(names(&s), ["g", "two", "three", "Layer 1", "Paper"]);
+        assert_eq!(s.active_id(), one);
+        // A folder and what is inside it: the folder alone moves.
+        let f = s.group_nodes(&[two], "f").unwrap();
+        assert!(s.move_nodes(&[f, two], f, 1, Place::Below));
+        assert_eq!(names(&s), ["g", "three", "Layer 1", "Paper", "f", "two"]);
+    }
+
 }

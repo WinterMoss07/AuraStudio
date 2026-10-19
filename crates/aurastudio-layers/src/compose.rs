@@ -28,8 +28,9 @@ use crate::{FolderBlend, LayerStack, Node};
 pub struct Pick {
     /// Leave out the draft layers (and what draft folders hold).
     pub skip_drafts:     bool,
-    /// Only the reference layers (and what reference folders hold).
-    pub references_only: bool,
+    /// Only this node (a reference layer or folder, and what is clipped
+    /// to it); `Some(0)`: nothing (no reference to look at).
+    pub reference:       Option<u64>,
     /// Leave out this node (0: none): the layer being painted, which
     /// mustn't stop its own strokes (CSP's "exclude editing layer").
     pub skip:            u64,
@@ -39,7 +40,7 @@ pub struct Pick {
 }
 
 impl Pick {
-    pub const ALL: Pick = Pick { skip_drafts: false, references_only: false, skip: 0, until: 0 };
+    pub const ALL: Pick = Pick { skip_drafts: false, reference: None, skip: 0, until: 0 };
     /// What an exported image shows (CSP leaves drafts out).
     pub const EXPORT: Pick = Pick { skip_drafts: true, ..Pick::ALL };
 }
@@ -127,12 +128,16 @@ impl LayerStack {
 }
 
 impl LayerStack {
-    /// Rows per band to merge `rect` with a margin of `m`: the margin is
+    /// Rows per band to merge `rect` with a margin of `m`: BAND without
+    /// one; else the margin is
     /// merged again for each band, so all at once when it fits (~24 M
     /// pixels), else bands at least twice the margin tall. Sizes clamped to
     /// the canvas (a margin as big as the canvas made every band merge all
     /// of it again: 50 s on an A4 page).
     fn band_rows(&self, rect: Rect, m: u32) -> u32 {
+        // No margin: plain bands (short: the document is locked for one at
+        // a time while the UI waits).
+        if m == 0 { return BAND; }
         let ext_w = ((rect.2 + m).min(self.width) - rect.0.saturating_sub(m)) as u64;
         let ext_h = |band: u32| ((rect.1 + band + m).min(self.height) - rect.1.saturating_sub(m)) as u64;
         const BUDGET: u64 = 24 << 20;
@@ -170,11 +175,14 @@ fn straight(p: Premul) -> [u8; 4] {
     [unit_to_u8(p[0] / a), unit_to_u8(p[1] / a), unit_to_u8(p[2] / a), unit_to_u8(a)]
 }
 
+/// `n` is the reference `pick` looks at.
+fn is_reference(n: &Node, pick: Pick) -> bool { pick.reference == Some(n.id()) }
+
 /// Whether `n` is drawn (it, or for a folder its content).
 fn taken(n: &Node, pick: Pick, in_reference: bool) -> bool {
     if !n.visible() || n.opacity() <= 0.0 || n.id() == pick.skip { return false; }
     if pick.skip_drafts && n.props().draft { return false; }
-    if pick.references_only && !in_reference && !n.props().reference && !n.is_folder() { return false; }
+    if pick.reference.is_some() && !in_reference && !is_reference(n, pick) && !n.is_folder() { return false; }
     true
 }
 
@@ -191,11 +199,18 @@ fn compose(nodes: &[Node], b: &mut Block, scale: f32, pick: Pick, in_reference: 
         let mut j = i + 1;
         while j < nodes.len() && nodes[j].props().clip { j += 1; }
         let clipped = &nodes[i + 1..j];
-        let base_ref = in_reference || base.props().reference;
+        let base_ref = in_reference || is_reference(base, pick);
         let is_filter = matches!(base, Node::Filter(_));
         let wanted = !is_filter && clipped.iter().any(|c| taken(c, pick, base_ref));
         if !taken(base, pick, in_reference) {
-            // (A hidden base hides its clipped nodes.)
+            // (A hidden base hides its clipped nodes. Left out because
+            // only a reference is looked at: the reference may be one of
+            // them, shown on its own.)
+            if pick.reference.is_some() && !in_reference && base.visible() {
+                for c in clipped {
+                    if taken(c, pick, false) { draw(c, b, scale, pick, false, mask, false, stop); }
+                }
+            }
         } else if !wanted {
             draw(base, b, scale, pick, in_reference, mask, false, stop);
             if is_filter {
@@ -240,10 +255,10 @@ fn blend_block(b: &mut Block, g: &Block, op: f32, mode: BlendMode, mask: Option<
 /// a clipping group (full opacity, normal blending: the group gets them).
 #[allow(clippy::too_many_arguments)]
 fn draw(n: &Node, b: &mut Block, scale: f32, pick: Pick, in_reference: bool, mask: Option<&[f32]>, alone: bool, stop: &mut bool) {
-    let is_ref = in_reference || n.props().reference;
+    let is_ref = in_reference || is_reference(n, pick);
     match n {
         Node::Layer(l) => {
-            if pick.references_only && !is_ref { return; }
+            if pick.reference.is_some() && !is_ref { return; }
             let op = if alone { 1.0 } else { l.opacity * scale };
             let blend = if alone { BlendMode::Normal } else { l.blend };
             let fill = l.tiles.fill();
@@ -280,7 +295,7 @@ fn draw(n: &Node, b: &mut Block, scale: f32, pick: Pick, in_reference: bool, mas
             }
         },
         Node::Filter(fl) => {
-            if pick.references_only && !is_ref { return; }
+            if pick.reference.is_some() && !is_ref { return; }
             let op = if alone { 1.0 } else { fl.opacity * scale };
             // The filter works on straight 8-bit pixels, as on a layer.
             let src: Vec<u8> = b.px.iter().flat_map(|p| straight(*p)).collect();
@@ -435,16 +450,19 @@ mod tests {
         assert_eq!(at(&s, 25, Pick::ALL, false), [0, 0, 255, 255]);
         assert_eq!(at(&s, 25, draft, false), [255, 255, 255, 255]);
         // References only: nothing marked, nothing seen.
-        let refs = Pick { references_only: true, ..Pick::ALL };
+        let refs = Pick { reference: Some(0), ..Pick::ALL };
         assert_eq!(at(&s, 5, refs, true)[3], 0);
-        s.node_mut(ink).unwrap().props_mut().reference = true;
+        s.set_reference(ink, true);
+        let refs = Pick { reference: s.reference_for(sketch), ..Pick::ALL };
+        assert_eq!(refs.reference, Some(ink));
         assert_eq!(at(&s, 5, refs, true), [0, 0, 0, 255]);
         assert_eq!(at(&s, 25, refs, true)[3], 0, "not a reference");
         // A reference folder: everything in it counts.
         let mut t = stack();
         let f = t.add_folder("lines");
-        t.node_mut(f).unwrap().props_mut().reference = true;
+        t.set_reference(f, true);
         paint(&mut t, "in folder", (0, 0, 10, 64), [0, 0, 0, 255]);
+        let refs = Pick { reference: Some(f), ..Pick::ALL };
         assert_eq!(at(&t, 5, refs, true), [0, 0, 0, 255]);
         // Skip a layer; stop under a node.
         let skip = Pick { skip: sketch, ..Pick::ALL };

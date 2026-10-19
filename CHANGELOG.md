@@ -3,6 +3,48 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.10.1 — 2026-10-19
+
+**Undo for the layers**
+- Everything the Layers docker and the Layer menu do is undoable, one
+  step each: new layer / folder / filter layer, delete (the layer comes
+  back with its pixels), duplicate, move, group / ungroup, clip,
+  reference, draft, color label, lock, opacity, blend mode, name, a filter
+  layer's values. A slider dragged or a name typed is one step once
+  released. Hiding a layer or folding a folder is not a step (Photoshop,
+  CSP). Undoing a paste takes its layer away.
+- The Edit menu says what it undoes ("Undo Clip to layer below").
+- Moved, never copied: a layer step keeps the tree's settings and order
+  only, the pixels of the layers it deleted or made go along with it.
+
+**Layers docker**
+- One row of actions (CSP): new layer, and under its arrow the other
+  kinds (paint layer, folder, filter layers by group); duplicate; one
+  folder button (groups the selection, ungroups a folder selected alone);
+  clip, reference, draft; the label filter and delete on the right. Move
+  up / down are gone (drag and drop). The color label is a vertical list
+  beside the blend mode and opacity.
+- Clipping shows as a sky blue chain across the rows it links, in the
+  eyes' column; the chain icon in the toolbar.
+- Several layers: Ctrl+click adds or removes one, Shift+click takes a
+  range. Group, drag, duplicate, delete, label, clip and draft work on
+  all of them.
+- Dragging a layer to the top or bottom of the list scrolls it, faster
+  the farther out; the brush list does the same.
+
+**Reference layers**
+- One per folder: marking one unmarks the other there. A layer looks at
+  its folder's reference, else the one of the folder around it, up to
+  the top level (the fill's "References", "Stay inside the lines").
+- A duplicated layer is neither a reference nor a draft (its lock, label
+  and clipping are copied).
+
+**Fixed**
+- Merging the whole canvas again (a visibility, a clip, an opacity)
+  could hold the interface ~200 ms on a big page ("UI waited" in the
+  log): the merge goes by short bands and hands the document over
+  between two; the interface waits up to 15 ms for it.
+
 ## 0.10.0 — 2026-10-19
 
 **Clipping masks** (CSP, Photoshop)

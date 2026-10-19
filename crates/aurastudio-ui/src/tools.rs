@@ -330,10 +330,11 @@ pub fn fill_options(ui: &mut Ui, m: &mut Model, w: f32) {
         ui.selectable_value(&mut m.fill.refer, Refer::Layer, "This layer").on_hover_text("Only this layer's own pixels stop the fill");
         ui.selectable_value(&mut m.fill.refer, Refer::All, "All layers").on_hover_text("Lines on any visible layer stop the fill");
         ui.selectable_value(&mut m.fill.refer, Refer::References, "References")
-            .on_hover_text("Only the reference layers (lighthouse in the Layers docker) stop the fill: color under the line art whatever else is painted");
+            .on_hover_text("Only the reference layer (lighthouse in the Layers docker) stops the fill: color under the line art whatever else is painted. In a folder, its own reference counts");
     });
-    if m.fill.refer == aurastudio_layers::Refer::References && !m.layers.has_reference() {
-        ui.label(RichText::new("No reference layer: mark the line art with the lighthouse in the Layers docker.").small().color(theme::DROP));
+    let active = m.layers.active_id();
+    if m.fill.refer == aurastudio_layers::Refer::References && m.layers.reference_for(active).is_none() {
+        ui.label(RichText::new("No reference layer for this layer: mark the line art with the lighthouse in the Layers docker.").small().color(theme::DROP));
     }
     ui.add_enabled_ui(m.fill.refer != aurastudio_layers::Refer::Layer, |ui| {
         ui.checkbox(&mut m.fill.skip_drafts, "Ignore draft layers").on_hover_text("Sketches marked as drafts don't stop the fill");
@@ -343,9 +344,9 @@ pub fn fill_options(ui: &mut Ui, m: &mut Model, w: f32) {
 /// Brushes: "stay inside the lines" (CSP's anti-overflow).
 pub fn stay_inside_option(ui: &mut Ui, m: &mut Model) {
     ui.add_space(2.0);
-    let refs = m.layers.has_reference();
+    let refs = m.layers.reference_for(m.layers.active_id()).is_some();
     ui.checkbox(m.stay_inside, "Stay inside the lines").on_hover_text(if refs {
-        "The stroke stays in the area of the reference layers' lines where it starts (it starts free on a line itself)"
+        "The stroke stays in the area of the reference layer's lines where it starts (it starts free on a line itself)"
     } else {
         "No reference layer: the lines of the other layers are used. Mark the line art with the lighthouse in the Layers docker"
     });

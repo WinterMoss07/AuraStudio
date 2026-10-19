@@ -8,11 +8,16 @@
 //! A step holds ONE buffer: the pixels to put back. Undoing swaps it with
 //! the current pixels, which become the redo data, so undo and redo cost
 //! no extra copy of the image.
+//!
+//! Layer steps (what the Layers docker does) work the same way: the tree
+//! as it was (settings and order, no pixels), swapped with the tree as it
+//! is; the nodes only one side has (deleted, or made) wait in the step
+//! with their pixels.
 
 use std::collections::VecDeque;
 
 use aurastudio_canvas::Rect;
-use aurastudio_layers::LayerStack;
+use aurastudio_layers::{LayerStack, Node, TreeState};
 
 use crate::Change;
 
@@ -21,7 +26,12 @@ pub const DEFAULT_BUDGET: usize = 512 * 1024 * 1024;
 /// Upper bound on undo steps, whatever their size.
 const MAX_STEPS: usize = 200;
 
-struct Step {
+enum Step {
+    Pixels(PixelStep),
+    Tree(TreeStep),
+}
+
+struct PixelStep {
     label:    &'static str,
     layer_id: u64,
     rect:     Rect,
@@ -29,7 +39,42 @@ struct Step {
     data:     Vec<u8>,
 }
 
+struct TreeStep {
+    label: &'static str,
+    /// The tree to go back to.
+    state: TreeState,
+    /// Nodes it has that the tree hasn't (deleted ones), with pixels.
+    kept:  Vec<Node>,
+    bytes: usize,
+}
+
 impl Step {
+    fn label(&self) -> &'static str {
+        match self { Step::Pixels(p) => p.label, Step::Tree(t) => t.label }
+    }
+
+    fn bytes(&self) -> usize {
+        match self { Step::Pixels(p) => p.data.len(), Step::Tree(t) => t.bytes }
+    }
+
+    /// Undo / redo it: the step now goes the other way. None (and dropped)
+    /// if it can't be (its layer is gone).
+    fn swap_into(&mut self, layers: &mut LayerStack) -> Option<Change> {
+        match self {
+            Step::Pixels(p) => p.swap_into(layers).then(|| p.change()),
+            Step::Tree(t) => {
+                let now = layers.tree_state();
+                let made = layers.restore_tree(&t.state, std::mem::take(&mut t.kept));
+                t.state = now;
+                t.bytes = made.iter().map(Node::bytes).sum();
+                t.kept = made;
+                Some(Change { layer_id: layers.active_id(), rect: (0, 0, layers.width, layers.height), tree: true })
+            }
+        }
+    }
+}
+
+impl PixelStep {
     fn new(label: &'static str, layer_id: u64, rect: Rect, pixels: &[u8]) -> Self {
         Self { label, layer_id, rect, data: lz4_flex::compress_prepend_size(pixels) }
     }
@@ -45,7 +90,7 @@ impl Step {
     }
 
     fn change(&self) -> Change {
-        Change { layer_id: self.layer_id, rect: self.rect }
+        Change { layer_id: self.layer_id, rect: self.rect, tree: false }
     }
 }
 
@@ -78,16 +123,29 @@ impl History {
     pub fn push(&mut self, label: &'static str, layer_id: u64, rect: Rect, before: &[u8]) {
         if rect.0 >= rect.2 || rect.1 >= rect.3 { return; }
         self.redo.clear();
-        self.undo.push_back(Step::new(label, layer_id, rect, before));
+        self.undo.push_back(Step::Pixels(PixelStep::new(label, layer_id, rect, before)));
         self.trim();
     }
+
+    /// Record a change of the layer tree: `before` is the tree before it,
+    /// `removed` the nodes it deleted.
+    pub fn push_tree(&mut self, label: &'static str, before: TreeState, removed: Vec<Node>) {
+        self.redo.clear();
+        let bytes = removed.iter().map(Node::bytes).sum();
+        self.undo.push_back(Step::Tree(TreeStep { label, state: before, kept: removed, bytes }));
+        self.trim();
+    }
+
+    /// What the next undo would undo.
+    pub fn undo_label(&self) -> Option<&'static str> { self.undo.back().map(Step::label) }
+
+    pub fn redo_label(&self) -> Option<&'static str> { self.redo.last().map(Step::label) }
 
     pub fn undo(&mut self, layers: &mut LayerStack) -> Option<Change> {
         // A step whose layer was deleted can't be applied: drop it and go
         // on with the previous one.
         while let Some(mut step) = self.undo.pop_back() {
-            if step.swap_into(layers) {
-                let change = step.change();
+            if let Some(change) = step.swap_into(layers) {
                 self.redo.push(step);
                 return Some(change);
             }
@@ -97,8 +155,7 @@ impl History {
 
     pub fn redo(&mut self, layers: &mut LayerStack) -> Option<Change> {
         while let Some(mut step) = self.redo.pop() {
-            if step.swap_into(layers) {
-                let change = step.change();
+            if let Some(change) = step.swap_into(layers) {
                 self.undo.push_back(step);
                 self.trim();
                 return Some(change);
@@ -108,11 +165,18 @@ impl History {
     }
 
     /// The newest `max_undo` undo steps (oldest first) and every redo step
-    /// (next to redo last), for saving.
+    /// (next to redo last), for saving. Only the pixel steps: a layer step
+    /// holds the tree it goes back to, not kept in the file (the pixel
+    /// steps still apply: they only touch layers that exist, and are
+    /// skipped for the others, as for a deleted layer).
     pub fn export(&self, max_undo: usize) -> (Vec<SavedStep>, Vec<SavedStep>) {
-        let save = |s: &Step| SavedStep { label: s.label.to_owned(), layer_id: s.layer_id, rect: s.rect, data: s.data.clone() };
-        let skip = self.undo.len().saturating_sub(max_undo);
-        (self.undo.iter().skip(skip).map(save).collect(), self.redo.iter().map(save).collect())
+        let save = |s: &Step| match s {
+            Step::Pixels(p) => Some(SavedStep { label: p.label.to_owned(), layer_id: p.layer_id, rect: p.rect, data: p.data.clone() }),
+            Step::Tree(_) => None,
+        };
+        let undo: Vec<SavedStep> = self.undo.iter().filter_map(save).collect();
+        let skip = undo.len().saturating_sub(max_undo);
+        (undo.into_iter().skip(skip).collect(), self.redo.iter().filter_map(save).collect())
     }
 
     /// History read from a file. Steps whose rectangle is empty are
@@ -122,7 +186,7 @@ impl History {
         let load = |s: SavedStep| {
             let label = LABELS.iter().find(|l| **l == s.label).copied().unwrap_or("Action");
             (s.rect.0 < s.rect.2 && s.rect.1 < s.rect.3)
-                .then_some(Step { label, layer_id: s.layer_id, rect: s.rect, data: s.data })
+                .then_some(Step::Pixels(PixelStep { label, layer_id: s.layer_id, rect: s.rect, data: s.data }))
         };
         let mut h = Self {
             undo: undo.into_iter().filter_map(load).collect(),
@@ -144,7 +208,7 @@ impl History {
 
     /// Compressed bytes held by the history.
     pub fn bytes(&self) -> usize {
-        self.undo.iter().chain(self.redo.iter()).map(|s| s.data.len()).sum()
+        self.undo.iter().chain(self.redo.iter()).map(Step::bytes).sum()
     }
 
     /// Drop the oldest steps until within budget (the newest step is
@@ -153,7 +217,7 @@ impl History {
         let mut bytes = self.bytes();
         while self.undo.len() > 1 && (bytes > self.budget || self.undo.len() > MAX_STEPS) {
             if let Some(old) = self.undo.pop_front() {
-                bytes -= old.data.len();
+                bytes -= old.bytes();
             }
         }
     }

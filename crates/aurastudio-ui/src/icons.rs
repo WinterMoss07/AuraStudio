@@ -12,7 +12,7 @@ pub enum Icon {
     Brush, Eraser, Picker, Fill, Lasso, RectSelect,
     Line, Rectangle, Ellipse, Arc,
     // Layers docker.
-    NewLayer, NewFolder, Duplicate, Up, Down, Delete,
+    NewLayer, NewFolder, Duplicate, Delete,
     Eye, EyeClosed, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
     Clip, Reference, Draft, FilterLayer, Label, FilterBy, Group, Ungroup, Close,
     // Toolbar.
@@ -45,8 +45,6 @@ impl Icon {
             Icon::NewLayer   => svg!("../icons/layers-plus.svg"),
             Icon::NewFolder  => svg!("../icons/folder-plus.svg"),
             Icon::Duplicate  => svg!("../icons/copy.svg"),
-            Icon::Up         => svg!("../icons/arrow-up.svg"),
-            Icon::Down       => svg!("../icons/arrow-down.svg"),
             Icon::Delete     => svg!("../icons/trash-2.svg"),
             Icon::Eye        => svg!("../icons/eye.svg"),
             Icon::EyeClosed  => svg!("../icons/eye-closed.svg"),
@@ -56,7 +54,7 @@ impl Icon {
             Icon::FolderOpen => svg!("../icons/folder-open.svg"),
             Icon::Collapsed  => svg!("../icons/chevron-right.svg"),
             Icon::Expanded   => svg!("../icons/chevron-down.svg"),
-            Icon::Clip       => svg!("../icons/corner-left-down.svg"),
+            Icon::Clip       => svg!("../icons/link.svg"),
             Icon::Reference  => svg!("../icons/lighthouse.svg"),
             Icon::Draft      => svg!("../icons/pencil-line.svg"),
             Icon::FilterLayer => svg!("../icons/sliders-horizontal.svg"),

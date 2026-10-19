@@ -234,6 +234,7 @@ fn fuzz() {
                     ..Default::default()
                 };
                 let (can_undo, can_redo) = (d.history().undo_len() > 0, d.history().redo_len() > 0);
+                let (undo_label, redo_label) = (d.history().undo_label(), d.history().redo_label());
                 let sel_outlines = d.selection.as_ref().map(|s| s.outlines().to_vec());
                 let selection = d.selection.clone();
                 let to_points = |p: (f32, f32)| { let q = view.canvas_to_screen(p, size, area); (q.0, q.1) };
@@ -249,6 +250,8 @@ fn fuzz() {
                         layers: &mut d.layers,
                         can_undo,
                         can_redo,
+                        undo_label,
+                        redo_label,
                         view_zoom: view.zoom,
                         view_angle: view.angle.to_degrees(),
                         prefs: &mut prefs,
@@ -270,6 +273,8 @@ fn fuzz() {
                     aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
                 });
                 ui_frames += 1;
+                // As App::render_frame: the docker's edits become undo steps.
+                if actions.layers_idle { d.record_tree(actions.layer_edit.unwrap_or("Layers")); }
                 // As App::select_preset.
                 if p != preset && p < lib.presets.len() {
                     let color = brush.color;
@@ -381,15 +386,29 @@ fn fuzz() {
                         d.layers.add_filter_layer(f);
                     }
                     8 => {
+                        let active = d.layers.active_id();
+                        let on = !d.layers.active_node().props().reference;
                         let p = d.layers.active_node_mut().props_mut();
                         match r.below(4) {
                             0 => p.clip ^= true,
-                            1 => p.reference ^= true,
+                            1 => d.layers.set_reference(active, on),
                             2 => p.draft ^= true,
                             _ => p.label = r.below(9) as u8,
                         }
                     }
-                    9 => if r.chance(0.5) { d.layers.group_active("G"); } else { d.layers.ungroup_active(); },
+                    // Several layers grouped, moved together.
+                    9 => {
+                        let some: Vec<u64> = ids.iter().copied().filter(|_| r.chance(0.3)).collect();
+                        match r.below(4) {
+                            0 => { d.layers.group_active("G"); }
+                            1 => { d.layers.ungroup_active(); }
+                            2 => { d.layers.group_nodes(&some, "G"); }
+                            _ => if let (Some(&first), Some(&target)) = (some.first(), ids.get(r.below(ids.len() as u64) as usize)) {
+                                let place = [aurastudio_layers::Place::Above, aurastudio_layers::Place::Below, aurastudio_layers::Place::Inside][r.below(3) as usize];
+                                d.layers.move_nodes(&some, first, target, place);
+                            },
+                        }
+                    }
                     2 => { d.layers.remove_active(); }
                     3 => { d.layers.duplicate_active(); }
                     4 => d.layers.move_active(r.chance(0.5)),
@@ -398,6 +417,8 @@ fn fuzz() {
                         if let Some(n) = d.layers.node_mut(id) { *n.locked_mut() ^= true; }
                     },
                 }
+                // Recorded for undo now, or with the next ones.
+                if r.chance(0.6) { d.record_tree("Fuzz"); }
                 ops += 1;
             }
             // Save and open again (in memory): the same document comes back.

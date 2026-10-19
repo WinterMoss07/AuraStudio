@@ -157,7 +157,19 @@ pub enum AppEvent {
     Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
 }
 
+/// The document locked, if it gets free within `wait`.
+fn lock_soon(doc: &SharedDoc, wait: Duration) -> Option<std::sync::MutexGuard<'_, aurastudio_document::Document>> {
+    let t = Instant::now();
+    loop {
+        if let Ok(d) = doc.try_lock() { return Some(d); }
+        if t.elapsed() >= wait { return None; }
+        std::thread::sleep(Duration::from_micros(200));
+    }
+}
+
 pub struct App {
+    /// Name of the layer edit under way (its undo step, once over).
+    layer_label: Option<&'static str>,
     proxy:  EventLoopProxy<AppEvent>,
     window: Option<Arc<Window>>,
     gpu:    Option<GpuState>,
@@ -312,6 +324,7 @@ impl App {
         // Start with the round pen (the catalog starts with pencils).
         let first = library.presets.iter().position(|p| p.name == "Round pen").unwrap_or(0);
         Self {
+            layer_label: None,
             proxy,
             window: None,
             gpu:    None,
@@ -1115,12 +1128,17 @@ impl App {
         let mut doc_busy = false;
         let run_ui = std::mem::take(&mut self.ui_dirty) || !gpu.has_cached_ui();
         let ui_saw_canvas = &mut self.ui_saw_canvas;
+        let layer_label = &mut self.layer_label;
         let over_canvas = self.over_canvas;
         if run_ui { self.activity.ui_frames += 1 } else { self.activity.canvas_frames += 1 }
-        match if run_ui { doc.try_lock().ok() } else { None } {
+        // Outside a stroke, wait a little for it: a merge on the paint
+        // thread takes it band by band and lets go between two.
+        let wait = if self.is_drawing { Duration::ZERO } else { Duration::from_millis(15) };
+        match if run_ui { lock_soon(doc, wait) } else { None } {
             Some(mut doc) => gpu.render(|ctx| {
             *ui_saw_canvas = over_canvas;
             let (can_undo, can_redo) = (doc.history().undo_len() > 0, doc.history().redo_len() > 0);
+            let (undo_label, redo_label) = (doc.history().undo_label(), doc.history().redo_label());
             let d = &mut *doc;
             let mut model = Model {
                 brush,
@@ -1145,6 +1163,8 @@ impl App {
                 to_points: &to_points,
                 can_undo,
                 can_redo,
+                undo_label,
+                redo_label,
                 view_zoom,
                 view_angle,
                 prefs: &mut prefs,
@@ -1154,6 +1174,13 @@ impl App {
                 home,
             };
             aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions);
+            // What the Layers docker did, as one undo step once over (the
+            // opacity released, the name typed).
+            if let Some(l) = actions.layer_edit { *layer_label = Some(l); }
+            if actions.layers_idle && d.record_tree(layer_label.unwrap_or("Layers")) {
+                log::info!("undo step: {}", layer_label.unwrap_or("Layers"));
+            }
+            if actions.layers_idle { *layer_label = None; }
             }),
             None => {
                 doc_busy = run_ui;
