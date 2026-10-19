@@ -7,7 +7,8 @@
 //! - `mimetype`: `application/x-aurastudio`, first, so the type can be
 //!   told from the first bytes;
 //! - `document.json`: canvas size, resolution, active layer, the layer
-//!   tree (names, folders, opacity, blend, visibility, locks) and the
+//!   tree (names, folders, filter layers, opacity, blend, visibility,
+//!   locks, color labels, clipping, reference and draft marks) and the
 //!   undo / redo steps;
 //! - `layers/<id>.tiles`: each layer's painted tiles (64 × 64 RGBA), each
 //!   LZ4-compressed (fast both ways); an empty layer has none. Format 1
@@ -25,15 +26,17 @@ use std::path::{Path, PathBuf};
 
 use aurastudio_canvas::{BlendMode, TILE};
 use aurastudio_document::{DocId, Document, History, SavedStep, DEFAULT_BUDGET};
-use aurastudio_layers::{Folder, FolderBlend, Layer, LayerStack, Node, Tiles, TILE_BYTES};
+use aurastudio_filters::Filter;
+use aurastudio_layers::{FilterLayer, Folder, FolderBlend, Layer, LayerStack, Node, Props, Tiles, LABELS, TILE_BYTES};
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 
 /// File extension of AuraStudio documents.
 pub const EXTENSION: &str = "aurs";
 /// Version written in new files; files from a newer version are refused.
-/// 2: layers saved as tiles.
-pub const FORMAT_VERSION: u32 = 2;
+/// 2: layers saved as tiles. 3: filter layers, labels, clipping,
+/// reference and draft marks.
+pub const FORMAT_VERSION: u32 = 3;
 /// Undo steps kept in a saved file (the newest ones).
 pub const SAVED_UNDO_STEPS: usize = 50;
 /// Image formats Open can read, by extension.
@@ -74,13 +77,63 @@ enum NodeJson {
         id: u64, name: String, visible: bool, opacity: f32, blend: String, locked: bool,
         #[serde(default)]
         background: bool,
+        #[serde(default, skip_serializing_if = "PropsJson::is_default")]
+        props: PropsJson,
     },
     Folder {
         id: u64, name: String, visible: bool, opacity: f32, blend: String, locked: bool,
         #[serde(default)]
         collapsed: bool,
         children: Vec<NodeJson>,
+        #[serde(default, skip_serializing_if = "PropsJson::is_default")]
+        props: PropsJson,
     },
+    Filter {
+        id: u64, name: String, visible: bool, opacity: f32, locked: bool,
+        filter: FilterJson,
+        #[serde(default, skip_serializing_if = "PropsJson::is_default")]
+        props: PropsJson,
+    },
+}
+
+/// A node's Props: the label by name ("Blue"...), the marks.
+#[derive(Serialize, Deserialize, Default, PartialEq)]
+struct PropsJson {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    label:     String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    clip:      bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    reference: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    draft:     bool,
+}
+
+fn is_false(b: &bool) -> bool { !*b }
+
+impl PropsJson {
+    fn is_default(&self) -> bool { *self == PropsJson::default() }
+
+    fn of(p: Props) -> Self {
+        let label = if p.label == 0 { String::new() } else { LABELS.get(p.label as usize).map_or(String::new(), |l| l.0.to_owned()) };
+        PropsJson { label, clip: p.clip, reference: p.reference, draft: p.draft }
+    }
+
+    /// (An unknown label name: none.)
+    fn props(&self) -> Props {
+        let label = LABELS.iter().position(|l| l.0 == self.label && !self.label.is_empty()).unwrap_or(0) as u8;
+        Props { label, clip: self.clip, reference: self.reference, draft: self.draft }
+    }
+}
+
+/// A filter layer's filter: its kind by name ("Gaussian blur"...), its
+/// values and color.
+#[derive(Serialize, Deserialize)]
+struct FilterJson {
+    kind:   String,
+    values: Vec<f32>,
+    #[serde(default)]
+    color:  [u8; 3],
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,6 +177,7 @@ pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
                 NodeJson::Layer {
                     id: l.id, name: l.name.clone(), visible: l.visible, opacity: l.opacity,
                     blend: l.blend.name().into(), locked: l.locked, background: l.background,
+                    props: PropsJson::of(l.props),
                 }
             }
             Node::Folder(f) => NodeJson::Folder {
@@ -134,6 +188,12 @@ pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
                 },
                 locked: f.locked, collapsed: f.collapsed,
                 children: walk(&f.children, blobs),
+                props: PropsJson::of(f.props),
+            },
+            Node::Filter(f) => NodeJson::Filter {
+                id: f.id, name: f.name.clone(), visible: f.visible, opacity: f.opacity, locked: f.locked,
+                filter: FilterJson { kind: f.filter.kind.name().into(), values: f.filter.values.clone(), color: f.filter.color },
+                props: PropsJson::of(f.props),
             },
         }).collect()
     }
@@ -247,7 +307,7 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
     {
         let len = size.0 as usize * size.1 as usize * 4;
         nodes.into_iter().map(|n| Ok(match n {
-            NodeJson::Layer { id, name, visible, opacity, blend, locked, background } => {
+            NodeJson::Layer { id, name, visible, opacity, blend, locked, background, props } => {
                 let mut layer = Layer::new(size.0, size.1, background);
                 let damaged = || format!("damaged file (layer {id})");
                 if version >= 2 {
@@ -259,14 +319,27 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
                     let rgba = unpack(&blob, len).ok_or_else(damaged)?;
                     layer.tiles = Tiles::from_rgba(size.0, size.1, &rgba, layer.tiles.fill());
                 }
-                Node::Layer(Layer { id, name, visible, opacity: opacity.clamp(0.0, 1.0), blend: blend_from(&blend), locked, ..layer })
+                Node::Layer(Layer { id, name, visible, opacity: opacity.clamp(0.0, 1.0), blend: blend_from(&blend), locked, props: props.props(), ..layer })
             }
-            NodeJson::Folder { id, name, visible, opacity, blend, locked, collapsed, children } => Node::Folder(Folder {
+            NodeJson::Folder { id, name, visible, opacity, blend, locked, collapsed, children, props } => Node::Folder(Folder {
                 id, name, visible, opacity: opacity.clamp(0.0, 1.0),
                 blend: if blend == PASS_THROUGH { FolderBlend::PassThrough } else { FolderBlend::Isolated(blend_from(&blend)) },
                 locked, collapsed,
                 children: build(children, zip, size, version)?,
+                props: props.props(),
             }),
+            NodeJson::Filter { id, name, visible, opacity, locked, filter, props } => {
+                let kind = aurastudio_filters::GROUPS.iter().flat_map(|g| g.1.iter()).find(|k| k.name() == filter.kind)
+                    .ok_or_else(|| format!("unknown filter \"{}\" (made by a newer version of AuraStudio?)", filter.kind))?;
+                // Values past what this version knows are dropped, missing
+                // ones get their default (Filter::v checks the ranges).
+                let mut values = kind.defaults();
+                for (v, f) in values.iter_mut().zip(&filter.values) { if f.is_finite() { *v = *f; } }
+                Node::Filter(FilterLayer {
+                    id, name, visible, opacity: opacity.clamp(0.0, 1.0), locked, props: props.props(),
+                    filter: Filter { kind: *kind, values, color: filter.color },
+                })
+            }
         })).collect()
     }
     let root = build(json.layers, &mut zip, (w, h), version)?;
@@ -554,6 +627,31 @@ mod tests {
         // New layers get ids the file didn't use.
         let new = back.layers.add_layer("new");
         assert!(!doc.layers.layer_ids().contains(&new));
+    }
+
+    #[test]
+    fn filter_layers_labels_and_marks_come_back() {
+        use aurastudio_filters::{Filter, Kind};
+        let (mut doc, ink, shade) = sample_doc();
+        {
+            let p = doc.layers.node_mut(ink).unwrap().props_mut();
+            p.label = 6;
+            p.reference = true;
+        }
+        doc.layers.node_mut(shade).unwrap().props_mut().clip = true;
+        doc.layers.node_mut(shade - 1).unwrap().props_mut().draft = true;
+        doc.layers.set_active(ink);
+        let blur = Filter { values: vec![3.5], ..Filter::new(Kind::GaussianBlur) };
+        let f = doc.layers.add_filter_layer(blur.clone());
+        *doc.layers.node_mut(f).unwrap().opacity_mut() = 0.25;
+        let back = roundtrip(&doc).doc;
+        assert_eq!(back.layers.node(ink).unwrap().props(), Props { label: 6, reference: true, ..Props::default() });
+        assert!(back.layers.node(shade).unwrap().props().clip);
+        assert!(back.layers.node(shade - 1).unwrap().props().draft);
+        let Some(Node::Filter(fl)) = back.layers.node(f) else { panic!("filter layer lost") };
+        assert_eq!((&fl.filter, fl.opacity, fl.name.as_str()), (&blur, 0.25, "Gaussian blur"));
+        // The merged image is the same.
+        assert_eq!(back.layers.composite_rect((0, 0, 96, 64)), doc.layers.composite_rect((0, 0, 96, 64)));
     }
 
     #[test]

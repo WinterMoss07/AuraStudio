@@ -80,6 +80,24 @@ impl Selection {
         Some(s)
     }
 
+    /// The pixels of a fill area (the brushes' "stay inside the lines"),
+    /// without an outline to draw. None if it is empty.
+    pub fn from_area(width: u32, height: u32, area: &crate::fill::Area) -> Option<Self> {
+        let b = area.bbox;
+        if b.2 <= b.0 || b.3 <= b.1 { return None; }
+        let mut s = Self::empty(width, height);
+        for y in b.1..b.3.min(height) {
+            for x in b.0..b.2.min(width) {
+                if area.contains(x, y) {
+                    let i = y as usize * width as usize + x as usize;
+                    s.bits[i / 64] |= 1 << (i % 64);
+                }
+            }
+        }
+        s.bbox = b;
+        Some(s)
+    }
+
     fn set_run(&mut self, y: u32, x0: u32, x1: u32) {
         let row = y as usize * self.width as usize;
         for i in row + x0 as usize..row + x1 as usize {

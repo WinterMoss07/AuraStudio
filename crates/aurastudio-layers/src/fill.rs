@@ -1,26 +1,53 @@
 //! Fill tool: the area of similar color around a point, then painted.
 //!
 //! The area is found on the merged image (to color under line art on
-//! another layer, the usual case) or on the layer itself. The merged image
-//! is made only for the tiles the fill goes through, never whole.
+//! another layer, the usual case), on the reference layers only (CSP:
+//! the line art, whatever is painted around it), or on the layer itself.
+//! Draft layers are left out unless asked. The merged image is made only
+//! for the tiles the fill goes through, never whole.
 
 use aurastudio_canvas::{Rect, TILE};
 
-use crate::{LayerStack, Node, Selection};
+use crate::{LayerStack, Node, Pick, Selection};
+
+/// What the fill looks at to find the area (CSP's "Refer multiple").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Refer {
+    /// Only the layer filled.
+    Layer,
+    /// Every visible layer, merged.
+    #[default]
+    All,
+    /// The reference layers, merged.
+    References,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FillParams {
     /// Largest difference per channel still counted as "the same color".
-    pub tolerance: u8,
-    /// Look at every visible layer merged (else only the layer filled).
-    pub merged:    bool,
+    pub tolerance:   u8,
+    pub refer:       Refer,
+    /// Leave the draft layers out of what is looked at (CSP's "Exclude
+    /// draft layers").
+    pub skip_drafts: bool,
     /// Grow the area by this many pixels, under the edges of anti-aliased
     /// lines (no white halo between the line and the fill).
-    pub expand:    u32,
+    pub expand:      u32,
 }
 
 impl Default for FillParams {
-    fn default() -> Self { Self { tolerance: 32, merged: true, expand: 1 } }
+    fn default() -> Self { Self { tolerance: 32, refer: Refer::All, skip_drafts: true, expand: 1 } }
+}
+
+impl FillParams {
+    /// The merge looked at (None: the layer itself).
+    pub fn pick(&self) -> Option<Pick> {
+        match self.refer {
+            Refer::Layer => None,
+            Refer::All => Some(Pick { skip_drafts: self.skip_drafts, ..Pick::ALL }),
+            Refer::References => Some(Pick { skip_drafts: self.skip_drafts, references_only: true, ..Pick::ALL }),
+        }
+    }
 }
 
 /// Pixels of the area and their bounding box. One bit per pixel, a row
@@ -62,6 +89,7 @@ impl Area {
 struct Candidates<'a> {
     layers:    &'a LayerStack,
     layer:     Option<&'a crate::Tiles>,
+    pick:      Pick,
     selection: Option<&'a Selection>,
     seed:      [u8; 4],
     tolerance: u8,
@@ -92,7 +120,7 @@ impl Candidates<'_> {
                 None => (None, 0),
             },
             None => {
-                merged = self.layers.composite_rect((x0, y0, x0 + tw, y0 + th));
+                merged = self.layers.composite_pick((x0, y0, x0 + tw, y0 + th), self.pick, false);
                 (Some(&merged[..]), tw)
             }
         };
@@ -126,21 +154,28 @@ fn similar(a: [u8; 4], b: [u8; 4], tol: u8) -> bool {
 /// The area to fill from (x, y) on `layer`, inside `selection` if any.
 /// None if the point is off the canvas or outside the selection.
 pub fn flood(layers: &LayerStack, layer: u64, x: u32, y: u32, p: FillParams, selection: Option<&Selection>) -> Option<Area> {
+    flood_with(layers, layer, x, y, p, selection, p.pick())
+}
+
+/// `flood`, looking at the merge `pick` takes (None: the layer itself).
+pub fn flood_with(layers: &LayerStack, layer: u64, x: u32, y: u32, p: FillParams, selection: Option<&Selection>, pick: Option<Pick>) -> Option<Area> {
     let (w, h) = (layers.width, layers.height);
     if x >= w || y >= h { return None; }
     if selection.is_some_and(|s| !s.contains(x, y)) { return None; }
+    let merged = pick.is_some();
+    let pick = pick.unwrap_or_default();
     let layer_tiles = match layers.node(layer)? {
-        Node::Layer(l) if !p.merged => Some(&l.tiles),
+        Node::Layer(l) if !merged => Some(&l.tiles),
         Node::Layer(_) => None,
-        Node::Folder(_) => return None,
+        Node::Folder(_) | Node::Filter(_) => return None,
     };
     let seed = match layer_tiles {
         Some(t) => t.pixel(x, y),
-        None => { let m = layers.composite_rect((x, y, x + 1, y + 1)); [m[0], m[1], m[2], m[3]] }
+        None => { let m = layers.composite_pick((x, y, x + 1, y + 1), pick, false); [m[0], m[1], m[2], m[3]] }
     };
     let cols = w.div_ceil(TILE);
     let mut cand = Candidates {
-        layers, layer: layer_tiles, selection, seed, tolerance: p.tolerance, cols,
+        layers, layer: layer_tiles, pick, selection, seed, tolerance: p.tolerance, cols,
         tiles: vec![None; (cols * h.div_ceil(TILE)) as usize],
     };
     let mut area = Area::new(w, h);
@@ -263,7 +298,7 @@ mod tests {
         assert!(a.contains(32, 32) && a.contains(32, 16));
         assert!(!a.contains(32, 12) && !a.contains(2, 2), "went past the ring");
         // On the color layer alone (empty), the whole canvas is one area.
-        let all = flood(&s, color, 32, 32, FillParams { merged: false, ..p }, None).unwrap();
+        let all = flood(&s, color, 32, 32, FillParams { refer: Refer::Layer, ..p }, None).unwrap();
         assert!(all.contains(2, 2));
         // Grown by one pixel: under the ring's inner edge.
         let grown = flood(&s, color, 32, 32, FillParams { expand: 1, ..p }, None).unwrap();
@@ -299,7 +334,7 @@ mod tests {
             assert!(s.set_layer_rect(id, (0, 0, w, h), &px));
             let sel = (round % 2 == 1).then(|| Selection::polygon(w, h, &[(5.0, 3.0), (w as f32 - 2.0, 20.0), (w as f32 / 2.0, h as f32)]).unwrap());
             let (x, y) = (rnd(w), rnd(h));
-            let p = FillParams { tolerance: 10, merged: false, expand: 0 };
+            let p = FillParams { tolerance: 10, refer: Refer::Layer, skip_drafts: true, expand: 0 };
             let got = flood(&s, id, x, y, p, sel.as_ref());
             let allowed = |x: u32, y: u32| sel.as_ref().is_none_or(|s| s.contains(x, y));
             if !allowed(x, y) { assert!(got.is_none()); continue; }
@@ -331,11 +366,11 @@ mod tests {
     fn bench_fill_a4() {
         let s = LayerStack::new_document(2480, 3508);
         let id = s.active_id();
-        for merged in [true, false] {
+        for refer in [Refer::All, Refer::Layer] {
             let t = std::time::Instant::now();
-            let a = flood(&s, id, 10, 10, FillParams { merged, expand: std::env::var("E").map_or(1, |v| v.parse().unwrap()), ..Default::default() }, None).unwrap();
+            let a = flood(&s, id, 10, 10, FillParams { refer, expand: std::env::var("E").map_or(1, |v| v.parse().unwrap()), ..Default::default() }, None).unwrap();
             assert!(a.contains(2479, 3507));
-            println!("merged {merged}: {:?}", t.elapsed());
+            println!("{refer:?}: {:?}", t.elapsed());
         }
     }
 }

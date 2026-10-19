@@ -27,6 +27,7 @@ use egui_dock::{DockArea, DockState};
 
 pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
+pub use dockers::layers::LayerCmd;
 pub use filters::FilterAction;
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
@@ -67,6 +68,8 @@ pub struct Model<'a> {
     /// The tool and brush last used in each toolbox group.
     pub tools:              &'a mut ToolMemory,
     pub fill:               &'a mut FillParams,
+    /// Brushes stay inside the reference layers' lines.
+    pub stay_inside:        &'a mut bool,
     pub shape:              &'a mut ShapeOptions,
     pub has_selection:      bool,
     /// The selection, if any (what a filter changes).
@@ -267,12 +270,15 @@ impl UiState {
         if self.filter.is_none() { self.filter = filters::new_dialog(ctx, kinds[n % kinds.len()], m); }
     }
 
+    /// A layer command from its shortcut (Ctrl+G...), done next frame.
+    pub fn layer_shortcut(&mut self, cmd: LayerCmd) { self.layers.shortcut(cmd); }
+
     /// A filter dialog is open (the layer shows its preview: no painting).
     pub fn filtering(&self) -> bool { self.filter.is_some() }
 
     /// Close the filter dialog without keeping its filter (the app sends
     /// the Cancel itself: a document is closing...).
-    pub fn close_filter(&mut self) -> bool { self.filter.take().is_some() }
+    pub fn close_filter(&mut self) -> bool { self.filter.take().is_some_and(|d| d.targets_layer()) }
 
     /// A medium was just made: show it and edit its name.
     pub fn rename_medium(&mut self, name: &str) {
@@ -347,8 +353,16 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         if !prefs::dialog(ctx, section, model.prefs, model.display_profile, &mut reset) { state.prefs_open = None; }
         if reset { state.dock = dockers::default_dock(); }
     }
+    // A filter layer to edit (the Layers docker asked).
+    if let Some((id, created)) = state.layers.edit_filter.take() {
+        if state.filter.is_none() {
+            state.filter = filters::layer_dialog(ctx, id, created, model);
+        }
+    }
     if let Some(d) = &mut state.filter {
-        if !filters::dialog(ctx, d, actions) { state.filter = None; }
+        let open = filters::dialog(ctx, d, actions);
+        if let Some((id, e)) = d.edit.take() { filters::apply_layer_edit(id, e, model, actions); }
+        if !open { state.filter = None; }
     }
     if let Some(form) = &mut state.new_form {
         state.new_category = form.category();

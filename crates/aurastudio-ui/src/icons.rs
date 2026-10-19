@@ -14,6 +14,7 @@ pub enum Icon {
     // Layers docker.
     NewLayer, NewFolder, Duplicate, Up, Down, Delete,
     Eye, EyeClosed, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
+    Clip, Reference, Draft, FilterLayer, Label, FilterBy, Group, Ungroup, Close,
     // Toolbar.
     FileNew, FileOpen, Save, Copy, Paste,
     // Tools docker: the brush mediums.
@@ -55,6 +56,15 @@ impl Icon {
             Icon::FolderOpen => svg!("../icons/folder-open.svg"),
             Icon::Collapsed  => svg!("../icons/chevron-right.svg"),
             Icon::Expanded   => svg!("../icons/chevron-down.svg"),
+            Icon::Clip       => svg!("../icons/corner-left-down.svg"),
+            Icon::Reference  => svg!("../icons/lighthouse.svg"),
+            Icon::Draft      => svg!("../icons/pencil-line.svg"),
+            Icon::FilterLayer => svg!("../icons/sliders-horizontal.svg"),
+            Icon::Label      => svg!("../icons/tag.svg"),
+            Icon::FilterBy   => svg!("../icons/funnel.svg"),
+            Icon::Group      => svg!("../icons/folder-input.svg"),
+            Icon::Ungroup    => svg!("../icons/folder-output.svg"),
+            Icon::Close      => svg!("../icons/x.svg"),
             Icon::Pencil     => svg!("../icons/pencil.svg"),
             Icon::Ink        => svg!("../icons/pen-tool.svg"),
             Icon::Charcoal   => svg!("../icons/charcoal.svg"),

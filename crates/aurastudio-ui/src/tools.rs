@@ -323,9 +323,31 @@ pub fn fill_options(ui: &mut Ui, m: &mut Model, w: f32) {
     if let Some(v) = fill_slider(ui, "fill_expand", expand, m.fill.expand as f32, w) {
         m.fill.expand = v as u32;
     }
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut m.fill.merged, true, "All layers").on_hover_text("Lines on any layer stop the fill");
-        ui.selectable_value(&mut m.fill.merged, false, "This layer");
+    ui.add_space(2.0);
+    ui.label(RichText::new("Refer to").small().color(theme::TEXT_WEAK));
+    ui.horizontal_wrapped(|ui| {
+        use aurastudio_layers::Refer;
+        ui.selectable_value(&mut m.fill.refer, Refer::Layer, "This layer").on_hover_text("Only this layer's own pixels stop the fill");
+        ui.selectable_value(&mut m.fill.refer, Refer::All, "All layers").on_hover_text("Lines on any visible layer stop the fill");
+        ui.selectable_value(&mut m.fill.refer, Refer::References, "References")
+            .on_hover_text("Only the reference layers (lighthouse in the Layers docker) stop the fill: color under the line art whatever else is painted");
+    });
+    if m.fill.refer == aurastudio_layers::Refer::References && !m.layers.has_reference() {
+        ui.label(RichText::new("No reference layer: mark the line art with the lighthouse in the Layers docker.").small().color(theme::DROP));
+    }
+    ui.add_enabled_ui(m.fill.refer != aurastudio_layers::Refer::Layer, |ui| {
+        ui.checkbox(&mut m.fill.skip_drafts, "Ignore draft layers").on_hover_text("Sketches marked as drafts don't stop the fill");
+    });
+}
+
+/// Brushes: "stay inside the lines" (CSP's anti-overflow).
+pub fn stay_inside_option(ui: &mut Ui, m: &mut Model) {
+    ui.add_space(2.0);
+    let refs = m.layers.has_reference();
+    ui.checkbox(m.stay_inside, "Stay inside the lines").on_hover_text(if refs {
+        "The stroke stays in the area of the reference layers' lines where it starts (it starts free on a line itself)"
+    } else {
+        "No reference layer: the lines of the other layers are used. Mark the line art with the lighthouse in the Layers docker"
     });
 }
 

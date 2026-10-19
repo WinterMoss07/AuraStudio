@@ -226,6 +226,21 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool) -> boo
     enabled && resp.clicked()
 }
 
+/// An icon button that stays lit while `on` (a layer mark, a filter).
+/// Returns its response (clicked, or a popup under it).
+pub fn icon_toggle(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool, on: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
+    let resp = resp.on_hover_text(tooltip);
+    if on {
+        ui.painter().rect_filled(rect, 5.0, theme::ACCENT_DIM);
+    } else if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect, 5.0, theme::WIDGET_HOVER);
+    }
+    let col = if !enabled { theme::TEXT_WEAK.gamma_multiply(0.45) } else if on { theme::TEXT } else { Color32::from_gray(0xc8) };
+    crate::icons::paint(ui, icon, rect, 16.0, col);
+    resp
+}
+
 // --- Brush controls (options bar + Tool options dock) ---------------------
 
 /// What a fill slider shows and edits.

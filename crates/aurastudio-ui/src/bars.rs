@@ -72,6 +72,8 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         layers::delete_layer(&mut state.notice, m, a);
                         ui.close_menu();
                     }
+                    ui.separator();
+                    layers::menu_entries(ui, &mut state.layers, m, a);
                 }));
                 ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Canvas", |ui| {
                     if ui.button("Canvas size…").clicked() {

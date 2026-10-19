@@ -108,16 +108,22 @@ pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile
             ui.set_width(560.0);
             ui.label(RichText::new("Preferences").heading());
             ui.add_space(10.0);
+            // A fixed height: a separator in a horizontal row takes all the
+            // height it is offered, and a modal offers what it had last
+            // frame, so the window grew a little more every frame.
+            const H: f32 = 280.0;
             ui.horizontal_top(|ui| {
+                ui.set_height(H);
                 ui.vertical(|ui| {
                     ui.set_width(150.0);
                     for s in Section::ALL {
                         if ui.selectable_label(*section == s, s.name()).clicked() { *section = s; }
                     }
                 });
-                ui.separator();
+                let (line, _) = ui.allocate_exact_size(egui::vec2(9.0, H), egui::Sense::hover());
+                ui.painter().vline(line.center().x, line.y_range(), egui::Stroke::new(1.0_f32, theme::BORDER));
                 ui.vertical(|ui| {
-                    ui.set_min_height(260.0);
+                    ui.set_height(H);
                     match section {
                         Section::Interface => interface(ui, p, reset_docks),
                         Section::Display => display(ui, p, profile),
@@ -217,5 +223,23 @@ mod tests {
         // A 0.7 settings file.
         let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");
         assert_eq!((old.hidpi_scaling, old.ui_scale, old.debounce_ms, old.autosave_minutes), (false, 0.85, 30, 5));
+    }
+
+    #[test]
+    fn the_dialog_keeps_its_size() {
+        let ctx = egui::Context::default();
+        let (mut section, mut p, mut reset) = (Section::Interface, Prefs::default(), false);
+        let mut heights = Vec::new();
+        for frame in 0..40 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                events: vec![egui::Event::PointerMoved(egui::pos2(600.0 + frame as f32, 400.0))],
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| { dialog(ctx, &mut section, &mut p, None, &mut reset); });
+            heights.push(ctx.memory(|m| m.area_rect(egui::Id::new("preferences"))).map_or(0.0, |r| r.height()));
+        }
+        assert!(heights[39] > 100.0 && heights[39] < 600.0, "{heights:?}");
+        assert_eq!(heights[10], heights[39], "grew: {heights:?}");
     }
 }

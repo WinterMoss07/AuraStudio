@@ -41,6 +41,7 @@ fn normal(n: &Node) -> bool {
     match n {
         Node::Layer(l) => l.blend == BlendMode::Normal,
         Node::Folder(f) => f.blend == FolderBlend::Isolated(BlendMode::Normal),
+        Node::Filter(_) => false,
     }
 }
 
@@ -63,7 +64,9 @@ impl LayerStack {
         let mut items = Vec::new();
         flatten(&self.root, 1.0, &mut items);
         let Some(k) = items.iter().position(|(n, _)| n.id() == id) else { return self.composite_rect(r) };
-        let usable = *self.stroke.cache.usable.get_or_insert_with(|| items[k + 1..].iter().all(|(n, _)| normal(n)));
+        // (Clipping and filter layers: the general merge, no cache.)
+        let general = self.needs_general_merge();
+        let usable = *self.stroke.cache.usable.get_or_insert_with(|| !general && items[k + 1..].iter().all(|(n, _)| normal(n)));
         if !usable { return self.composite_rect(r); }
 
         let tiles = self.stroke.base.len();
@@ -169,7 +172,7 @@ mod tests {
     }
 
     fn folder(id: u64, blend: FolderBlend, opacity: f32, children: Vec<Node>) -> Node {
-        Node::Folder(Folder { id, name: "f".into(), visible: true, opacity, blend, locked: false, collapsed: false, children })
+        Node::Folder(Folder { id, name: "f".into(), visible: true, opacity, blend, locked: false, collapsed: false, children, props: Default::default() })
     }
 
     fn max_diff(a: &[u8], b: &[u8]) -> u8 {

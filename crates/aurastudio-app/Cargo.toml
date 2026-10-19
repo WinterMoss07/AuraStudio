@@ -24,6 +24,7 @@ egui-winit = "0.30"
 aurastudio-layers = { path = "../aurastudio-layers" }
 aurastudio-document = { path = "../aurastudio-document" }
 aurastudio-file = { path = "../aurastudio-file" }
+aurastudio-filters = { path = "../aurastudio-filters" }
 dirs = "7"
 aurastudio-color    = { path = "../aurastudio-color" }
 aurastudio-brushes  = { path = "../aurastudio-brushes" }

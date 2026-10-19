@@ -32,6 +32,7 @@ pub fn show(ui: &mut Ui, previews: &mut StrokePreviews, m: &mut Model, a: &mut c
     opacity_slider(ui, "dock_opacity", m.brush, w);
     hardness_slider(ui, "dock_hardness", m.brush, w);
     if m.tool.is_shape() { crate::tools::shape_options(ui, m); }
+    crate::tools::stay_inside_option(ui, m);
     // Build-up brushes blend their dabs themselves.
     if !p.blends() { return; }
     ui.add_space(2.0);

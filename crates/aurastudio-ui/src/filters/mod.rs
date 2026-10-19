@@ -30,8 +30,32 @@ pub enum FilterAction {
     Cancel,
 }
 
+/// What a dialog works on.
+enum Target {
+    /// The active layer's pixels (the paint thread's filter session).
+    Layer,
+    /// A filter layer's filter: changed in place, put back on Cancel (or
+    /// the layer removed, if it was just made).
+    FilterLayer { id: u64, before: Filter, created: bool },
+}
+
+/// What a filter layer's dialog asks of its layer (lib.rs does it).
+pub enum LayerEdit {
+    /// Show this filter on it.
+    Set(Filter),
+    /// Done: keep it.
+    Keep(Filter),
+    /// Cancelled: back to this one.
+    Restore(Filter),
+    /// Cancelled when just made: remove the layer.
+    Remove,
+}
+
 /// The open filter dialog.
 pub struct FilterDialog {
+    target:  Target,
+    /// For a filter layer: what to do to it this frame.
+    pub(crate) edit: Option<(u64, LayerEdit)>,
     filter:  Filter,
     preview: bool,
     /// What the layer shows now (None: nothing sent yet).
@@ -74,6 +98,8 @@ pub fn new_dialog(ctx: &egui::Context, kind: Kind, m: &Model) -> Option<FilterDi
     let source = Source::capture(m.layers, m.selection)?;
     let color = match kind { Kind::BlackWhite => Filter::new(kind).color, _ => m.brush.color };
     Some(FilterDialog {
+        target: Target::Layer,
+        edit: None,
         filter: Filter { color, ..Filter::new(kind) },
         preview: true,
         shown: None,
@@ -82,6 +108,32 @@ pub fn new_dialog(ctx: &egui::Context, kind: Kind, m: &Model) -> Option<FilterDi
         state: editors::State::default(),
         frames: 0,
     })
+}
+
+/// A dialog for filter layer `id` (`created`: just made; Cancel removes
+/// it). None if it isn't a filter layer.
+pub fn layer_dialog(ctx: &egui::Context, id: u64, created: bool, m: &Model) -> Option<FilterDialog> {
+    let Some(aurastudio_layers::Node::Filter(fl)) = m.layers.node(id) else { return None };
+    let source = Source::below(m.layers, id)?;
+    Some(FilterDialog {
+        target: Target::FilterLayer { id, before: fl.filter.clone(), created },
+        edit: None,
+        filter: fl.filter.clone(),
+        preview: true,
+        // The layer shows its filter already.
+        shown: Some(Some(fl.filter.clone())),
+        source: Arc::new(source),
+        view: view::View::new(ctx),
+        state: editors::State::default(),
+        frames: 0,
+    })
+}
+
+impl FilterDialog {
+    /// Closed from outside (a document opened...): for the active layer,
+    /// its session is cancelled (the app sends it); a filter layer keeps
+    /// what it shows.
+    pub fn targets_layer(&self) -> bool { matches!(self.target, Target::Layer) }
 }
 
 /// The dialog, if open. Returns false once closed.
@@ -93,7 +145,8 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
         d.frames += 1;
         ctx.request_repaint();
     }
-    egui::Window::new(kind.name())
+    let title = match d.target { Target::Layer => kind.name().to_string(), Target::FilterLayer { .. } => format!("{} (filter layer)", kind.name()) };
+    egui::Window::new(title)
         .id(egui::Id::new("filter_dialog"))
         .collapsible(false)
         .resizable(false)
@@ -123,7 +176,10 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
             let (w, h) = (src.area.2 - src.area.0, src.area.3 - src.area.1);
             let px = src.painted();
             let count = if px >= 1_000_000 { format!("{:.1} M", px as f64 / 1e6) } else { format!("{px}") };
-            draw::info(ui, &format!("{} {w} × {h} px, {count} painted pixels", if src.selection { "In the selection:" } else { "On the layer:" }));
+            match d.target {
+                Target::Layer => draw::info(ui, &format!("{} {w} × {h} px, {count} painted pixels", if src.selection { "In the selection:" } else { "On the layer:" })),
+                Target::FilterLayer { .. } => draw::info(ui, "A filter layer: everything under it, changed until you change it again (double-click the layer)"),
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.checkbox(&mut d.preview, "Preview on canvas").on_hover_text("The layer shows the result while the dialog is open");
@@ -141,6 +197,24 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
     if ctx.memory(|m| m.focused().is_none()) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) { apply = true; }
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { open = false; }
 
+    if let Target::FilterLayer { id, before, created } = &d.target {
+        let id = *id;
+        if apply {
+            d.edit = Some((id, LayerEdit::Keep(d.filter.clone())));
+            return false;
+        }
+        if !open {
+            d.edit = Some((id, if *created { LayerEdit::Remove } else { LayerEdit::Restore(before.clone()) }));
+            return false;
+        }
+        // "Preview on canvas" off: the layer shows its filter as it was.
+        let wanted = if d.preview { d.filter.clone() } else { before.clone() };
+        if d.shown.as_ref() != Some(&Some(wanted.clone())) {
+            d.shown = Some(Some(wanted.clone()));
+            d.edit = Some((id, LayerEdit::Set(wanted)));
+        }
+        return true;
+    }
     if apply {
         a.filter = Some(FilterAction::Apply(d.filter.clone()));
         return false;
@@ -155,6 +229,20 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
         a.filter = Some(FilterAction::Preview(wanted));
     }
     true
+}
+
+/// Do a filter layer dialog's edit on the layer.
+pub fn apply_layer_edit(id: u64, edit: LayerEdit, m: &mut Model, a: &mut Actions) {
+    let Some(aurastudio_layers::Node::Filter(fl)) = m.layers.node_mut(id) else { return };
+    match edit {
+        LayerEdit::Set(f) | LayerEdit::Restore(f) => fl.filter = f,
+        LayerEdit::Keep(f) => { fl.filter = f; a.modified = true; }
+        LayerEdit::Remove => {
+            m.layers.set_active(id);
+            m.layers.remove_active();
+        }
+    }
+    a.recomposite = true;
 }
 
 #[cfg(test)]
@@ -204,7 +292,7 @@ mod tests {
         for (_, kinds) in GROUPS {
             for &kind in *kinds {
                 let src = Arc::new(Source::capture(&l, None).unwrap());
-                let mut d = FilterDialog { filter: Filter::new(kind), preview: true, shown: None, source: src, view: view::View::new(&ctx), state: editors::State::default(), frames: 0 };
+                let mut d = FilterDialog { target: Target::Layer, edit: None, filter: Filter::new(kind), preview: true, shown: None, source: src, view: view::View::new(&ctx), state: editors::State::default(), frames: 0 };
                 let mut sent = Vec::new();
                 for frame in 0..4 {
                     let mut a = Actions::default();

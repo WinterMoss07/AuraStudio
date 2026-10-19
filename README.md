@@ -46,7 +46,8 @@ UI stays quiet so the painting gets the room.
 
 **Tools** — toolbox on the canvas's left edge, centered (Krita's optimized
 layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
-- Fill on the merged image or the layer alone, tolerance, expand under
+- Fill referring to this layer, all layers or the reference layers
+  (drafts left out or not), tolerance, expand under
   anti-aliased lines; an A4 page in ~10–50 ms.
 - Painting, fill and Delete stay inside the selection.
 - Geometry tools (U cycles them), drawn with the current brush: Line
@@ -97,6 +98,20 @@ delay. Kept in `settings.txt`.
 
 **Layers** — Paper + Layer 1 for new documents, folders, opacity, blend,
 lock, rename, undo / redo with a memory budget.
+- **Clipping masks** (CSP / Photoshop): a layer shows only where the
+  layer (or folder) under it has pixels; several can clip to the same
+  base; the base's opacity fades the whole group (Ctrl+Alt+G).
+- **Filter layers** (Krita): any filter kept editable over what is under
+  it (double-click to change it), clipped too; a whole merge with them
+  runs on the paint thread.
+- **Reference layers** (CSP's lighthouse): what the fill tool can refer
+  to, and what "Stay inside the lines" keeps the brushes in (CSP's
+  anti-overflow: paint the colors on their own layer without crossing the
+  line art). **Draft layers** (CSP's pencil): shown, but left out of
+  fills, references and exported images.
+- **Color labels** (Krita's eight colors), the list filtered by them
+  (Krita, Label Box); folders stand out, Group / Ungroup (Ctrl+G,
+  Ctrl+Shift+G); a right click on a row for all of it.
 
 **View** — GPU zoom / pan / rotation, monitor ICC color management;
 mipmapped canvas (thin lines stay visible zoomed out; +33 % GPU memory for

@@ -86,6 +86,16 @@ The interface icons (`crates/aurastudio-ui/icons/*.svg`) come from
 Recolored to white and drawn with a thinner stroke. `charcoal.svg` is ours,
 drawn in the same style (Lucide has no charcoal stick).
 
+## Ideas from other programs (no code copied)
+
+- Clipping masks, reference and draft layers, "Stay inside the lines"
+  (anti-overflow): Clip Studio Paint's behavior, from its manual.
+- Filter layers, color labels and filtering by label: Krita's, from its
+  manual.
+- Darker folder rows: the Layer Kit plugin for Krita by tenzindraws
+  (https://github.com/10zindraws/Layer-Kit, GPL-3.0); its code is not
+  used.
+
 ## PhotoCraft — filters and their dialogs
 
 Parts of `crates/aurastudio-filters` and of the filter dialogs

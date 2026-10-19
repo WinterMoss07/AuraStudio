@@ -3,6 +3,68 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.10.0 — 2026-10-19
+
+**Clipping masks** (CSP, Photoshop)
+- A layer, folder or filter layer clipped to the one under it shows only
+  where that base has pixels; several clipped in a row share the base. As
+  Photoshop's "blend clipped layers as group": each clipped layer blends
+  over the base with its own mode and opacity, then the group is blended
+  down with the base's: lowering the base's opacity fades the group. A
+  hidden base hides them; one at the bottom of its folder has no base.
+- Docker: the clip icon (and Ctrl+Alt+G, the Layer menu, the row's right
+  click); clipped rows are indented with a hooked arrow down to the base.
+
+**Filter layers** (Krita)
+- Any of the 16 filters over what is under it, kept editable: New filter
+  layer (the docker's sliders icon or the Layer menu) opens the filter's
+  dialog (Cancel removes the new layer); a double-click on the layer, or
+  the button where the blend mode was, opens it again. In an isolated
+  folder it filters that folder's content; clipped, only its base.
+- The dialog shows what is under the layer before / after; the canvas
+  shows the result live.
+
+**Reference and draft layers** (CSP)
+- Reference (lighthouse): the fill tool's new "Refer to: This layer / All
+  layers / References"; the brushes' new **Stay inside the lines** (CSP's
+  anti-overflow): the stroke stays in the area of the reference lines
+  where it starts (free when it starts on a line; with no reference
+  layer, the other layers' lines count). Color on its own layer without
+  crossing the line art.
+- Draft (pencil, a blue line left of the thumbnail): shown, but left out
+  of fills (the fill's "Ignore draft layers", on by default), of "Stay
+  inside the lines" and of exported PNG / JPG.
+- A reference or draft folder marks what it holds.
+
+**Layers docker**
+- Color labels (Krita's eight colors): a strip and a tint on the row; the
+  funnel shows only some labels (the active layer always shows).
+- A row of marks for the active layer: clip, reference, draft, label,
+  group, ungroup. Right click on a row: rename, duplicate, delete, label,
+  marks, group / ungroup, edit filter.
+- Folders stand out (Layer Kit's idea): their own background and border,
+  their layer count. Group (Ctrl+G) puts the active layer in a new
+  folder, Ungroup (Ctrl+Shift+G) takes a folder's content out.
+- New Lucide icons: lighthouse, pencil line, corner arrow, sliders, tag,
+  funnel, folder in / out.
+
+**Under the hood**
+- A general merge (`compose.rs`) for clipping, filter layers and merges
+  of some layers only (references, exports without drafts), by bands with
+  the margin the filter layers read; the plain merge stays for documents
+  without them. Tested to give the same pixels as the plain merge, and
+  the same pixels for a part as for the whole with a blur layer.
+- Merging the whole canvas again (visibility, opacity, order, a filter
+  layer's values) runs on the paint thread, by bands: the interface no
+  longer waits for it.
+- Files: format 3 (labels, marks, filter layers); older files open as
+  before.
+
+**Fixed**
+- Preferences: the window grew taller at every frame until it filled the
+  screen (a vertical separator in a row takes all the height it's
+  offered). It has a fixed height now, with a test.
+
 ## 0.9.1 — 2026-10-19
 
 **Fixed**

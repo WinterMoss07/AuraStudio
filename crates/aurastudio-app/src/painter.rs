@@ -122,7 +122,7 @@ impl Session {
         brush.opacity = if self.r.chance(0.3) { self.r.range(0.3, 1.0) } else { 1.0 };
         let forge = self.lib.presets[preset].brush.clone();
         let t0 = Instant::now();
-        self.pt.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, forge });
+        self.pt.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, forge, limit: None });
         let n = path.len();
         for (i, &(x, y)) in path.iter().enumerate() {
             self.t += 0.005;
@@ -287,7 +287,8 @@ fn painter_session() {
             // Flatting: fill closed areas on the flats layer.
             77..=81 => {
                 let color = s.colors[s.r.below(s.colors.len() as u64) as usize];
-                let params = FillParams { tolerance: s.r.below(60) as u8, merged: s.r.chance(0.8), expand: s.r.below(3) as u32 };
+                let refer = if s.r.chance(0.8) { aurastudio_layers::Refer::All } else { aurastudio_layers::Refer::Layer };
+                let params = FillParams { tolerance: s.r.below(60) as u8, refer, expand: s.r.below(3) as u32, ..FillParams::default() };
                 let (x, y) = (start.0.clamp(0.0, size.0 as f32 - 1.0) as u32, start.1.clamp(0.0, size.1 as f32 - 1.0) as u32);
                 s.timed(Work::Fill, |s| s.pt.send(Cmd::Fill { doc: Arc::clone(&s.doc), x, y, color: [color[0], color[1], color[2], 255], params }));
             }

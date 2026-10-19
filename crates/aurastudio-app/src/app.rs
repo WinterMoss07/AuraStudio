@@ -19,7 +19,7 @@ use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent
 use aurastudio_document::{Document, SharedDoc, Workspace};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_layers::{FillParams, Selection};
-use aurastudio_ui::{Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, Prefs, SelectCmd, ShapeOptions, Tool, ToolMemory, UiState, ViewCmd};
+use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, Prefs, SelectCmd, ShapeOptions, Tool, ToolMemory, UiState, ViewCmd};
 
 use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
 use crate::debounce::{Debounce, Kind as DebounceKind};
@@ -252,6 +252,9 @@ pub struct App {
     /// Selected tool, the fill tool's settings.
     tool:       Tool,
     fill:       FillParams,
+    /// Brushes stay inside the reference layers' lines (CSP's
+    /// anti-overflow).
+    stay_inside: bool,
     shape:      ShapeOptions,
     gesture:    Option<Gesture>,
     /// The tool and brush last used in each toolbox group.
@@ -359,6 +362,7 @@ impl App {
             clip:       None,
             tool:       Tool::default(),
             fill:       FillParams::default(),
+            stay_inside: false,
             shape:      ShapeOptions::default(),
             gesture:    None,
             tool_memory: ToolMemory::default(),
@@ -738,7 +742,7 @@ impl App {
         }
         let mut brush = self.brush.clone();
         brush.erase = false;
-        self.paint.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, forge: self.library.presets[self.preset].brush.clone() });
+        self.paint.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, forge: self.library.presets[self.preset].brush.clone(), limit: self.stroke_limit() });
         let mut time = self.start.elapsed().as_secs_f64();
         let mut last = path[0];
         for (x, y) in path {
@@ -973,7 +977,14 @@ impl App {
             doc:       Arc::clone(&self.doc),
             brush,
             forge:     self.library.presets[self.preset].brush.clone(),
+            limit:     self.stroke_limit(),
         });
+    }
+
+    /// "Stay inside the lines": the fill tool's tolerance and drafts
+    /// setting, its expand (at least 1 px: under the lines' soft edge).
+    fn stroke_limit(&self) -> Option<FillParams> {
+        self.stay_inside.then_some(FillParams { expand: self.fill.expand.max(1), ..self.fill })
     }
 
     fn end_stroke(&mut self) {
@@ -1093,6 +1104,7 @@ impl App {
         let tool = &mut self.tool;
         let tool_memory = &mut self.tool_memory;
         let fill = &mut self.fill;
+        let stay_inside = &mut self.stay_inside;
         let drawing = self.gesture.as_ref().and_then(Gesture::outline);
         let shape = &mut self.shape;
         let snap = gpu.view_snapshot();
@@ -1119,6 +1131,7 @@ impl App {
                 tool,
                 tools: tool_memory,
                 fill,
+                stay_inside,
                 has_selection: d.selection.is_some(),
                 selection: d.selection.as_ref(),
                 overlay: Overlay {
@@ -1244,7 +1257,11 @@ impl App {
         if actions.redo { self.redo(); }
         if actions.clear_layer { self.clear_active_layer(); }
         let Some(gpu) = &mut self.gpu else { return };
-        if actions.resize_to.is_some() || actions.recomposite || self.layers_dirty {
+        if actions.recomposite && actions.resize_to.is_none() && !self.layers_dirty {
+            // Merged on the paint thread (filter layers make a whole merge
+            // slow): the UI never waits for it.
+            self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc)));
+        } else if actions.resize_to.is_some() || actions.recomposite || self.layers_dirty {
             // Layer visibility / opacity / order changed, or new size: merge
             // everything again (rare, never during a stroke).
             let mut doc = self.doc.lock().unwrap();
@@ -1496,7 +1513,8 @@ impl App {
             let (pixels, w, h) = {
                 let d = doc.lock().unwrap();
                 let (w, h) = (d.layers.width, d.layers.height);
-                (d.layers.composite_rect((0, 0, w, h)), w, h)
+                // Without the draft layers (CSP).
+                (d.layers.composite_pick((0, 0, w, h), aurastudio_layers::Pick::EXPORT, false), w, h)
             };
             let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let msg = match aurastudio_file::export_image(&pixels, w, h, &path) {
@@ -1928,6 +1946,14 @@ impl App {
                         self.ui.open_prefs();
                         self.request_redraw();
                     }
+                    // Layers: Ctrl+G group, Ctrl+Shift+G ungroup, Ctrl+Alt+G
+                    // clip to the layer below (Photoshop's keys).
+                    Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("g") && !self.home => {
+                        let cmd = if alt { LayerCmd::Clip } else if shift { LayerCmd::Ungroup } else { LayerCmd::Group };
+                        self.ui.layer_shortcut(cmd);
+                        self.ui_dirty = true;
+                        self.request_redraw();
+                    }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.select(SelectCmd::All),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("c") => self.edit_cmd(EditCmd::Copy),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("v") => self.edit_cmd(EditCmd::Paste),
@@ -2092,14 +2118,12 @@ fn window_icon() -> Option<winit::window::Icon> {
 /// Send the whole merged image to the GPU, in bands of rows: the full
 /// image never exists in RAM (a B4 page at 600 dpi is 200 MB).
 fn upload_all(layers: &aurastudio_layers::LayerStack, gpu: &mut GpuState) {
-    const BAND: u32 = 64;
     let (w, h) = (layers.width, layers.height);
-    let mut band = vec![0u8; w as usize * BAND as usize * 4];
-    for y in (0..h).step_by(BAND as usize) {
-        let rect = (0, y, w, (y + BAND).min(h));
-        let rgba = &mut band[..w as usize * (rect.3 - y) as usize * 4];
-        layers.composite_rect_to(rect, rgba);
-        gpu.upload(rect, rgba);
+    let mut band = Vec::new();
+    for rect in layers.merge_bands((0, 0, w, h), 64) {
+        band.resize(w as usize * (rect.3 - rect.1) as usize * 4, 0);
+        layers.composite_rect_to(rect, &mut band);
+        gpu.upload(rect, &band);
     }
 }
 

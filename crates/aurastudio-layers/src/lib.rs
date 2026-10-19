@@ -1,9 +1,15 @@
-//! Layer tree: paint layers and folders (groups), like Krita / CSP.
+//! Layer tree: paint layers, folders (groups) and filter layers, like
+//! Krita / CSP.
 //!
 //! Stored bottom to top. Each node has a stable `id`; the active node is
 //! tracked by id, so reordering or moving in and out of folders never
 //! changes which layer you paint on.
+//!
+//! Every node also has `Props`: a color label (Krita's colors), clipping
+//! to the node below (CSP / Photoshop clipping masks), and CSP's reference
+//! and draft marks (see `compose.rs` and `fill.rs` for what they do).
 
+mod compose;
 pub mod fill;
 mod selection;
 mod stroke_cache;
@@ -12,7 +18,8 @@ mod tiles;
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
 
-pub use fill::{flood, FillParams};
+pub use compose::Pick;
+pub use fill::{flood, flood_with, FillParams, Refer};
 pub use selection::Selection;
 pub use tiles::{new_tile, Tile, Tiles, TILE_BYTES};
 
@@ -29,6 +36,50 @@ fn over(dst: &mut [u8], src: [u8; 4]) {
     dst[3] = a as u8;
 }
 
+/// Color labels, Krita's eight: (name, color). Index 0: none.
+pub const LABELS: [(&str, [u8; 3]); 9] = [
+    ("None", [0, 0, 0]),
+    ("Blue", [86, 137, 222]),
+    ("Green", [102, 184, 90]),
+    ("Yellow", [229, 196, 64]),
+    ("Orange", [232, 135, 58]),
+    ("Brown", [150, 104, 70]),
+    ("Red", [220, 72, 72]),
+    ("Purple", [154, 98, 204]),
+    ("Gray", [140, 140, 148]),
+];
+
+/// What every node has besides its content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Props {
+    /// Color label, an index into LABELS (0: none).
+    pub label:     u8,
+    /// Clipped to the node below (its base): shows only where the base
+    /// shows. Consecutive clipped nodes share the same base.
+    pub clip:      bool,
+    /// A reference layer (CSP): what the fill tool and the brushes' "stay
+    /// inside the lines" look at.
+    pub reference: bool,
+    /// A draft layer (CSP): shown, but left out of fills, references and
+    /// exported images.
+    pub draft:     bool,
+}
+
+/// A filter layer (Krita): the filter applied to what is under it, kept
+/// editable. In a pass-through folder or at the top level: everything
+/// under it; in an isolated folder: that folder's content under it;
+/// clipped: only where its base shows.
+pub struct FilterLayer {
+    pub id:      u64,
+    pub name:    String,
+    pub visible: bool,
+    /// How much of the filtered image shows over the unfiltered one.
+    pub opacity: f32,
+    pub locked:  bool,
+    pub props:   Props,
+    pub filter:  aurastudio_filters::Filter,
+}
+
 /// One paint layer: RGBA8, straight alpha, stored in tiles (only where
 /// it differs from its fill color).
 pub struct Layer {
@@ -43,6 +94,7 @@ pub struct Layer {
     /// The background layer is opaque white; clearing it resets it to
     /// white instead of transparent.
     pub background: bool,
+    pub props:   Props,
 }
 
 /// How a folder combines its content with what is below it.
@@ -70,41 +122,34 @@ pub struct Folder {
     pub collapsed: bool,
     /// Bottom to top.
     pub children:  Vec<Node>,
+    pub props:     Props,
 }
 
 pub enum Node {
     Layer(Layer),
     Folder(Folder),
+    Filter(FilterLayer),
+}
+
+/// `$e` on the node's struct, whatever its kind.
+macro_rules! each {
+    ($n:expr, $x:ident => $e:expr) => {
+        match $n { Node::Layer($x) => $e, Node::Folder($x) => $e, Node::Filter($x) => $e }
+    };
 }
 
 impl Node {
-    pub fn id(&self) -> u64 {
-        match self { Node::Layer(l) => l.id, Node::Folder(f) => f.id }
-    }
-    pub fn name(&self) -> &str {
-        match self { Node::Layer(l) => &l.name, Node::Folder(f) => &f.name }
-    }
-    pub fn name_mut(&mut self) -> &mut String {
-        match self { Node::Layer(l) => &mut l.name, Node::Folder(f) => &mut f.name }
-    }
-    pub fn visible(&self) -> bool {
-        match self { Node::Layer(l) => l.visible, Node::Folder(f) => f.visible }
-    }
-    pub fn visible_mut(&mut self) -> &mut bool {
-        match self { Node::Layer(l) => &mut l.visible, Node::Folder(f) => &mut f.visible }
-    }
-    pub fn opacity(&self) -> f32 {
-        match self { Node::Layer(l) => l.opacity, Node::Folder(f) => f.opacity }
-    }
-    pub fn opacity_mut(&mut self) -> &mut f32 {
-        match self { Node::Layer(l) => &mut l.opacity, Node::Folder(f) => &mut f.opacity }
-    }
-    pub fn locked(&self) -> bool {
-        match self { Node::Layer(l) => l.locked, Node::Folder(f) => f.locked }
-    }
-    pub fn locked_mut(&mut self) -> &mut bool {
-        match self { Node::Layer(l) => &mut l.locked, Node::Folder(f) => &mut f.locked }
-    }
+    pub fn id(&self) -> u64 { each!(self, n => n.id) }
+    pub fn name(&self) -> &str { each!(self, n => &n.name) }
+    pub fn name_mut(&mut self) -> &mut String { each!(self, n => &mut n.name) }
+    pub fn visible(&self) -> bool { each!(self, n => n.visible) }
+    pub fn visible_mut(&mut self) -> &mut bool { each!(self, n => &mut n.visible) }
+    pub fn opacity(&self) -> f32 { each!(self, n => n.opacity) }
+    pub fn opacity_mut(&mut self) -> &mut f32 { each!(self, n => &mut n.opacity) }
+    pub fn locked(&self) -> bool { each!(self, n => n.locked) }
+    pub fn locked_mut(&mut self) -> &mut bool { each!(self, n => &mut n.locked) }
+    pub fn props(&self) -> Props { each!(self, n => n.props) }
+    pub fn props_mut(&mut self) -> &mut Props { each!(self, n => &mut n.props) }
     pub fn is_folder(&self) -> bool {
         matches!(self, Node::Folder(_))
     }
@@ -116,6 +161,7 @@ impl Node {
                 FolderBlend::PassThrough => "Pass Through",
                 FolderBlend::Isolated(m) => m.name(),
             },
+            Node::Filter(f) => f.filter.kind.name(),
         }
     }
 }
@@ -138,6 +184,7 @@ impl Layer {
             locked: false,
             tiles: Tiles::new(width, height, clear_pixel(background)),
             background,
+            props: Props::default(),
         }
     }
 
@@ -158,6 +205,12 @@ pub struct Row {
     pub collapsed: bool,
     /// Locked itself or through a parent folder.
     pub locked_by_parent: bool,
+    /// Clipped and with a base under it (a clipped node at the bottom of
+    /// its folder has none: it shows as it is).
+    pub clipped:   bool,
+    /// Reference / draft through a parent folder.
+    pub reference_by_parent: bool,
+    pub draft_by_parent: bool,
 }
 
 /// Coverage of one tile in the stroke mask (one byte per pixel).
@@ -257,7 +310,7 @@ fn siblings_mut<'a>(root: &'a mut Vec<Node>, parent: &[usize]) -> &'a mut Vec<No
     for &i in parent {
         v = match &mut v[i] {
             Node::Folder(f) => &mut f.children,
-            Node::Layer(_) => unreachable!("path goes through a layer"),
+            _ => unreachable!("path goes through a layer"),
         };
     }
     v
@@ -267,6 +320,7 @@ fn count_layers(nodes: &[Node]) -> usize {
     nodes.iter().map(|n| match n {
         Node::Layer(_) => 1,
         Node::Folder(f) => count_layers(&f.children),
+        Node::Filter(_) => 0,
     }).sum()
 }
 
@@ -275,6 +329,7 @@ fn first_layer_id(nodes: &[Node]) -> Option<u64> {
         match n {
             Node::Layer(l) => return Some(l.id),
             Node::Folder(f) => if let Some(id) = first_layer_id(&f.children) { return Some(id); },
+            Node::Filter(_) => {}
         }
     }
     None
@@ -337,7 +392,7 @@ impl LayerStack {
                     Node::Layer(l) if (l.tiles.width(), l.tiles.height()) != size => {
                         return Err(format!("layer {} is {}x{}, not the canvas size", l.id, l.tiles.width(), l.tiles.height()));
                     }
-                    Node::Layer(_) => {}
+                    Node::Layer(_) | Node::Filter(_) => {}
                     Node::Folder(f) => walk(&f.children, size, ids)?,
                 }
             }
@@ -472,8 +527,76 @@ impl LayerStack {
             locked: false,
             collapsed: false,
             children: Vec::new(),
+            props: Props::default(),
         };
         self.insert(Node::Folder(folder))
+    }
+
+    /// A filter layer with `filter`, above the active node (or at the top
+    /// of the active folder), made active.
+    pub fn add_filter_layer(&mut self, filter: aurastudio_filters::Filter) -> u64 {
+        let layer = FilterLayer {
+            id: self.new_id(),
+            name: filter.kind.name().into(),
+            visible: true,
+            opacity: 1.0,
+            locked: false,
+            props: Props::default(),
+            filter,
+        };
+        self.insert(Node::Filter(layer))
+    }
+
+    /// Put the active node into a new folder in its place (Ctrl+G), the
+    /// folder active. Returns its id.
+    pub fn group_active(&mut self, name: &str) -> u64 {
+        let path = self.path(self.active).expect("active node exists");
+        let (last, parent) = path.split_last().unwrap();
+        let siblings = siblings_mut(&mut self.root, parent);
+        let node = siblings.remove(*last);
+        let id = self.new_id();
+        let folder = Folder {
+            id, name: name.into(), visible: true, opacity: 1.0, blend: FolderBlend::PassThrough,
+            locked: false, collapsed: false, children: vec![node], props: Props::default(),
+        };
+        siblings_mut(&mut self.root, parent).insert(*last, Node::Folder(folder));
+        self.active = id;
+        id
+    }
+
+    /// Take the active folder's content out, in its place, and remove the
+    /// folder (its opacity and blend mode are lost, as in Krita). False if
+    /// the active node isn't a folder.
+    pub fn ungroup_active(&mut self) -> bool {
+        let path = self.path(self.active).expect("active node exists");
+        let (last, parent) = path.split_last().unwrap();
+        let siblings = siblings_mut(&mut self.root, parent);
+        if !siblings[*last].is_folder() { return false; }
+        let Node::Folder(f) = siblings.remove(*last) else { unreachable!() };
+        let top = f.children.last().map(|n| n.id());
+        for (k, child) in f.children.into_iter().enumerate() { siblings.insert(last + k, child); }
+        self.active = top.or_else(|| first_layer_id(&self.root)).unwrap_or(0);
+        true
+    }
+
+    /// The node `id` is clipped and shows only where its base does: the
+    /// base, or None if it isn't clipped or has nothing under it.
+    pub fn clip_base(&self, id: u64) -> Option<u64> {
+        let path = self.path(id)?;
+        let (last, parent) = path.split_last()?;
+        let mut nodes = &self.root;
+        for &i in parent { if let Node::Folder(f) = &nodes[i] { nodes = &f.children; } }
+        if !nodes[*last].props().clip { return None; }
+        nodes[..*last].iter().rev().find(|n| !n.props().clip).map(|n| n.id())
+    }
+
+    /// Ids of the nodes with a reference mark (themselves or through a
+    /// folder), visible.
+    pub fn has_reference(&self) -> bool {
+        fn any(nodes: &[Node]) -> bool {
+            nodes.iter().any(|n| n.visible() && (n.props().reference || matches!(n, Node::Folder(f) if any(&f.children))))
+        }
+        any(&self.root)
     }
 
     fn clone_node(&mut self, n: &Node) -> Node {
@@ -492,6 +615,7 @@ impl LayerStack {
                     l.tiles.clone()
                 },
                 background: false,
+                props: l.props,
             }),
             Node::Folder(f) => {
                 let children = f.children.iter().map(|c| self.clone_node(c)).collect();
@@ -504,8 +628,18 @@ impl LayerStack {
                     locked: f.locked,
                     collapsed: f.collapsed,
                     children,
+                    props: f.props,
                 })
             }
+            Node::Filter(f) => Node::Filter(FilterLayer {
+                id: self.new_id(),
+                name: f.name.clone(),
+                visible: f.visible,
+                opacity: f.opacity,
+                locked: f.locked,
+                props: f.props,
+                filter: f.filter.clone(),
+            }),
         }
     }
 
@@ -534,7 +668,7 @@ impl LayerStack {
         }
         let node = self.active_node();
         if self.is_locked(self.active) || any_locked(node) { return Some("Locked: unlock it first"); }
-        let removed = match node { Node::Layer(_) => 1, Node::Folder(f) => count_layers(&f.children) };
+        let removed = match node { Node::Layer(_) => 1, Node::Folder(f) => count_layers(&f.children), Node::Filter(_) => 0 };
         (self.layer_count() == removed).then_some("Can't delete the last layer")
     }
 
@@ -691,7 +825,7 @@ impl LayerStack {
     pub fn layer_rect(&self, id: u64, rect: Rect) -> Option<Vec<u8>> {
         match self.node(id)? {
             Node::Layer(l) => Some(l.tiles.read_rect(rect)),
-            Node::Folder(_) => None,
+            Node::Folder(_) | Node::Filter(_) => None,
         }
     }
 
@@ -790,6 +924,7 @@ impl LayerStack {
                 match n {
                     Node::Layer(l) => out.push(l.id),
                     Node::Folder(f) => walk(&f.children, out),
+                    Node::Filter(_) => {}
                 }
             }
         }
@@ -800,22 +935,27 @@ impl LayerStack {
 
     /// Rows of the layer list, top to bottom, skipping collapsed content.
     pub fn rows(&self) -> Vec<Row> {
-        fn walk(nodes: &[Node], depth: usize, locked: bool, out: &mut Vec<Row>) {
-            for n in nodes.iter().rev() {
+        #[derive(Clone, Copy)]
+        struct Up { locked: bool, reference: bool, draft: bool }
+        fn walk(nodes: &[Node], depth: usize, up: Up, out: &mut Vec<Row>) {
+            for (i, n) in nodes.iter().enumerate().rev() {
                 let (is_folder, collapsed) = match n {
                     Node::Folder(f) => (true, f.collapsed),
-                    Node::Layer(_) => (false, false),
+                    _ => (false, false),
                 };
-                out.push(Row { id: n.id(), depth, is_folder, collapsed, locked_by_parent: locked });
+                let clipped = n.props().clip && nodes[..i].iter().any(|b| !b.props().clip);
+                out.push(Row { id: n.id(), depth, is_folder, collapsed, locked_by_parent: up.locked, clipped,
+                               reference_by_parent: up.reference, draft_by_parent: up.draft });
                 if let Node::Folder(f) = n {
                     if !f.collapsed {
-                        walk(&f.children, depth + 1, locked || f.locked, out);
+                        let p = f.props;
+                        walk(&f.children, depth + 1, Up { locked: up.locked || f.locked, reference: up.reference || p.reference, draft: up.draft || p.draft }, out);
                     }
                 }
             }
         }
         let mut v = Vec::new();
-        walk(&self.root, 0, false, &mut v);
+        walk(&self.root, 0, Up { locked: false, reference: false, draft: false }, &mut v);
         v
     }
 
@@ -828,6 +968,7 @@ impl LayerStack {
                 match n {
                     Node::Layer(l) => f(l),
                     Node::Folder(fo) => walk(&mut fo.children, f),
+                    Node::Filter(_) => {}
                 }
             }
         }
@@ -860,6 +1001,8 @@ impl LayerStack {
     pub fn composite_rect_to(&self, rect: Rect, out: &mut [u8]) {
         let (x0, y0, x1, y1) = rect;
         if x0 >= x1 || y0 >= y1 { return; }
+        // Clipping or filter layers: the general merge (compose.rs).
+        if self.needs_general_merge() { return self.general_to(rect, Pick::ALL, false, out); }
         let n = (x1 - x0) as usize;
         debug_assert_eq!(out.len(), n * (y1 - y0) as usize * 4);
         let mut group: Vec<Premul> = Vec::new();
@@ -879,9 +1022,15 @@ impl LayerStack {
         let (tw, th) = (((w as f32 * k).round() as u32).max(1), ((h as f32 * k).round() as u32).max(1));
         let mut out = Vec::with_capacity(tw as usize * th as usize * 4);
         let mut row = vec![0u8; w as usize * 4];
+        // Filter layers read around each pixel: one merge of everything
+        // costs less than every sampled row with its margin.
+        let full = self.needs_general_merge().then(|| self.composite_rect((0, 0, w, h)));
         for ty in 0..th {
             let y = ((ty as u64 * 2 + 1) * h as u64 / (th as u64 * 2)) as u32;
-            self.composite_rect_to((0, y, w, y + 1), &mut row);
+            match &full {
+                Some(f) => row.copy_from_slice(&f[(y * w * 4) as usize..((y + 1) * w * 4) as usize]),
+                None => self.composite_rect_to((0, y, w, y + 1), &mut row),
+            }
             for tx in 0..tw {
                 let (a, b) = (tx * w / tw, ((tx + 1) * w / tw).max(tx * w / tw + 1));
                 let mut sum = [0u32; 4];
@@ -920,6 +1069,8 @@ fn composite_row_opaque(
                     }
                 });
             }
+            // (Trees with filter layers take the general merge.)
+            Node::Filter(_) => {}
             Node::Folder(f) => match f.blend {
                 FolderBlend::PassThrough => {
                     composite_row_opaque(&f.children, y, x0, dst, opacity_scale * f.opacity, group);
@@ -1017,6 +1168,7 @@ fn composite_row(nodes: &[Node], y: u32, x0: u32, row: &mut [Premul], opacity_sc
                     }
                 });
             }
+            Node::Filter(_) => {}
             Node::Folder(f) => match f.blend {
                 FolderBlend::PassThrough => {
                     composite_row(&f.children, y, x0, row, opacity_scale * f.opacity);
@@ -1037,7 +1189,7 @@ fn composite_row(nodes: &[Node], y: u32, x0: u32, row: &mut [Premul], opacity_sc
 }
 
 /// One tile row of a fill color (blended where a layer has no tile).
-fn fill_run(fill: [u8; 4]) -> [u8; (TILE * 4) as usize] {
+pub(crate) fn fill_run(fill: [u8; 4]) -> [u8; (TILE * 4) as usize] {
     let mut run = [0u8; (TILE * 4) as usize];
     for p in run.chunks_exact_mut(4) { p.copy_from_slice(&fill); }
     run
@@ -1359,5 +1511,70 @@ mod filter_area_tests {
         if let Some(Node::Layer(p)) = l.node_mut(paper) { p.tiles = Tiles::new(256, 256, [255, 255, 255, 255]); }
         l.set_active(paper);
         assert_eq!(l.filter_area(Some(&off), 0), Some((paper, (0, 0, 50, 50))));
+    }
+}
+
+#[cfg(test)]
+mod layer_tree_tests {
+    use super::*;
+
+    #[test]
+    fn group_ungroup_and_clipped_rows() {
+        let mut s = LayerStack::new_document(64, 64);
+        let a = s.active_id();
+        let b = s.add_layer("b");
+        s.node_mut(b).unwrap().props_mut().clip = true;
+        let rows = s.rows();
+        assert!(rows.iter().find(|r| r.id == b).unwrap().clipped);
+        assert!(!rows.iter().find(|r| r.id == a).unwrap().clipped);
+        // Clipped at the bottom of a folder: no base.
+        s.set_active(b);
+        let g = s.group_active("g");
+        assert_eq!(s.active_id(), g);
+        assert!(s.node(g).unwrap().is_folder());
+        assert!(!s.rows().iter().find(|r| r.id == b).unwrap().clipped);
+        assert_eq!(s.clip_base(b), None);
+        // A reference folder marks what it holds.
+        s.node_mut(g).unwrap().props_mut().reference = true;
+        assert!(s.rows().iter().find(|r| r.id == b).unwrap().reference_by_parent);
+        assert!(s.has_reference());
+        assert!(s.ungroup_active());
+        assert_eq!(s.active_id(), b);
+        assert!(s.node(g).is_none());
+        assert_eq!(s.clip_base(b), Some(a));
+        assert!(!s.ungroup_active(), "not a folder");
+        // Filter layers: no pixels, not paintable, duplicated with their filter.
+        let f = s.add_filter_layer(aurastudio_filters::Filter::new(aurastudio_filters::Kind::Invert));
+        assert!(!s.can_paint() && s.layer_rect(f, (0, 0, 1, 1)).is_none());
+        let d = s.duplicate_active();
+        assert!(matches!(s.node(d), Some(Node::Filter(x)) if x.filter.kind == aurastudio_filters::Kind::Invert));
+        assert!(!s.layer_ids().contains(&f));
+    }
+
+    #[test]
+    fn fill_refers_to_the_reference_layers() {
+        let mut s = LayerStack::new(64, 64);
+        if let Some(Node::Layer(bg)) = s.root.first_mut() { bg.tiles = Tiles::new(64, 64, [255, 255, 255, 255]); }
+        // A wall on the ink layer, a sketch line (draft) and a color patch.
+        let ink = s.add_layer("ink");
+        s.set_layer_rect(ink, (32, 0, 34, 64), &[0u8, 0, 0, 255].repeat(128));
+        let sketch = s.add_layer("sketch");
+        s.set_layer_rect(sketch, (16, 0, 17, 64), &[0u8, 0, 255, 255].repeat(64));
+        s.node_mut(sketch).unwrap().props_mut().draft = true;
+        let color = s.add_layer("color");
+        let p = FillParams { tolerance: 10, expand: 0, ..FillParams::default() };
+        // All layers, drafts skipped: the ink stops it, not the sketch.
+        let a = flood(&s, color, 5, 5, p, None).unwrap();
+        assert!(a.contains(20, 5) && !a.contains(40, 5));
+        // Drafts counted: the sketch stops it too.
+        let a = flood(&s, color, 5, 5, FillParams { skip_drafts: false, ..p }, None).unwrap();
+        assert!(!a.contains(20, 5));
+        // References only, the ink marked: same as ink alone.
+        s.node_mut(ink).unwrap().props_mut().reference = true;
+        let a = flood(&s, color, 5, 5, FillParams { refer: Refer::References, skip_drafts: false, ..p }, None).unwrap();
+        assert!(a.contains(20, 5) && !a.contains(40, 5));
+        // A brush limit: the area on the line art, as a selection.
+        let sel = Selection::from_area(64, 64, &a).unwrap();
+        assert!(sel.contains(5, 5) && !sel.contains(40, 5));
     }
 }

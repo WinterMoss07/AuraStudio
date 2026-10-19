@@ -54,13 +54,22 @@ impl Source {
         let hist = match &mask { Some(m) => Histogram::of(&px, |i| m[i]), None => Histogram::of(&px, |_| true) };
         let transparent = matches!(layers.node(id), Some(aurastudio_layers::Node::Layer(l)) if l.tiles.fill()[3] == 0);
         let full = Level { w, h, px, mask };
-        let mut reduced: Vec<Level> = Vec::new();
-        while reduced.last().unwrap_or(&full).w.max(reduced.last().unwrap_or(&full).h) > SMALLEST_SIDE * 2 {
-            let next = reduce(reduced.last().unwrap_or(&full), 2);
-            reduced.push(next);
-        }
+        let reduced = pyramid(&full);
         let area = (inner.0 - rect.0, inner.1 - rect.1, inner.2 - rect.0, inner.3 - rect.1);
         Some(Source { area, full, reduced, hist, selection: sel.is_some(), transparent })
+    }
+
+    /// What filter layer `id` filters: the merge of everything under it
+    /// (its dialog shows it before and after). None if the canvas is empty.
+    pub fn below(layers: &LayerStack, id: u64) -> Option<Source> {
+        let (w, h) = (layers.width, layers.height);
+        if w == 0 || h == 0 { return None; }
+        let pick = aurastudio_layers::Pick { until: id, ..aurastudio_layers::Pick::ALL };
+        let px = layers.composite_pick((0, 0, w, h), pick, false);
+        let hist = Histogram::of(&px, |_| true);
+        let full = Level { w: w as usize, h: h as usize, px, mask: None };
+        let reduced = pyramid(&full);
+        Some(Source { area: (0, 0, w, h), full, reduced, hist, selection: false, transparent: false })
     }
 
     /// The level reduced `k` times (a power of two; 1: full size).
@@ -87,6 +96,16 @@ impl Source {
 
     /// How many pixels the filter changes (painted, selected).
     pub fn painted(&self) -> u64 { self.hist.count }
+}
+
+/// `full` reduced 2, 4, 8… times, down to about SMALLEST_SIDE.
+fn pyramid(full: &Level) -> Vec<Level> {
+    let mut reduced: Vec<Level> = Vec::new();
+    while reduced.last().unwrap_or(full).w.max(reduced.last().unwrap_or(full).h) > SMALLEST_SIDE * 2 {
+        let next = reduce(reduced.last().unwrap_or(full), 2);
+        reduced.push(next);
+    }
+    reduced
 }
 
 /// `l` reduced `k` times: each pixel the average of k × k, colors weighted

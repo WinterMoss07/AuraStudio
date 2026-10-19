@@ -137,7 +137,7 @@ fn random_brush(r: &mut Rng, base: &Brush) -> Brush {
 fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (u32, u32), finish: bool) {
     let preset = &lib.presets[r.below(lib.presets.len() as u64) as usize];
     let brush = random_brush(r, &preset.settings);
-    pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, forge: preset.brush.clone() });
+    pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, forge: preset.brush.clone(), limit: (r.below(4) == 0).then(FillParams::default) });
     let (w, h) = (size.0 as f32, size.1 as f32);
     // Sometimes a geometry tool's shape (as App::paint_path sends it).
     if r.chance(0.2) {
@@ -209,6 +209,7 @@ fn fuzz() {
     let mut fill = FillParams::default();
     let mut shape = ShapeOptions::default();
     let mut prefs = aurastudio_ui::Prefs::default();
+    let mut stay_inside = false;
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
     let t0 = Instant::now();
@@ -258,6 +259,7 @@ fn fuzz() {
                         tool: &mut tool,
                         tools: &mut tool_memory,
                         fill: &mut fill,
+                        stay_inside: &mut stay_inside,
                         shape: &mut shape,
                         has_selection: sel_outlines.is_some(),
                         selection: selection.as_ref(),
@@ -290,7 +292,10 @@ fn fuzz() {
                     if actions.clear_layer { pt.send(Cmd::Clear(Arc::clone(&doc))); }
                 }
                 if let Some(action) = actions.filter { pt.send(Cmd::Filter { doc: Arc::clone(&doc), action }); }
-                if actions.resize_to.is_some() || actions.recomposite {
+                if actions.recomposite && actions.resize_to.is_none() {
+                    // As the app: merged on the paint thread.
+                    pt.send(Cmd::Recomposite(Arc::clone(&doc)));
+                } else if actions.resize_to.is_some() {
                     let mut d = doc.lock().unwrap();
                     if let Some((w, h)) = actions.resize_to {
                         d.resize(w, h);
@@ -334,7 +339,8 @@ fn fuzz() {
                     1 => pt.send(Cmd::Redo(d)),
                     2 => pt.send(Cmd::Clear(d)),
                     3 | 4 => {
-                        let params = FillParams { tolerance: r.below(256) as u8, merged: r.chance(0.5), expand: r.below(4) as u32 };
+                        let refer = [aurastudio_layers::Refer::Layer, aurastudio_layers::Refer::All, aurastudio_layers::Refer::References][r.below(3) as usize];
+                        let params = FillParams { tolerance: r.below(256) as u8, refer, skip_drafts: r.chance(0.5), expand: r.below(4) as u32 };
                         let color = [r.below(256) as u8, r.below(256) as u8, r.below(256) as u8, r.below(256) as u8];
                         // Off the canvas too (the app checks; the thread must cope).
                         let (x, y) = (r.range(-0.1, 1.1) * w, r.range(-0.1, 1.1) * h);
@@ -363,9 +369,27 @@ fn fuzz() {
             92..=95 => {
                 let mut d = doc.lock().unwrap();
                 let ids = d.layers.layer_ids();
-                match r.below(7) {
+                match r.below(10) {
                     0 => { d.layers.add_layer("L"); }
                     1 => { d.layers.add_folder("F"); }
+                    // Filter layers, marks, groups (merged in the general
+                    // merge, saved in the file).
+                    7 => {
+                        let kinds: Vec<_> = aurastudio_filters::GROUPS.iter().flat_map(|g| g.1.iter().copied()).collect();
+                        let mut f = aurastudio_filters::Filter::new(kinds[r.below(kinds.len() as u64) as usize]);
+                        for v in f.values.iter_mut() { if r.chance(0.3) { *v *= r.range(0.0, 3.0); } }
+                        d.layers.add_filter_layer(f);
+                    }
+                    8 => {
+                        let p = d.layers.active_node_mut().props_mut();
+                        match r.below(4) {
+                            0 => p.clip ^= true,
+                            1 => p.reference ^= true,
+                            2 => p.draft ^= true,
+                            _ => p.label = r.below(9) as u8,
+                        }
+                    }
+                    9 => if r.chance(0.5) { d.layers.group_active("G"); } else { d.layers.ungroup_active(); },
                     2 => { d.layers.remove_active(); }
                     3 => { d.layers.duplicate_active(); }
                     4 => d.layers.move_active(r.chance(0.5)),
@@ -385,6 +409,7 @@ fn fuzz() {
                 let back = aurastudio_file::read(buf, DocId(2), "fuzz", 1 << 15).expect("saved file must open").doc;
                 assert_eq!(back.layers.layer_ids(), d.layers.layer_ids());
                 assert_eq!(back.layers.active_id(), d.layers.active_id());
+                assert_eq!(back.layers.rows().len(), d.layers.rows().len(), "filter layers / folders lost");
                 for id in d.layers.layer_ids() {
                     let (Some(aurastudio_layers::Node::Layer(a)), Some(aurastudio_layers::Node::Layer(b))) =
                         (d.layers.node(id), back.layers.node(id)) else { panic!("layer {id} lost") };
@@ -466,10 +491,10 @@ fn fuzz() {
 /// As app::upload_all, without a GPU: the whole image merged band by band.
 pub(crate) fn merge_all_in_bands(layers: &aurastudio_layers::LayerStack) {
     let (w, h) = (layers.width, layers.height);
-    let mut band = vec![0u8; w as usize * 64 * 4];
-    for y in (0..h).step_by(64) {
-        let rect = (0, y, w, (y + 64).min(h));
-        layers.composite_rect_to(rect, &mut band[..w as usize * (rect.3 - y) as usize * 4]);
+    let mut band = Vec::new();
+    for rect in layers.merge_bands((0, 0, w, h), 64) {
+        band.resize(w as usize * (rect.3 - rect.1) as usize * 4, 0);
+        layers.composite_rect_to(rect, &mut band);
     }
 }
 

@@ -31,8 +31,14 @@ const UPDATE_PERIOD: Duration = Duration::from_millis(8);
 
 pub enum Cmd {
     /// Start a stroke on the active layer of `doc` with these settings and
-    /// this Forge brush (from the selected preset).
-    Begin { doc: SharedDoc, brush: Brush, forge: Arc<ForgeBrush> },
+    /// this Forge brush (from the selected preset). `limit`: stay inside
+    /// the lines (CSP's anti-overflow), found as these fill settings would
+    /// from where the stroke starts.
+    Begin { doc: SharedDoc, brush: Brush, forge: Arc<ForgeBrush>, limit: Option<aurastudio_layers::FillParams> },
+    /// Merge the whole canvas again (layer visibility, opacity, order,
+    /// a filter layer's values...). Only the latest of those waiting is
+    /// done.
+    Recomposite(SharedDoc),
     /// One pen sample.
     Sample(PenSample),
     End,
@@ -103,6 +109,27 @@ impl Drop for PaintThread {
     }
 }
 
+/// The area a stroke starting at (x, y) on `layer` must stay in: the
+/// region of the reference layers around it (all the other layers when
+/// none is marked), as the fill tool finds it. None (free): started on a
+/// line, off the canvas, or nothing around.
+fn stay_inside(doc: &Document, layer: u64, x: f32, y: f32, p: aurastudio_layers::FillParams) -> Option<aurastudio_layers::Selection> {
+    use aurastudio_layers::Pick;
+    let (w, h) = (doc.layers.width, doc.layers.height);
+    if !(x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32) { return None; }
+    let (x, y) = (x as u32, y as u32);
+    let refs = doc.layers.has_reference();
+    let pick = Pick { skip_drafts: p.skip_drafts, references_only: refs, skip: layer, ..Pick::ALL };
+    // On a line itself: free (CSP: the brush's center decides).
+    let under = doc.layers.composite_pick((x, y, x + 1, y + 1), pick, true);
+    if under.get(3).is_some_and(|a| *a >= 128) { return None; }
+    let t = Instant::now();
+    let area = aurastudio_layers::flood_with(&doc.layers, layer, x, y, p, doc.selection.as_ref(), Some(pick))?;
+    log::info!("stay inside the lines: area {:?} found in {:.0} ms ({})", area.bbox, t.elapsed().as_secs_f64() * 1000.0,
+        if refs { "reference layers" } else { "all the other layers" });
+    aurastudio_layers::Selection::from_area(w, h, &area)
+}
+
 struct Worker {
     /// Document being worked on (last stroke / undo / clear).
     doc:      Option<SharedDoc>,
@@ -126,6 +153,11 @@ struct Worker {
     sampled:  bool,
     /// Everything the stroke touched: the area saved for undo.
     stroke_rect: Option<Rect>,
+    /// "Stay inside the lines": the settings, until the first sample
+    /// finds the area; then the area (None: free, the stroke started on a
+    /// line).
+    limit_params: Option<aurastudio_layers::FillParams>,
+    limit:    Option<aurastudio_layers::Selection>,
     stats:    Stats,
 }
 
@@ -140,6 +172,8 @@ impl Worker {
             size: (0, 0),
             sampled: false,
             stroke_rect: None,
+            limit_params: None,
+            limit: None,
             stats: Stats::default(),
         }
     }
@@ -172,6 +206,36 @@ impl Worker {
                     }
                     Cmd::Filter { action: aurastudio_ui::FilterAction::Preview(_), .. }
                         if queue.iter().any(|c| matches!(c, Cmd::Filter { .. })) => {}
+                    Cmd::Recomposite(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_))) => {}
+                    Cmd::Recomposite(doc) => {
+                        // Off the UI thread: with filter layers a whole
+                        // merge takes a while. What was waiting to be shown
+                        // is part of it.
+                        let t = Instant::now();
+                        let (w, h) = {
+                            let mut d = doc.lock().unwrap();
+                            d.layers.drop_stroke_cache();
+                            (d.layers.width, d.layers.height)
+                        };
+                        self.pending.clear();
+                        // By bands, the document locked for one at a time
+                        // (the UI runs between two), each shown as it comes.
+                        let bands = doc.lock().unwrap().layers.merge_bands((0, 0, w, h), 128);
+                        for r in bands {
+                            let rgba = {
+                                let d = doc.lock().unwrap();
+                                if (d.layers.width, d.layers.height) != (w, h) { break; }
+                                d.layers.composite_rect(r)
+                            };
+                            let mut p = self.projection.lock().unwrap();
+                            if (p.width, p.height) != (w, h) { break; }
+                            p.push(r, rgba);
+                            drop(p);
+                            (self.notify)(Event::Painted);
+                        }
+                        self.doc = Some(doc);
+                        log::info!("recomposite {w}x{h}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+                    }
                     Cmd::Filter { doc, action } => {
                         use aurastudio_ui::FilterAction as F;
                         let t = Instant::now();
@@ -196,12 +260,14 @@ impl Worker {
                         self.doc = Some(doc);
                         flush = true;
                     }
-                    Cmd::Begin { doc, brush, forge } => {
+                    Cmd::Begin { doc, brush, forge, limit } => {
                         // A stroke still open (its End never came, e.g. the
                         // window lost focus): finish it first, so it is
                         // recorded for undo like any other.
                         if self.active { self.finish_stroke(&mut events); }
                         self.doc = Some(doc);
+                        self.limit_params = limit;
+                        self.limit = None;
                         if self.with_doc(|w, d| w.begin(d, brush, &forge)) == Some(false) {
                             events.push(Event::Notice("Layer is locked or is a folder"));
                         }
@@ -318,6 +384,14 @@ impl Worker {
         // Merged outside the projection lock (the UI only waits for the
         // handover); mid-stroke from the cached merges (stroke_cache.rs).
         let (w, h) = (d.layers.width, d.layers.height);
+        // A filter layer reading far around (a big blur): each piece would
+        // read and filter its whole margin again; one piece over them all
+        // does it once.
+        let rects = if rects.len() > 1 && d.layers.merge_margin() > 16 {
+            vec![rects.into_iter().reduce(union).unwrap()]
+        } else {
+            rects
+        };
         let patches: Vec<_> = rects.into_iter().map(|r| (r, d.layers.composite_rect_stroke(r))).collect();
         let mut p = self.projection.lock().unwrap();
         if (p.width, p.height) != (w, h) { return; }
@@ -372,6 +446,9 @@ impl Worker {
             self.active = false;
             return None;
         }
+        if let Some(p) = self.limit_params.take() {
+            self.limit = stay_inside(doc, self.layer, now.x, now.y, p);
+        }
         let t0 = Instant::now();
         let Some(mut surface) = doc.layers.layer_surface(self.layer) else {
             // The layer was deleted: nothing left to paint on.
@@ -382,8 +459,9 @@ impl Worker {
         // Forge paints only the path over the canvas (zoomed out, the pen
         // can wander far off it).
         let rect = self.engine.as_mut()?.stroke_to(&mut surface, now);
-        // Only selected pixels may change.
+        // Only selected pixels may change, and inside the lines.
         if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
+        if let (Some(r), Some(l)) = (rect, &self.limit) { doc.layers.clip_stroke(r, l); }
         self.stats.paint.add(t0.elapsed());
         rect
     }
@@ -404,6 +482,9 @@ impl Worker {
             }
         }
         if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
+        if let (Some(r), Some(l)) = (rect, &self.limit) { doc.layers.clip_stroke(r, l); }
+        self.limit = None;
+        self.limit_params = None;
         self.engine = None;
         if let Some(r) = rect { self.stroke_rect = Some(self.stroke_rect.map_or(r, |s| union(s, r))); }
         // After a resize the snapshot no longer matches: nothing to record.
@@ -481,7 +562,7 @@ mod tests {
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, forge: round() });
+        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, forge: round(), limit: None });
         pt.send(Cmd::Sample(PenSample::new(10.0, y, 1.0, 0.0)));
         pt.send(Cmd::Sample(PenSample::new(50.0, y, 1.0, 0.01)));
         pt.send(Cmd::End);
@@ -538,7 +619,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round() });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round(), limit: None });
         pt.send(Cmd::Sample(PenSample::new(10.0, 30.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         // The user selects another layer while the stroke goes on.
@@ -558,7 +639,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), forge: round() });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), forge: round(), limit: None });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         stroke(&pt, &doc, 40.0);
         drop(pt);
@@ -573,7 +654,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round() });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round(), limit: None });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         {
@@ -603,7 +684,7 @@ mod tests {
             let mut brush = Brush::new();
             brush.radius = 3.0;
             let t = Instant::now();
-            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge });
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge, limit: None });
             // A few samples on the canvas (MyPaint brushes only paint once
             // the pen moves), far away, back step by step (they fade at
             // high speed), a few more.
@@ -657,7 +738,7 @@ mod tests {
         assert_eq!(pixel(&doc, id, 20, 20), [0, 0, 0, 255]);
         assert_eq!(pixel(&doc, id, 40, 20)[3], 0);
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
-        let params = aurastudio_layers::FillParams { merged: false, ..Default::default() };
+        let params = aurastudio_layers::FillParams { refer: aurastudio_layers::Refer::Layer, ..Default::default() };
         pt.send(Cmd::Fill { doc: Arc::clone(&doc), x: 5, y: 50, color: [255, 0, 0, 255], params });
         drop(pt);
         assert_eq!(pixel(&doc, id, 5, 60), [255, 0, 0, 255]);
@@ -671,6 +752,104 @@ mod tests {
         drop(pt);
         assert_eq!(pixel(&doc, id, 5, 60)[3], 0);
         assert_eq!(pixel(&doc, id, 20, 60), [255, 0, 0, 255]);
+    }
+
+    /// "Stay inside the lines": a stroke crossing the reference layer's
+    /// wall stops at it; started on the wall, it is free; the recomposite
+    /// command shows the whole canvas.
+    #[test]
+    fn strokes_stay_inside_the_reference_lines() {
+        let (doc, color) = doc_with_layer();
+        let ink = {
+            let mut d = doc.lock().unwrap();
+            let ink = d.layers.add_layer("lines");
+            d.layers.set_layer_rect(ink, (30, 0, 33, 64), &[0u8, 0, 0, 255].repeat(3 * 64));
+            d.layers.node_mut(ink).unwrap().props_mut().reference = true;
+            d.layers.set_active(color);
+            ink
+        };
+        let projection = proj(64, 64);
+        let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
+        let limit = Some(aurastudio_layers::FillParams { expand: 1, ..Default::default() });
+        let mut brush = Brush::new();
+        brush.radius = 4.0;
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), forge: round(), limit });
+        pt.send(Cmd::Sample(PenSample::new(10.0, 20.0, 1.0, 0.0)));
+        pt.send(Cmd::Sample(PenSample::new(55.0, 20.0, 1.0, 0.01)));
+        pt.send(Cmd::End);
+        // Started on the line: free.
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round(), limit });
+        pt.send(Cmd::Sample(PenSample::new(31.0, 45.0, 1.0, 0.0)));
+        pt.send(Cmd::Sample(PenSample::new(55.0, 45.0, 1.0, 0.01)));
+        pt.send(Cmd::End);
+        pt.send(Cmd::Recomposite(Arc::clone(&doc)));
+        drop(pt);
+        assert_eq!(pixel(&doc, color, 20, 20)[3], 255, "painted on its side");
+        assert_eq!(pixel(&doc, color, 45, 20)[3], 0, "not past the line");
+        assert_eq!(pixel(&doc, color, 45, 45)[3], 255, "free from the line");
+        assert_eq!(pixel(&doc, ink, 31, 20), [0, 0, 0, 255]);
+        let p = projection.lock().unwrap().take_patches();
+        assert!(p.iter().any(|(r, _)| r.1 == 0 && r.2 == 64), "the whole canvas shown again");
+    }
+
+    /// The same over a painted picture and under a filter layer (the
+    /// picture isn't a reference: it doesn't count).
+    #[test]
+    fn stay_inside_over_a_picture_and_a_filter_layer() {
+        let doc: SharedDoc = Arc::new(Mutex::new(Document::new(DocId(1), "t", 64, 64)));
+        let (ink, color) = {
+            let mut d = doc.lock().unwrap();
+            let pic = d.layers.add_layer("picture");
+            let px: Vec<u8> = (0..64 * 64).flat_map(|i| [(i % 64 * 4) as u8, 120, 200, 255]).collect();
+            d.layers.set_layer_rect(pic, (0, 0, 64, 64), &px);
+            d.layers.add_filter_layer(aurastudio_filters::Filter::new(aurastudio_filters::Kind::Invert));
+            let ink = d.layers.add_layer("lines");
+            d.layers.set_layer_rect(ink, (30, 0, 33, 64), &[0u8, 0, 0, 255].repeat(3 * 64));
+            d.layers.node_mut(ink).unwrap().props_mut().reference = true;
+            let color = d.layers.add_layer("color");
+            (ink, color)
+        };
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        let mut brush = Brush::new();
+        brush.radius = 4.0;
+        let limit = Some(aurastudio_layers::FillParams { expand: 1, ..Default::default() });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round(), limit });
+        pt.send(Cmd::Sample(PenSample::new(10.0, 20.0, 1.0, 0.0)));
+        pt.send(Cmd::Sample(PenSample::new(55.0, 20.0, 1.0, 0.01)));
+        pt.send(Cmd::End);
+        drop(pt);
+        assert_eq!(pixel(&doc, color, 20, 20)[3], 255);
+        assert_eq!(pixel(&doc, color, 45, 20)[3], 0, "not past the line");
+        let _ = ink;
+    }
+
+    /// How long a stroke takes to show under a blur filter layer (A4).
+    ///     cargo test --release -p aurastudio blur_layer_stroke -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn blur_layer_stroke_timing() {
+        let doc: SharedDoc = Arc::new(Mutex::new(Document::new(DocId(1), "t", 2480, 3508)));
+        let paint = {
+            let mut d = doc.lock().unwrap();
+            let paint = d.layers.active_id();
+            let sigma: f32 = std::env::var("SIGMA").ok().and_then(|s| s.parse().ok()).unwrap_or(30.0);
+            d.layers.add_filter_layer(aurastudio_filters::Filter { values: vec![sigma], ..aurastudio_filters::Filter::new(aurastudio_filters::Kind::GaussianBlur) });
+            d.layers.set_active(paint);
+            paint
+        };
+        let projection = proj(2480, 3508);
+        let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
+        let t = Instant::now();
+        let mut brush = Brush::new();
+        brush.radius = 25.0;
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round(), limit: None });
+        for i in 0..400 {
+            pt.send(Cmd::Sample(PenSample::new(300.0 + i as f32 * 4.0, 1000.0 + (i as f32 * 0.05).sin() * 300.0, 1.0, i as f64 * 0.005)));
+        }
+        pt.send(Cmd::End);
+        drop(pt);
+        println!("1600 px stroke under a blur layer: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(pixel(&doc, paint, 300, 1000)[3], 255);
     }
 
     /// A locked layer is never painted, even if a stroke is sent.
@@ -727,7 +906,7 @@ mod tests {
 
             let mut brush = Brush::new();
             brush.radius = radius as f32;
-            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round() });
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round(), limit: None });
             let t0 = Instant::now();
             let n = 200;
             for i in 0..n {
