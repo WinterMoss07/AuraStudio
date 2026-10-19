@@ -8,6 +8,7 @@ aurastudio-brush  = { path = "../aurastudio-brush" }
 aurastudio-brushes = { path = "../aurastudio-brushes" }
 aurastudio-canvas = { path = "../aurastudio-canvas" }
 aurastudio-layers = { path = "../aurastudio-layers" }
+aurastudio-filters = { path = "../aurastudio-filters" }
 egui      = "0.30"
 log       = "0.4"
 egui_dock = "0.15"

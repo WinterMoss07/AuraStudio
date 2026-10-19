@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 aurastudio-canvas = { path = "../aurastudio-canvas" }
 aurastudio-layers = { path = "../aurastudio-layers" }
+aurastudio-filters = { path = "../aurastudio-filters" }
 lz4_flex          = "0.14"

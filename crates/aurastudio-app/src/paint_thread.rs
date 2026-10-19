@@ -47,6 +47,9 @@ pub enum Cmd {
     Paste { doc: SharedDoc, clip: aurastudio_document::Clip },
     /// Fill tool at canvas pixel (x, y) on the active layer (undoable).
     Fill { doc: SharedDoc, x: u32, y: u32, color: [u8; 4], params: aurastudio_layers::FillParams },
+    /// The filter dialog: show / keep / drop a filter on the active layer.
+    /// Only the latest of the previews waiting is done.
+    Filter { doc: SharedDoc, action: aurastudio_ui::FilterAction },
     /// Save the document to `path` (after the strokes sent before). The
     /// file is written on its own thread; painting goes on meanwhile.
     /// `origin`: autosaves only, the file the work belongs to.
@@ -159,6 +162,40 @@ impl Worker {
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
                 match cmd {
+                    Cmd::Begin { doc, .. } | Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) | Cmd::Fill { doc, .. } | Cmd::Paste { doc, .. }
+                        if doc.lock().unwrap().filtering() =>
+                    {
+                        // The layer shows a filter's preview: nothing else
+                        // touches the document until it is applied or not.
+                        events.push(Event::Notice("Apply or cancel the filter first"));
+                        self.doc = Some(doc);
+                    }
+                    Cmd::Filter { action: aurastudio_ui::FilterAction::Preview(_), .. }
+                        if queue.iter().any(|c| matches!(c, Cmd::Filter { .. })) => {}
+                    Cmd::Filter { doc, action } => {
+                        use aurastudio_ui::FilterAction as F;
+                        let t = Instant::now();
+                        let (done, keep) = {
+                            let mut d = doc.lock().unwrap();
+                            match &action {
+                                F::Preview(f) => (d.filter_preview(f.as_ref()), false),
+                                F::Apply(f) => (d.filter_apply(f), true),
+                                F::Cancel => (d.filter_cancel(), true),
+                            }
+                        };
+                        log::info!("filter {:?}: {:.0} ms", match &action { F::Preview(f) => f.as_ref().map(|f| f.kind.name()), F::Apply(f) => Some(f.kind.name()), F::Cancel => None },
+                            t.elapsed().as_secs_f64() * 1000.0);
+                        match done {
+                            Some((id, r)) => {
+                                if r.2 > r.0 { add_rect(&mut self.pending, r); }
+                                if keep { events.push(Event::LayerChanged { layer_id: id }); }
+                            }
+                            None if !matches!(action, F::Cancel) => events.push(Event::Notice("Layer is locked or is a folder")),
+                            None => {}
+                        }
+                        self.doc = Some(doc);
+                        flush = true;
+                    }
                     Cmd::Begin { doc, brush, forge } => {
                         // A stroke still open (its End never came, e.g. the
                         // window lost focus): finish it first, so it is

@@ -10,7 +10,9 @@ mod bars;
 mod stroke_preview;
 mod dock_layout;
 mod dockers;
+mod filters;
 mod home;
+mod prefs;
 mod icons;
 mod tools;
 mod widgets;
@@ -25,6 +27,8 @@ use egui_dock::{DockArea, DockState};
 
 pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
+pub use filters::FilterAction;
+pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
 pub use tools::{Group, Overlay, SelectCmd, ShapeOptions, Tool, ToolMemory};
 pub use widgets::set_display_transform;
@@ -51,10 +55,9 @@ pub struct Model<'a> {
     /// Current view, for display: zoom (1.0 = 100 %) and angle in degrees.
     pub view_zoom:          f32,
     pub view_angle:         f32,
-    /// Display color management (View menu): on / off, intent, and the
-    /// monitor profile name (None: no profile found, shown as sRGB).
-    pub color_managed:      &'a mut bool,
-    pub perceptual:         &'a mut bool,
+    /// The preferences (Edit > Preferences…), and the monitor profile's
+    /// name (None: no profile found, shown as sRGB).
+    pub prefs:              &'a mut Prefs,
     pub display_profile:    Option<&'a str>,
     /// No document open: the start screen shows in place of the canvas
     /// (the layer stack lent is an empty placeholder).
@@ -70,17 +73,8 @@ pub struct Model<'a> {
     /// egui point).
     pub overlay:            Overlay<'a>,
     pub to_points:          &'a dyn Fn((f32, f32)) -> (f32, f32),
-    /// View menu: 100 % zoom follows the display scaling (off: one image
-    /// pixel per physical screen pixel), and the size of the interface
-    /// (1.0 = the system's scaling).
-    pub hidpi_scaling:      &'a mut bool,
-    pub ui_scale:           &'a mut f32,
-    /// Mouse click debounce in ms (View menu; 0: off).
-    pub debounce_ms:        &'a mut u32,
 }
 
-/// Interface sizes offered in the View menu.
-pub const UI_SCALES: [f32; 6] = [0.75, 0.85, 1.0, 1.1, 1.25, 1.5];
 
 /// View commands from the View menu (the app also binds them to keys).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +97,8 @@ pub struct Actions {
     /// A brush dragged: (brush, its new medium, before which brush; None:
     /// at the end).
     pub move_brush:  Option<(usize, String, Option<usize>)>,
+    /// The filter dialog: show / keep / drop a filter on the active layer.
+    pub filter:      Option<FilterAction>,
     /// A medium dragged: (medium, before which medium; None: last).
     pub move_medium: Option<(String, Option<String>)>,
     /// The + after the medium icons: a new medium of that kind.
@@ -185,9 +181,15 @@ pub struct UiState {
     color:         dockers::color::ColorState,
     layers:        dockers::layers::LayersState,
     tool_list:     dockers::tool_list::ToolListState,
+    /// The open filter dialog.
+    filter:        Option<filters::FilterDialog>,
+    /// The Preferences dialog is open, on this section.
+    prefs_open:    Option<prefs::Section>,
     dock_layout:   dock_layout::DockLayout,
     dialog:        Option<Dialog>,
     new_form:      Option<home::NewForm>,
+    /// The New dialog's tab last used (Painting, Animation, Comics).
+    new_category:  usize,
     recent:        Vec<RecentFile>,
 }
 
@@ -205,16 +207,19 @@ impl UiState {
             color:         Default::default(),
             layers:        Default::default(),
             tool_list:     Default::default(),
+            filter:        None,
+            prefs_open:    None,
             dock_layout:   Default::default(),
             dialog:        None,
             new_form:      None,
+            new_category:  0,
             recent:        Vec::new(),
         }
     }
 
     /// Show the New document dialog.
     pub fn open_new_dialog(&mut self) {
-        self.new_form = Some(home::NewForm::new());
+        self.new_form = Some(home::NewForm::new(self.new_category));
     }
 
     /// Recent files of the start screen (thumbnails come later, see
@@ -234,7 +239,7 @@ impl UiState {
 
     /// A dialog is waiting for an answer (the canvas ignores the pen).
     pub fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.new_form.is_some()
+        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some()
     }
 
     /// The pixels of this layer changed: rebuild its thumbnail.
@@ -246,6 +251,18 @@ impl UiState {
     pub fn invalidate_all_thumbnails(&mut self) {
         self.layers.invalidate_all();
     }
+
+    /// Edit > Preferences… (Ctrl+K).
+    pub fn open_prefs(&mut self) {
+        if self.prefs_open.is_none() { self.prefs_open = Some(prefs::Section::default()); }
+    }
+
+    /// A filter dialog is open (the layer shows its preview: no painting).
+    pub fn filtering(&self) -> bool { self.filter.is_some() }
+
+    /// Close the filter dialog without keeping its filter (the app sends
+    /// the Cancel itself: a document is closing...).
+    pub fn close_filter(&mut self) -> bool { self.filter.take().is_some() }
 
     /// A medium was just made: show it and edit its name.
     pub fn rename_medium(&mut self, name: &str) {
@@ -315,7 +332,16 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
             tools::draw_overlay(ctx, card, &model.overlay, model.to_points);
         }
     }
+    if let Some(section) = &mut state.prefs_open {
+        let mut reset = false;
+        if !prefs::dialog(ctx, section, model.prefs, model.display_profile, &mut reset) { state.prefs_open = None; }
+        if reset { state.dock = dockers::default_dock(); }
+    }
+    if let Some(d) = &mut state.filter {
+        if !filters::dialog(ctx, d, actions) { state.filter = None; }
+    }
     if let Some(form) = &mut state.new_form {
+        state.new_category = form.category();
         if !home::new_dialog(ctx, form, model.max_canvas, actions) { state.new_form = None; }
     }
     dialog(ctx, state, actions);

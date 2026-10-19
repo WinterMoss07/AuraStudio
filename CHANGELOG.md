@@ -3,6 +3,58 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.8.0 — 2026-10-19
+
+**Filters**
+- A Filter menu, from the W3C Filter Effects Module (the spec of CSS and
+  SVG filters, as the blend modes follow Compositing and Blending):
+  - Adjust: brightness, contrast, levels, opacity;
+  - Color: saturate, hue rotate, grayscale, sepia (the spec's matrices),
+    invert, posterize, threshold;
+  - Blur & sharpen: Gaussian blur (feGaussianBlur: three box blurs),
+    sharpen;
+  - Lines & edges: emboss, edge detect (feConvolveMatrix), thicken and
+    thin lines (feMorphology dilate / erode);
+  - Effects: drop shadow (the brush color).
+- A floating dialog with the filter's values; the active layer shows the
+  result live (Preview), inside the selection if there is one. Apply is
+  one undo step; Cancel or Escape puts the layer back. Painting, undo and
+  the like wait until the filter is applied or canceled.
+- New crate `aurastudio-filters` (no dependencies): straight colors for
+  the color ops, premultiplied 16-bit planes for blurs and convolutions,
+  one thread per channel. A4 300 dpi on 2 cores: color ops ~40 ms, blur
+  ~0.5 s.
+
+**Preferences**
+- Edit > Preferences… (Ctrl+K), by section: Interface (size, brush
+  strokes in the Tools docker, open maximized, reset docks), Canvas &
+  display (HiDPI scaling, color management, intent), Brushes & input
+  (brush outline or a crosshair, click debounce), Files (autosave delay,
+  or never). Changes apply at once; "Restore defaults". The View menu
+  items they replace are gone. 0.7 settings files are still read.
+
+**New document dialog**
+- Redone after PhotoCraft's layout: Painting, Animation and Comics tabs,
+  preset cards with the page's shape and size, the details on the right
+  (name, width / height in px, mm, cm or in, resolution, orientation,
+  what the preset is for, pixel size and memory). Double-click a card or
+  Enter creates. The tab last used is remembered.
+- Presets: paper sizes, squares, wallpapers, Instagram; animation HD
+  720p, Full HD, 4K and 8K UHD, DCI 2K and 4K (full container, flat
+  1.85, scope 2.39), 1.66, 4:3, vertical 9:16, square; comics: manga B4
+  and A4 manuscripts, B5, A5, B6 tankōbon (600 dpi), US comic with bleed,
+  US art board 11 × 17, graphic novel 6 × 9, BD album, A4, webtoon (1×,
+  2×), Instagram comic.
+
+**Fixed**
+- The hand, rotate and zoom cursors were tiny on high-density screens
+  (3K at 200 %): they are drawn at the screen's scaling, and redrawn when
+  the window moves to another monitor.
+
+**Parked**
+- Stroke previews: to redo from a clean base (README, "Parked"); the
+  geometry tools' previews don't show since 0.7.3.
+
 ## 0.7.3 — 2026-10-19
 
 **Stroke previews: steady while the size changes**

@@ -11,6 +11,7 @@ members = [
     "crates/aurastudio-gpu",
     "crates/aurastudio-ui",
     "crates/aurastudio-file",
+    "crates/aurastudio-filters",
     "crates/aurastudio-app",
 ]
 
@@ -36,4 +37,4 @@ codegen-units = 16
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.7.3"
+version = "0.8.0"

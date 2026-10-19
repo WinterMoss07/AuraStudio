@@ -49,6 +49,11 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                             ui.close_menu();
                         }
                     }
+                    ui.separator();
+                    if ui.add(egui::Button::new("Preferences…").shortcut_text("Ctrl+K")).clicked() {
+                        state.open_prefs();
+                        ui.close_menu();
+                    }
                 });
                 ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Layer", |ui| {
                     if ui.button("New layer").clicked() { layers::new_layer(m, a); ui.close_menu(); }
@@ -74,6 +79,9 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         ui.close_menu();
                     }
                 }));
+                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Filter", |ui| {
+                    crate::filters::menu(ui, &mut state.filter, m);
+                }));
                 ui.menu_button("View", |ui| {
                     for (label, key, cmd) in [
                         ("Zoom in", "+", ViewCmd::ZoomIn),
@@ -91,38 +99,6 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     }
                     ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate · Ctrl+Space+drag: zoom")
                         .small().color(theme::TEXT_WEAK));
-                    ui.separator();
-                    // Display color management of the canvas (and color docker).
-                    let profile = m.display_profile.unwrap_or("none found (sRGB)");
-                    ui.label(RichText::new(format!("Monitor profile: {profile}")).small().color(theme::TEXT_WEAK));
-                    ui.add_enabled_ui(m.display_profile.is_some(), |ui| {
-                        ui.checkbox(m.color_managed, "Color-manage canvas");
-                        ui.add_enabled_ui(*m.color_managed, |ui| {
-                            ui.radio_value(m.perceptual, true, "Perceptual");
-                            ui.radio_value(m.perceptual, false, "Relative colorimetric");
-                        });
-                    });
-                    ui.separator();
-                    ui.checkbox(m.hidpi_scaling, "HiDPI image scaling")
-                        .on_hover_text("100 % follows Windows' display scaling");
-                    ui.menu_button("Interface size", |ui| {
-                        for s in crate::UI_SCALES {
-                            let label = format!("{:.0} %", s * 100.0);
-                            if ui.radio((*m.ui_scale - s).abs() < 1e-3, label).clicked() {
-                                *m.ui_scale = s;
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                    ui.menu_button("Mouse click debounce", |ui| {
-                        for ms in [0u32, 10, 20, 30, 40, 60, 80] {
-                            let label = if ms == 0 { "Off".to_string() } else { format!("{ms} ms") };
-                            if ui.radio(*m.debounce_ms == ms, label).clicked() {
-                                *m.debounce_ms = ms;
-                                ui.close_menu();
-                            }
-                        }
-                    });
                     ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();

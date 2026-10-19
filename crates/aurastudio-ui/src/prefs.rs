@@ -1,0 +1,221 @@
+//! Preferences (Edit > Preferences…, Ctrl+K): what the user can turn on
+//! and off, kept in settings.txt (key=value lines; unknown or missing keys
+//! keep their default), and their dialog.
+
+use egui::{RichText, Ui};
+
+use crate::theme;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Prefs {
+    // Interface.
+    /// Size of the interface (1.0 = the system's scaling).
+    pub ui_scale:         f32,
+    /// The Tools docker shows each brush's stroke (off: names only).
+    pub brush_previews:   bool,
+    /// The window opens maximized.
+    pub open_maximized:   bool,
+    // Canvas and display.
+    /// 100 % zoom follows the display scaling (off: one image pixel per
+    /// physical screen pixel).
+    pub hidpi_scaling:    bool,
+    /// The canvas is color-managed to the monitor profile.
+    pub color_managed:    bool,
+    /// Perceptual intent (off: relative colorimetric).
+    pub perceptual:       bool,
+    // Brushes and input.
+    /// The brush outline replaces the cursor over the canvas (off: a
+    /// crosshair).
+    pub brush_outline:    bool,
+    /// Mouse click debounce, ms (0: off).
+    pub debounce_ms:      u32,
+    // Files.
+    /// Unsaved work goes to the recovery file this long after it changed
+    /// (0: never).
+    pub autosave_minutes: u32,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            ui_scale: 1.0, brush_previews: true, open_maximized: true,
+            hidpi_scaling: true, color_managed: true, perceptual: true,
+            brush_outline: true, debounce_ms: 20,
+            autosave_minutes: 5,
+        }
+    }
+}
+
+/// Interface sizes offered.
+pub const UI_SCALES: [f32; 6] = [0.75, 0.85, 1.0, 1.1, 1.25, 1.5];
+const DEBOUNCES: [u32; 7] = [0, 10, 20, 30, 40, 60, 80];
+const AUTOSAVES: [u32; 7] = [0, 1, 2, 5, 10, 15, 30];
+
+impl Prefs {
+    pub fn from_text(text: &str) -> Self {
+        let mut p = Self::default();
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let v = v.trim();
+            let b = v != "false";
+            match k.trim() {
+                "ui_scale" => if let Ok(v) = v.parse::<f32>() { p.ui_scale = v.clamp(0.5, 2.0) },
+                "brush_previews" => p.brush_previews = b,
+                "open_maximized" => p.open_maximized = b,
+                "hidpi_image_scaling" => p.hidpi_scaling = b,
+                "color_managed" => p.color_managed = b,
+                "perceptual" => p.perceptual = b,
+                "brush_outline" => p.brush_outline = b,
+                "click_debounce_ms" => if let Ok(v) = v.parse::<u32>() { p.debounce_ms = v.min(200) },
+                "autosave_minutes" => if let Ok(v) = v.parse::<u32>() { p.autosave_minutes = v.min(120) },
+                _ => {}
+            }
+        }
+        p
+    }
+
+    pub fn to_text(&self) -> String {
+        format!(
+            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\n",
+            self.ui_scale, self.brush_previews, self.open_maximized, self.hidpi_scaling, self.color_managed,
+            self.perceptual, self.brush_outline, self.debounce_ms, self.autosave_minutes,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Section { #[default] Interface, Display, Brushes, Files }
+
+impl Section {
+    const ALL: [Section; 4] = [Section::Interface, Section::Display, Section::Brushes, Section::Files];
+    fn name(self) -> &'static str {
+        match self {
+            Section::Interface => "Interface",
+            Section::Display => "Canvas & display",
+            Section::Brushes => "Brushes & input",
+            Section::Files => "Files",
+        }
+    }
+}
+
+/// The Preferences dialog. Changes apply at once. Returns false once
+/// closed. `profile`: the monitor profile's name, if one was found.
+pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile: Option<&str>, reset_docks: &mut bool) -> bool {
+    let mut open = true;
+    let modal = egui::Modal::new(egui::Id::new("preferences"))
+        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+        .show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.label(RichText::new("Preferences").heading());
+            ui.add_space(10.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(150.0);
+                    for s in Section::ALL {
+                        if ui.selectable_label(*section == s, s.name()).clicked() { *section = s; }
+                    }
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_min_height(260.0);
+                    match section {
+                        Section::Interface => interface(ui, p, reset_docks),
+                        Section::Display => display(ui, p, profile),
+                        Section::Brushes => brushes(ui, p),
+                        Section::Files => files(ui, p),
+                    }
+                });
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Restore defaults").on_hover_text("Every preference back to its default").clicked() {
+                    *p = Prefs::default();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let b = egui::Button::new(RichText::new("Close").color(theme::TEXT)).fill(theme::ACCENT).min_size(egui::vec2(88.0, 26.0));
+                    if ui.add(b).clicked() { open = false; }
+                });
+            });
+        });
+    if modal.should_close() { open = false; }
+    open
+}
+
+fn title(ui: &mut Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(RichText::new(text).strong());
+}
+
+fn note(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text).small().color(theme::TEXT_WEAK));
+}
+
+fn interface(ui: &mut Ui, p: &mut Prefs, reset_docks: &mut bool) {
+    title(ui, "Interface size");
+    ui.horizontal_wrapped(|ui| {
+        for s in UI_SCALES {
+            ui.radio_value(&mut p.ui_scale, s, format!("{:.0} %", s * 100.0));
+        }
+    });
+    note(ui, "On top of the system's display scaling.");
+    title(ui, "Tools docker");
+    ui.checkbox(&mut p.brush_previews, "Show brush strokes")
+        .on_hover_text("Off: brush names only (lighter on slow machines)");
+    title(ui, "Window");
+    ui.checkbox(&mut p.open_maximized, "Open maximized");
+    ui.add_space(6.0);
+    if ui.button("Reset docks").on_hover_text("Docks back to their default places").clicked() { *reset_docks = true; }
+}
+
+fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>) {
+    title(ui, "Zoom");
+    ui.checkbox(&mut p.hidpi_scaling, "HiDPI image scaling")
+        .on_hover_text("100 % shows the image at the size of the interface");
+    note(ui, "Off: 100 % is one image pixel per screen pixel.");
+    title(ui, "Color management");
+    note(ui, &format!("Monitor profile: {}", profile.unwrap_or("none found (sRGB)")));
+    ui.add_enabled_ui(profile.is_some(), |ui| {
+        ui.checkbox(&mut p.color_managed, "Color-manage the canvas");
+        ui.add_enabled_ui(p.color_managed, |ui| {
+            ui.radio_value(&mut p.perceptual, true, "Perceptual");
+            ui.radio_value(&mut p.perceptual, false, "Relative colorimetric");
+        });
+    });
+}
+
+fn brushes(ui: &mut Ui, p: &mut Prefs) {
+    title(ui, "Cursor");
+    ui.checkbox(&mut p.brush_outline, "Brush outline over the canvas")
+        .on_hover_text("Off: a crosshair");
+    title(ui, "Mouse click debounce");
+    ui.horizontal_wrapped(|ui| {
+        for ms in DEBOUNCES {
+            ui.radio_value(&mut p.debounce_ms, ms, if ms == 0 { "Off".to_string() } else { format!("{ms} ms") });
+        }
+    });
+    note(ui, "Ignores a worn mouse button's double release (a stroke cut in two).");
+}
+
+fn files(ui: &mut Ui, p: &mut Prefs) {
+    title(ui, "Autosave");
+    ui.horizontal_wrapped(|ui| {
+        for m in AUTOSAVES {
+            ui.radio_value(&mut p.autosave_minutes, m, if m == 0 { "Never".to_string() } else { format!("{m} min") });
+        }
+    });
+    note(ui, "Unsaved work goes to a recovery file this long after a change; it is offered back if AuraStudio doesn't close normally.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefs_round_trip_and_old_files_read() {
+        let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, ..Prefs::default() };
+        assert_eq!(Prefs::from_text(&p.to_text()), p);
+        // A 0.7 settings file.
+        let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");
+        assert_eq!((old.hidpi_scaling, old.ui_scale, old.debounce_ms, old.autosave_minutes), (false, 0.85, 30, 5));
+    }
+}

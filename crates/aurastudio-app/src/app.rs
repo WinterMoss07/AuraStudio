@@ -19,7 +19,7 @@ use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent
 use aurastudio_document::{Document, SharedDoc, Workspace};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_layers::{FillParams, Selection};
-use aurastudio_ui::{Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, SelectCmd, ShapeOptions, Tool, ToolMemory, UiState, ViewCmd};
+use aurastudio_ui::{Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, Prefs, SelectCmd, ShapeOptions, Tool, ToolMemory, UiState, ViewCmd};
 
 use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
 use crate::debounce::{Debounce, Kind as DebounceKind};
@@ -41,10 +41,11 @@ const MAX_RECENT: usize = 12;
 /// Zoom drag speed: the zoom is multiplied by e^(ZOOM_DRAG * dx px).
 const ZOOM_DRAG: f32 = 0.007;
 /// Unsaved work is saved to the recovery file this long after it changed
-/// (AURASTUDIO_AUTOSAVE_SECS overrides it, for testing).
-fn autosave_after() -> Duration {
-    let secs = std::env::var("AURASTUDIO_AUTOSAVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(5 * 60);
-    Duration::from_secs(secs)
+/// (Preferences; AURASTUDIO_AUTOSAVE_SECS overrides it, for testing).
+/// None: never.
+fn autosave_after(minutes: u32) -> Option<Duration> {
+    let secs = std::env::var("AURASTUDIO_AUTOSAVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(minutes as u64 * 60);
+    (secs > 0).then(|| Duration::from_secs(secs))
 }
 
 /// Something that would close the current document: done right away, or
@@ -78,43 +79,18 @@ fn save_recent(list: &[PathBuf]) {
 }
 
 /// Settings kept between sessions (key=value lines).
-#[derive(Clone, Copy, PartialEq)]
-struct Settings {
-    /// 100 % zoom follows the display scaling (off: one image pixel per
-    /// physical screen pixel).
-    hidpi_scaling: bool,
-    ui_scale:    f32,
-    /// Mouse click debounce, ms (0: off).
-    debounce_ms: u32,
-}
-
-impl Default for Settings {
-    fn default() -> Self { Self { hidpi_scaling: true, ui_scale: 1.0, debounce_ms: crate::debounce::DEFAULT_MS } }
-}
-
 fn settings_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("AuraStudio").join("settings.txt"))
 }
 
-fn load_settings() -> Settings {
-    let mut s = Settings::default();
-    let text = settings_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
-    for line in text.lines() {
-        match line.split_once('=') {
-            Some(("hidpi_image_scaling", v)) => s.hidpi_scaling = v.trim() != "false",
-            Some(("ui_scale", v)) => if let Ok(v) = v.trim().parse::<f32>() { s.ui_scale = v.clamp(0.5, 2.0) },
-            Some(("click_debounce_ms", v)) => if let Ok(v) = v.trim().parse::<u32>() { s.debounce_ms = v.min(200) },
-            _ => {}
-        }
-    }
-    s
+fn load_prefs() -> Prefs {
+    Prefs::from_text(&settings_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default())
 }
 
-fn save_settings(s: Settings) {
+fn save_prefs(p: &Prefs) {
     let Some(path) = settings_path() else { return };
     if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
-    let text = format!("hidpi_image_scaling={}\nui_scale={}\nclick_debounce_ms={}\n", s.hidpi_scaling, s.ui_scale, s.debounce_ms);
-    if let Err(e) = std::fs::write(&path, text) { log::warn!("settings: {e}"); }
+    if let Err(e) = std::fs::write(&path, p.to_text()) { log::warn!("settings: {e}"); }
 }
 
 fn has_extension(path: &Path, ext: &str) -> bool {
@@ -238,9 +214,6 @@ pub struct App {
     modifiers:  ModifiersState,
     /// Monitor ICC profile (None: not found, treated as sRGB).
     display_profile: Option<DisplayProfile>,
-    /// Display color management of the canvas (View menu).
-    color_managed: bool,
-    perceptual:    bool,
     /// Space held: a left drag moves the view instead of painting.
     space_down: bool,
     /// A Shift key is held (tracked from the keys too, see shift_held).
@@ -269,7 +242,7 @@ pub struct App {
     outline_shown: bool,
     /// Our cursors (hands, rotate), made once the event loop runs.
     cursors: Option<crate::cursors::Cursors>,
-    settings:   Settings,
+    prefs:      Prefs,
     /// Last pixels copied here (with where they came from: pasted back in
     /// place while they are still what the system clipboard holds).
     clip:       Option<aurastudio_document::Clip>,
@@ -365,8 +338,6 @@ impl App {
             start:      Instant::now(),
             modifiers:  ModifiersState::empty(),
             display_profile: None,
-            color_managed: true,
-            perceptual:    true,
             space_down: false,
             shift_down: false,
             ctrl_down:  false,
@@ -380,7 +351,7 @@ impl App {
             cursor_in_window: false,
             outline_shown: false,
             cursors: None,
-            settings:   load_settings(),
+            prefs:      load_prefs(),
             clip:       None,
             tool:       Tool::default(),
             fill:       FillParams::default(),
@@ -487,7 +458,7 @@ impl App {
     /// cursor (back over the docks and while navigating).
     fn update_outline(&mut self) {
         let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
-            && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none();
+            && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none() && self.prefs.brush_outline;
         self.outline_shown = show;
         if let Some(gpu) = &mut self.gpu {
             let outline = show.then(|| (self.cursor, self.brush.radius * gpu.zoom()));
@@ -516,7 +487,8 @@ impl App {
             None if self.is_drawing => Wanted::Hidden,
             None if self.over_canvas && !self.home => match self.tool {
                 _ if self.gesture.is_some() || self.picking_with_alt() => Wanted::System(CursorIcon::Crosshair),
-                Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => Wanted::Hidden,
+                Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc if self.prefs.brush_outline => Wanted::Hidden,
+                Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => Wanted::System(CursorIcon::Crosshair),
                 Tool::Picker | Tool::Fill | Tool::Lasso | Tool::RectSelect => Wanted::System(CursorIcon::Crosshair),
             },
             None if self.over_canvas => Wanted::System(CursorIcon::Default),
@@ -594,9 +566,9 @@ impl App {
     /// Interface size and 100 % zoom meaning, from the settings.
     fn apply_settings(&mut self) {
         let Some(gpu) = &mut self.gpu else { return };
-        gpu.set_pixel_exact(!self.settings.hidpi_scaling);
-        gpu.set_ui_scale(self.settings.ui_scale);
-        self.debounce.window = Duration::from_millis(self.settings.debounce_ms as u64);
+        gpu.set_pixel_exact(!self.prefs.hidpi_scaling);
+        gpu.set_ui_scale(self.prefs.ui_scale);
+        self.debounce.window = Duration::from_millis(self.prefs.debounce_ms as u64);
         self.update_cursor();
         self.request_redraw();
     }
@@ -867,8 +839,8 @@ impl App {
     /// Push the sRGB -> monitor transform to the canvas shader and the
     /// color docker, or switch it off.
     fn apply_color_management(&mut self) {
-        let intent = if self.perceptual { Intent::Perceptual } else { Intent::RelativeColorimetric };
-        let transform = match (&self.display_profile, self.color_managed) {
+        let intent = if self.prefs.perceptual { Intent::Perceptual } else { Intent::RelativeColorimetric };
+        let transform = match (&self.display_profile, self.prefs.color_managed) {
             (Some(p), true) => match DisplayTransform::new(&p.icc, intent) {
                 Ok(t) if t.is_identity() => {
                     log::info!("color management: monitor profile is sRGB-like, nothing to convert");
@@ -1101,13 +1073,8 @@ impl App {
 
         let max_canvas = gpu.max_canvas_size();
         let (view_zoom, view_angle) = (gpu.display_zoom(), gpu.view.angle.to_degrees());
-        let settings_before = self.settings;
-        let mut hidpi_scaling = self.settings.hidpi_scaling;
-        let mut ui_scale = self.settings.ui_scale;
-        let mut debounce_ms = self.settings.debounce_ms;
-        let (cm_before, perceptual_before) = (self.color_managed, self.perceptual);
-        let color_managed = &mut self.color_managed;
-        let perceptual = &mut self.perceptual;
+        let prefs_before = self.prefs.clone();
+        let mut prefs = self.prefs.clone();
         let display_profile = self.display_profile.as_ref().map(|p| p.name.as_str());
         let ui_state   = &mut self.ui;
         let doc        = &self.doc;
@@ -1158,15 +1125,11 @@ impl App {
                 },
                 shape,
                 to_points: &to_points,
-                hidpi_scaling: &mut hidpi_scaling,
-                ui_scale: &mut ui_scale,
-                debounce_ms: &mut debounce_ms,
                 can_undo,
                 can_redo,
                 view_zoom,
                 view_angle,
-                color_managed,
-                perceptual,
+                prefs: &mut prefs,
                 display_profile,
                 canvas_edit,
                 max_canvas,
@@ -1217,17 +1180,16 @@ impl App {
         // egui's cursor wish over its widgets is known now.
         self.apply_cursor();
 
-        if (self.color_managed, self.perceptual) != (cm_before, perceptual_before) {
-            self.apply_color_management();
+        if prefs != prefs_before {
+            let color = (prefs.color_managed, prefs.perceptual) != (prefs_before.color_managed, prefs_before.perceptual);
+            self.prefs = prefs;
+            save_prefs(&self.prefs);
+            self.apply_settings();
+            if color { self.apply_color_management(); }
+            // The autosave timer restarts with the new delay.
+            self.autosave_at = None;
         }
         if preset != preset_before { self.select_preset(preset); }
-        self.settings.hidpi_scaling = hidpi_scaling;
-        self.settings.ui_scale = ui_scale;
-        self.settings.debounce_ms = debounce_ms;
-        if self.settings != settings_before {
-            self.apply_settings();
-            save_settings(self.settings);
-        }
         if self.tool != tool_before {
             let tool = std::mem::replace(&mut self.tool, tool_before);
             self.set_tool(tool);
@@ -1251,6 +1213,9 @@ impl App {
         }
         if let Some(name) = actions.remove_medium {
             if !self.library.remove_medium(&name) { self.ui.notify("Only an empty medium can be removed"); }
+        }
+        if let Some(action) = actions.filter {
+            self.paint.send(Cmd::Filter { doc: Arc::clone(&self.doc), action });
         }
         if let Some(choice) = actions.dialog { self.on_dialog(choice); }
         if let Some(cmd) = actions.file { self.file_cmd(cmd); }
@@ -1310,6 +1275,7 @@ impl App {
 
     fn file_cmd(&mut self, cmd: FileCmd) {
         if self.is_drawing || self.ui.has_dialog() { return; }
+        self.cancel_filter();
         match cmd {
             FileCmd::New => self.ui.open_new_dialog(),
             FileCmd::Open => self.open_dialog(),
@@ -1324,7 +1290,15 @@ impl App {
     }
 
     /// Do `action`, first asking to save unsaved changes.
+    /// Close the filter dialog, putting the layer back as it was.
+    fn cancel_filter(&mut self) {
+        if self.ui.close_filter() {
+            self.paint.send(Cmd::Filter { doc: Arc::clone(&self.doc), action: aurastudio_ui::FilterAction::Cancel });
+        }
+    }
+
     fn request(&mut self, action: Pending) {
+        self.cancel_filter();
         let (modified, name) = {
             let d = self.doc.lock().unwrap();
             (d.is_modified(), d.name.clone())
@@ -1534,13 +1508,15 @@ impl App {
     fn check_autosave(&mut self) {
         let Ok(d) = self.doc.try_lock() else { return };
         let rev = d.revision();
-        if !d.is_modified() || rev == self.autosaved_revision {
+        // (Not a filter's preview: it isn't the document yet.)
+        if !d.is_modified() || rev == self.autosaved_revision || d.filtering() {
             self.autosave_at = None;
             return;
         }
         let now = Instant::now();
+        let Some(after) = autosave_after(self.prefs.autosave_minutes) else { return };
         match self.autosave_at {
-            None => self.autosave_at = Some(now + autosave_after()),
+            None => self.autosave_at = Some(now + after),
             Some(t) if now >= t && !self.is_drawing => {
                 if let Some(path) = recovery_path() {
                     let origin = d.path.clone();
@@ -1729,7 +1705,7 @@ impl ApplicationHandler<AppEvent> for App {
         let mut attrs = Window::default_attributes()
             .with_title(APP_TITLE)
             .with_window_icon(window_icon())
-            .with_maximized(true)
+            .with_maximized(self.prefs.open_maximized)
             .with_inner_size(winit::dpi::LogicalSize::new(1440u32, 900u32));
         if let Some(m) = event_loop.primary_monitor() {
             let (screen, pos) = (m.size(), m.position());
@@ -1770,7 +1746,7 @@ impl ApplicationHandler<AppEvent> for App {
         let window_scale = window.scale_factor();
         window.request_redraw();
         self.window = Some(window);
-        self.cursors = Some(crate::cursors::Cursors::new(event_loop));
+        self.cursors = Some(crate::cursors::Cursors::new(event_loop, window_scale));
         self.gpu    = Some(gpu);
         log::info!("display scaling: {:.0} % ({})", window_scale * 100.0,
             self.hwnd().map_or_else(String::new, aurastudio_input::dpi_report));
@@ -1783,10 +1759,14 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn window_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         _id:        WindowId,
         event:      WindowEvent,
     ) {
+        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {
+            // Cursors at the new display scaling.
+            self.cursors = Some(crate::cursors::Cursors::new(event_loop, *scale_factor));
+        }
         // Left button bounce filter first (debounce.rs): a release is held
         // back until it is sure not to be the switch chattering.
         let kind = match &event {
@@ -1938,6 +1918,10 @@ impl App {
                         if shift { self.redo() } else { self.undo() }
                     }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => self.redo(),
+                    Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("k") => {
+                        self.ui.open_prefs();
+                        self.request_redraw();
+                    }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.select(SelectCmd::All),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("c") => self.edit_cmd(EditCmd::Copy),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("v") => self.edit_cmd(EditCmd::Paste),

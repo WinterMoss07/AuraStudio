@@ -62,11 +62,28 @@ layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangl
 **Files**
 - `.aurs` documents (layers, folders, 50 undo steps, preview), atomic saves,
   autosave + crash recovery, unsaved-changes prompts.
-- Start screen with recent files; New dialog with paper / manga / comics /
-  screen presets.
+- Start screen with recent files. New document dialog (laid out like
+  PhotoCraft's): Painting, Animation and Comics tabs of preset cards
+  (paper sizes; HD to 8K and the DCI 2K / 4K cinema sizes, flat and
+  scope; manga B4 / A4 / B5 / B6 manuscripts at 600 dpi, US comic with
+  bleed, BD album, webtoon), units px / mm / cm / in, orientation.
 - Open PNG / JPG / WebP / BMP / TIFF / GIF: the picture is the bottom layer
   and an empty layer above it is active (no painting on the picture by
   mistake). Export to PNG / JPG.
+
+**Filters** — Filter menu, from the W3C Filter Effects spec (the one CSS
+and SVG filters follow, as the blend modes follow Compositing and
+Blending): brightness, contrast, saturate, hue rotate, grayscale, sepia,
+invert, opacity, levels, posterize, threshold, Gaussian blur, sharpen,
+emboss, edge detect, thicken / thin lines (feMorphology), drop shadow.
+Live preview on the active layer (inside the selection), Apply is one
+undo step, Cancel or Escape puts the layer back. Blur of an A4 300 dpi
+layer: ~0.5 s on 2 cores.
+
+**Preferences** — Edit > Preferences… (Ctrl+K): interface size, brush
+strokes in the Tools docker, open maximized, HiDPI scaling, color
+management and intent, brush outline cursor, click debounce, autosave
+delay. Kept in `settings.txt`.
 
 **Layers** — Paper + Layer 1 for new documents, folders, opacity, blend,
 lock, rename, undo / redo with a memory budget.
@@ -76,9 +93,10 @@ mipmapped canvas (thin lines stay visible zoomed out; +33 % GPU memory for
 the canvas texture).
 - High-density screens: 100 % follows the system's display scaling, so a
   picture has the same size on a 3K laptop and an HD monitor; moving the
-  window to another monitor keeps it the same size. View menu: "1 image
-  pixel = 1 screen pixel" (XnView's option) and Interface size (75–150 %),
-  both remembered.
+  window to another monitor keeps it the same size; the hand, rotate and
+  zoom cursors are drawn at the screen's scaling. Preferences: "HiDPI
+  image scaling" off = 1 image pixel per screen pixel (XnView's option),
+  and Interface size (75–150 %).
 
 **Under the hood**
 - Brushes on their own thread (never split); merge of the changed areas off
@@ -179,6 +197,7 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 | `aurastudio-gpu` | wgpu renderer: canvas, view transform, color LUT, brush outline, egui |
 | `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
 | `aurastudio-file` | `.aurs` format, image import / export |
+| `aurastudio-filters` | Filters from the W3C Filter Effects spec |
 | `aurastudio-ui` | egui interface: bars, toolbox, one file per docker, theme, widgets |
 | `aurastudio-app` | the application: event loop, paint thread, projection |
 
@@ -214,6 +233,17 @@ See `NOTICE.md` for third-party code and assets.
       Today nothing caps the memory: 1.5 GB with 35 layers in the 20-minute
       painting test.
 
+**Parked: stroke previews, to redo cleanly**
+- [ ] Geometry tool previews no longer show (0.7.3).
+- [ ] Study PhotoCraft's Brush settings preview (`crates/ui-egui/src/brush_preview.rs`,
+      `brush_panel.rs`) and rewrite ours from a clean base: it grew one
+      fix at a time.
+- [ ] Photoshop's behavior: the Brushes docker's previews show each
+      preset as saved and never change; only the Brush settings (Tool
+      options) preview follows the sliders.
+- [ ] Keep what 0.7.3 measured: dabs in place along the path and grain
+      by place (a size change only grows the dabs), no jumps.
+
 **Next: Forge**
 - [ ] Advanced tool options popup (gear at the bottom right of Tool
       options, F5): every Forge setting and its curves; Tool options keeps
@@ -232,7 +262,7 @@ See `NOTICE.md` for third-party code and assets.
       smudge too weakly by default).
 - [x] Brushes docker: list of brush strokes (0.4.0), by medium (0.5.0), tool groups and Tools docker (0.6.0).
 - [ ] Krita brush bundles (.bundle) import.
-- [ ] Redesign of the New document dialog.
+- [x] Redesign of the New document dialog (0.8.0).
 - [ ] PSD / ORA export.
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and
       canvas resize (history is cleared today).

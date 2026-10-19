@@ -1,0 +1,6 @@
+[package]
+name = "aurastudio-filters"
+version.workspace = true
+edition = "2021"
+
+[dependencies]

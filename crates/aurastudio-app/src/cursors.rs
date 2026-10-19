@@ -34,22 +34,27 @@ pub struct Cursors {
     applied:     Option<Wanted>,
 }
 
-/// Cursor bitmaps are this many pixels wide and high.
+/// Cursor bitmaps are drawn on a grid this many units wide and high, one
+/// unit per screen pixel at 100 % display scaling.
 const SIZE: u32 = 32;
 
 impl Cursors {
-    pub fn new(event_loop: &ActiveEventLoop) -> Self {
+    /// The cursors at `scale` screen pixels per unit (the display scaling:
+    /// Windows doesn't scale custom cursors, at 200 % they came out half
+    /// the size of the system's).
+    pub fn new(event_loop: &ActiveEventLoop, scale: f64) -> Self {
+        let scale = (scale as f32).clamp(1.0, 4.0);
         let make = |pixmap: Pixmap| {
+            let side = pixmap.width() as u16;
             let rgba = straight_rgba(&pixmap);
-            let source = CustomCursor::from_rgba(rgba, SIZE as u16, SIZE as u16, (SIZE / 2) as u16, (SIZE / 2) as u16)
-                .expect("cursor bitmap");
+            let source = CustomCursor::from_rgba(rgba, side, side, side / 2, side / 2).expect("cursor bitmap");
             event_loop.create_custom_cursor(source)
         };
         Self {
-            hand: make(hand(false)),
-            hand_closed: make(hand(true)),
-            rotate: make(rotate()),
-            zoom: make(magnifier()),
+            hand: make(hand(false, scale)),
+            hand_closed: make(hand(true, scale)),
+            rotate: make(rotate(scale)),
+            zoom: make(magnifier(scale)),
             applied: None,
         }
     }
@@ -120,8 +125,8 @@ fn outline_then_fill(pixmap: &mut Pixmap, draw: impl Fn(&mut Pixmap, &Paint, f32
 }
 
 /// Open (fingers spread) or closed (fingers curled) hand.
-fn hand(closed: bool) -> Pixmap {
-    let mut pixmap = Pixmap::new(SIZE, SIZE).unwrap();
+fn hand(closed: bool, scale: f32) -> Pixmap {
+    let (mut pixmap, t) = canvas(scale);
     // Finger x positions and fingertip heights.
     let fingers: [(f32, f32); 4] = if closed {
         [(10.5, 12.5), (14.5, 11.5), (18.5, 11.5), (22.5, 13.0)]
@@ -136,26 +141,26 @@ fn hand(closed: bool) -> Pixmap {
             pb.move_to(x, top);
             pb.line_to(x, 18.0);
             let path = pb.finish().unwrap();
-            pm.stroke_path(&path, paint, &stroke, Transform::identity(), None);
+            pm.stroke_path(&path, paint, &stroke, t, None);
         }
         let mut pb = PathBuilder::new();
         pb.move_to(thumb.0 .0, thumb.0 .1);
         pb.line_to(thumb.1 .0, thumb.1 .1);
         let path = pb.finish().unwrap();
         stroke.width = 3.6 + extra;
-        pm.stroke_path(&path, paint, &stroke, Transform::identity(), None);
+        pm.stroke_path(&path, paint, &stroke, t, None);
         // Palm: a rounded block under the fingers.
         let grow = extra / 2.0;
         let rect = tiny_skia::Rect::from_ltrb(8.6 - grow, 14.0 - grow, 24.4 + grow, 27.0 + grow).unwrap();
         let path = rounded_rect(rect, 4.5 + grow);
-        pm.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
+        pm.fill_path(&path, paint, FillRule::Winding, t, None);
     });
     pixmap
 }
 
 /// A circle of two arrows (rotate the view).
-fn rotate() -> Pixmap {
-    let mut pixmap = Pixmap::new(SIZE, SIZE).unwrap();
+fn rotate(scale: f32) -> Pixmap {
+    let (mut pixmap, t) = canvas(scale);
     let (cx, cy, r) = (16.0f32, 16.0f32, 9.0f32);
     outline_then_fill(&mut pixmap, |pm, paint, extra| {
         let stroke = Stroke { width: 2.4 + extra, line_cap: LineCap::Butt, ..Default::default() };
@@ -170,7 +175,7 @@ fn rotate() -> Pixmap {
                 if i == 0 { pb.move_to(x, y) } else { pb.line_to(x, y) }
             }
             let path = pb.finish().unwrap();
-            pm.stroke_path(&path, paint, &stroke, Transform::identity(), None);
+            pm.stroke_path(&path, paint, &stroke, t, None);
             // Arrowhead at the end, along the turning direction.
             let a = start + sweep;
             let (ex, ey) = (cx + r * a.cos(), cy + r * a.sin());
@@ -184,29 +189,35 @@ fn rotate() -> Pixmap {
             pb.line_to(ex - tx * back - nx * half, ey - ty * back - ny * half);
             pb.close();
             let path = pb.finish().unwrap();
-            pm.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
+            pm.fill_path(&path, paint, FillRule::Winding, t, None);
         }
     });
     pixmap
 }
 
 /// A magnifying glass (zoom the view).
-fn magnifier() -> Pixmap {
-    let mut pixmap = Pixmap::new(SIZE, SIZE).unwrap();
+fn magnifier(scale: f32) -> Pixmap {
+    let (mut pixmap, t) = canvas(scale);
     let (cx, cy, r) = (14.0f32, 14.0f32, 7.5f32);
     outline_then_fill(&mut pixmap, |pm, paint, extra| {
         let ring = Stroke { width: 2.6 + extra, ..Default::default() };
         let circle = PathBuilder::from_circle(cx, cy, r).unwrap();
-        pm.stroke_path(&circle, paint, &ring, Transform::identity(), None);
+        pm.stroke_path(&circle, paint, &ring, t, None);
         let handle = Stroke { width: 3.6 + extra, line_cap: LineCap::Round, ..Default::default() };
         let mut pb = PathBuilder::new();
         let k = std::f32::consts::FRAC_1_SQRT_2;
         pb.move_to(cx + (r + 1.5) * k, cy + (r + 1.5) * k);
         pb.line_to(26.0, 26.0);
         let path = pb.finish().unwrap();
-        pm.stroke_path(&path, paint, &handle, Transform::identity(), None);
+        pm.stroke_path(&path, paint, &handle, t, None);
     });
     pixmap
+}
+
+/// A cursor bitmap for `scale`, and the transform from grid units to it.
+fn canvas(scale: f32) -> (Pixmap, Transform) {
+    let side = (SIZE as f32 * scale).round() as u32;
+    (Pixmap::new(side, side).unwrap(), Transform::from_scale(side as f32 / SIZE as f32, side as f32 / SIZE as f32))
 }
 
 fn rounded_rect(r: tiny_skia::Rect, radius: f32) -> tiny_skia::Path {
@@ -240,9 +251,9 @@ mod tests {
 
     #[test]
     fn cursor_bitmaps_have_ink() {
-        for pm in [hand(false), hand(true), rotate(), magnifier()] {
+        for pm in [hand(false, 1.0), hand(true, 1.0), rotate(1.0), magnifier(1.0), hand(false, 2.0)] {
             let rgba = straight_rgba(&pm);
-            assert_eq!(rgba.len(), (SIZE * SIZE * 4) as usize);
+            assert_eq!(rgba.len(), (pm.width() * pm.height() * 4) as usize);
             let opaque = rgba.chunks(4).filter(|p| p[3] > 128).count();
             assert!(opaque > 60, "cursor almost empty: {opaque}");
             if let Ok(dir) = std::env::var("CURSOR_DUMP") {

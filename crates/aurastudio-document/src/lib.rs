@@ -36,7 +36,22 @@ pub struct Document {
     saved_revision: u64,
     /// Pixels painting, filling and clearing may change; None: all.
     pub selection:  Option<Selection>,
+    /// A filter being previewed (its dialog is open).
+    filter:     Option<FilterSession>,
 }
+
+/// A filter shown on the active layer while its dialog is open: the
+/// layer's pixels from before, to filter again with other values, to put
+/// back (Cancel), or to record for undo (Apply).
+struct FilterSession {
+    layer:  u64,
+    rect:   Rect,
+    before: Vec<u8>,
+}
+
+/// How far around the painted area (or the selection) a filter may reach
+/// (a 100 px blur, a shadow moved 200 px).
+const FILTER_MARGIN: u32 = 512;
 
 impl Document {
     pub fn new(id: DocId, name: &str, width: u32, height: u32) -> Self {
@@ -46,7 +61,7 @@ impl Document {
     /// A document from its parts (a file being opened). It counts as
     /// saved.
     pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
-        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None }
+        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, filter: None }
     }
 
     /// Something changed (the layer panel edits the stack directly and
@@ -106,6 +121,77 @@ impl Document {
         Some((id, rect))
     }
 
+    /// Show `filter` on the active layer (None: the layer as it was).
+    /// The first call starts a session. Returns the layer and the area to
+    /// redraw, or None if the active layer can't be painted.
+    pub fn filter_preview(&mut self, filter: Option<&aurastudio_filters::Filter>) -> Option<(u64, Rect)> {
+        if self.filter.is_none() {
+            if !self.layers.can_paint() { return None; }
+            let layer = self.layers.active_id();
+            let (w, h) = (self.layers.width, self.layers.height);
+            let aurastudio_layers::Node::Layer(l) = self.layers.node(layer)? else { return None };
+            // A layer whose empty parts are transparent changes only around
+            // what is painted; the paper changes everywhere.
+            let area = match (&self.selection, l.tiles.fill()[3], l.tiles.content_bounds()) {
+                (Some(s), _, _) => s.bbox(),
+                (None, 0, Some(b)) => b,
+                (None, 0, None) => return Some((layer, (0, 0, 0, 0))),
+                (None, _, _) => (0, 0, w, h),
+            };
+            let m = FILTER_MARGIN;
+            let rect = (area.0.saturating_sub(m), area.1.saturating_sub(m), (area.2 + m).min(w), (area.3 + m).min(h));
+            let before = self.layers.layer_rect(layer, rect)?;
+            self.filter = Some(FilterSession { layer, rect, before });
+        }
+        let s = self.filter.as_ref()?;
+        let (layer, rect) = (s.layer, s.rect);
+        let (rw, rh) = ((rect.2 - rect.0) as usize, (rect.3 - rect.1) as usize);
+        if rw == 0 || rh == 0 { return Some((layer, rect)); }
+        let px = match filter {
+            None => s.before.clone(),
+            Some(f) => {
+                let mut px = f.apply(&s.before, rw, rh);
+                // Only selected pixels change; a transparent pixel stays
+                // the empty value (no memory taken by invisible colors).
+                let mut i = 0;
+                for y in rect.1..rect.3 {
+                    for x in rect.0..rect.2 {
+                        let outside = self.selection.as_ref().is_some_and(|sel| !sel.contains(x, y));
+                        if outside || (px[i + 3] == 0 && s.before[i + 3] == 0) {
+                            px[i..i + 4].copy_from_slice(&s.before[i..i + 4]);
+                        }
+                        i += 4;
+                    }
+                }
+                px
+            }
+        };
+        self.layers.set_layer_rect(layer, rect, &px);
+        Some((layer, rect))
+    }
+
+    /// Keep `filter` on the layer (undoable as `name`). Returns what
+    /// changed.
+    pub fn filter_apply(&mut self, filter: &aurastudio_filters::Filter) -> Option<(u64, Rect)> {
+        let changed = self.filter_preview(Some(filter))?;
+        let s = self.filter.take()?;
+        if changed.1.2 > changed.1.0 {
+            self.history.push(filter.kind.name(), s.layer, s.rect, &s.before);
+            self.touch();
+        }
+        Some(changed)
+    }
+
+    /// Put the layer back as it was before the filter's dialog opened.
+    pub fn filter_cancel(&mut self) -> Option<(u64, Rect)> {
+        let s = self.filter.take()?;
+        self.layers.set_layer_rect(s.layer, s.rect, &s.before);
+        Some((s.layer, s.rect))
+    }
+
+    /// A filter dialog is open on this document.
+    pub fn filtering(&self) -> bool { self.filter.is_some() }
+
     pub fn undo(&mut self) -> Option<Change> {
         let c = self.history.undo(&mut self.layers);
         if c.is_some() { self.touch(); }
@@ -122,6 +208,9 @@ impl Document {
     /// so the history is dropped (Krita does the same without an undoable
     /// resize command).
     pub fn resize(&mut self, width: u32, height: u32) {
+        // A filter being previewed is dropped first (its saved pixels
+        // are for the old size).
+        self.filter_cancel();
         self.layers.resize(width, height);
         self.history.clear();
         self.selection = None;
@@ -274,6 +363,43 @@ mod tests {
     fn px(doc: &Document, id: u64, x: u32, y: u32) -> [u8; 4] {
         let Some(Node::Layer(l)) = doc.layers.node(id) else { panic!() };
         l.tiles.pixel(x, y)
+    }
+
+    #[test]
+    fn filters_preview_cancel_apply_and_undo() {
+        use aurastudio_filters::{Filter, Kind};
+        let mut doc = Document::new(DocId(1), "a", 64, 64);
+        let id = doc.layers.add_layer("ink");
+        doc.layers.set_active(id);
+        paint(&mut doc, id, (10, 10, 20, 20), [200, 100, 50, 255]);
+        let inv = Filter::new(Kind::Invert);
+        let empty = px(&doc, id, 40, 40);
+        doc.filter_preview(Some(&inv)).unwrap();
+        assert_eq!(px(&doc, id, 15, 15), [55, 155, 205, 255]);
+        assert!(doc.filtering());
+        // Empty pixels stay the layer's empty value.
+        assert_eq!(px(&doc, id, 40, 40), empty);
+        doc.filter_cancel();
+        assert_eq!(px(&doc, id, 15, 15), [200, 100, 50, 255]);
+        assert!(!doc.filtering());
+
+        let undo_before = doc.history().undo_len();
+        doc.filter_preview(Some(&Filter::new(Kind::Grayscale)));
+        doc.filter_apply(&inv).unwrap();
+        assert_eq!(px(&doc, id, 15, 15), [55, 155, 205, 255]);
+        assert_eq!(doc.history().undo_len(), undo_before + 1);
+        doc.undo();
+        assert_eq!(px(&doc, id, 15, 15), [200, 100, 50, 255]);
+
+        // A selection limits it; the paper (opaque fill) changes too.
+        doc.selection = Selection::rect(64, 64, (0, 0, 15, 64));
+        doc.layers.set_active(1);
+        assert!(doc.filter_apply(&inv).is_none(), "the paper is locked");
+        *doc.layers.node_mut(1).unwrap().locked_mut() = false;
+        doc.filter_apply(&inv).unwrap();
+        let Some(Node::Layer(paper)) = doc.layers.node(1) else { panic!() };
+        assert_eq!(paper.tiles.pixel(5, 5), [0, 0, 0, 255]);
+        assert_eq!(paper.tiles.pixel(30, 5), [255, 255, 255, 255]);
     }
 
     #[test]

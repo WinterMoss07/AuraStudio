@@ -122,7 +122,7 @@ fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 3.0;
         let mut pick = |st: &mut ToolListState, ui: &mut Ui, i: usize| {
-            let resp = brush_row(ui, st, &presets[i], i, i == *m.preset, m.brush);
+            let resp = brush_row(ui, st, &presets[i], i, i == *m.preset, m.brush, m.prefs.brush_previews);
             if resp.clicked() {
                 // A brush of another group (search): go there.
                 let g = Group::of_kind(presets[i].kind);
@@ -280,8 +280,9 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
     }
 }
 
-fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, selected: bool, current: &aurastudio_brush::Brush) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click_and_drag());
+fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, selected: bool, current: &aurastudio_brush::Brush, strokes: bool) -> egui::Response {
+    let height = if strokes { ROW } else { 26.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click_and_drag());
     if resp.drag_started() { resp.dnd_set_drag_payload(BrushDrag(index)); }
     let resp = resp.on_hover_text(format!("{}\n{}  ·  {}", p.name, p.author, p.origin.label()));
     if !ui.is_rect_visible(rect) { return resp; }
@@ -289,8 +290,13 @@ fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, sele
     ui.painter().rect_filled(rect, 4.0, bg);
     // The selected brush is shown with its current settings.
     let settings = if selected { current } else { &p.settings };
-    let spec = StrokeSpec { preset: p, settings, shape: Shape::S, mode: Mode::List };
-    st.previews.show(ui, rect.shrink(1.0), Slot::Brush(index), spec, Some(&p.name));
+    if strokes {
+        let spec = StrokeSpec { preset: p, settings, shape: Shape::S, mode: Mode::List };
+        st.previews.show(ui, rect.shrink(1.0), Slot::Brush(index), spec, Some(&p.name));
+    } else {
+        // Preferences: names only.
+        ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, &p.name, egui::FontId::proportional(13.0), theme::TEXT);
+    }
     if selected {
         ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5_f32, theme::ACCENT));
     }

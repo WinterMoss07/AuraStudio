@@ -194,7 +194,6 @@ fn fuzz() {
     let mut brush = lib.presets[0].settings.clone();
     let mut preset = 0usize;
     let mut canvas_edit = size;
-    let (mut cm, mut perceptual) = (true, true);
     let mut view = CanvasView::default();
     let area = [0.0, 70.0, 1100.0, 830.0];
     let mut pointer = pos2(700.0, 400.0);
@@ -204,7 +203,7 @@ fn fuzz() {
     let mut tool_memory = aurastudio_ui::ToolMemory::default();
     let mut fill = FillParams::default();
     let mut shape = ShapeOptions::default();
-    let (mut hidpi_scaling, mut ui_scale, mut debounce_ms) = (true, 1.0f32, 20u32);
+    let mut prefs = aurastudio_ui::Prefs::default();
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
     let t0 = Instant::now();
@@ -241,8 +240,7 @@ fn fuzz() {
                         can_redo,
                         view_zoom: view.zoom,
                         view_angle: view.angle.to_degrees(),
-                        color_managed: &mut cm,
-                        perceptual: &mut perceptual,
+                        prefs: &mut prefs,
                         display_profile: None,
                         canvas_edit: &mut canvas_edit,
                         max_canvas: 4096,
@@ -254,9 +252,6 @@ fn fuzz() {
                         has_selection: sel_outlines.is_some(),
                         overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None, shape: None, handles: &[], guide: &[] },
                         to_points: &to_points,
-                        hidpi_scaling: &mut hidpi_scaling,
-                        ui_scale: &mut ui_scale,
-                        debounce_ms: &mut debounce_ms,
                     };
                     aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
                 });
@@ -282,6 +277,7 @@ fn fuzz() {
                     if actions.redo { pt.send(Cmd::Redo(Arc::clone(&doc))); }
                     if actions.clear_layer { pt.send(Cmd::Clear(Arc::clone(&doc))); }
                 }
+                if let Some(action) = actions.filter { pt.send(Cmd::Filter { doc: Arc::clone(&doc), action }); }
                 if actions.resize_to.is_some() || actions.recomposite {
                     let mut d = doc.lock().unwrap();
                     if let Some((w, h)) = actions.resize_to {

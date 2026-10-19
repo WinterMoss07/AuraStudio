@@ -52,47 +52,98 @@ impl Unit {
     }
 }
 
-struct Preset { group: &'static str, name: &'static str, w: f32, h: f32, unit: Unit, dpi: f32 }
+/// A size the New dialog offers.
+pub struct Preset {
+    pub name: &'static str,
+    pub w:    f32,
+    pub h:    f32,
+    unit:     Unit,
+    pub dpi:  f32,
+    /// What it is for, shown under the details.
+    pub note: &'static str,
+}
 
-const PRESETS: &[Preset] = &[
-    Preset { group: "Paper", name: "A5", w: 148.0, h: 210.0, unit: Unit::Mm, dpi: 300.0 },
-    Preset { group: "Paper", name: "A4", w: 210.0, h: 297.0, unit: Unit::Mm, dpi: 300.0 },
-    Preset { group: "Paper", name: "A3", w: 297.0, h: 420.0, unit: Unit::Mm, dpi: 300.0 },
-    Preset { group: "Paper", name: "US Letter", w: 8.5, h: 11.0, unit: Unit::In, dpi: 300.0 },
-    // Black and white manga manuscripts are drawn at 600 dpi (CSP presets).
-    Preset { group: "Manga", name: "B4 manuscript", w: 257.0, h: 364.0, unit: Unit::Mm, dpi: 600.0 },
-    Preset { group: "Manga", name: "B5", w: 182.0, h: 257.0, unit: Unit::Mm, dpi: 600.0 },
-    Preset { group: "Manga", name: "A4", w: 210.0, h: 297.0, unit: Unit::Mm, dpi: 600.0 },
-    Preset { group: "Comics", name: "US comic, bleed", w: 6.875, h: 10.4375, unit: Unit::In, dpi: 600.0 },
-    Preset { group: "Comics", name: "US art board", w: 11.0, h: 17.0, unit: Unit::In, dpi: 400.0 },
-    Preset { group: "Comics", name: "BD album page", w: 240.0, h: 320.0, unit: Unit::Mm, dpi: 600.0 },
-    Preset { group: "Screen", name: "Square", w: 2048.0, h: 2048.0, unit: Unit::Px, dpi: 72.0 },
-    Preset { group: "Screen", name: "Full HD", w: 1920.0, h: 1080.0, unit: Unit::Px, dpi: 72.0 },
-    Preset { group: "Screen", name: "4K UHD", w: 3840.0, h: 2160.0, unit: Unit::Px, dpi: 72.0 },
-    Preset { group: "Screen", name: "Webtoon", w: 800.0, h: 1280.0, unit: Unit::Px, dpi: 72.0 },
-    Preset { group: "Screen", name: "Instagram portrait", w: 1080.0, h: 1350.0, unit: Unit::Px, dpi: 72.0 },
+const fn mm(name: &'static str, w: f32, h: f32, dpi: f32, note: &'static str) -> Preset { Preset { name, w, h, unit: Unit::Mm, dpi, note } }
+const fn inch(name: &'static str, w: f32, h: f32, dpi: f32, note: &'static str) -> Preset { Preset { name, w, h, unit: Unit::In, dpi, note } }
+const fn px(name: &'static str, w: f32, h: f32, note: &'static str) -> Preset { Preset { name, w, h, unit: Unit::Px, dpi: 72.0, note } }
+
+/// The dialog's tabs and their presets. Comics: black-and-white pages at
+/// 600 dpi (manga manuscripts), color ones at 400; animation and screens
+/// in pixels (the DCI sizes: Digital Cinema Initiatives).
+pub const CATEGORIES: &[(&str, &[Preset])] = &[
+    ("Painting", &[
+        mm("A5", 148.0, 210.0, 300.0, "Sketchbook page"),
+        mm("A4", 210.0, 297.0, 300.0, "Print, 300 dpi"),
+        mm("A3", 297.0, 420.0, 300.0, "Print, 300 dpi"),
+        inch("US Letter", 8.5, 11.0, 300.0, "Print, 300 dpi"),
+        inch("Tabloid", 11.0, 17.0, 300.0, "Print, 300 dpi"),
+        inch("Poster 18 × 24", 18.0, 24.0, 300.0, "Print, 300 dpi"),
+        px("Square 2K", 2048.0, 2048.0, "Studies, speed paintings"),
+        px("Square 4K", 4096.0, 4096.0, "Large illustration"),
+        px("Portrait 3:4", 3000.0, 4000.0, "Illustration for screens"),
+        px("Wallpaper 4K", 3840.0, 2160.0, "16:9 screen, keyframes"),
+        px("Instagram portrait", 1080.0, 1350.0, "4:5 post"),
+        px("Instagram square", 1080.0, 1080.0, "1:1 post"),
+    ]),
+    ("Animation", &[
+        px("HD 720p", 1280.0, 720.0, "16:9, light: animatics and tests"),
+        px("Full HD 1080p", 1920.0, 1080.0, "16:9, TV and web standard"),
+        px("4K UHD", 3840.0, 2160.0, "16:9, UHD TV and streaming"),
+        px("8K UHD", 7680.0, 4320.0, "16:9"),
+        px("DCI 2K", 2048.0, 1080.0, "1.90:1, cinema full container"),
+        px("DCI 2K Flat", 1998.0, 1080.0, "1.85:1, cinema"),
+        px("DCI 2K Scope", 2048.0, 858.0, "2.39:1, cinema widescreen"),
+        px("DCI 4K", 4096.0, 2160.0, "1.90:1, cinema full container"),
+        px("DCI 4K Flat", 3996.0, 2160.0, "1.85:1, cinema"),
+        px("DCI 4K Scope", 4096.0, 1716.0, "2.39:1, cinema widescreen"),
+        px("1.66:1", 1800.0, 1080.0, "European widescreen"),
+        px("4:3", 1440.0, 1080.0, "Classic TV, 1080 lines"),
+        px("Vertical 9:16", 1080.0, 1920.0, "Shorts, Reels, TikTok"),
+        px("Square 1:1", 1080.0, 1080.0, "Social posts"),
+    ]),
+    ("Comics", &[
+        mm("Manga B4 manuscript", 257.0, 364.0, 600.0, "Japanese manuscript paper; inner frame 180 × 270 mm, printed at B5"),
+        mm("Manga A4 manuscript", 210.0, 297.0, 600.0, "Doujinshi manuscript, printed at B5 or A5"),
+        mm("Manga B5", 182.0, 257.0, 600.0, "Magazine / B5 doujinshi page"),
+        mm("Manga A5", 148.0, 210.0, 600.0, "A5 doujinshi page"),
+        mm("Manga B6 tankōbon", 128.0, 182.0, 600.0, "Collected volume page"),
+        inch("US comic, bleed", 6.875, 10.4375, 600.0, "Trim 6.625 × 10.25 in, 0.125 in bleed"),
+        inch("US comic art board", 11.0, 17.0, 400.0, "Original art, printed reduced"),
+        inch("Graphic novel 6 × 9", 6.0, 9.0, 400.0, "Trade paperback"),
+        mm("BD album", 240.0, 320.0, 400.0, "European album page (franco-belge)"),
+        mm("A4 comic", 210.0, 297.0, 400.0, "European / print-on-demand"),
+        px("Webtoon", 800.0, 1280.0, "Vertical scroll, 800 px wide"),
+        px("Webtoon 2×", 1600.0, 2560.0, "Drawn at twice the web width"),
+        px("Instagram comic", 1080.0, 1350.0, "4:5 carousel page"),
+    ]),
 ];
 
 /// State of the open New dialog.
 pub struct NewForm {
-    name:   String,
-    preset: Option<usize>,
-    w:      f32,
-    h:      f32,
-    unit:   Unit,
-    dpi:    f32,
+    name:     String,
+    category: usize,
+    /// (category, preset) chosen; None once a value was changed by hand.
+    preset:   Option<(usize, usize)>,
+    w:        f32,
+    h:        f32,
+    unit:     Unit,
+    dpi:      f32,
 }
 
 impl NewForm {
-    pub fn new() -> Self {
-        let mut f = Self { name: "Untitled".into(), preset: None, w: 0.0, h: 0.0, unit: Unit::Px, dpi: 0.0 };
-        f.pick(1); // A4 300 dpi
+    /// The dialog on `category` (the last one used), its second preset.
+    pub fn new(category: usize) -> Self {
+        let category = category.min(CATEGORIES.len() - 1);
+        let mut f = Self { name: "Untitled".into(), category, preset: None, w: 0.0, h: 0.0, unit: Unit::Px, dpi: 0.0 };
+        f.pick(category, 1);
         f
     }
 
-    fn pick(&mut self, i: usize) {
-        let p = &PRESETS[i];
-        (self.preset, self.w, self.h, self.unit, self.dpi) = (Some(i), p.w, p.h, p.unit, p.dpi);
+    pub fn category(&self) -> usize { self.category }
+
+    fn pick(&mut self, c: usize, i: usize) {
+        let p = &CATEGORIES[c].1[i];
+        (self.preset, self.w, self.h, self.unit, self.dpi) = (Some((c, i)), p.w, p.h, p.unit, p.dpi);
     }
 
     fn pixels(&self) -> (u32, u32) {
@@ -100,72 +151,129 @@ impl NewForm {
     }
 }
 
-impl Default for NewForm {
-    fn default() -> Self { Self::new() }
+/// Size line of a preset card ("210 × 297 mm · 300 dpi", "1920 × 1080 px").
+fn size_line(p: &Preset) -> String {
+    let n = |v: f32| if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v}") };
+    match p.unit {
+        Unit::Px => format!("{} × {} px", n(p.w), n(p.h)),
+        u => format!("{} × {} {} · {:.0} dpi", n(p.w), n(p.h), u.name(), p.dpi),
+    }
 }
 
-/// The New document dialog. Returns false once closed.
+/// A page outline with the size's proportions, in `r`.
+fn page_icon(ui: &Ui, r: Rect, w: f32, h: f32, color: Color32) {
+    let s = r.width().min(r.height()) / w.max(h);
+    let page = Rect::from_center_size(r.center(), vec2(w * s, h * s));
+    ui.painter().rect_stroke(page, 2.0, Stroke::new(1.3_f32, color));
+}
+
+/// The New document dialog (laid out like PhotoCraft's: tabs, preset
+/// cards, the details on the right). Returns false once closed.
 pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mut Actions) -> bool {
     let mut open = true;
-    let modal = egui::Modal::new(egui::Id::new("new_document"))
+    let mut create = false;
+    let _ = egui::Modal::new(egui::Id::new("new_document"))
         .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
         .show(ctx, |ui| {
-            ui.set_width(560.0);
+            ui.set_width(820.0);
             ui.label(RichText::new("New document").heading());
-            ui.add_space(10.0);
+            ui.add_space(8.0);
+            // Tabs, underlined when chosen.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 20.0;
+                for (c, (name, _)) in CATEGORIES.iter().enumerate() {
+                    let on = form.category == c;
+                    let r = ui.add(egui::Label::new(RichText::new(*name).size(14.0).color(if on { theme::TEXT } else { theme::TEXT_WEAK }))
+                        .selectable(false).sense(Sense::click()));
+                    if on {
+                        ui.painter().line_segment([r.rect.left_bottom() + vec2(0.0, 3.0), r.rect.right_bottom() + vec2(0.0, 3.0)], Stroke::new(2.0_f32, theme::ACCENT));
+                    }
+                    if r.clicked() && !on {
+                        form.category = c;
+                        form.pick(c, 1);
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(6.0);
             ui.horizontal_top(|ui| {
-                // Presets, by group.
+                // Left: the presets as cards.
                 ui.vertical(|ui| {
-                    ui.set_width(210.0);
-                    egui::ScrollArea::vertical().max_height(330.0).show(ui, |ui| {
-                        let mut group = "";
-                        for (i, p) in PRESETS.iter().enumerate() {
-                            if p.group != group {
-                                group = p.group;
-                                ui.add_space(4.0);
-                                ui.label(RichText::new(group).small().color(theme::TEXT_WEAK));
-                            }
-                            let text = format!("{}  ·  {:.0} dpi", p.name, p.dpi);
-                            let text = if p.unit == Unit::Px { p.name.to_string() } else { text };
-                            if ui.selectable_label(form.preset == Some(i), text).clicked() { form.pick(i); }
+                    ui.set_width(500.0);
+                    let presets = CATEGORIES[form.category].1;
+                    let card = vec2(160.0, 104.0);
+                    egui::ScrollArea::vertical().id_salt(("new_presets", form.category)).max_height(3.0 * (card.y + 8.0) + 4.0).show(ui, |ui| {
+                        for (row, chunk) in presets.chunks(3).enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                for (k, p) in chunk.iter().enumerate() {
+                                    let i = row * 3 + k;
+                                    let on = form.preset == Some((form.category, i));
+                                    let (r, resp) = ui.allocate_exact_size(card, Sense::click());
+                                    let resp = resp.on_hover_text(p.note);
+                                    let bg = if on { theme::ACCENT_DIM } else if resp.hovered() { theme::WIDGET_HOVER } else { theme::WIDGET };
+                                    ui.painter().rect_filled(r, 6.0, bg);
+                                    if on { ui.painter().rect_stroke(r, 6.0, Stroke::new(1.5_f32, theme::ACCENT)); }
+                                    page_icon(ui, Rect::from_center_size(pos2(r.center().x, r.top() + 30.0), vec2(38.0, 38.0)), p.w, p.h, theme::TEXT_WEAK);
+                                    ui.painter().text(pos2(r.center().x, r.top() + 64.0), Align2::CENTER_CENTER, p.name, FontId::proportional(12.5), theme::TEXT);
+                                    ui.painter().text(pos2(r.center().x, r.top() + 84.0), Align2::CENTER_CENTER, size_line(p), FontId::proportional(10.5), theme::TEXT_WEAK);
+                                    if resp.clicked() { form.pick(form.category, i); }
+                                    if resp.double_clicked() { create = true; }
+                                }
+                            });
+                            ui.add_space(8.0);
                         }
                     });
                 });
-                ui.add_space(12.0);
-                // Size.
+                ui.add_space(14.0);
+                // Right: the details.
                 ui.vertical(|ui| {
-                    let field = |ui: &mut Ui, label: &str| { ui.label(RichText::new(label).small().color(theme::TEXT_WEAK)); };
-                    field(ui, "Name");
+                    ui.set_width(280.0);
+                    let label = |ui: &mut Ui, text: &str| { ui.label(RichText::new(text).small().color(theme::TEXT_WEAK)); };
+                    label(ui, "Name");
                     ui.add(egui::TextEdit::singleline(&mut form.name).desired_width(f32::INFINITY));
                     ui.add_space(6.0);
-                    let (before_w, before_h, before_dpi) = (form.w, form.h, form.dpi);
+                    let before = (form.w, form.h, form.dpi);
+                    let speed = if form.unit == Unit::Px { 1.0 } else { 0.1 };
+                    let digits = if form.unit == Unit::Px { 0 } else { 2 };
                     egui::Grid::new("new_size").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
-                        let speed = if form.unit == Unit::Px { 1.0 } else { 0.1 };
-                        let digits = if form.unit == Unit::Px { 0 } else { 2 };
                         ui.label("Width");
                         ui.add(egui::DragValue::new(&mut form.w).range(0.01..=100_000.0).speed(speed).max_decimals(digits));
                         unit_combo(ui, form);
                         ui.end_row();
                         ui.label("Height");
                         ui.add(egui::DragValue::new(&mut form.h).range(0.01..=100_000.0).speed(speed).max_decimals(digits));
-                        if ui.button("Swap").on_hover_text("Portrait / landscape").clicked() {
-                            std::mem::swap(&mut form.w, &mut form.h);
-                            form.preset = None;
-                        }
                         ui.end_row();
                         ui.label("Resolution");
                         ui.add(egui::DragValue::new(&mut form.dpi).range(1.0..=2400.0).speed(1.0).suffix(" dpi"));
                         ui.end_row();
                     });
-                    if (form.w, form.h, form.dpi) != (before_w, before_h, before_dpi) { form.preset = None; }
+                    ui.add_space(4.0);
+                    // Orientation: a portrait and a landscape page.
+                    ui.horizontal(|ui| {
+                        label(ui, "Orientation");
+                        for portrait in [true, false] {
+                            let on = (form.h >= form.w) == portrait;
+                            let (r, resp) = ui.allocate_exact_size(vec2(30.0, 26.0), Sense::click());
+                            let resp = resp.on_hover_text(if portrait { "Portrait" } else { "Landscape" });
+                            if on { ui.painter().rect_filled(r, 4.0, theme::ACCENT_DIM); } else if resp.hovered() { ui.painter().rect_filled(r, 4.0, theme::WIDGET_HOVER); }
+                            let (w, h) = if portrait { (3.0, 4.0) } else { (4.0, 3.0) };
+                            page_icon(ui, r.shrink(5.0), w, h, if on { theme::TEXT } else { theme::TEXT_WEAK });
+                            if resp.clicked() && !on { std::mem::swap(&mut form.w, &mut form.h); }
+                        }
+                    });
+                    if (form.w, form.h, form.dpi) != before && (form.w, form.h) != (before.1, before.0) { form.preset = None; }
 
                     let (pw, ph) = form.pixels();
                     ui.add_space(10.0);
                     ui.label(RichText::new(format!("{pw} × {ph} px")).strong());
+                    if let Some((c, i)) = form.preset {
+                        ui.label(RichText::new(CATEGORIES[c].1[i].note).small().color(theme::TEXT_WEAK));
+                    }
                     let mb = pw as f64 * ph as f64 * 4.0 / (1024.0 * 1024.0);
-                    ui.label(RichText::new(format!(
-                        "≈ {mb:.0} MB for the image shown; each layer only takes memory where it is painted."
-                    )).small().color(theme::TEXT_WEAK));
+                    ui.label(RichText::new(format!("≈ {mb:.0} MB for the image shown; each layer only takes memory where it is painted."))
+                        .small().color(theme::TEXT_WEAK));
                     let too_big = pw > max_side || ph > max_side;
                     if too_big {
                         ui.label(RichText::new(format!("Too big for this GPU: at most {max_side} px per side."))
@@ -175,25 +283,25 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() { open = false; }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let create = egui::Button::new(RichText::new("Create").color(theme::TEXT))
-                                .fill(theme::ACCENT).min_size(vec2(96.0, 28.0));
-                            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if ui.add_enabled(!too_big, create).clicked() || (enter && !too_big) {
-                                let name = form.name.trim();
-                                a.new_doc = Some(NewDoc {
-                                    name: if name.is_empty() { "Untitled".into() } else { name.into() },
-                                    width: pw, height: ph, dpi: form.dpi,
-                                });
-                                open = false;
-                            }
+                            let b = egui::Button::new(RichText::new("Create").color(theme::TEXT)).fill(theme::ACCENT).min_size(vec2(96.0, 28.0));
+                            if ui.add_enabled(!too_big, b).clicked() { create = true; }
                         });
                     });
+                    if create && too_big { create = false; }
                 });
             });
         });
+    if ctx.memory(|m| m.focused().is_none()) && ctx.input(|i| i.key_pressed(egui::Key::Enter)) { create = true; }
+    if create {
+        let (pw, ph) = form.pixels();
+        if pw <= max_side && ph <= max_side {
+            let name = form.name.trim();
+            a.new_doc = Some(NewDoc { name: if name.is_empty() { "Untitled".into() } else { name.into() }, width: pw, height: ph, dpi: form.dpi });
+            open = false;
+        }
+    }
     // Escape closes it; a click beside it doesn't (a slip would lose
     // what was typed).
-    let _ = modal;
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { open = false; }
     open
 }
@@ -341,14 +449,18 @@ mod tests {
 
     #[test]
     fn presets_give_the_expected_pixels() {
-        let px = |name: &str, dpi: f32| {
-            let mut f = NewForm::new();
-            f.pick(PRESETS.iter().position(|p| p.name == name && p.dpi == dpi).unwrap());
+        let px = |c: &str, name: &str| {
+            let ci = CATEGORIES.iter().position(|x| x.0 == c).unwrap();
+            let mut f = NewForm::new(ci);
+            f.pick(ci, CATEGORIES[ci].1.iter().position(|p| p.name == name).unwrap());
             f.pixels()
         };
-        assert_eq!(px("A4", 300.0), (2480, 3508));
-        assert_eq!(px("B4 manuscript", 600.0), (6071, 8598));
-        assert_eq!(px("Full HD", 72.0), (1920, 1080));
+        assert_eq!(px("Painting", "A4"), (2480, 3508));
+        assert_eq!(px("Comics", "Manga B4 manuscript"), (6071, 8598));
+        assert_eq!(px("Comics", "US comic, bleed"), (4125, 6263));
+        assert_eq!(px("Animation", "DCI 4K Scope"), (4096, 1716));
+        // Every category opens on a preset.
+        for c in 0..CATEGORIES.len() { assert!(NewForm::new(c).preset.is_some()); }
     }
 
     #[test]
