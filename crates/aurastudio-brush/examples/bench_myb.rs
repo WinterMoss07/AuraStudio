@@ -24,7 +24,7 @@ fn main() {
         let t = i as f32 / n as f32;
         let p = (300.0 + i as f32 * 8.0, 1000.0 + (t * 20.0).sin() * 300.0);
         let t0 = Instant::now();
-        e.stroke_to(&mut s, p.0, p.1, 0.8, i as f64 * 0.005);
+        e.stroke_to(&mut s, aurastudio_brush::PenSample::new(p.0, p.1, 0.8, i as f64 * 0.005));
         let dt = t0.elapsed();
         total += dt;
         worst = worst.max(dt);

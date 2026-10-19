@@ -51,6 +51,14 @@ impl Engine {
     pub fn is_mypaint(&self) -> bool {
         matches!(self, Engine::MyPaint(_))
     }
+
+    /// A fresh engine for a stroke with this preset's rules.
+    pub fn start(&self) -> aurastudio_brush::BrushEngine {
+        match self {
+            Engine::Native => aurastudio_brush::BrushEngine::dab(),
+            Engine::MyPaint(b) => aurastudio_brush::BrushEngine::mypaint((**b).clone()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -102,6 +110,18 @@ pub struct Library {
 impl Library {
     /// The bundled brushes, then those imported before.
     pub fn load() -> Self {
+        let mut lib = Self::load_bundled();
+        if let Some(dir) = user_dir() {
+            let n = lib.add_from(&dir, None);
+            if n > 0 { log::info!("brushes: {n} imported brush(es) loaded from {}", dir.display()); }
+        }
+        for (i, p) in lib.presets.iter_mut().enumerate() { p.order = i as u32; }
+        lib.load_layout();
+        lib
+    }
+
+    /// The bundled brushes only, as shipped (no user layout).
+    pub fn load_bundled() -> Self {
         let mut presets = Vec::new();
         for (medium, name, author, brush) in BUNDLED {
             match brush {
@@ -113,14 +133,7 @@ impl Library {
                 },
             }
         }
-        let mut lib = Self { presets };
-        if let Some(dir) = user_dir() {
-            let n = lib.add_from(&dir, None);
-            if n > 0 { log::info!("brushes: {n} imported brush(es) loaded from {}", dir.display()); }
-        }
-        for (i, p) in lib.presets.iter_mut().enumerate() { p.order = i as u32; }
-        lib.load_layout();
-        lib
+        Self { presets }
     }
 
     /// Move brush `index` to `medium`, before brush `before` (None: at the

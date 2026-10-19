@@ -17,7 +17,7 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::Brush;
+use aurastudio_brush::{Brush, PenSample};
 use aurastudio_brushes::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_layers::{FillParams, Node, Selection};
@@ -127,7 +127,7 @@ impl Session {
         for (i, &(x, y)) in path.iter().enumerate() {
             self.t += 0.005;
             let p = pressure(&mut self.r, i as f32 / (n - 1).max(1) as f32, base);
-            self.pt.send(Cmd::Sample { x, y, pressure: p, time: self.t });
+            self.pt.send(Cmd::Sample(PenSample::new(x, y, p, self.t)));
         }
         self.pt.send(Cmd::End);
         self.sync();

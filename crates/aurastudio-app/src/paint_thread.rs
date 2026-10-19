@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{Brush, DabEngine, MyPaintEngine};
+use aurastudio_brush::{Brush, BrushEngine, PenSample};
 use aurastudio_brushes::Engine;
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
@@ -34,8 +34,8 @@ pub enum Cmd {
     /// Start a stroke on the active layer of `doc` with these settings and
     /// this engine (from the selected brush preset).
     Begin { doc: SharedDoc, brush: Brush, engine: Engine },
-    /// One pen sample: canvas coordinates, pressure, pen time in seconds.
-    Sample { x: f32, y: f32, pressure: f32, time: f64 },
+    /// One pen sample.
+    Sample(PenSample),
     End,
     Undo(SharedDoc),
     Redo(SharedDoc),
@@ -111,10 +111,8 @@ struct Worker {
     notify:   Arc<dyn Fn(Event) + Send + Sync>,
 
     brush:    Brush,
-    /// Engine of the stroke: the native dab engine, or a MyPaint one
-    /// built from the preset when it is a MyPaint brush.
-    dabs:     DabEngine,
-    mypaint:  Option<MyPaintEngine>,
+    /// The stroke's engine, with the preset's rules.
+    engine:   Option<BrushEngine>,
     /// The stroke started on a paintable layer.
     active:   bool,
     /// Layer the stroke paints on, fixed at Begin (another may get selected
@@ -122,8 +120,8 @@ struct Worker {
     layer:    u64,
     /// Canvas size at Begin: a resize meanwhile ends the stroke.
     size:     (u32, u32),
-    /// Last sample of the stroke: x, y, pressure and pen time.
-    last:     Option<(f32, f32, f32, f64)>,
+    /// Last sample of the stroke.
+    last:     Option<PenSample>,
     /// The engine is following the pen: it is on (or near) the canvas.
     /// Off it, the stroke is paused like a pen lifted, and resumes where
     /// it comes back (see `sample`).
@@ -138,8 +136,7 @@ impl Worker {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
             brush: Brush::new(),
-            dabs: DabEngine::new(),
-            mypaint: None,
+            engine: None,
             active: false,
             layer: 0,
             size: (0, 0),
@@ -178,8 +175,8 @@ impl Worker {
                             events.push(Event::Notice("Layer is locked or is a folder"));
                         }
                     }
-                    Cmd::Sample { x, y, pressure, time } => {
-                        let r = self.with_doc(|w, d| w.sample(d, x, y, pressure, time)).flatten();
+                    Cmd::Sample(p) => {
+                        let r = self.with_doc(|w, d| w.sample(d, p)).flatten();
                         if let Some(r) = r {
                             add_rect(&mut self.pending, r);
                             self.stroke_rect = Some(self.stroke_rect.map_or(r, |s| union(s, r)));
@@ -329,23 +326,17 @@ impl Worker {
         self.active = doc.layers.can_paint() && doc.layers.begin_stroke(self.layer);
         if !self.active { return false; }
 
-        self.brush = brush;
         // The engine itself starts with the first sample on the canvas.
-        self.mypaint = match &engine {
-            Engine::Native => {
-                self.dabs.sync_from(&self.brush);
-                None
-            }
-            Engine::MyPaint(preset) => {
-                let mut e = MyPaintEngine::new((**preset).clone());
-                e.sync_from(&self.brush);
-                Some(e)
-            }
-        };
+        let mut e = engine.start();
+        e.sync_from(&brush);
+        e.begin_stroke();
+        self.engine = Some(e);
+        self.brush = brush;
         true
     }
 
-    fn sample(&mut self, doc: &mut Document, x: f32, y: f32, pressure: f32, time: f64) -> Option<Rect> {
+    fn sample(&mut self, doc: &mut Document, now: PenSample) -> Option<Rect> {
+        let PenSample { x, y, .. } = now;
         if !self.active { return None; }
         // The canvas was resized under the stroke: its snapshot no longer
         // matches the layer. Stop here (what was painted stays, undoable).
@@ -359,7 +350,6 @@ impl Worker {
             self.active = false;
             return None;
         };
-        let now = (x, y, pressure, time);
         let prev = self.last.replace(now);
         // Only the path over the canvas (plus a margin) goes to the engine:
         // zoomed out, dabs far off it cost seconds and show nothing.
@@ -369,12 +359,16 @@ impl Worker {
         let mut rect = None;
         let seg = match prev {
             None => inside(area, x, y).then_some((0.0, 1.0)),
-            Some(p) => clip_segment(area, (p.0, p.1), (x, y)),
+            Some(p) => clip_segment(area, (p.x, p.y), (x, y)),
         };
         let at = |t: f32| match prev {
             Some(p) => {
                 let l = |a: f32, b: f32| a + (b - a) * t;
-                (l(p.0, x), l(p.1, y), l(p.2, pressure), p.3 + (time - p.3) * t as f64)
+                PenSample {
+                    x: l(p.x, x), y: l(p.y, y), pressure: l(p.pressure, now.pressure),
+                    tilt: (l(p.tilt.0, now.tilt.0), l(p.tilt.1, now.tilt.1)),
+                    time: p.time + (now.time - p.time) * t as f64,
+                }
             }
             None => now,
         };
@@ -407,25 +401,16 @@ impl Worker {
 
     /// Follow the pen afresh, keeping what the stroke painted so far.
     fn restart_engine(&mut self) {
-        match &mut self.mypaint {
-            Some(e) => e.resume(),
-            None => self.dabs.begin_stroke(),
-        }
+        if let Some(e) = &mut self.engine { e.resume(); }
     }
 
-    fn engine_to(&mut self, s: &mut aurastudio_layers::LayerSurface, (x, y, p, t): (f32, f32, f32, f64)) -> Option<Rect> {
-        match &mut self.mypaint {
-            Some(e) => e.stroke_to(s, x, y, p, t),
-            None => self.dabs.stroke_to(s, x, y, p),
-        }
+    fn engine_to(&mut self, s: &mut aurastudio_layers::LayerSurface, p: PenSample) -> Option<Rect> {
+        self.engine.as_mut()?.stroke_to(s, p)
     }
 
     /// Pen lifted (end of the stroke, or off the canvas).
     fn engine_end(&mut self, s: &mut aurastudio_layers::LayerSurface) -> Option<Rect> {
-        match &mut self.mypaint {
-            Some(e) => e.lift(s),
-            None => self.dabs.end_stroke(s),
-        }
+        self.engine.as_mut()?.lift(s)
     }
 
     /// Finish the stroke and record it for undo. Returns the last painted
@@ -444,7 +429,7 @@ impl Worker {
             }
         }
         if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
-        self.mypaint = None;
+        self.engine = None;
         if let Some(r) = rect { self.stroke_rect = Some(self.stroke_rect.map_or(r, |s| union(s, r))); }
         // After a resize the snapshot no longer matches: nothing to record.
         if !same_size { self.stroke_rect = None; }
@@ -550,8 +535,8 @@ mod tests {
         let mut brush = Brush::new();
         brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::Native });
-        pt.send(Cmd::Sample { x: 10.0, y, pressure: 1.0, time: 0.0 });
-        pt.send(Cmd::Sample { x: 50.0, y, pressure: 1.0, time: 0.01 });
+        pt.send(Cmd::Sample(PenSample::new(10.0, y, 1.0, 0.0)));
+        pt.send(Cmd::Sample(PenSample::new(50.0, y, 1.0, 0.01)));
         pt.send(Cmd::End);
     }
 
@@ -607,11 +592,11 @@ mod tests {
         let mut brush = Brush::new();
         brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
-        pt.send(Cmd::Sample { x: 10.0, y: 30.0, pressure: 1.0, time: 0.0 });
+        pt.send(Cmd::Sample(PenSample::new(10.0, 30.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         // The user selects another layer while the stroke goes on.
         doc.lock().unwrap().layers.set_active(other);
-        pt.send(Cmd::Sample { x: 50.0, y: 30.0, pressure: 1.0, time: 0.01 });
+        pt.send(Cmd::Sample(PenSample::new(50.0, 30.0, 1.0, 0.01)));
         pt.send(Cmd::End);
         drop(pt);
         assert_eq!(pixel(&doc, id, 40, 30), [0, 0, 0, 255]);
@@ -627,7 +612,7 @@ mod tests {
         let mut brush = Brush::new();
         brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::Native });
-        pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
+        pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         stroke(&pt, &doc, 40.0);
         drop(pt);
         assert_eq!(doc.lock().unwrap().history().undo_len(), 2);
@@ -642,14 +627,14 @@ mod tests {
         let mut brush = Brush::new();
         brush.radius = 4.0;
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
-        pt.send(Cmd::Sample { x: 10.0, y: 10.0, pressure: 1.0, time: 0.0 });
+        pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         {
             let mut d = doc.lock().unwrap();
             d.layers.set_active(id);
             assert!(d.layers.remove_active());
         }
-        pt.send(Cmd::Sample { x: 50.0, y: 10.0, pressure: 1.0, time: 0.01 });
+        pt.send(Cmd::Sample(PenSample::new(50.0, 10.0, 1.0, 0.01)));
         pt.send(Cmd::End);
         drop(pt);
         let d = doc.lock().unwrap();
@@ -692,7 +677,7 @@ mod tests {
                         (-300.0, 50.0), (-150.0, 50.0), (-60.0, 50.0), (-20.0, 50.0)])
                 .chain(on(50.0)).collect();
             for (i, (x, y)) in path.into_iter().enumerate() {
-                pt.send(Cmd::Sample { x, y, pressure: 1.0, time: i as f64 * 0.01 });
+                pt.send(Cmd::Sample(PenSample::new(x, y, 1.0, i as f64 * 0.01)));
             }
             pt.send(Cmd::End);
             drop(pt);
@@ -813,7 +798,7 @@ mod tests {
                 let t = i as f32 / n as f32;
                 let x = 300.0 + i as f32 * 7.0;
                 let y = 1000.0 + (t * 12.0).sin() * 400.0;
-                pt.send(Cmd::Sample { x, y, pressure: 0.3 + 0.7 * (t * 9.0).sin().abs(), time: i as f64 * 0.005 });
+                pt.send(Cmd::Sample(PenSample::new(x, y, 0.3 + 0.7 * (t * 9.0).sin().abs(), i as f64 * 0.005)));
                 let due = t0 + Duration::from_millis(5 * (i as u64 + 1));
                 while Instant::now() < due { std::thread::sleep(Duration::from_micros(200)); }
             }

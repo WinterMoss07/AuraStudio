@@ -3,6 +3,28 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.6.4 — 2026-10-19
+
+**Brush engine, step 1 of the fusion**
+- One engine front for every brush format (`aurastudio_brush::BrushEngine`):
+  pen samples in, changed areas out, one stroke lifecycle. The paint
+  thread and the stroke previews no longer have a code path per engine.
+  Krita's Pixel and Color Smudge rules will plug in behind it.
+- Pen tilt reaches the brushes: read from WinTab (azimuth / altitude) and
+  Windows Ink (tilt x / y), passed to MyPaint brushes (their tilt inputs
+  did nothing until now). The mouse sends none.
+- Reference renders (`aurastudio-brushes/tests/reference.rs`): every
+  catalog brush paints fixed strokes, compared by hash; any pixel the
+  coming refactors change shows, by brush.
+
+**Changed**
+- Drag and drop: a red line shows where an item lands (CSP); a medium
+  icon gets a red frame when a brush is about to go there.
+- Geometry stroke previews drawn with the brush again, 1 to 10 px thick
+  (logarithmic over 1..1000 px: every size change shows).
+- Size slider: 100 px in the middle (1..1000, exponential: each step a
+  ratio, finer for small brushes).
+
 ## 0.6.3 — 2026-10-19
 
 **New**

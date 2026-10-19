@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use aurastudio_brush::Brush;
+use aurastudio_brush::{Brush, PenSample};
 use aurastudio_brushes::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_gpu::CanvasView;
@@ -147,7 +147,7 @@ fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (
             _ => crate::shapes::arc(a, b, m),
         };
         for (i, (x, y)) in path.into_iter().enumerate() {
-            pt.send(Cmd::Sample { x, y, pressure: 1.0, time: i as f64 * 0.001 });
+            pt.send(Cmd::Sample(PenSample::new(x, y, 1.0, i as f64 * 0.001)));
         }
         if finish { pt.send(Cmd::End); }
         return;
@@ -166,7 +166,7 @@ fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (
         // Pen time mostly rising, sometimes repeated or going back.
         t += if r.chance(0.05) { -0.01 } else if r.chance(0.05) { 0.0 } else { r.range(0.001, 0.02) as f64 };
         let pressure = match r.below(5) { 0 => 0.0, 1 => 1.0, _ => r.f() };
-        pt.send(Cmd::Sample { x, y, pressure, time: t });
+        pt.send(Cmd::Sample(PenSample::new(x, y, pressure, t)));
     }
     if finish { pt.send(Cmd::End); }
 }

@@ -29,7 +29,7 @@ fn main() {
             let t = i as f32 / 300.0;
             let x = 40.0 + t * (w as f32 - 80.0);
             let y = y0 + (t * 12.0).sin() * 18.0;
-            e.stroke_to(&mut s, x, y, 0.15 + 0.85 * t, i as f64 * 0.006);
+            e.stroke_to(&mut s, aurastudio_brush::PenSample::new(x, y, 0.15 + 0.85 * t, i as f64 * 0.006));
         }
         e.end_stroke(&mut s);
         println!("{f}: native size {size}px");

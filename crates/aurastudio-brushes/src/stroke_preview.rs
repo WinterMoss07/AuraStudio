@@ -15,7 +15,7 @@
 //! for big ones); the path stays the same whatever the size. Geometry
 //! tools draw their shape, 1 to 10 px thick whatever the brush size.
 
-use aurastudio_brush::{Brush, DabEngine, MyPaintEngine};
+use aurastudio_brush::{Brush, MyPaintEngine, PenSample};
 use aurastudio_canvas::FlatSurface;
 
 use crate::Engine;
@@ -97,24 +97,13 @@ fn stroke(engine: &Engine, b: &Brush, shape: Shape, blank: &FlatSurface) -> Vec<
     s.pixels.copy_from_slice(&blank.pixels);
     s.next_stroke();
     let path = path(shape, w, h);
-    match engine {
-        Engine::Native => {
-            let mut e = DabEngine::new();
-            e.sync_from(b);
-            e.set_spacing(b.radius * 0.08);
-            e.begin_stroke();
-            for &(x, y, p, _) in &path { e.stroke_to(&mut s, x, y, p); }
-            e.end_stroke(&mut s);
-        }
-        Engine::MyPaint(p) => {
-            MyPaintEngine::reset_random();
-            let mut e = MyPaintEngine::new((**p).clone());
-            e.sync_from(b);
-            e.begin_stroke();
-            for &(x, y, p, t) in &path { e.stroke_to(&mut s, x, y, p, t); }
-            e.end_stroke(&mut s);
-        }
-    }
+    MyPaintEngine::reset_random();
+    let mut e = engine.start();
+    e.sync_from(b);
+    e.proportional_spacing();
+    e.begin_stroke();
+    for &(x, y, p, t) in &path { e.stroke_to(&mut s, PenSample::new(x, y, p, t)); }
+    e.end_stroke(&mut s);
     s.pixels
 }
 

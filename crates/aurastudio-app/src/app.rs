@@ -11,7 +11,7 @@ use winit::{
     window::{CursorIcon, Window, WindowId},
 };
 
-use aurastudio_brush::Brush;
+use aurastudio_brush::{Brush, PenSample};
 use aurastudio_brushes::Library;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
@@ -228,6 +228,8 @@ pub struct App {
 
     is_drawing: bool,
     pressure:   f32,
+    /// Pen tilt of the last sample (-1..1 toward +x / +y; 0: mouse).
+    tilt:       (f32, f32),
     /// Pen samples sent for the current stroke (0 at release = a click
     /// without moving: paint one dot).
     samples_sent: u32,
@@ -358,6 +360,7 @@ impl App {
 
             is_drawing: false,
             pressure:   1.0,
+            tilt:       (0.0, 0.0),
             samples_sent: 0,
             start:      Instant::now(),
             modifiers:  ModifiersState::empty(),
@@ -615,6 +618,7 @@ impl App {
             Tool::Arc => if let Some(p) = at { self.arc_press(p) },
             Tool::Brush | Tool::Eraser => {
                 self.pressure = 1.0;
+                self.tilt = (0.0, 0.0);
                 self.begin_stroke();
             }
             Tool::Picker => {
@@ -765,7 +769,7 @@ impl App {
             // 2000 canvas px per second.
             time += (((x - last.0).powi(2) + (y - last.1).powi(2)).sqrt() as f64 / 2000.0).max(0.0005);
             last = (x, y);
-            self.paint.send(Cmd::Sample { x, y, pressure: 1.0, time });
+            self.paint.send(Cmd::Sample(PenSample::new(x, y, 1.0, time)));
         }
         self.paint.send(Cmd::End);
     }
@@ -1017,7 +1021,7 @@ impl App {
             None => self.start.elapsed().as_secs_f64(),
         };
         self.samples_sent += 1;
-        self.paint.send(Cmd::Sample { x, y, pressure: self.pressure, time });
+        self.paint.send(Cmd::Sample(PenSample { tilt: self.tilt, ..PenSample::new(x, y, self.pressure, time) }));
     }
 
     /// The window lost focus (Alt+Tab...): key releases now go elsewhere,
@@ -1050,6 +1054,7 @@ impl App {
                 self.pen_active = true;
                 self.press_point = None;
                 self.pressure   = s.pressure;
+                self.tilt       = s.tilt;
                 self.cursor     = (s.x, s.y);
                 self.draw_at(s.x, s.y, Some(s.time_ms));
                 self.request_canvas_frame();

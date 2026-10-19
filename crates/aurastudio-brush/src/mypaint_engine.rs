@@ -17,6 +17,7 @@ use hokusai::{BrushSetting, BrushState, TiledSurface};
 
 use crate::Brush;
 
+
 const ONE: u32 = 1 << 15;
 const TS: i32 = TILE_SIZE as i32;
 // libmypaint tiles line up with the layer tiles: a libmypaint tile row is
@@ -118,8 +119,9 @@ impl MyPaintEngine {
         self.last_time = None;
     }
 
-    /// One pen sample at pen time `time` (seconds).
-    pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, x: f32, y: f32, pressure: f32, time: f64) -> Option<Rect> {
+    /// One pen sample.
+    pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, p: crate::PenSample) -> Option<Rect> {
+        let crate::PenSample { x, y, pressure, tilt, time } = p;
         let dtime = self.last_time.map(|t| (time - t).clamp(0.001, 0.25)).unwrap_or(0.0);
         self.last_time = Some(time);
         // Tiles a dab or a smudge sample may touch around the pen must be
@@ -131,7 +133,7 @@ impl MyPaintEngine {
         let prev = if self.state.started { (self.state.actual_x, self.state.actual_y) } else { (x, y) };
         let reach = self.reach.max(self.state.actual_radius * 3.0 + 16.0);
         tiles.preload(x.min(prev.0) - reach, y.min(prev.1) - reach, x.max(prev.0) + reach, y.max(prev.1) + reach);
-        self.brush.stroke_to(&mut self.state, &mut tiles, x, y, pressure, 0.0, 0.0, dtime);
+        self.brush.stroke_to(&mut self.state, &mut tiles, x, y, pressure, tilt.0, tilt.1, dtime);
         let dirty = std::mem::take(&mut tiles.dirty);
         write_back(&self.tiles, &dirty, surface)
     }
@@ -299,7 +301,7 @@ mod tests {
     fn stroke(e: &mut MyPaintEngine, s: &mut S) {
         e.begin_stroke();
         for i in 0..=60 {
-            e.stroke_to(s, 30.0 + i as f32 * 3.0, 64.0, 1.0, i as f64 * 0.008);
+            e.stroke_to(s, crate::PenSample::new(30.0 + i as f32 * 3.0, 64.0, 1.0, i as f64 * 0.008));
         }
         e.end_stroke(s);
     }
@@ -372,9 +374,9 @@ mod tests {
         e.sync_from(&Brush::new());
         let mut s = surface([255, 255, 255, 255]);
         e.begin_stroke();
-        e.stroke_to(&mut s, 100.0, 64.0, 1.0, 0.0);
-        e.stroke_to(&mut s, 200_000.0, -150_000.0, 1.0, 0.01);
-        e.stroke_to(&mut s, -90_000.0, 300_000.0, 1.0, 0.02);
+        e.stroke_to(&mut s, crate::PenSample::new(100.0, 64.0, 1.0, 0.0));
+        e.stroke_to(&mut s, crate::PenSample::new(200_000.0, -150_000.0, 1.0, 0.01));
+        e.stroke_to(&mut s, crate::PenSample::new(-90_000.0, 300_000.0, 1.0, 0.02));
         let canvas_tiles = (W.div_ceil(TS as u32) * H.div_ceil(TS as u32)) as usize;
         assert!(e.tiles.len() <= canvas_tiles, "{} tiles kept", e.tiles.len());
         e.end_stroke(&mut s);

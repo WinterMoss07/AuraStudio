@@ -1,9 +1,11 @@
 use aurastudio_canvas::BlendMode;
 
 mod dab_engine;
+mod engine;
 mod mypaint_engine;
 mod raster;
 pub use dab_engine::DabEngine;
+pub use engine::{BrushEngine, PenSample};
 pub use mypaint_engine::MyPaintEngine;
 /// hokusai's brush type (a parsed .myb), for the brush library.
 pub use hokusai::Brush as MyPaintBrush;

@@ -9,6 +9,9 @@ pub struct StylusSample {
     pub y:        f32,
     /// 0..1.
     pub pressure: f32,
+    /// Tilt toward +x / +y (right / down), -1..1, 1 = 60° (libmypaint's
+    /// scale); 0 when the pen doesn't report it.
+    pub tilt:     (f32, f32),
     /// Pen timestamp in milliseconds (the driver's clock, wraps after ~49
     /// days): only differences between samples are meaningful.
     pub time_ms:  u32,
@@ -56,7 +59,7 @@ mod imp {
     };
 
     #[derive(Clone, Copy)]
-    struct PenPacket { x: f32, y: f32, pressure: f32, time_ms: u32 }
+    struct PenPacket { x: f32, y: f32, pressure: f32, tilt: (f32, f32), time_ms: u32 }
 
     /// Queue a packet; when full, drop the oldest one (the newest pen
     /// position matters most).
@@ -100,7 +103,7 @@ mod imp {
     pub fn drain(inner: &Inner) -> Vec<StylusSample> {
         let mut out = Vec::new();
         while let Some(p) = inner.queue.pop() {
-            out.push(StylusSample { x: p.x, y: p.y, pressure: p.pressure, time_ms: p.time_ms });
+            out.push(StylusSample { x: p.x, y: p.y, pressure: p.pressure, tilt: p.tilt, time_ms: p.time_ms });
         }
         out
     }
@@ -123,6 +126,11 @@ mod imp {
                 pressure: if info.penMask & PEN_MASK_PRESSURE != 0 {
                     info.pressure as f32 / 1024.
                 } else { 1. },
+                // Degrees, -90..90.
+                tilt: (
+                    if info.penMask & PEN_MASK_TILT_X != 0 { (info.tiltX as f32 / 60.0).clamp(-1.0, 1.0) } else { 0.0 },
+                    if info.penMask & PEN_MASK_TILT_Y != 0 { (info.tiltY as f32 / 60.0).clamp(-1.0, 1.0) } else { 0.0 },
+                ),
                 time_ms: info.pointerInfo.dwTime,
             };
             push_latest(&state.queue, packet);
@@ -253,8 +261,8 @@ mod imp {
             packet_mask: u32,
             pressure_range: AxisRange,
             pressure_seen_max: std::cell::Cell<i32>,
-            /// Tilt / rotation axes, read at install; kept for tilt support
-            /// in brushes (not used yet).
+            /// Tilt / rotation axes, read at install (tilt is read in fixed
+            /// units, the ranges serve the twist later).
             #[allow(dead_code)]
             orientation: [AxisRange; 3],
         }
@@ -306,8 +314,17 @@ mod imp {
                     normalized(raw, range)
                 })
                 .unwrap_or(1.0);
+            // Orientation: azimuth (tenths of a degree, clockwise from up)
+            // and altitude (tenths of a degree above the tablet, negative
+            // for the eraser end). The pen leans 90° - altitude toward the
+            // azimuth; in degrees / 60 like Windows Ink below.
+            let tilt = field_offset(state.packet_mask, PK_ORIENTATION).map_or((0.0, 0.0), |o| {
+                let az = (packet_i32(&words, o) as f32 / 10.0).to_radians();
+                let lean = 90.0 - (packet_i32(&words, o + 4).unsigned_abs() as f32 / 10.0).min(90.0);
+                ((lean * az.sin() / 60.0).clamp(-1.0, 1.0), (-lean * az.cos() / 60.0).clamp(-1.0, 1.0))
+            });
             // Physical client pixels (see push_info in the Windows Ink section).
-            let packet = PenPacket { x: screen.x as f32, y: screen.y as f32, pressure, time_ms };
+            let packet = PenPacket { x: screen.x as f32, y: screen.y as f32, pressure, tilt, time_ms };
             push_latest(&state.queue, packet);
         }
 
