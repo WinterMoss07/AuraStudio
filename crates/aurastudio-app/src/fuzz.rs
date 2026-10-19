@@ -226,6 +226,7 @@ fn fuzz() {
                 };
                 let (can_undo, can_redo) = (d.history().undo_len() > 0, d.history().redo_len() > 0);
                 let sel_outlines = d.selection.as_ref().map(|s| s.outlines().to_vec());
+                let selection = d.selection.clone();
                 let to_points = |p: (f32, f32)| { let q = view.canvas_to_screen(p, size, area); (q.0, q.1) };
                 let mut actions = Actions::default();
                 let mut p = preset;
@@ -250,6 +251,7 @@ fn fuzz() {
                         fill: &mut fill,
                         shape: &mut shape,
                         has_selection: sel_outlines.is_some(),
+                        selection: selection.as_ref(),
                         overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None, shape: None, handles: &[], guide: &[] },
                         to_points: &to_points,
                     };

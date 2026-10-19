@@ -46,12 +46,15 @@ pub struct Document {
 struct FilterSession {
     layer:  u64,
     rect:   Rect,
+    /// How far around the painted area `rect` reaches.
+    margin: u32,
     before: Vec<u8>,
 }
 
 /// How far around the painted area (or the selection) a filter may reach
-/// (a 100 px blur, a shadow moved 200 px).
-const FILTER_MARGIN: u32 = 512;
+/// at least (a 100 px blur, a shadow moved 200 px); a filter reaching
+/// farther grows its session.
+pub const FILTER_MARGIN: u32 = aurastudio_filters::MARGIN;
 
 impl Document {
     pub fn new(id: DocId, name: &str, width: u32, height: u32) -> Self {
@@ -125,23 +128,20 @@ impl Document {
     /// The first call starts a session. Returns the layer and the area to
     /// redraw, or None if the active layer can't be painted.
     pub fn filter_preview(&mut self, filter: Option<&aurastudio_filters::Filter>) -> Option<(u64, Rect)> {
+        // A filter reaching past the session's margin (a 250 px blur):
+        // start again from the layer as it was, with room for it (its
+        // halo was cut off at the margin).
+        let reach = filter.map_or(0, |f| f.reach());
+        if self.filter.as_ref().is_some_and(|s| reach > s.margin && s.rect.2 > s.rect.0) {
+            self.filter_cancel();
+        }
         if self.filter.is_none() {
-            if !self.layers.can_paint() { return None; }
-            let layer = self.layers.active_id();
-            let (w, h) = (self.layers.width, self.layers.height);
-            let aurastudio_layers::Node::Layer(l) = self.layers.node(layer)? else { return None };
-            // A layer whose empty parts are transparent changes only around
-            // what is painted; the paper changes everywhere.
-            let area = match (&self.selection, l.tiles.fill()[3], l.tiles.content_bounds()) {
-                (Some(s), _, _) => s.bbox(),
-                (None, 0, Some(b)) => b,
-                (None, 0, None) => return Some((layer, (0, 0, 0, 0))),
-                (None, _, _) => (0, 0, w, h),
-            };
-            let m = FILTER_MARGIN;
-            let rect = (area.0.saturating_sub(m), area.1.saturating_sub(m), (area.2 + m).min(w), (area.3 + m).min(h));
-            let before = self.layers.layer_rect(layer, rect)?;
-            self.filter = Some(FilterSession { layer, rect, before });
+            // (An empty layer: an empty session, so Apply and Cancel still
+            // close it.)
+            let margin = reach.max(FILTER_MARGIN);
+            let (layer, rect) = self.layers.filter_area(self.selection.as_ref(), margin)?;
+            let before = if rect.2 > rect.0 { self.layers.layer_rect(layer, rect)? } else { Vec::new() };
+            self.filter = Some(FilterSession { layer, rect, margin, before });
         }
         let s = self.filter.as_ref()?;
         let (layer, rect) = (s.layer, s.rect);
@@ -384,7 +384,7 @@ mod tests {
         assert!(!doc.filtering());
 
         let undo_before = doc.history().undo_len();
-        doc.filter_preview(Some(&Filter::new(Kind::Grayscale)));
+        doc.filter_preview(Some(&Filter::new(Kind::Sepia)));
         doc.filter_apply(&inv).unwrap();
         assert_eq!(px(&doc, id, 15, 15), [55, 155, 205, 255]);
         assert_eq!(doc.history().undo_len(), undo_before + 1);
@@ -400,6 +400,33 @@ mod tests {
         let Some(Node::Layer(paper)) = doc.layers.node(1) else { panic!() };
         assert_eq!(paper.tiles.pixel(5, 5), [0, 0, 0, 255]);
         assert_eq!(paper.tiles.pixel(30, 5), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn filter_sessions_grow_for_far_filters_and_close_on_empty_layers() {
+        use aurastudio_filters::{Filter, Kind};
+        let mut doc = Document::new(DocId(1), "a", 2000, 64);
+        let id = doc.layers.add_layer("ink");
+        doc.layers.set_active(id);
+        paint(&mut doc, id, (10, 0, 210, 64), [0, 0, 0, 255]);
+        let small = Filter { values: vec![2.0], ..Filter::new(Kind::GaussianBlur) };
+        doc.filter_preview(Some(&small)).unwrap();
+        // σ 250 reaches 752 px: its halo is not cut at the 512 px margin.
+        let big = Filter { values: vec![250.0], ..Filter::new(Kind::GaussianBlur) };
+        let (_, rect) = doc.filter_preview(Some(&big)).unwrap();
+        assert!(rect.2 >= 210 + big.reach(), "{rect:?}");
+        assert!(px(&doc, id, 740, 30)[3] > 0, "halo past the old margin");
+        doc.filter_cancel();
+        assert_eq!(px(&doc, id, 740, 30)[3], 0);
+        assert_eq!(px(&doc, id, 15, 30), [0, 0, 0, 255]);
+        // An empty layer: Apply closes the session, nothing recorded.
+        let empty = doc.layers.add_layer("empty");
+        doc.layers.set_active(empty);
+        let undo = doc.history().undo_len();
+        doc.filter_preview(Some(&small)).unwrap();
+        assert!(doc.filter_apply(&small).is_some());
+        assert!(!doc.filtering());
+        assert_eq!(doc.history().undo_len(), undo);
     }
 
     #[test]

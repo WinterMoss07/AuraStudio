@@ -7,7 +7,8 @@ fn main() {
     let src: Vec<u8> = (0..w * h).flat_map(|i| { let (x, y) = (i % w, i / w); [(x % 256) as u8, (y % 256) as u8, 128, if (x / 64 + y / 64) % 3 == 0 { 0 } else { 255 }] }).collect();
     let mut all: Vec<Filter> = GROUPS.iter().flat_map(|g| g.1.iter().map(|&k| Filter::new(k))).collect();
     all.push(Filter { values: vec![100.0], ..Filter::new(Kind::GaussianBlur) });
-    all.push(Filter { values: vec![20.0], ..Filter::new(Kind::Dilate) });
+    all.push(Filter { values: vec![20.0, 0.0], ..Filter::new(Kind::Thicken) });
+    all.push(Filter { values: vec![8.0, 1.0], ..Filter::new(Kind::Thicken) });
     for f in all {
         let t = std::time::Instant::now();
         let out = f.apply(&src, w, h);

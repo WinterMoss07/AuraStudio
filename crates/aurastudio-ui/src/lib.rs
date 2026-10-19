@@ -69,6 +69,8 @@ pub struct Model<'a> {
     pub fill:               &'a mut FillParams,
     pub shape:              &'a mut ShapeOptions,
     pub has_selection:      bool,
+    /// The selection, if any (what a filter changes).
+    pub selection:          Option<&'a aurastudio_layers::Selection>,
     /// Drawn over the canvas, placed with `to_points` (canvas pixel ->
     /// egui point).
     pub overlay:            Overlay<'a>,

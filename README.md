@@ -71,14 +71,24 @@ layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangl
   and an empty layer above it is active (no painting on the picture by
   mistake). Export to PNG / JPG.
 
-**Filters** — Filter menu, from the W3C Filter Effects spec (the one CSS
-and SVG filters follow, as the blend modes follow Compositing and
-Blending): brightness, contrast, saturate, hue rotate, grayscale, sepia,
-invert, opacity, levels, posterize, threshold, Gaussian blur, sharpen,
-emboss, edge detect, thicken / thin lines (feMorphology), drop shadow.
-Live preview on the active layer (inside the selection), Apply is one
-undo step, Cancel or Escape puts the layer back. Blur of an A4 300 dpi
-layer: ~0.5 s on 2 cores.
+**Filters** — Filter menu: Brightness / Contrast, Levels (per channel,
+Auto), Hue / Saturation (six color ranges, colorize), Black & White (six
+color weights, tint), Invert, Posterize, Threshold, Sepia, Opacity,
+Gaussian blur, Unsharp mask, Thicken / Thin lines (on line art and on
+paper), Find edges, Emboss, Drop shadow. Tones and colors behave as
+Photoshop's (as PhotoCraft measured them); blur, sepia, invert and opacity
+follow the W3C Filter Effects spec.
+- Each dialog shows what the filter does: the layer before and after side
+  by side (drag the line; zoom and pan, 100 % shows the real pixels),
+  the histogram before and after with the tone curve and the clipping,
+  the painting's main colors before and after, the hue spectrum as it
+  turns, a hard edge or a line as the blur, sharpening or thickening
+  leaves it, a lit sample for Emboss and Drop shadow, an angle dial for
+  the light. Sliders with colored tracks (Shift: finer, double-click:
+  default), values typed in.
+- The layer shows the result too (Preview on canvas), inside the
+  selection; Apply is one undo step, Cancel or Escape puts the layer back.
+  A blur of an A4 300 dpi layer: ~0.4 s on 2 cores.
 
 **Preferences** — Edit > Preferences… (Ctrl+K): interface size, brush
 strokes in the Tools docker, open maximized, HiDPI scaling, color
@@ -197,7 +207,7 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 | `aurastudio-gpu` | wgpu renderer: canvas, view transform, color LUT, brush outline, egui |
 | `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
 | `aurastudio-file` | `.aurs` format, image import / export |
-| `aurastudio-filters` | Filters from the W3C Filter Effects spec |
+| `aurastudio-filters` | Filters: Photoshop's tones and colors, W3C Filter Effects blurs |
 | `aurastudio-ui` | egui interface: bars, toolbox, one file per docker, theme, widgets |
 | `aurastudio-app` | the application: event loop, paint thread, projection |
 

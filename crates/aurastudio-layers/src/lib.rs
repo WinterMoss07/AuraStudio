@@ -408,6 +408,29 @@ impl LayerStack {
 
     pub fn layer_count(&self) -> usize { count_layers(&self.root) }
 
+    /// Where a filter on the active layer works: the selection's bounds,
+    /// else what is painted (a layer whose empty parts are transparent),
+    /// else the whole canvas (the paper changes everywhere); grown by
+    /// `margin` px for the filters that reach out (a blur, a shadow).
+    /// None: the active layer can't be painted; an empty rect: nothing
+    /// painted.
+    pub fn filter_area(&self, selection: Option<&Selection>, margin: u32) -> Option<(u64, Rect)> {
+        if !self.can_paint() { return None; }
+        let id = self.active;
+        let Node::Layer(l) = self.node(id)? else { return None };
+        let (w, h) = (self.width, self.height);
+        let area = match (selection, l.tiles.fill()[3], l.tiles.content_bounds()) {
+            (Some(s), _, _) => s.bbox(),
+            (None, 0, Some(b)) => b,
+            (None, 0, None) => return Some((id, (0, 0, 0, 0))),
+            (None, _, _) => (0, 0, w, h),
+        };
+        if area.2 <= area.0 || area.3 <= area.1 { return Some((id, (0, 0, 0, 0))); }
+        let m = margin;
+        Some((id, (area.0.saturating_sub(m), area.1.saturating_sub(m), (area.2 + m).min(w), (area.3 + m).min(h))))
+    }
+
+
     /// Where a new node goes: right above the active node in the same
     /// folder, or at the top inside the active folder.
     fn insert_point(&mut self) -> (Path, usize) {

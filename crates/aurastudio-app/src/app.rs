@@ -193,6 +193,9 @@ pub struct App {
     home: bool,
     /// Recently opened / saved files, newest first.
     recent: Vec<PathBuf>,
+    /// A file named on the command line ("Open with" in the file
+    /// manager), opened once the window is up.
+    open_arg: Option<PathBuf>,
     /// The document shown, shared with the paint thread.
     doc:    SharedDoc,
     paint:  PaintThread,
@@ -325,6 +328,7 @@ impl App {
             quit: false,
             home: true,
             recent: load_recent(),
+            open_arg: std::env::args_os().nth(1).map(PathBuf::from),
             doc,
             paint,
             projection,
@@ -1116,6 +1120,7 @@ impl App {
                 tools: tool_memory,
                 fill,
                 has_selection: d.selection.is_some(),
+                selection: d.selection.as_ref(),
                 overlay: Overlay {
                     selection: d.selection.as_ref().map_or(&[], |s| s.outlines()),
                     drawing: drawing.as_deref(),
@@ -1755,6 +1760,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.refresh_display_profile();
         self.refresh_home();
         self.offer_recovery();
+        if let Some(path) = self.open_arg.take() { self.open_path(&path); }
     }
 
     fn window_event(

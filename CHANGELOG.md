@@ -3,6 +3,63 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.9.0 — 2026-10-19
+
+**Filter dialogs that show what they do**
+- A preview in each dialog: the layer before and after, side by side on
+  either part of a line you drag; Fit, 100 %, zoom (wheel, buttons, a
+  double-click) and pan. Zoomed out, a reduced copy is filtered; from
+  100 % the layer's own pixels. It runs on a thread of its own: dragging
+  a slider never waits for it.
+- Pictures for every filter, made by the filter itself:
+  - Brightness / Contrast, Invert, Posterize: the histogram before and
+    after on one scale, the tone curve, how much is clipped to black or
+    white;
+  - Levels (as PhotoCraft's): RGB / Red / Green / Blue, the channel's
+    histogram, black / midtones / white handles over a gradient, output
+    handles, typed values, Auto (0.1 % clipping), the levels cut off
+    shaded, which other channels are changed;
+  - Threshold: the luminosity histogram split where you drag, the share
+    of pixels turning black;
+  - Hue / Saturation: Master or one of six color ranges, colored tracks,
+    the spectrum before and after, the range's four handles dragged on
+    it; Colorize;
+  - Black & White: six weights on colored tracks, the gray each hue
+    becomes, tint with a color picker;
+  - Hue / Saturation, Black & White, Invert, Posterize, Sepia: the
+    painting's main colors before and after; Sepia: a gray ramp before
+    and after;
+  - Gaussian blur, Unsharp mask, Thicken / Thin lines, Find edges: a hard
+    edge or a line before and after, in pixels ("a 6 px line becomes
+    8 px", halo size);
+  - Emboss and Drop shadow: an angle dial for the light, a lit or
+    shadowed sample.
+- Sliders with a colored track (a spectrum for hue, gray to color for
+  saturation, a checkerboard for opacity), the default marked; Shift
+  drags finer, a double-click puts the default back; values typed in their
+  field. Big ranges (a blur of 0.1 to 250 px) give small values room.
+- Information under the controls: clipping, the area and painted pixels
+  changed, the shadow's offset...
+- The Filter menu says why it is unavailable (layer locked or a folder,
+  nothing painted).
+- Filters (from 0.8.0's rewrite): Photoshop's Brightness / Contrast
+  (modern and legacy), Levels per channel, Hue / Saturation with color
+  ranges, Black & White, Posterize, Threshold, Unsharp mask, Minimum /
+  Maximum as Thicken / Thin lines (square or round), Find edges, Emboss,
+  Drop shadow (angle, distance, spread, size), adapted from PhotoCraft
+  (MIT, see NOTICE); the W3C spec's blur, sepia, invert and opacity.
+
+**Fixed**
+- A filter reaching farther than 512 px (a 250 px blur, a long shadow)
+  was cut off at that margin: the session grows to fit it.
+- A filter on an empty layer said "Layer is locked or is a folder".
+- Filter sliders rounded every value to a whole number (a 0.5 px blur
+  couldn't be set).
+- PhotoCraft's own bugs not carried over: its Threshold dialog drew the
+  RGB histogram while splitting on luminosity; its histogram skipped the
+  first half level and sloped the last one down.
+- A file given on the command line (Open with…) opens at start.
+
 ## 0.8.0 — 2026-10-19
 
 **Filters**
