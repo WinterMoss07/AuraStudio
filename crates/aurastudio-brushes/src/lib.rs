@@ -12,7 +12,8 @@ pub mod stroke_preview;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aurastudio_brush::{parse_myb, Brush, MyPaintBrush, MyPaintEngine};
+use aurastudio_brush::forge::Painting;
+use aurastudio_brush::{parse_myb, Brush, Forge, ForgeBrush};
 
 /// A brush of the catalog.
 pub enum BundledBrush { Round, Soft, MyPaint(&'static str) }
@@ -38,25 +39,20 @@ pub fn guess_medium(name: &str) -> &'static str {
     else { "Misc" }
 }
 
-/// Which engine paints a preset.
-#[derive(Clone)]
-pub enum Engine {
-    /// AuraStudio's dab engine: presets only differ by their settings.
-    Native,
-    /// A MyPaint brush, painted by libmypaint's rules.
-    MyPaint(Arc<MyPaintBrush>),
+/// Where a preset's brush comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Made for Forge (our round brushes).
+    Forge,
+    /// A MyPaint brush (.myb), read into Forge.
+    MyPaint,
 }
 
-impl Engine {
-    pub fn is_mypaint(&self) -> bool {
-        matches!(self, Engine::MyPaint(_))
-    }
-
-    /// A fresh engine for a stroke with this preset's rules.
-    pub fn start(&self) -> aurastudio_brush::BrushEngine {
+impl Origin {
+    pub fn label(self) -> &'static str {
         match self {
-            Engine::Native => aurastudio_brush::BrushEngine::dab(),
-            Engine::MyPaint(b) => aurastudio_brush::BrushEngine::mypaint((**b).clone()),
+            Origin::Forge => "Forge brush",
+            Origin::MyPaint => "MyPaint brush",
         }
     }
 }
@@ -68,7 +64,9 @@ pub struct Preset {
     pub medium: String,
     /// Who made it (or the imported pack).
     pub author: String,
-    pub engine: Engine,
+    pub origin: Origin,
+    /// Its Forge definition (settings, curves, painting mode).
+    pub brush:  Arc<ForgeBrush>,
     /// Size, opacity, hardness and blend mode (the color is global).
     pub settings: Brush,
     /// The imported file, None for bundled brushes.
@@ -80,18 +78,26 @@ pub struct Preset {
 impl Preset {
     fn builtin(name: &str, medium: &str, radius: f32, hardness: f32) -> Self {
         let settings = Brush { radius, hardness, ..Brush::new() };
-        Self { name: name.into(), medium: medium.into(), author: "AuraStudio".into(), engine: Engine::Native, settings, file: None, order: 0 }
+        Self { name: name.into(), medium: medium.into(), author: "AuraStudio".into(), origin: Origin::Forge,
+            brush: Arc::new(ForgeBrush::round()), settings, file: None, order: 0 }
     }
+
+    /// A Forge engine for a stroke with this preset.
+    pub fn start(&self) -> Forge { Forge::new((*self.brush).clone()) }
+
+    /// Its blend mode applies (wash painting; build-up brushes blend their
+    /// dabs themselves).
+    pub fn blends(&self) -> bool { self.brush.options.painting == Painting::Wash }
 
     /// A preset from a .myb brush, at the size and hardness it was made
     /// with; opacity 100 % (the slider multiplies the brush's own).
-    fn mypaint(name: String, medium: String, author: String, brush: MyPaintBrush, file: Option<PathBuf>) -> Self {
+    fn mypaint(name: String, medium: String, author: String, brush: ForgeBrush, file: Option<PathBuf>) -> Self {
         let settings = Brush {
-            radius: (MyPaintEngine::native_size(&brush) as f32 / 2.0).max(0.5),
-            hardness: MyPaintEngine::native_hardness(&brush),
+            radius: (Forge::native_size(&brush) as f32 / 2.0).max(0.5),
+            hardness: Forge::native_hardness(&brush),
             ..Brush::new()
         };
-        Self { name, medium, author, engine: Engine::MyPaint(Arc::new(brush)), settings, file, order: 0 }
+        Self { name, medium, author, origin: Origin::MyPaint, brush: Arc::new(brush), settings, file, order: 0 }
     }
 
     /// Stable key in the saved layout.
@@ -278,7 +284,7 @@ mod tests {
         assert_eq!(used, MEDIUMS);
         assert_eq!(lib.presets[0].medium, "Pencil");
         let round = lib.presets.iter().find(|p| p.name == "Round pen").unwrap();
-        assert!(matches!(round.engine, Engine::Native) && round.medium == "Ink");
+        assert!(round.origin == Origin::Forge && round.medium == "Ink");
         assert_eq!(lib.presets.iter().find(|p| p.name == "Liner").unwrap().author, "David Revoy");
     }
 

@@ -18,15 +18,16 @@
 //! watercolours) won't show parity until the C wrapper switches to
 //! `mypaint_brush_stroke_to_2` with a Surface2 wrapper.
 
-use crate::brush::Brush;
-use crate::color::{hsv_to_rgb, Hsv};
-use crate::evaluator::{evaluate, InputValues, SettingValues};
-use crate::setting::BrushSetting;
-use crate::state::BrushState;
-use crate::surface::{Dab, TiledSurface};
-use crate::BrushInput;
+use crate::forge::brush::ForgeBrush;
+use crate::forge::color::{hsv_to_rgb, Hsv};
+use crate::forge::evaluator::{evaluate, InputValues, SettingValues};
+use crate::forge::brush::Spacing;
+use crate::forge::setting::BrushSetting;
+use crate::forge::state::BrushState;
+use crate::forge::surface::{Dab, TiledSurface};
+use crate::forge::BrushInput;
 
-impl Brush {
+impl ForgeBrush {
     /// Feed one pointer event. `dtime` is seconds since the previous call.
     ///
     /// Returns `true` if at least one dab was painted.
@@ -195,7 +196,7 @@ impl Brush {
             // for later seed steps (state.X / state.Y).
             let _ = (xtilt, ytilt, m);
             state.started = true;
-            return false;
+            return self.options.dab_on_press && self.dab_at_rest(state, surface, seed_x, seed_y, pressure);
         }
 
         // --- Stroke input gating threshold ----------------------------------
@@ -549,7 +550,7 @@ impl Brush {
             let dab_sv = evaluate(self, &dab_inputs);
             // Mirrors libmypaint's `print_inputs` debug hook (enable both
             // sides with HOKUSAI_TRACE_INPUTS=1 and paste-diff the streams).
-            if std::env::var("HOKUSAI_TRACE_INPUTS").is_ok() {
+            if cfg!(debug_assertions) && std::env::var("HOKUSAI_TRACE_INPUTS").is_ok() {
                 eprintln!(
                     "press={:6.3}, speed1={:7.4}\tspeed2={:7.4}\tstroke={:6.3}\tcustom={:6.3}\tdir={:6.3}\tdec={:6.3}\tasc={:6.3}\trand={:6.3}\tattack={:6.3}",
                     dab_inputs.get(BrushInput::Pressure),
@@ -838,7 +839,7 @@ impl Brush {
                                 state.smudge_a,
                             ];
                             let cur = [sr, sg, sb, sa];
-                            let mixed = crate::spectral::mix_colors(prev, cur, fac, paint_mode);
+                            let mixed = crate::forge::spectral::mix_colors(prev, cur, fac, paint_mode);
                             state.smudge_ra = mixed[0];
                             state.smudge_ga = mixed[1];
                             state.smudge_ba = mixed[2];
@@ -918,6 +919,23 @@ impl Brush {
         painted
     }
 
+    /// A dab with the pen at rest (no speed, direction or tilt): where it
+    /// lands and where it lifts (`ForgeOptions::dab_on_press`).
+    pub(crate) fn dab_at_rest<S: TiledSurface>(&self, state: &mut BrushState, surface: &mut S, x: f32, y: f32, pressure: f32) -> bool {
+        let mut inputs = InputValues::new();
+        let gain = self.get(BrushSetting::PressureGainLog).base_value.exp();
+        inputs.set(BrushInput::Pressure, pressure * gain);
+        inputs.set(BrushInput::TiltDeclination, 90.0);
+        inputs.set(BrushInput::BrushRadius, self.get(BrushSetting::Radius).base_value);
+        inputs.set(BrushInput::Random, state.random_input);
+        let sv = evaluate(self, &inputs);
+        let radius = sv.get(BrushSetting::Radius).exp().clamp(0.2, 1000.0);
+        state.actual_radius = radius;
+        let dab = build_dab(self, &sv, state, x, y, radius, 0.0, 1.0);
+        state.prev_settings = sv;
+        surface.draw_dab(&dab)
+    }
+
     /// Flush `slow_tracking` lag and paint the trailing pixels.
     ///
     /// Call this on pointer-up. The smoothed position lags behind the live
@@ -970,7 +988,7 @@ impl Brush {
 /// the setting wholly at defaults (base 0, no inputs) we use 1.0 so the
 /// final opacity matches libmypaint's default behaviour rather than
 /// zeroing out every dab.
-fn opaque_multiplier(brush: &Brush, sv: &SettingValues) -> f32 {
+fn opaque_multiplier(brush: &ForgeBrush, sv: &SettingValues) -> f32 {
     let setting = brush.get(BrushSetting::OpaqueMultiply);
     if setting.base_value == 0.0 && setting.inputs.is_empty() {
         return 1.0;
@@ -980,7 +998,7 @@ fn opaque_multiplier(brush: &Brush, sv: &SettingValues) -> f32 {
 
 #[allow(clippy::too_many_arguments)]
 fn build_dab(
-    brush: &Brush,
+    brush: &ForgeBrush,
     sv: &SettingValues,
     state: &mut BrushState,
     px: f32,
@@ -1028,7 +1046,7 @@ fn build_dab(
             state.smudge_a,
         ];
         let brush_color = [base.r, base.g, base.b, 1.0];
-        let mixed = crate::spectral::mix_colors(smudge_color, brush_color, smudge_amt, paint_mode);
+        let mixed = crate::forge::spectral::mix_colors(smudge_color, brush_color, smudge_amt, paint_mode);
         [
             mixed[0].clamp(0.0, 1.0),
             mixed[1].clamp(0.0, 1.0),
@@ -1058,7 +1076,7 @@ fn build_dab(
     let mut color_g = mixed_rgb[1];
     let mut color_b = mixed_rgb[2];
     if dh != 0.0 || dhsv_s != 0.0 || dv != 0.0 {
-        let mut hsv = crate::color::rgb_to_hsv(color_r, color_g, color_b);
+        let mut hsv = crate::forge::color::rgb_to_hsv(color_r, color_g, color_b);
         hsv.h = (hsv.h + dh).rem_euclid(1.0);
         hsv.s = (hsv.s + hsv.s * hsv.v * dhsv_s).clamp(0.0, 1.0);
         hsv.v = (hsv.v + dv).clamp(0.0, 1.0);
@@ -1068,11 +1086,11 @@ fn build_dab(
         color_b = rgb.b;
     }
     if dl != 0.0 || dhsl_s != 0.0 {
-        let mut hsl = crate::color::rgb_to_hsl(color_r, color_g, color_b);
+        let mut hsl = crate::forge::color::rgb_to_hsl(color_r, color_g, color_b);
         hsl.l = (hsl.l + dl).clamp(0.0, 1.0);
         let edge = (1.0 - hsl.l).abs().min(hsl.l.abs());
         hsl.s = (hsl.s + hsl.s * edge * 2.0 * dhsl_s).clamp(0.0, 1.0);
-        let rgb = crate::color::hsl_to_rgb(hsl);
+        let rgb = crate::forge::color::hsl_to_rgb(hsl);
         color_r = rgb.r;
         color_g = rgb.g;
         color_b = rgb.b;
@@ -1080,12 +1098,12 @@ fn build_dab(
 
     // Diagnostic / test bookkeeping: the legacy `state.actual_*` fields
     // now record the last dab's post-dynamics colour.
-    let hsv_out = crate::color::rgb_to_hsv(color_r, color_g, color_b);
+    let hsv_out = crate::forge::color::rgb_to_hsv(color_r, color_g, color_b);
     state.actual_h = hsv_out.h;
     state.actual_s = hsv_out.s;
     state.actual_v = hsv_out.v;
 
-    let color = crate::color::RgbaF32 {
+    let color = crate::forge::color::RgbaF32 {
         r: color_r,
         g: color_g,
         b: color_b,
@@ -1244,7 +1262,7 @@ fn build_dab(
 /// - `dabs_per_*` — one step delayed, falling back to the brush's base
 ///   value when 0 (`dabs_per_second` only falls back on NaN).
 fn count_dabs_to(
-    brush: &Brush,
+    brush: &ForgeBrush,
     state: &mut BrushState,
     cur_x: f32,
     cur_y: f32,
@@ -1293,6 +1311,9 @@ fn count_dabs_to(
         brush.get(BrushSetting::DabsPerSecond).base_value
     };
 
+    if let Spacing::Auto(k) = brush.options.spacing {
+        return dist / (k * (2.0 * state.actual_radius).sqrt()).max(0.5);
+    }
     dist / state.actual_radius * dpar + dist / base_radius * dpbr + dt_left * dps
 }
 
@@ -1477,13 +1498,13 @@ fn direction_angle(dx: f32, dy: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mapping::SettingValue;
+    use crate::forge::mapping::SettingValue;
 
     struct CountingSurface {
         count: u32,
     }
     impl TiledSurface for CountingSurface {
-        fn tile_request_start(&mut self, _tx: i32, _ty: i32) -> &mut crate::tile::TilePixels {
+        fn tile_request_start(&mut self, _tx: i32, _ty: i32) -> &mut crate::forge::tile::TilePixels {
             unreachable!()
         }
         fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
@@ -1493,8 +1514,8 @@ mod tests {
         }
     }
 
-    fn make_brush(radius_log: f32, dabs_per_actual_radius: f32) -> Brush {
-        let mut b = Brush::new();
+    fn make_brush(radius_log: f32, dabs_per_actual_radius: f32) -> ForgeBrush {
+        let mut b = ForgeBrush::new();
         b.set(BrushSetting::Radius, SettingValue::constant(radius_log));
         b.set(
             BrushSetting::DabsPerActualRadius,
@@ -1619,7 +1640,7 @@ mod tests {
             xs: Vec<f32>,
         }
         impl TiledSurface for CaptureSurface {
-            fn tile_request_start(&mut self, _: i32, _: i32) -> &mut crate::tile::TilePixels {
+            fn tile_request_start(&mut self, _: i32, _: i32) -> &mut crate::forge::tile::TilePixels {
                 unreachable!()
             }
             fn tile_request_end(&mut self, _: i32, _: i32) {}
@@ -1688,11 +1709,11 @@ mod tests {
             BrushSetting::Radius,
             SettingValue {
                 base_value: 1.0,
-                inputs: vec![crate::mapping::InputMapping {
+                inputs: vec![crate::forge::mapping::InputMapping {
                     input: BrushInput::TiltDeclination,
                     points: vec![(0.0, 0.0), (90.0, 1.0)],
                 }],
-                unknown_inputs: Default::default(),
+                ..Default::default()
             },
         );
         let mut s1 = BrushState::default();

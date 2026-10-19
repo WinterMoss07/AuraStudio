@@ -5,8 +5,8 @@
 //! The defaults cover libmypaint's Normal+Eraser, Colorize, Posterize, and
 //! LockAlpha blend modes; the spectral `paint` mode is still deferred.
 
-use crate::color::RgbaF32;
-use crate::tile::TilePixels;
+use crate::forge::color::RgbaF32;
+use crate::forge::tile::TilePixels;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Dab {
@@ -43,7 +43,7 @@ pub trait TiledSurface {
     /// fix15, plus colorize / posterize / lock_alpha when those dab fields
     /// are non-zero. The spectral `paint` mode is still deferred.
     fn draw_dab(&mut self, dab: &Dab) -> bool {
-        crate::brushmodes::draw_dab_default(self, dab)
+        crate::forge::brushmodes::draw_dab_default(self, dab)
     }
 
     /// Read-only tile lookup, used by the default `get_color` and by any
@@ -59,10 +59,10 @@ pub trait TiledSurface {
     /// a transparent result for backends that don't implement it. Backends
     /// without raw tile access (e.g. a single `Pixmap`-backed surface)
     /// can override and forward to
-    /// [`crate::brushmodes::get_color_via_sample`] with their own
+    /// [`crate::forge::brushmodes::get_color_via_sample`] with their own
     /// per-pixel reader.
     fn get_color(&self, x: f32, y: f32, radius: f32) -> RgbaF32 {
-        crate::brushmodes::get_color_default(self, x, y, radius)
+        crate::forge::brushmodes::get_color_default(self, x, y, radius)
     }
 
     /// libmypaint's `get_color_pigment`: alpha-weighted running WGM
@@ -75,7 +75,7 @@ pub trait TiledSurface {
         if paint < 0.0 {
             self.get_color(x, y, radius)
         } else {
-            crate::brushmodes::get_color_pigment_default(self, x, y, radius, paint)
+            crate::forge::brushmodes::get_color_pigment_default(self, x, y, radius, paint)
         }
     }
 }

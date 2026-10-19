@@ -13,7 +13,7 @@
 //! drop to another place in the list, or onto another medium's icon.
 
 use aurastudio_brushes::stroke_preview::{Mode, Shape};
-use aurastudio_brushes::{Engine, Library, Preset};
+use aurastudio_brushes::{Library, Preset};
 use egui::{vec2, RichText, Sense, Stroke, Ui};
 
 use crate::icons::Icon;
@@ -202,7 +202,7 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
 fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, selected: bool, current: &aurastudio_brush::Brush) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click_and_drag());
     if resp.drag_started() { resp.dnd_set_drag_payload(BrushDrag(index)); }
-    let resp = resp.on_hover_text(format!("{}\n{}  ·  {}", p.name, p.author, engine_label(&p.engine)));
+    let resp = resp.on_hover_text(format!("{}\n{}  ·  {}", p.name, p.author, p.origin.label()));
     if !ui.is_rect_visible(rect) { return resp; }
     let bg = if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE };
     ui.painter().rect_filled(rect, 4.0, bg);
@@ -214,11 +214,4 @@ fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, sele
         ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5_f32, theme::ACCENT));
     }
     resp
-}
-
-pub fn engine_label(e: &Engine) -> &'static str {
-    match e {
-        Engine::Native => "AuraStudio engine",
-        Engine::MyPaint(_) => "MyPaint brush",
-    }
 }

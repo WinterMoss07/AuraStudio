@@ -133,7 +133,7 @@ fn random_brush(r: &mut Rng, base: &Brush) -> Brush {
 fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (u32, u32), finish: bool) {
     let preset = &lib.presets[r.below(lib.presets.len() as u64) as usize];
     let brush = random_brush(r, &preset.settings);
-    pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: preset.engine.clone() });
+    pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, forge: preset.brush.clone() });
     let (w, h) = (size.0 as f32, size.1 as f32);
     // Sometimes a geometry tool's shape (as App::paint_path sends it).
     if r.chance(0.2) {

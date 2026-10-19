@@ -1,4 +1,4 @@
-//! Brush settings — 1:1 with libmypaint's `brushsettings.json` keys.
+//! ForgeBrush settings — 1:1 with libmypaint's `brushsettings.json` keys.
 //!
 //! The string keys returned by [`BrushSetting::cname`] and accepted by
 //! [`BrushSetting::from_cname`] are the exact identifiers used in `.myb`
@@ -108,6 +108,15 @@ define_settings! {
     GridmapScale                 => "gridmap_scale",
     GridmapScaleX                => "gridmap_scale_x",
     GridmapScaleY                => "gridmap_scale_y",
+}
+
+impl BrushSetting {
+    /// Stored as a logarithm (a Krita-style factor adds its ln).
+    pub const fn is_logarithmic(self) -> bool {
+        matches!(self, Self::Radius | Self::SmudgeRadiusLog | Self::PressureGainLog
+            | Self::StrokeDurationLogarithmic | Self::GridmapScale | Self::OffsetMultiplier
+            | Self::Speed1Gamma | Self::Speed2Gamma)
+    }
 }
 
 impl fmt::Display for BrushSetting {

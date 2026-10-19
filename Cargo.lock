@@ -185,7 +185,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "arboard",
  "aurastudio-brush",
@@ -216,16 +216,18 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brush"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "aurastudio-canvas",
- "hokusai",
  "png 0.18.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "aurastudio-brushes"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-canvas",
@@ -236,14 +238,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-canvas"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "wgpu",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "log",
  "moxcms 0.9.1",
@@ -252,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-document"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-layers",
@@ -261,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-document",
@@ -275,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "aurastudio-canvas",
  "bytemuck",
@@ -290,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-input"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "crossbeam-queue",
  "windows",
@@ -298,14 +300,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "aurastudio-canvas",
 ]
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.6.4"
+version = "0.7.0"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-brushes",
@@ -1208,45 +1210,6 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
-
-[[package]]
-name = "hokusai"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2a43c466522f5a05c6a09ac6466c4ea6e1f1e3921e62d6add9e29a026ef0357"
-dependencies = [
- "hokusai-brush",
- "hokusai-core",
- "hokusai-tile-mem",
-]
-
-[[package]]
-name = "hokusai-brush"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "553185ffcdcf55251cd02a2d0be297cd2ac0bf9f8fae50cffb70ddbadc70fee4"
-dependencies = [
- "hokusai-core",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "hokusai-core"
-version = "0.3.0"
-dependencies = [
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "hokusai-tile-mem"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baaeddb70dce44dad67dccd058b30c5eac889a5a36e5c19f5ac76c7711bf45d0"
-dependencies = [
- "hokusai-core",
-]
 
 [[package]]
 name = "icu_collections"

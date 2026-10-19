@@ -120,9 +120,9 @@ impl Session {
         brush.erase = erase;
         brush.color = self.colors[self.r.below(self.colors.len() as u64) as usize];
         brush.opacity = if self.r.chance(0.3) { self.r.range(0.3, 1.0) } else { 1.0 };
-        let engine = self.lib.presets[preset].engine.clone();
+        let forge = self.lib.presets[preset].brush.clone();
         let t0 = Instant::now();
-        self.pt.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, engine });
+        self.pt.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, forge });
         let n = path.len();
         for (i, &(x, y)) in path.iter().enumerate() {
             self.t += 0.005;

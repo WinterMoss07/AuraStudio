@@ -16,9 +16,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
-use aurastudio_brush::Brush;
+use aurastudio_brush::{Brush, ForgeBrush};
 use aurastudio_brushes::stroke_preview::{self, Mode, Shape};
-use aurastudio_brushes::{Engine, Preset};
+use aurastudio_brushes::Preset;
 use egui::{pos2, vec2, Color32, FontId, Rect, TextureHandle, Ui};
 
 use crate::theme;
@@ -28,7 +28,7 @@ use crate::theme;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Slot { Brush(usize), Shape(Shape), ToolOptions }
 
-struct Job { slot: Slot, key: u64, engine: Engine, settings: Brush, shape: Shape, mode: Mode, w: u32, h: u32, scale: f32 }
+struct Job { slot: Slot, key: u64, brush: Arc<ForgeBrush>, settings: Brush, shape: Shape, mode: Mode, w: u32, h: u32, scale: f32 }
 
 /// A painted preview: slot, settings key, size, straight RGBA.
 type Done = (Slot, u64, u32, u32, Vec<u8>);
@@ -78,7 +78,7 @@ impl StrokePreviews {
             self.asked.insert(slot, key);
             // Canvas pixels at true size: one per screen pixel at 100 %
             // zoom (HiDPI image scaling).
-            let job = Job { slot, key, engine: stroke.preset.engine.clone(), settings: stroke.settings.clone(),
+            let job = Job { slot, key, brush: stroke.preset.brush.clone(), settings: stroke.settings.clone(),
                 shape: stroke.shape, mode: stroke.mode, w, h, scale: ppp };
             let (lock, wake) = &*self.queue;
             let mut q = lock.lock().unwrap();
@@ -115,7 +115,7 @@ impl StrokePreviews {
                 while q.is_empty() { q = wake.wait(q).unwrap(); }
                 q.remove(0)
             };
-            let px = stroke_preview::render(&job.engine, &job.settings, job.shape, job.mode, job.w, job.h, job.scale);
+            let px = stroke_preview::render(&job.brush, &job.settings, job.shape, job.mode, job.w, job.h, job.scale);
             if send.send((job.slot, job.key, job.w, job.h, px)).is_err() { return; }
             ctx.request_repaint();
         });

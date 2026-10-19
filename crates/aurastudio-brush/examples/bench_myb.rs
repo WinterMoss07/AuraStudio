@@ -1,7 +1,7 @@
 // Measures CPU cost per pointer sample of a MyPaint brush at a given size.
 // Usage: cargo run --release -p aurastudio-brush --example bench_myb -- brush.myb [radius]
 use std::time::{Duration, Instant};
-use aurastudio_brush::{parse_myb, Brush, MyPaintEngine};
+use aurastudio_brush::{parse_myb, Brush, Forge};
 
 use aurastudio_canvas::FlatSurface as S;
 
@@ -11,7 +11,7 @@ fn main() {
     let radius: f32 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(150.0);
     let (w, h) = (2048u32, 2048u32);
     let mut s = S::new(w, h, [255; 4]);
-    let mut e = MyPaintEngine::new(preset);
+    let mut e = Forge::new(preset);
     let mut b = Brush::new();
     b.color = [40, 60, 120];
     b.radius = radius;

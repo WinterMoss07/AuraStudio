@@ -2,7 +2,7 @@
 // window: the round brush.
 // Usage: cargo run --release -p aurastudio-brush --example bench_stroke
 use std::time::{Duration, Instant};
-use aurastudio_brush::{Brush, DabEngine};
+use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
 
 use aurastudio_canvas::FlatSurface as S;
 
@@ -28,7 +28,7 @@ fn main() {
             let mut b = Brush::new();
             b.radius = radius as f32;
             b.hardness = hardness;
-            let mut d = DabEngine::new();
+            let mut d = Forge::new(ForgeBrush::round());
             d.sync_from(&b);
             d.begin_stroke();
             let n = 200;
@@ -40,7 +40,7 @@ fn main() {
                 let p = (300.0 + i as f32 * 8.0, 1000.0 + (t * 20.0).sin() * 300.0);
                 let pr = if steady { 0.8 + 0.02 * (t * 9.0).sin() } else { 0.3 + 0.7 * (t * 9.0).sin().abs() };
                 let t0 = Instant::now();
-                d.stroke_to(&mut s, p.0, p.1, pr);
+                d.stroke_to(&mut s, PenSample::new(p.0, p.1, pr, i as f64 * 0.005));
                 let dt = t0.elapsed();
                 total += dt; worst = worst.max(dt);
             }

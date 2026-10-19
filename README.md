@@ -19,11 +19,13 @@ UI stays quiet so the painting gets the room.
 ## What works today
 
 **Painting**
-- One native brush engine (Krita-style "wash" opacity, auto spacing,
-  pressure) plus 56 MyPaint brushes (CC0, chosen from the 196 of the
-  MyPaint collection, `assets/brushes/catalog.txt`) painted natively;
-  `.myb` import. Each brush keeps its own size / opacity / hardness / blend
-  mode; 13 blend modes. GPU brush outline cursor, app-drawn hand / rotate
+- **Forge**, the brush engine: libmypaint's model (its ~60 settings, pen
+  inputs and curves, stroke path and dab blending) grown with Krita's ways
+  (curves that multiply, wash opacity, auto spacing, a dab on press).
+  Brush formats are read into it: 56 MyPaint brushes (CC0, chosen from the
+  196 of the MyPaint collection, `assets/brushes/catalog.txt`) and `.myb`
+  import; Krita bundles next. Pressure and pen tilt. Each brush keeps its
+  own size / opacity / hardness / blend mode; 13 blend modes. GPU brush outline cursor, app-drawn hand / rotate
   cursors.
 - Toolbox by groups: Draw (pencil, ink, charcoal & pastel, misc), Paint
   (paint, watercolor, airbrush, blend & smudge, texture & FX), Eraser,
@@ -165,7 +167,7 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 | Crate | Role |
 |---|---|
 | `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
-| `aurastudio-brush` | the brush engine, native MyPaint engine |
+| `aurastudio-brush` | Forge, the brush engine (`src/forge`), `.myb` reader |
 | `aurastudio-brushes` | brush library: built-in presets, bundled MyPaint collection, import |
 | `aurastudio-layers` | layer tree, folders, lock, compositing |
 | `aurastudio-document` | documents, workspace, undo history |
@@ -208,6 +210,16 @@ See `NOTICE.md` for third-party code and assets.
       Today nothing caps the memory: 1.5 GB with 35 layers in the 20-minute
       painting test.
 
+**Next: Forge**
+- [ ] Advanced tool options popup (gear at the bottom right of Tool
+      options, F5): every Forge setting and its curves; Tool options keeps
+      the common ones.
+- [ ] Oil / acrylic closer to MyPaint: compare with MyPaint's own renders
+      (the size / hardness sliders override the brush's base values today;
+      a global pressure curve).
+- [ ] Krita brushes: .kpp / .bundle reader, brush tips and textures,
+      Krita's Color Smudge; then a smudge / blend as strong as CSP's.
+
 **Missing / planned**
 - [ ] Smudge / blend strength sliders in Tool options (MyPaint brushes
       smudge too weakly by default).
@@ -218,8 +230,7 @@ See `NOTICE.md` for third-party code and assets.
 - [ ] Undo for structural layer changes (add, delete, move, opacity…) and
       canvas resize (history is cleared today).
 - [ ] Persist per-brush settings and UI layout between sessions.
-- [ ] Brush editor (MyPaint settings and curves); brush tilt / rotation input
-      (WinTab orientation is already read).
+- [ ] Barrel rotation input (WinTab orientation is already read).
 - [ ] Document tabs (the workspace already handles several documents).
 - [ ] Faster large MyPaint smudge brushes (acrylic / water / oil "only
       water", 500–1000 px: still 2–3× slower than the pen on a slow

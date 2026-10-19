@@ -25,18 +25,39 @@ Cerviño (tanda), Guillaume Loussarévian (kaerhon_v1), Brien Dieterle
 (Dieterle). Thank you! AuraStudio ships 56 of them, chosen and renamed in
 `assets/brushes/catalog.txt`; the others stay in the folder.
 
-## hokusai — MyPaint brush engine
+## hokusai — the core of Forge
 
-Brush dynamics and dab rendering for MyPaint brushes use the `hokusai`
-crates (https://github.com/reearth/hokusai, a Rust port of libmypaint,
-MIT OR Apache-2.0), from crates.io.
+Forge, AuraStudio's brush engine (`crates/aurastudio-brush/src/forge`),
+is built on the code of `hokusai-core` 0.3.0 and `hokusai-brush` 0.3.0
+(https://github.com/reearth/hokusai, © Re:Earth and contributors, MIT OR
+Apache-2.0), a Rust port of libmypaint (https://github.com/mypaint/libmypaint,
+ISC): brush settings, inputs and curves, the stroke path, libmypaint's dab
+blending and the `.myb` reader. Changed since: Krita-style curve modes,
+wash painting, auto spacing, a dab on press, path clipping to the canvas,
+and speedups that keep MyPaint brushes' output identical (the spectral
+mix takes the brush color's logarithms once per dab, `wgm_mix`; the trace
+checks run in debug builds only).
 
-`vendor/hokusai-core` is a copy of `hokusai-core` 0.3.0 with speedups that
-keep its output identical: the spectral (pigment) mix takes the brush
-color's logarithms once per dab and a branch-free `fastpow2` that
-vectorizes (`spectral.rs`, test `wgm_mix_matches_fastpow`), and the
-`HOKUSAI_TRACE_DABS` check runs in debug builds only. Used through
-`[patch.crates-io]` in the workspace `Cargo.toml`.
+The MIT license of hokusai:
+
+> Permission is hereby granted, free of charge, to any person obtaining a
+> copy of this software and associated documentation files (the
+> "Software"), to deal in the Software without restriction, including
+> without limitation the rights to use, copy, modify, merge, publish,
+> distribute, sublicense, and/or sell copies of the Software, and to
+> permit persons to whom the Software is furnished to do so, subject to
+> the following conditions:
+>
+> The above copyright notice and this permission notice shall be included
+> in all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+> OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+> MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+> IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+> CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+> TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+> SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## vendor/egui — egui 0.30.0, patched
 

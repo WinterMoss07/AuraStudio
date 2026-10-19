@@ -1,13 +1,14 @@
-//! Setting evaluator: turn a [`Brush`] + normalized input values into the
+//! Setting evaluator: turn a [`ForgeBrush`] + normalized input values into the
 //! per-setting evaluated values needed by the dab loop.
 //!
 //! Matches the core of libmypaint's `update_states_and_setting_values` —
 //! input normalization (pressure, speed, tilt …) is the stroke engine's job;
 //! this module is the pure `(base_value + Σ mapping.eval(input_value))` step.
 
-use crate::brush::Brush;
-use crate::input::{BrushInput, NUM_INPUTS};
-use crate::setting::NUM_SETTINGS;
+use crate::forge::brush::ForgeBrush;
+use crate::forge::input::{BrushInput, NUM_INPUTS};
+use crate::forge::mapping::Combine;
+use crate::forge::setting::{BrushSetting, NUM_SETTINGS};
 
 /// Normalized input values, indexed by [`BrushInput`]. The stroke engine
 /// fills this each event before calling [`evaluate`].
@@ -34,7 +35,7 @@ impl InputValues {
     }
 }
 
-/// Evaluated setting values, indexed by [`crate::BrushSetting`].
+/// Evaluated setting values, indexed by [`crate::forge::BrushSetting`].
 #[derive(Debug, Clone)]
 pub struct SettingValues {
     pub values: [f32; NUM_SETTINGS],
@@ -48,7 +49,7 @@ impl SettingValues {
     }
 
     #[inline]
-    pub fn get(&self, s: crate::BrushSetting) -> f32 {
+    pub fn get(&self, s: crate::forge::BrushSetting) -> f32 {
         self.values[s.index()]
     }
 }
@@ -65,14 +66,27 @@ impl Default for SettingValues {
 /// libmypaint clamps a handful of settings after evaluation (e.g. `opaque`
 /// into `[0, 2]`); that clamping is intentionally **not** done here so the
 /// stroke engine can apply setting-specific post-processing in one place.
-pub fn evaluate(brush: &Brush, inputs: &InputValues) -> SettingValues {
+pub fn evaluate(brush: &ForgeBrush, inputs: &InputValues) -> SettingValues {
     let mut out = SettingValues::new();
     for (i, sv) in brush.settings().iter().enumerate() {
-        let mut v = sv.base_value;
-        for m in &sv.inputs {
-            v += m.eval(inputs.get(m.input));
-        }
-        out.values[i] = v;
+        out.values[i] = match sv.combine {
+            Combine::MyPaint => {
+                let mut v = sv.base_value;
+                for m in &sv.inputs {
+                    v += m.eval(inputs.get(m.input));
+                }
+                v
+            }
+            _ if sv.inputs.is_empty() => sv.base_value,
+            mode => {
+                let f = mode.factor(sv.inputs.iter().map(|m| m.eval(inputs.get(m.input))));
+                if BrushSetting::ALL[i].is_logarithmic() {
+                    sv.base_value + f.max(1e-4).ln()
+                } else {
+                    sv.base_value * f
+                }
+            }
+        };
     }
     out
 }
@@ -80,12 +94,12 @@ pub fn evaluate(brush: &Brush, inputs: &InputValues) -> SettingValues {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mapping::{InputMapping, SettingValue};
-    use crate::BrushSetting;
+    use crate::forge::mapping::{InputMapping, SettingValue};
+    use crate::forge::BrushSetting;
 
     #[test]
     fn base_value_only() {
-        let mut brush = Brush::new();
+        let mut brush = ForgeBrush::new();
         brush.set(BrushSetting::Radius, SettingValue::constant(2.0));
         let out = evaluate(&brush, &InputValues::new());
         assert_eq!(out.get(BrushSetting::Radius), 2.0);
@@ -93,7 +107,7 @@ mod tests {
 
     #[test]
     fn sums_base_and_mapped_inputs() {
-        let mut brush = Brush::new();
+        let mut brush = ForgeBrush::new();
         brush.set(
             BrushSetting::Opaque,
             SettingValue {
@@ -113,7 +127,7 @@ mod tests {
 
     #[test]
     fn multiple_input_mappings_sum() {
-        let mut brush = Brush::new();
+        let mut brush = ForgeBrush::new();
         brush.set(
             BrushSetting::Radius,
             SettingValue {

@@ -19,8 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{Brush, BrushEngine, PenSample};
-use aurastudio_brushes::Engine;
+use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
 
@@ -32,8 +31,8 @@ const UPDATE_PERIOD: Duration = Duration::from_millis(8);
 
 pub enum Cmd {
     /// Start a stroke on the active layer of `doc` with these settings and
-    /// this engine (from the selected brush preset).
-    Begin { doc: SharedDoc, brush: Brush, engine: Engine },
+    /// this Forge brush (from the selected preset).
+    Begin { doc: SharedDoc, brush: Brush, forge: Arc<ForgeBrush> },
     /// One pen sample.
     Sample(PenSample),
     End,
@@ -111,8 +110,8 @@ struct Worker {
     notify:   Arc<dyn Fn(Event) + Send + Sync>,
 
     brush:    Brush,
-    /// The stroke's engine, with the preset's rules.
-    engine:   Option<BrushEngine>,
+    /// The stroke's engine, with the preset's brush.
+    engine:   Option<Forge>,
     /// The stroke started on a paintable layer.
     active:   bool,
     /// Layer the stroke paints on, fixed at Begin (another may get selected
@@ -120,12 +119,8 @@ struct Worker {
     layer:    u64,
     /// Canvas size at Begin: a resize meanwhile ends the stroke.
     size:     (u32, u32),
-    /// Last sample of the stroke.
-    last:     Option<PenSample>,
-    /// The engine is following the pen: it is on (or near) the canvas.
-    /// Off it, the stroke is paused like a pen lifted, and resumes where
-    /// it comes back (see `sample`).
-    on_canvas: bool,
+    /// The stroke got a sample.
+    sampled:  bool,
     /// Everything the stroke touched: the area saved for undo.
     stroke_rect: Option<Rect>,
     stats:    Stats,
@@ -140,8 +135,7 @@ impl Worker {
             active: false,
             layer: 0,
             size: (0, 0),
-            last: None,
-            on_canvas: false,
+            sampled: false,
             stroke_rect: None,
             stats: Stats::default(),
         }
@@ -165,13 +159,13 @@ impl Worker {
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
                 match cmd {
-                    Cmd::Begin { doc, brush, engine } => {
+                    Cmd::Begin { doc, brush, forge } => {
                         // A stroke still open (its End never came, e.g. the
                         // window lost focus): finish it first, so it is
                         // recorded for undo like any other.
                         if self.active { self.finish_stroke(&mut events); }
                         self.doc = Some(doc);
-                        if self.with_doc(|w, d| w.begin(d, brush, engine)) == Some(false) {
+                        if self.with_doc(|w, d| w.begin(d, brush, &forge)) == Some(false) {
                             events.push(Event::Notice("Layer is locked or is a folder"));
                         }
                     }
@@ -316,9 +310,8 @@ impl Worker {
 
     /// Start a stroke on the active layer. False if it can't be painted
     /// (locked, or a folder is selected).
-    fn begin(&mut self, doc: &mut Document, brush: Brush, engine: Engine) -> bool {
-        self.last = None;
-        self.on_canvas = false;
+    fn begin(&mut self, doc: &mut Document, brush: Brush, forge: &ForgeBrush) -> bool {
+        self.sampled = false;
         self.stroke_rect = None;
         self.stats = Stats::default();
         self.layer = doc.layers.active_id();
@@ -326,8 +319,7 @@ impl Worker {
         self.active = doc.layers.can_paint() && doc.layers.begin_stroke(self.layer);
         if !self.active { return false; }
 
-        // The engine itself starts with the first sample on the canvas.
-        let mut e = engine.start();
+        let mut e = Forge::new(forge.clone());
         e.sync_from(&brush);
         e.begin_stroke();
         self.engine = Some(e);
@@ -336,7 +328,6 @@ impl Worker {
     }
 
     fn sample(&mut self, doc: &mut Document, now: PenSample) -> Option<Rect> {
-        let PenSample { x, y, .. } = now;
         if !self.active { return None; }
         // The canvas was resized under the stroke: its snapshot no longer
         // matches the layer. Stop here (what was painted stays, undoable).
@@ -350,67 +341,14 @@ impl Worker {
             self.active = false;
             return None;
         };
-        let prev = self.last.replace(now);
-        // Only the path over the canvas (plus a margin) goes to the engine:
-        // zoomed out, dabs far off it cost seconds and show nothing.
-        let (w, h) = self.size;
-        let m = (4.0 * self.brush.radius).max(256.0);
-        let area = (-m, -m, w as f32 + m, h as f32 + m);
-        let mut rect = None;
-        let seg = match prev {
-            None => inside(area, x, y).then_some((0.0, 1.0)),
-            Some(p) => clip_segment(area, (p.x, p.y), (x, y)),
-        };
-        let at = |t: f32| match prev {
-            Some(p) => {
-                let l = |a: f32, b: f32| a + (b - a) * t;
-                PenSample {
-                    x: l(p.x, x), y: l(p.y, y), pressure: l(p.pressure, now.pressure),
-                    tilt: (l(p.tilt.0, now.tilt.0), l(p.tilt.1, now.tilt.1)),
-                    time: p.time + (now.time - p.time) * t as f64,
-                }
-            }
-            None => now,
-        };
-        match seg {
-            Some((t0, t1)) => {
-                if !self.on_canvas {
-                    // Coming (back) onto the canvas: a fresh start there.
-                    self.restart_engine();
-                    self.on_canvas = true;
-                    rect = union_opt(rect, self.engine_to(&mut surface, at(t0)));
-                }
-                rect = union_opt(rect, self.engine_to(&mut surface, at(t1)));
-                if t1 < 1.0 {
-                    // Left the canvas: lift the pen there.
-                    rect = union_opt(rect, self.engine_end(&mut surface));
-                    self.on_canvas = false;
-                }
-            }
-            None if self.on_canvas => {
-                rect = union_opt(rect, self.engine_end(&mut surface));
-                self.on_canvas = false;
-            }
-            None => {}
-        }
+        self.sampled = true;
+        // Forge paints only the path over the canvas (zoomed out, the pen
+        // can wander far off it).
+        let rect = self.engine.as_mut()?.stroke_to(&mut surface, now);
         // Only selected pixels may change.
         if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
         self.stats.paint.add(t0.elapsed());
         rect
-    }
-
-    /// Follow the pen afresh, keeping what the stroke painted so far.
-    fn restart_engine(&mut self) {
-        if let Some(e) = &mut self.engine { e.resume(); }
-    }
-
-    fn engine_to(&mut self, s: &mut aurastudio_layers::LayerSurface, p: PenSample) -> Option<Rect> {
-        self.engine.as_mut()?.stroke_to(s, p)
-    }
-
-    /// Pen lifted (end of the stroke, or off the canvas).
-    fn engine_end(&mut self, s: &mut aurastudio_layers::LayerSurface) -> Option<Rect> {
-        self.engine.as_mut()?.lift(s)
     }
 
     /// Finish the stroke and record it for undo. Returns the last painted
@@ -419,13 +357,13 @@ impl Worker {
         let was_active = std::mem::take(&mut self.active);
         // Also after an aborted stroke (layer deleted / canvas resized):
         // whatever was painted before is still recorded for undo.
-        self.last.take()?;
+        if !std::mem::take(&mut self.sampled) { return None; }
         let id = self.layer;
         let same_size = (doc.layers.width, doc.layers.height) == self.size;
         let mut rect = None;
-        if was_active && std::mem::take(&mut self.on_canvas) {
-            if let Some(mut surface) = doc.layers.layer_surface(id) {
-                rect = self.engine_end(&mut surface);
+        if was_active {
+            if let (Some(mut surface), Some(e)) = (doc.layers.layer_surface(id), self.engine.as_mut()) {
+                rect = e.end_stroke(&mut surface);
             }
         }
         if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
@@ -444,36 +382,6 @@ impl Worker {
         doc.layers.end_stroke();
         Some((rect, id))
     }
-}
-
-fn union_opt(a: Option<Rect>, b: Option<Rect>) -> Option<Rect> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(union(a, b)),
-        (a, b) => a.or(b),
-    }
-}
-
-/// (x0, y0, x1, y1), in canvas pixels, may be negative.
-type Area = (f32, f32, f32, f32);
-
-fn inside(a: Area, x: f32, y: f32) -> bool {
-    x >= a.0 && x <= a.2 && y >= a.1 && y <= a.3
-}
-
-/// Part of the segment p -> q inside `a`, as (t_enter, t_exit) along it
-/// (Liang-Barsky); None when it misses the area.
-fn clip_segment(a: Area, p: (f32, f32), q: (f32, f32)) -> Option<(f32, f32)> {
-    let (dx, dy) = (q.0 - p.0, q.1 - p.1);
-    let (mut t0, mut t1) = (0.0f32, 1.0f32);
-    for (den, num) in [(-dx, p.0 - a.0), (dx, a.2 - p.0), (-dy, p.1 - a.1), (dy, a.3 - p.1)] {
-        if den == 0.0 {
-            if num < 0.0 { return None; }
-        } else {
-            let t = num / den;
-            if den < 0.0 { t0 = t0.max(t) } else { t1 = t1.min(t) }
-        }
-    }
-    (t0 <= t1).then_some((t0, t1))
 }
 
 #[derive(Default)]
@@ -515,6 +423,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use crate::projection::Projection;
 
+    fn round() -> Arc<ForgeBrush> { Arc::new(ForgeBrush::round()) }
+
     fn proj(w: u32, h: u32) -> SharedProjection {
         Arc::new(Mutex::new(Projection::new(w, h)))
     }
@@ -534,7 +444,7 @@ mod tests {
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, engine: Engine::Native });
+        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush, forge: round() });
         pt.send(Cmd::Sample(PenSample::new(10.0, y, 1.0, 0.0)));
         pt.send(Cmd::Sample(PenSample::new(50.0, y, 1.0, 0.01)));
         pt.send(Cmd::End);
@@ -591,7 +501,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round() });
         pt.send(Cmd::Sample(PenSample::new(10.0, 30.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         // The user selects another layer while the stroke goes on.
@@ -611,7 +521,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), engine: Engine::Native });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush.clone(), forge: round() });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         stroke(&pt, &doc, 40.0);
         drop(pt);
@@ -626,7 +536,7 @@ mod tests {
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         let mut brush = Brush::new();
         brush.radius = 4.0;
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round() });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         {
@@ -643,31 +553,20 @@ mod tests {
         assert!(bg.tiles.to_rgba().chunks(4).all(|p| p == [255, 255, 255, 255]));
     }
 
-    #[test]
-    fn segments_are_clipped_to_the_area() {
-        let a = (0.0, 0.0, 100.0, 100.0);
-        assert_eq!(clip_segment(a, (10.0, 10.0), (20.0, 20.0)), Some((0.0, 1.0)));
-        assert_eq!(clip_segment(a, (-100.0, 50.0), (100.0, 50.0)), Some((0.5, 1.0)));
-        assert_eq!(clip_segment(a, (50.0, 50.0), (50.0, 250.0)), Some((0.0, 0.25)));
-        // Crossing the whole area from outside to outside.
-        assert_eq!(clip_segment(a, (-100.0, 50.0), (200.0, 50.0)), Some((1.0 / 3.0, 2.0 / 3.0)));
-        assert_eq!(clip_segment(a, (-10.0, -10.0), (-5.0, 500.0)), None);
-    }
-
     /// Zoomed out, a stroke can wander hundreds of thousands of pixels off
     /// the canvas: it pauses there and resumes where it comes back, with
     /// any engine, quickly (MyPaint brushes took seconds per sample).
     #[test]
     fn stroke_leaving_the_canvas_far_pauses_and_resumes() {
         let lib = aurastudio_brushes::Library::load();
-        let mypaint = lib.presets.iter().find(|p| p.engine.is_mypaint() && p.name == "Marker").unwrap().engine.clone();
-        for (n, engine) in [Engine::Native, mypaint].into_iter().enumerate() {
+        let mypaint = lib.presets.iter().find(|p| p.name == "Marker").unwrap().brush.clone();
+        for (n, forge) in [round(), mypaint].into_iter().enumerate() {
             let (doc, id) = doc_with_layer();
             let pt = PaintThread::spawn(proj(64, 64), |_| {});
             let mut brush = Brush::new();
             brush.radius = 3.0;
             let t = Instant::now();
-            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine });
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge });
             // A few samples on the canvas (MyPaint brushes only paint once
             // the pen moves), far away, back step by step (they fade at
             // high speed), a few more.
@@ -791,7 +690,7 @@ mod tests {
 
             let mut brush = Brush::new();
             brush.radius = radius as f32;
-            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, engine: Engine::Native });
+            pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round() });
             let t0 = Instant::now();
             let n = 200;
             for i in 0..n {

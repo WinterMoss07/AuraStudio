@@ -1,21 +1,47 @@
-//! MyPaint brushes (.myb) through hokusai, a Rust port of libmypaint.
+//! Forge, AuraStudio's brush engine: libmypaint's model (its ~60 settings,
+//! inputs and curves, its stroke path and dab rules) grown with Krita's
+//! ways (curves that multiply, wash painting, auto spacing). Brushes from
+//! other formats are read into it (.myb today; Krita next).
 //!
-//! Unlike the dab engine (dab_engine.rs), a MyPaint brush works on the
-//! layer itself: the tiles it touches are loaded from the layer as before
-//! the stroke, and libmypaint's dab blending applies (eraser, smudge,
-//! colorize...: they read the colors already there).
-//!
-//! Tiles: 64x64 premultiplied RGBA in fix15 (1.0 = 1 << 15), sRGB-encoded
-//! values like our layers.
+//! Two ways to reach the layer (`Painting`):
+//! - Build-up: the tiles a stroke touches are loaded from the layer as
+//!   before the stroke into 64x64 premultiplied fix15 tiles (1.0 = 1 <<
+//!   15, sRGB-encoded values like our layers), libmypaint's dab blending
+//!   applies (eraser, smudge, colorize... read the colors already there),
+//!   and the changed tiles are written back.
+//! - Wash: dabs go through the layer's stroke mask (wash.rs), with the
+//!   brush's blend mode.
 
 use std::collections::{HashMap, HashSet};
 
-use aurastudio_canvas::{PaintSurface, Rect};
-use hokusai::color::rgb_to_hsv;
-use hokusai::tile::{TilePixels, TILE_SIZE};
-use hokusai::{BrushSetting, BrushState, TiledSurface};
+use aurastudio_canvas::{BlendMode, PaintSurface, Rect};
 
+use crate::forge::color::rgb_to_hsv;
+use crate::forge::tile::{TilePixels, TILE_SIZE};
+use crate::forge::wash::Wash;
+use crate::forge::{BrushSetting, BrushState, Dab, ForgeBrush, Painting, Spacing, TiledSurface};
 use crate::Brush;
+
+/// One pen sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PenSample {
+    /// Canvas pixels.
+    pub x:        f32,
+    pub y:        f32,
+    /// 0..1.
+    pub pressure: f32,
+    /// Pen tilt toward +x / +y, -1..1 (1: 60°, libmypaint's scale); 0 for
+    /// a mouse.
+    pub tilt:     (f32, f32),
+    /// Pen time, seconds.
+    pub time:     f64,
+}
+
+impl PenSample {
+    pub fn new(x: f32, y: f32, pressure: f32, time: f64) -> Self {
+        Self { x, y, pressure, tilt: (0.0, 0.0), time }
+    }
+}
 
 
 const ONE: u32 = 1 << 15;
@@ -27,10 +53,11 @@ const _: () = assert!(TILE_SIZE as u32 == aurastudio_canvas::TILE);
 /// Settings by which a brush works on the paint already on the layer.
 const PAINT_SETTINGS: [BrushSetting; 5] = [BrushSetting::Smudge, BrushSetting::Eraser, BrushSetting::Posterize, BrushSetting::Colorize, BrushSetting::LockAlpha];
 
-pub struct MyPaintEngine {
+/// A stroke being painted.
+pub struct Forge {
     /// The preset's brush, with color / size / opacity bases set from
     /// the shared Brush at each stroke (its curves are kept).
-    brush: hokusai::Brush,
+    brush: ForgeBrush,
     state: BrushState,
     /// Working tiles of the current stroke, loaded from the layer.
     tiles: HashMap<(i32, i32), Box<TilePixels>>,
@@ -41,6 +68,10 @@ pub struct MyPaintEngine {
     scratch: Box<TilePixels>,
     /// Pen time of the previous sample, seconds.
     last_time: Option<f64>,
+    /// The previous pen sample, and whether the brush follows the pen
+    /// (it is over the canvas, see `stroke_to`).
+    last: Option<PenSample>,
+    on_canvas: bool,
     /// Upper bound of the dab radius, for preloading the tiles a dab or a
     /// smudge sample may read.
     reach: f32,
@@ -50,18 +81,36 @@ pub struct MyPaintEngine {
     /// opacity and its pressure curve stay as the .myb file made them
     /// (many start at 0 and get everything from pressure).
     opacity: f32,
+    /// Blend mode (wash painting).
+    blend: BlendMode,
+    wash: Wash,
 }
 
-impl MyPaintEngine {
-    pub fn new(brush: hokusai::Brush) -> Self {
+impl Forge {
+    pub fn new(brush: ForgeBrush) -> Self {
         let preset_eraser = brush.get(BrushSetting::Eraser).base_value;
         Self { brush, preset_eraser, state: BrushState::default(), tiles: HashMap::new(),
-            scratch: Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]), last_time: None, reach: 64.0, opacity: 1.0 }
+            scratch: Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]), last_time: None, last: None, on_canvas: false, reach: 64.0, opacity: 1.0,
+            blend: BlendMode::Normal, wash: Wash::default() }
+    }
+
+    fn washes(&self) -> bool { self.brush.options.painting == Painting::Wash }
+
+    /// Dabs spaced in proportion to the size (stroke previews: a size
+    /// change scales the stroke instead of shifting its dabs). Brushes
+    /// spaced by their radius already keep theirs.
+    pub fn proportional_spacing(&mut self) {
+        if let Spacing::Auto(_) = self.brush.options.spacing {
+            self.brush.options.spacing = Spacing::Settings;
+            self.brush.get_mut(BrushSetting::DabsPerActualRadius).base_value = 12.5;
+            self.brush.get_mut(BrushSetting::DabsPerBasicRadius).base_value = 0.0;
+            self.brush.get_mut(BrushSetting::DabsPerSecond).base_value = 0.0;
+        }
     }
 
     /// Size (diameter, px) the .myb file was made with, to show it in the
     /// UI when the preset is selected.
-    pub fn native_size(brush: &hokusai::Brush) -> u32 {
+    pub fn native_size(brush: &ForgeBrush) -> u32 {
         let r = brush.get(BrushSetting::Radius).base_value.exp();
         (r * 2.0).round().clamp(1.0, 1000.0) as u32
     }
@@ -70,12 +119,12 @@ impl MyPaintEngine {
     /// the same stroke then paints the same pixels (stroke previews don't
     /// shimmer from one repaint to the next).
     pub fn reset_random() {
-        hokusai::brushmodes::reset_get_color_rng();
+        crate::forge::brushmodes::reset_get_color_rng();
     }
 
     /// A copy that only paints (no erasing, smudging, colorizing...): the
     /// shape of its stroke, for the brush lists' stroke previews.
-    pub fn painting_only(brush: &hokusai::Brush) -> hokusai::Brush {
+    pub fn painting_only(brush: &ForgeBrush) -> ForgeBrush {
         let mut b = brush.clone();
         for k in PAINT_SETTINGS {
             let v = b.get_mut(k);
@@ -86,7 +135,7 @@ impl MyPaintEngine {
     }
 
     /// Edge hardness the .myb file was made with.
-    pub fn native_hardness(brush: &hokusai::Brush) -> f32 {
+    pub fn native_hardness(brush: &ForgeBrush) -> f32 {
         brush.get(BrushSetting::Hardness).base_value.clamp(0.0, 1.0)
     }
 
@@ -102,6 +151,7 @@ impl MyPaintEngine {
         self.opacity = b.opacity.clamp(0.0, 1.0);
         self.brush.get_mut(BrushSetting::Hardness).base_value = b.hardness.clamp(0.0, 1.0);
         self.brush.get_mut(BrushSetting::Eraser).base_value = if b.erase { 1.0 } else { self.preset_eraser };
+        self.blend = b.blend;
         // Dynamics can grow the dab (pressure, random...), smudge reads
         // around it: keep a generous margin.
         self.reach = (radius * 3.0 + 16.0).min(4096.0);
@@ -109,21 +159,65 @@ impl MyPaintEngine {
 
     pub fn begin_stroke(&mut self) {
         self.tiles.clear();
+        self.last = None;
+        self.on_canvas = false;
         self.resume();
+    }
+
+    /// The area a wash stroke step changed.
+    fn wash_step<S: PaintSurface>(&mut self, surface: &mut S, step: impl FnOnce(&ForgeBrush, &mut BrushState, &mut WashTarget<S>)) -> Option<Rect> {
+        let mut t = WashTarget { surface, wash: &mut self.wash, scratch: &mut self.scratch, opacity: self.opacity, blend: self.blend, dirty: None };
+        step(&self.brush, &mut self.state, &mut t);
+        t.dirty
     }
 
     /// Start following the pen afresh within the same stroke (after
     /// `lift`): the tiles already painted are kept.
-    pub fn resume(&mut self) {
+    fn resume(&mut self) {
         self.state = BrushState::default();
         self.last_time = None;
+        self.wash.begin_stroke();
     }
 
-    /// One pen sample.
-    pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, p: crate::PenSample) -> Option<Rect> {
-        let crate::PenSample { x, y, pressure, tilt, time } = p;
+    /// One pen sample. Only the path over the canvas (plus a margin)
+    /// is painted: zoomed out, samples can land millions of pixels away,
+    /// and dabs out there take seconds and show nothing. Off it, the
+    /// stroke pauses like a lifted pen and starts afresh where it comes
+    /// back.
+    pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, p: PenSample) -> Option<Rect> {
+        let prev = self.last.replace(p);
+        let m = (self.reach + 64.0).max(256.0);
+        let area = (-m, -m, surface.width() as f32 + m, surface.height() as f32 + m);
+        let seg = match prev {
+            None => (p.x >= area.0 && p.y >= area.1 && p.x <= area.2 && p.y <= area.3).then_some((0.0, 1.0)),
+            Some(q) => clip(&q, &p, area),
+        };
+        let at = |t: f32| prev.map_or(p, |q| lerp(&q, &p, t));
+        let mut dirty = None;
+        match seg {
+            Some((t0, t1)) => {
+                if !self.on_canvas {
+                    // Coming (back) onto the canvas: a fresh start there.
+                    self.resume();
+                    self.on_canvas = true;
+                    merge(&mut dirty, self.step(surface, at(t0)));
+                }
+                if prev.is_some() { merge(&mut dirty, self.step(surface, at(t1))); }
+                if t1 < 1.0 { merge(&mut dirty, self.lift(surface)); }
+            }
+            None if self.on_canvas => merge(&mut dirty, self.lift(surface)),
+            None => {}
+        }
+        dirty
+    }
+
+    fn step<S: PaintSurface>(&mut self, surface: &mut S, p: PenSample) -> Option<Rect> {
+        let PenSample { x, y, pressure, tilt, time } = p;
         let dtime = self.last_time.map(|t| (time - t).clamp(0.001, 0.25)).unwrap_or(0.0);
         self.last_time = Some(time);
+        if self.washes() {
+            return self.wash_step(surface, |b, st, t| { b.stroke_to(st, t, x, y, pressure, tilt.0, tilt.1, dtime); });
+        }
         // Tiles a dab or a smudge sample may touch around the pen must be
         // loaded first: libmypaint reads them through tile_lookup, which
         // can't load anything.
@@ -149,6 +243,17 @@ impl MyPaintEngine {
     /// smoothed path, keep the tiles for `resume`. Reloading them from the
     /// layer as it was before the stroke would erase what was painted.
     pub fn lift<S: PaintSurface>(&mut self, surface: &mut S) -> Option<Rect> {
+        if !std::mem::take(&mut self.on_canvas) { return None; }
+        if self.washes() {
+            return self.wash_step(surface, |b, st, t| {
+                b.finish_stroke(st, t);
+                // The stroke reaches the pen (dabs stop up to a spacing short).
+                if b.options.dab_on_press && st.started && st.dist_past_dab > 0.01 {
+                    let (x, y, p) = (st.actual_x, st.actual_y, st.last_pressure);
+                    b.dab_at_rest(st, t, x, y, p);
+                }
+            });
+        }
         let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), opacity: self.opacity };
         self.brush.finish_stroke(&mut self.state, &mut tiles);
         let dirty = std::mem::take(&mut tiles.dirty);
@@ -217,15 +322,76 @@ impl<S: PaintSurface> TiledSurface for TileCache<'_, S> {
 
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
 
-    fn draw_dab(&mut self, dab: &hokusai::Dab) -> bool {
-        if self.opacity >= 1.0 { return hokusai::brushmodes::draw_dab_default(self, dab); }
-        let dab = hokusai::Dab { opaque: dab.opaque * self.opacity, ..*dab };
-        hokusai::brushmodes::draw_dab_default(self, &dab)
+    fn draw_dab(&mut self, dab: &Dab) -> bool {
+        if self.opacity >= 1.0 { return crate::forge::brushmodes::draw_dab_default(self, dab); }
+        let dab = Dab { opaque: dab.opaque * self.opacity, ..*dab };
+        crate::forge::brushmodes::draw_dab_default(self, &dab)
     }
 
     fn tile_lookup(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
         self.tiles.get(&(tx, ty)).map(|b| &**b)
     }
+}
+
+/// The layer as a libmypaint surface for wash painting: dabs go to
+/// wash.rs (nothing is read back: no smudge).
+struct WashTarget<'a, S: PaintSurface> {
+    surface: &'a mut S,
+    wash:    &'a mut Wash,
+    scratch: &'a mut Box<TilePixels>,
+    opacity: f32,
+    blend:   BlendMode,
+    dirty:   Option<Rect>,
+}
+
+impl<S: PaintSurface> TiledSurface for WashTarget<'_, S> {
+    fn tile_request_start(&mut self, _tx: i32, _ty: i32) -> &mut TilePixels { self.scratch }
+
+    fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+
+    fn draw_dab(&mut self, dab: &Dab) -> bool {
+        let Some(r) = self.wash.dab(self.surface, dab, self.opacity, self.blend) else { return false };
+        self.dirty = Some(match self.dirty {
+            None => r,
+            Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
+        });
+        true
+    }
+}
+
+/// The part of the segment a → b inside `area` (x0, y0, x1, y1), as
+/// fractions of it (Liang-Barsky).
+fn clip(a: &PenSample, b: &PenSample, area: (f32, f32, f32, f32)) -> Option<(f32, f32)> {
+    let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [(-dx, a.x as f64 - area.0 as f64), (dx, area.2 as f64 - a.x as f64),
+                   (-dy, a.y as f64 - area.1 as f64), (dy, area.3 as f64 - a.y as f64)] {
+        if p == 0.0 {
+            if q < 0.0 { return None; }
+            continue;
+        }
+        let r = q / p;
+        if p < 0.0 { t0 = t0.max(r) } else { t1 = t1.min(r) }
+        if t0 > t1 { return None; }
+    }
+    Some((t0 as f32, t1 as f32))
+}
+
+fn lerp(a: &PenSample, b: &PenSample, t: f32) -> PenSample {
+    let l = |u: f32, v: f32| u + (v - u) * t;
+    PenSample {
+        x: l(a.x, b.x), y: l(a.y, b.y), pressure: l(a.pressure, b.pressure),
+        tilt: (l(a.tilt.0, b.tilt.0), l(a.tilt.1, b.tilt.1)),
+        time: a.time + (b.time - a.time) * t as f64,
+    }
+}
+
+fn merge(acc: &mut Option<Rect>, r: Option<Rect>) {
+    let Some(r) = r else { return };
+    *acc = Some(match *acc {
+        None => r,
+        Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
+    });
 }
 
 /// Straight 8-bit RGBA -> premultiplied fix15.
@@ -298,10 +464,10 @@ mod tests {
         S::new(W, H, rgba)
     }
 
-    fn stroke(e: &mut MyPaintEngine, s: &mut S) {
+    fn stroke(e: &mut Forge, s: &mut S) {
         e.begin_stroke();
         for i in 0..=60 {
-            e.stroke_to(s, crate::PenSample::new(30.0 + i as f32 * 3.0, 64.0, 1.0, i as f64 * 0.008));
+            e.stroke_to(s, PenSample::new(30.0 + i as f32 * 3.0, 64.0, 1.0, i as f64 * 0.008));
         }
         e.end_stroke(s);
     }
@@ -310,7 +476,7 @@ mod tests {
     fn fix15_reciprocal_is_exact() {
         for a in 1..=ONE {
             for k in 0..24u32 {
-                let v = ((k * 2_654_435_761u32.wrapping_mul(a)) >> 5) % (ONE + 1);
+                let v = (k.wrapping_mul(2_654_435_761u32.wrapping_mul(a)) >> 5) % (ONE + 1);
                 let want = ((v * 255 + a / 2) / a).min(255) as u8;
                 let a8 = ((a * 255 + ONE / 2) / ONE) as u8;
                 let got = from_fix15([v as u16, a as u16, 0, a as u16]);
@@ -340,8 +506,8 @@ mod tests {
             "opaque_multiply": {"base_value": 1.0, "inputs": {}},
             "dabs_per_actual_radius": {"base_value": 4.0, "inputs": {}}
         }}"#;
-        let preset = hokusai::myb::from_str(json).expect("parse");
-        let mut e = MyPaintEngine::new(preset.clone());
+        let preset = crate::forge::myb::from_str(json).expect("parse");
+        let mut e = Forge::new(preset.clone());
         let mut b = Brush::new();
         b.radius = 6.0;
         e.sync_from(&b);
@@ -353,7 +519,7 @@ mod tests {
         // Same brush as an eraser, on the painted layer: back to transparent.
         let mut eraser = preset;
         eraser.get_mut(BrushSetting::Eraser).base_value = 1.0;
-        let mut e = MyPaintEngine::new(eraser);
+        let mut e = Forge::new(eraser);
         e.sync_from(&b);
         s.base.copy_from_slice(&s.pixels);
         stroke(&mut e, &mut s);
@@ -370,13 +536,13 @@ mod tests {
             "opaque": {"base_value": 1.0, "inputs": {}},
             "dabs_per_actual_radius": {"base_value": 2.0, "inputs": {}}
         }}"#;
-        let mut e = MyPaintEngine::new(hokusai::myb::from_str(json).expect("parse"));
+        let mut e = Forge::new(crate::forge::myb::from_str(json).expect("parse"));
         e.sync_from(&Brush::new());
         let mut s = surface([255, 255, 255, 255]);
         e.begin_stroke();
-        e.stroke_to(&mut s, crate::PenSample::new(100.0, 64.0, 1.0, 0.0));
-        e.stroke_to(&mut s, crate::PenSample::new(200_000.0, -150_000.0, 1.0, 0.01));
-        e.stroke_to(&mut s, crate::PenSample::new(-90_000.0, 300_000.0, 1.0, 0.02));
+        e.stroke_to(&mut s, PenSample::new(100.0, 64.0, 1.0, 0.0));
+        e.stroke_to(&mut s, PenSample::new(200_000.0, -150_000.0, 1.0, 0.01));
+        e.stroke_to(&mut s, PenSample::new(-90_000.0, 300_000.0, 1.0, 0.02));
         let canvas_tiles = (W.div_ceil(TS as u32) * H.div_ceil(TS as u32)) as usize;
         assert!(e.tiles.len() <= canvas_tiles, "{} tiles kept", e.tiles.len());
         e.end_stroke(&mut s);

@@ -14,7 +14,7 @@ fn main() {
     let t = std::time::Instant::now();
     for (k, p) in presets.iter().enumerate() {
         let mode = if std::env::var("DETAIL").is_ok() { Mode::Detail } else { Mode::List };
-        let px = stroke_preview::render(&p.engine, &p.settings, Shape::S, mode, w, h, 2.0);
+        let px = stroke_preview::render(&p.brush, &p.settings, Shape::S, mode, w, h, 2.0);
         let (ox, oy) = ((k as u32 % cols) * (w + 6), (k as u32 / cols) * (h + 6));
         for y in 0..h {
             for x in 0..w {

@@ -1,7 +1,7 @@
 //! Per-stroke mutable state. Mirrors libmypaint's `MyPaintBrush` runtime
 //! fields so the stroke engine port can be a near-line-for-line translation.
 
-use crate::rng::BrushRng;
+use crate::forge::rng::BrushRng;
 
 #[derive(Debug, Clone)]
 pub struct BrushState {
@@ -109,7 +109,7 @@ pub struct BrushState {
     /// read the *previous* evaluation (`STATE.DABS_PER_*`, the gridmap
     /// scale states), and `brush_reset` deliberately does NOT clear this
     /// (it lives outside `states[]`).
-    pub prev_settings: crate::evaluator::SettingValues,
+    pub prev_settings: crate::forge::evaluator::SettingValues,
 
     // Distance accumulated since last dab (so dab count is fractional-stable).
     pub dist_past_dab: f32,
@@ -206,7 +206,7 @@ impl BrushState {
             dabs_per_second: 0.0,
             actual_elliptical_ratio: 0.0,
             actual_elliptical_angle: 0.0,
-            prev_settings: crate::evaluator::SettingValues::new(),
+            prev_settings: crate::forge::evaluator::SettingValues::new(),
             dist_past_dab: 0.0,
             last_dab_x: 0.0,
             last_dab_y: 0.0,

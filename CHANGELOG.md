@@ -3,6 +3,30 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.7.0 — 2026-10-19
+
+**Forge, one brush engine**
+- AuraStudio's brush engine is now **Forge** (`aurastudio-brush/src/forge`):
+  hokusai's port of libmypaint, moved into the project, becomes the one
+  engine, and AuraStudio's own engine (dab engine) is gone. Its model,
+  libmypaint's ~60 settings with their pen inputs and curves, is the one
+  every brush format is read into; `.myb` files are now only a reader.
+- Krita's ways added to it:
+  - curve modes per setting: MyPaint's (base + curves) or Krita's (base ×
+    curves, combined by product, sum, max, min or difference);
+  - wash painting (Krita's indirect painting, with the blend mode) next
+    to MyPaint's build-up;
+  - Krita's auto spacing; a dab where the pen lands and where it lifts.
+- The round brushes (Round pen, Soft round, Round eraser) are Forge
+  brushes made the Krita way: opacity × pressure, by multiplying curves.
+  They paint as before (a few pixels differ by 1/255).
+- The 56 MyPaint brushes paint exactly as before (reference renders).
+- Clipping of the path to the canvas moved from the paint thread into
+  Forge (the stroke previews get it too); the first sample of a stroke is
+  no longer fed twice.
+- A per-dab environment check left in release builds (trace of the
+  inputs) now runs in debug builds only.
+
 ## 0.6.4 — 2026-10-19
 
 **Brush engine, step 1 of the fusion**

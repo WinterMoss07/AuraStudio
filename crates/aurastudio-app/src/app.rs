@@ -762,7 +762,7 @@ impl App {
         }
         let mut brush = self.brush.clone();
         brush.erase = false;
-        self.paint.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, engine: self.library.presets[self.preset].engine.clone() });
+        self.paint.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, forge: self.library.presets[self.preset].brush.clone() });
         let mut time = self.start.elapsed().as_secs_f64();
         let mut last = path[0];
         for (x, y) in path {
@@ -996,7 +996,7 @@ impl App {
         self.paint.send(Cmd::Begin {
             doc:       Arc::clone(&self.doc),
             brush,
-            engine:    self.library.presets[self.preset].engine.clone(),
+            forge:     self.library.presets[self.preset].brush.clone(),
         });
     }
 

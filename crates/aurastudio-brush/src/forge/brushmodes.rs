@@ -12,10 +12,10 @@
 
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
-use crate::color::RgbaF32;
-use crate::fix15::{self, FIX15_ONE};
-use crate::surface::{Dab, TiledSurface};
-use crate::tile::{TilePixels, TILE_SIZE};
+use crate::forge::color::RgbaF32;
+use crate::forge::fix15::{self, FIX15_ONE};
+use crate::forge::surface::{Dab, TiledSurface};
+use crate::forge::tile::{TilePixels, TILE_SIZE};
 
 /// Two-segment hardness falloff matching libmypaint's `calculate_opa`.
 ///
@@ -461,7 +461,7 @@ fn blend_lock_alpha_paint(
     src_b: u32,
     opacity: u32,
 ) {
-    use crate::spectral::{fastlog2_all, rgb_to_spectral, spectral_to_rgb, wgm_mix};
+    use crate::forge::spectral::{fastlog2_all, rgb_to_spectral, spectral_to_rgb, wgm_mix};
     const ONE: u32 = FIX15_ONE;
     let opacity = opacity.max(150);
     let spec_a = rgb_to_spectral(
@@ -625,7 +625,7 @@ fn blend_normal_paint(
     src_b: u32,
     opacity: u32,
 ) {
-    use crate::spectral::{fastlog2_all, rgb_to_spectral, spectral_to_rgb, wgm_mix};
+    use crate::forge::spectral::{fastlog2_all, rgb_to_spectral, spectral_to_rgb, wgm_mix};
     const ONE: u32 = FIX15_ONE;
     // "pigment-mode does not like very low opacity" — brushmodes.c:87.
     let opacity = opacity.max(150);
@@ -679,7 +679,7 @@ fn blend_normal_and_eraser_paint(
     color_a: u32,
     opacity: u32,
 ) {
-    use crate::spectral::{fastlog2_all, rgb_to_spectral, spectral_blend_factor, spectral_to_rgb, wgm_mix};
+    use crate::forge::spectral::{fastlog2_all, rgb_to_spectral, spectral_blend_factor, spectral_to_rgb, wgm_mix};
     const ONE: u32 = FIX15_ONE;
     let spec_a = rgb_to_spectral(
         src_r as f32 / ONE as f32,
@@ -997,7 +997,7 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
     radius: f32,
     paint: f32,
 ) -> RgbaF32 {
-    use crate::spectral::{fastpow, rgb_to_spectral, spectral_to_rgb};
+    use crate::forge::spectral::{fastpow, rgb_to_spectral, spectral_to_rgb};
 
     let radius = if radius < 1.0 { 1.0 } else { radius };
     let r_fringe = radius + 1.0;
@@ -1120,10 +1120,10 @@ mod tests {
         // mask-weighted average should be ≈ (1, 0, 0, 1).
         let sample = |_px: i32, _py: i32| {
             [
-                crate::fix15::FIX15_ONE as u16,
+                crate::forge::fix15::FIX15_ONE as u16,
                 0,
                 0,
-                crate::fix15::FIX15_ONE as u16,
+                crate::forge::fix15::FIX15_ONE as u16,
             ]
         };
         let c = get_color_via_sample(2.0, 2.0, 1.0, sample);

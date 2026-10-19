@@ -1,6 +1,6 @@
 //! Per-setting input → value mapping (piecewise-linear, matches libmypaint).
 
-use crate::input::BrushInput;
+use crate::forge::input::BrushInput;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InputMapping {
@@ -61,10 +61,47 @@ impl InputMapping {
     }
 }
 
+/// How a setting's input curves combine with its base value.
+///
+/// - `MyPaint`: `base + Σ curve(input)`, each curve an offset (.myb files).
+/// - The others are Krita's: each curve gives a factor (usually 0..1) and
+///   the setting is `base × combined factors`; for a logarithmic setting
+///   (radius...) that is `base + ln(factor)`. One curve: its factor. More:
+///   their product (Krita's default), sum, max, min, or max − min.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Combine {
+    #[default]
+    MyPaint,
+    Multiply,
+    Sum,
+    Max,
+    Min,
+    Difference,
+}
+
+impl Combine {
+    /// The factors of a setting's curves combined (Krita modes).
+    pub fn factor(self, factors: impl Iterator<Item = f32>) -> f32 {
+        let mut it = factors.peekable();
+        let Some(&first) = it.peek() else { return 1.0 };
+        match self {
+            Self::MyPaint | Self::Multiply => it.product(),
+            Self::Sum => it.sum(),
+            Self::Max => it.fold(first, f32::max),
+            Self::Min => it.fold(first, f32::min),
+            Self::Difference => {
+                let (lo, hi) = it.fold((first, first), |(lo, hi), v| (lo.min(v), hi.max(v)));
+                hi - lo
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SettingValue {
     pub base_value: f32,
     pub inputs: Vec<InputMapping>,
+    pub combine: Combine,
     /// Input mappings on this setting whose input name hokusai doesn't
     /// know about. Kept verbatim so a `.myb` parse + serialize cycle
     /// stays lossless even for brush packs that use inputs hokusai
@@ -78,6 +115,7 @@ impl SettingValue {
         Self {
             base_value: v,
             inputs: Vec::new(),
+            combine: Combine::MyPaint,
             unknown_inputs: std::collections::BTreeMap::new(),
         }
     }

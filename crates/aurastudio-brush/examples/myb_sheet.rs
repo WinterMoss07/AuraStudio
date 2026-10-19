@@ -1,8 +1,8 @@
-// Renders a sample sheet of MyPaint brushes through MyPaintEngine (the
+// Renders a sample sheet of MyPaint brushes through Forge (the
 // exact path the app uses), one row per brush, pressure rising left to
 // right, on a white layer. Checks .myb support by eye.
 // Usage: cargo run --release -p aurastudio-brush --example myb_sheet -- out.png a.myb b.myb ...
-use aurastudio_brush::{parse_myb, Brush, MyPaintEngine};
+use aurastudio_brush::{parse_myb, Brush, Forge};
 
 use aurastudio_canvas::FlatSurface as S;
 
@@ -16,8 +16,8 @@ fn main() {
     for (k, f) in files.iter().enumerate() {
         let json = std::fs::read_to_string(f).unwrap();
         let preset = match parse_myb(&json) { Ok(b) => b, Err(e) => { eprintln!("{f}: {e:?}"); continue } };
-        let size = MyPaintEngine::native_size(&preset);
-        let mut e = MyPaintEngine::new(preset);
+        let size = Forge::native_size(&preset);
+        let mut e = Forge::new(preset);
         let mut b = Brush::new();
         b.color = [40, 60, 120];
         b.radius = (size as f32 / 2.0).clamp(2.0, 30.0);

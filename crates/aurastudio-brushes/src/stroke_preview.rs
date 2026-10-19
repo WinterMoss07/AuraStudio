@@ -1,6 +1,5 @@
-//! Stroke previews: a stroke painted by the brush's own engine (DabEngine
-//! or MyPaint) with its current settings, as the Tools and Tool options
-//! dockers show it.
+//! Stroke previews: a stroke painted by Forge with the brush's current
+//! settings, as the Tools and Tool options dockers show it.
 //!
 //! - `Mode::List` (the Tools docker): the stroke alone, light, on nothing
 //!   (the UI shows through). Erasers and blenders are drawn as if they
@@ -15,10 +14,8 @@
 //! for big ones); the path stays the same whatever the size. Geometry
 //! tools draw their shape, 1 to 10 px thick whatever the brush size.
 
-use aurastudio_brush::{Brush, MyPaintEngine, PenSample};
+use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_canvas::FlatSurface;
-
-use crate::Engine;
 
 /// Stroke color: light, for the dark UI.
 pub const INK: [u8; 3] = [236, 236, 240];
@@ -56,7 +53,7 @@ pub fn shown_radius(r: f32, h: u32, scale: f32) -> f32 {
 
 /// Paint the preview: `w` × `h` straight RGBA (transparent where nothing
 /// is). `settings.erase`: the Eraser tool.
-pub fn render(engine: &Engine, settings: &Brush, shape: Shape, mode: Mode, w: u32, h: u32, scale: f32) -> Vec<u8> {
+pub fn render(brush: &ForgeBrush, settings: &Brush, shape: Shape, mode: Mode, w: u32, h: u32, scale: f32) -> Vec<u8> {
     let mut b = settings.clone();
     b.color = INK;
     b.radius = match shape {
@@ -64,26 +61,25 @@ pub fn render(engine: &Engine, settings: &Brush, shape: Shape, mode: Mode, w: u3
         _ => shape_thickness(settings.radius * 2.0) * scale / 2.0,
     };
     let mut blank = FlatSurface::new(w, h, [255, 255, 255, 0]);
-    let engine = match (mode, engine) {
+    let brush = match mode {
         // The list shows the stroke's shape: everything paints.
-        (Mode::List, Engine::MyPaint(p)) => {
+        Mode::List => {
             b.erase = false;
-            Engine::MyPaint(std::sync::Arc::new(MyPaintEngine::painting_only(p)))
+            Forge::painting_only(brush)
         }
-        (Mode::List, e) => { b.erase = false; e.clone() }
-        (Mode::Detail, e) => {
+        Mode::Detail => {
             paper(&mut blank);
-            e.clone()
+            brush.clone()
         }
     };
 
     // Brushes whose dynamics grow the dab well past its radius (pressure,
     // random offsets) would spill out of the strip: smaller until it fits.
-    let mut out = stroke(&engine, &b, shape, &blank);
+    let mut out = stroke(&brush, &b, shape, &blank);
     for _ in 0..3 {
         if fits(&out, &blank.pixels, w, h) || b.radius <= 0.5 { break; }
         b.radius = (b.radius * 0.6).max(0.5);
-        let smaller = stroke(&engine, &b, shape, &blank);
+        let smaller = stroke(&brush, &b, shape, &blank);
         // Too small to paint anything (dynamics): keep the last one.
         if smaller == blank.pixels { break; }
         out = smaller;
@@ -91,14 +87,14 @@ pub fn render(engine: &Engine, settings: &Brush, shape: Shape, mode: Mode, w: u3
     out
 }
 
-fn stroke(engine: &Engine, b: &Brush, shape: Shape, blank: &FlatSurface) -> Vec<u8> {
+fn stroke(brush: &ForgeBrush, b: &Brush, shape: Shape, blank: &FlatSurface) -> Vec<u8> {
     let (w, h) = (blank.width, blank.height);
     let mut s = FlatSurface::new(w, h, [0; 4]);
     s.pixels.copy_from_slice(&blank.pixels);
     s.next_stroke();
     let path = path(shape, w, h);
-    MyPaintEngine::reset_random();
-    let mut e = engine.start();
+    Forge::reset_random();
+    let mut e = Forge::new(brush.clone());
     e.sync_from(b);
     e.proportional_spacing();
     e.begin_stroke();
@@ -187,7 +183,7 @@ mod tests {
         b.hardness = 1.0;
         let sizes: Vec<usize> = [0.5, 3.0, 10.0, 50.0, 300.0, 1000.0].iter().map(|&r| {
             b.radius = r;
-            coverage(&render(&Engine::Native, &b, Shape::S, Mode::List, 240, 64, 1.0))
+            coverage(&render(&ForgeBrush::round(), &b, Shape::S, Mode::List, 240, 64, 1.0))
         }).collect();
         assert!(sizes.windows(2).all(|w| w[0] < w[1]), "{sizes:?}");
         assert!(shown_radius(1000.0, 64, 1.0) <= 64.0 * MAX_RADIUS + 0.01);
@@ -196,9 +192,9 @@ mod tests {
         // Soft: lighter edges, so less full coverage.
         b.radius = 300.0;
         let full = |px: &[u8]| px.chunks(4).filter(|p| p[3] > 250).count();
-        let hard = full(&render(&Engine::Native, &b, Shape::S, Mode::List, 240, 64, 1.0));
+        let hard = full(&render(&ForgeBrush::round(), &b, Shape::S, Mode::List, 240, 64, 1.0));
         b.hardness = 0.0;
-        let soft = full(&render(&Engine::Native, &b, Shape::S, Mode::List, 240, 64, 1.0));
+        let soft = full(&render(&ForgeBrush::round(), &b, Shape::S, Mode::List, 240, 64, 1.0));
         assert!(soft < hard / 2, "hard {hard} soft {soft}");
     }
 
@@ -208,9 +204,9 @@ mod tests {
         let mut detail_blank = FlatSurface::new(160, 48, [255, 255, 255, 0]);
         paper(&mut detail_blank);
         for p in &lib.presets {
-            let list = render(&p.engine, &p.settings, Shape::S, Mode::List, 160, 48, 1.0);
+            let list = render(&p.brush, &p.settings, Shape::S, Mode::List, 160, 48, 1.0);
             assert!(coverage(&list) > 20, "{} / {}: empty list preview", p.medium, p.name);
-            let detail = render(&p.engine, &p.settings, Shape::S, Mode::Detail, 160, 48, 1.0);
+            let detail = render(&p.brush, &p.settings, Shape::S, Mode::Detail, 160, 48, 1.0);
             assert!(detail != detail_blank.pixels, "{} / {}: empty detail preview", p.medium, p.name);
         }
     }
@@ -222,7 +218,7 @@ mod tests {
         assert!(shape_thickness(100.0) < shape_thickness(500.0));
         let cov = |d: f32, shape| {
             let b = Brush { radius: d / 2.0, ..Brush::new() };
-            coverage(&render(&Engine::Native, &b, shape, Mode::List, 200, 56, 1.0))
+            coverage(&render(&ForgeBrush::round(), &b, shape, Mode::List, 200, 56, 1.0))
         };
         for shape in [Shape::Line, Shape::Rectangle, Shape::Ellipse, Shape::Arc] {
             assert!(cov(10.0, shape) < cov(100.0, shape) && cov(100.0, shape) < cov(1000.0, shape), "{shape:?}");
@@ -234,7 +230,7 @@ mod tests {
         let mut b = Brush::new();
         b.radius = 8.0;
         b.erase = true;
-        let px = render(&Engine::Native, &b, Shape::S, Mode::Detail, 200, 60, 1.0);
+        let px = render(&ForgeBrush::round(), &b, Shape::S, Mode::Detail, 200, 60, 1.0);
         let holes = px.chunks(4).enumerate().filter(|(i, p)| (*i as u32 % 200) < 100 && p[3] < 128).count();
         let painted_right = px.chunks(4).enumerate().filter(|(i, p)| (*i as u32 % 200) >= 100 && p[3] > 0).count();
         assert!(holes > 200 && painted_right == 0, "holes {holes}, right {painted_right}");
