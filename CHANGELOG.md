@@ -3,6 +3,26 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.6.1 — 2026-10-19
+
+- Stroke preview trembling while the size changed: the dabs were spaced
+  by the automatic spacing (√size), so each size moved them along the
+  stroke (rings at its tapered ends shifting). Previews now space dabs in
+  proportion to the size: the stroke scales smoothly. MyPaint previews
+  restart their random sequences each time (same settings, same picture).
+- MyPaint brushes showed "Opacity 0 %" (Digital brush...): their own
+  opacity is 0 and comes from pen pressure. The Opacity slider is now a
+  multiplier of the brush's own opacity: 100 % is the brush as made.
+- Mouse click debounce: 20 ms instead of 50 (old mice bounce for 15-20
+  ms), set in View > Mouse click debounce (Off to 80 ms). A release
+  shorter than 150 ms that got through is logged ("mouse button up for
+  N ms only"): a slider letting go then jumping back under the cursor
+  is that, a bounce longer than the debounce.
+- Saving and autosaving hold the document (the interface waits) only to
+  copy the layers; compressing them is done by the save thread.
+- Frames over 100 ms and the interface waiting for the document over
+  100 ms are logged ("slow frame", "UI waited").
+
 ## 0.6.0 — 2026-10-19
 
 **New**

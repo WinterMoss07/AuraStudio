@@ -104,8 +104,10 @@ fn blend_from(name: &str) -> BlendMode {
 /// on another thread while painting goes on.
 pub struct Snapshot {
     json:     DocJson,
-    /// (layer id, its tiles: see `pack_tiles`)
-    layers:   Vec<(u64, Vec<u8>)>,
+    /// (layer id, a copy of its tiles). Compressed (`pack_tiles`) when
+    /// written, not while the document is locked: the interface waits for
+    /// that lock.
+    layers:   Vec<(u64, Tiles)>,
     undo:     Vec<Vec<u8>>,
     redo:     Vec<Vec<u8>>,
     /// Merged image, small: (width, height, RGBA).
@@ -117,10 +119,10 @@ pub struct Snapshot {
 /// Take a snapshot of `doc`. `origin`: for autosaves, the file the work
 /// belongs to.
 pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
-    fn walk(nodes: &[Node], blobs: &mut Vec<(u64, Vec<u8>)>) -> Vec<NodeJson> {
+    fn walk(nodes: &[Node], blobs: &mut Vec<(u64, Tiles)>) -> Vec<NodeJson> {
         nodes.iter().map(|n| match n {
             Node::Layer(l) => {
-                blobs.push((l.id, pack_tiles(&l.tiles)));
+                blobs.push((l.id, l.tiles.clone()));
                 NodeJson::Layer {
                     id: l.id, name: l.name.clone(), visible: l.visible, opacity: l.opacity,
                     blend: l.blend.name().into(), locked: l.locked, background: l.background,
@@ -181,9 +183,9 @@ pub fn write<W: Write + Seek>(snap: &Snapshot, out: W) -> io::Result<()> {
         zip.start_file("preview.png", stored).map_err(err)?;
         zip.write_all(&png)?;
     }
-    for (id, data) in &snap.layers {
+    for (id, tiles) in &snap.layers {
         zip.start_file(format!("layers/{id}.tiles"), stored).map_err(err)?;
-        zip.write_all(data)?;
+        zip.write_all(&pack_tiles(tiles))?;
     }
     for (kind, steps) in [("undo", &snap.undo), ("redo", &snap.redo)] {
         for (i, data) in steps.iter().enumerate() {
@@ -469,6 +471,28 @@ mod tests {
         assert!(doc.layers.set_layer_rect(id, rect, &rgba.repeat(n)));
         doc.commit_stroke(id, rect);
         doc.layers.end_stroke();
+    }
+
+    /// How long a snapshot holds the document: an A4 page at 300 dpi
+    /// with two fully painted layers. The interface waits that long.
+    #[test]
+    #[ignore]
+    fn snapshot_time_on_a4() {
+        let (w, h) = (2480, 3508);
+        let mut doc = Document::new(DocId(1), "a4", w, h);
+        let mut noise = 1u32;
+        for _ in 0..2 {
+            let id = doc.layers.add_layer("Paint");
+            assert!(doc.layers.begin_stroke(id));
+            doc.layers.layer_surface(id).unwrap().prepare((0, 0, w, h));
+            let px: Vec<u8> = (0..w * h * 4).map(|_| { noise = noise.wrapping_mul(1664525).wrapping_add(1013904223); (noise >> 24) as u8 | 1 }).collect();
+            assert!(doc.layers.set_layer_rect(id, (0, 0, w, h), &px));
+            doc.commit_stroke(id, (0, 0, w, h));
+            doc.layers.end_stroke();
+        }
+        let t = std::time::Instant::now();
+        let snap = snapshot(&doc, None);
+        println!("snapshot: {:.0} ms ({} layers)", t.elapsed().as_secs_f64() * 1000.0, snap.layers.len());
     }
 
     fn sample_doc() -> (Document, u64, u64) {

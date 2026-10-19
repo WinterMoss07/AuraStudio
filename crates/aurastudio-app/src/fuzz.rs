@@ -204,7 +204,7 @@ fn fuzz() {
     let mut tool_memory = aurastudio_ui::ToolMemory::default();
     let mut fill = FillParams::default();
     let mut shape = ShapeOptions::default();
-    let (mut hidpi_scaling, mut ui_scale) = (true, 1.0f32);
+    let (mut hidpi_scaling, mut ui_scale, mut debounce_ms) = (true, 1.0f32, 20u32);
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
     let t0 = Instant::now();
@@ -255,6 +255,7 @@ fn fuzz() {
                         to_points: &to_points,
                         hidpi_scaling: &mut hidpi_scaling,
                         ui_scale: &mut ui_scale,
+                        debounce_ms: &mut debounce_ms,
                     };
                     aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
                 });

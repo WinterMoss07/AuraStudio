@@ -84,10 +84,12 @@ struct Settings {
     /// physical screen pixel).
     hidpi_scaling: bool,
     ui_scale:    f32,
+    /// Mouse click debounce, ms (0: off).
+    debounce_ms: u32,
 }
 
 impl Default for Settings {
-    fn default() -> Self { Self { hidpi_scaling: true, ui_scale: 1.0 } }
+    fn default() -> Self { Self { hidpi_scaling: true, ui_scale: 1.0, debounce_ms: crate::debounce::DEFAULT_MS } }
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -101,6 +103,7 @@ fn load_settings() -> Settings {
         match line.split_once('=') {
             Some(("hidpi_image_scaling", v)) => s.hidpi_scaling = v.trim() != "false",
             Some(("ui_scale", v)) => if let Ok(v) = v.trim().parse::<f32>() { s.ui_scale = v.clamp(0.5, 2.0) },
+            Some(("click_debounce_ms", v)) => if let Ok(v) = v.trim().parse::<u32>() { s.debounce_ms = v.min(200) },
             _ => {}
         }
     }
@@ -110,7 +113,7 @@ fn load_settings() -> Settings {
 fn save_settings(s: Settings) {
     let Some(path) = settings_path() else { return };
     if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
-    let text = format!("hidpi_image_scaling={}\nui_scale={}\n", s.hidpi_scaling, s.ui_scale);
+    let text = format!("hidpi_image_scaling={}\nui_scale={}\nclick_debounce_ms={}\n", s.hidpi_scaling, s.ui_scale, s.debounce_ms);
     if let Err(e) = std::fs::write(&path, text) { log::warn!("settings: {e}"); }
 }
 
@@ -298,6 +301,8 @@ pub struct App {
     frame_interval: Duration,
     /// A frame wanted before `frame_interval` was over: drawn at this time.
     deferred_frame: Option<Instant>,
+    /// Since when the UI couldn't run (document held by the paint thread).
+    ui_blocked_since: Option<Instant>,
     /// A frame is needed. The actual window redraw request is made in
     /// about_to_wait: winit drops requests made while handling a redraw.
     redraw_wanted: bool,
@@ -398,6 +403,7 @@ impl App {
             last_frame:   None,
             frame_interval: Duration::from_micros(16_667),
             deferred_frame: None,
+            ui_blocked_since: None,
             redraw_wanted: false,
             ui_dirty:     true,
             ui_saw_canvas: false,
@@ -603,6 +609,7 @@ impl App {
         let Some(gpu) = &mut self.gpu else { return };
         gpu.set_pixel_exact(!self.settings.hidpi_scaling);
         gpu.set_ui_scale(self.settings.ui_scale);
+        self.debounce.window = Duration::from_millis(self.settings.debounce_ms as u64);
         self.update_cursor();
         self.request_redraw();
     }
@@ -1116,6 +1123,7 @@ impl App {
         let settings_before = self.settings;
         let mut hidpi_scaling = self.settings.hidpi_scaling;
         let mut ui_scale = self.settings.ui_scale;
+        let mut debounce_ms = self.settings.debounce_ms;
         let (cm_before, perceptual_before) = (self.color_managed, self.perceptual);
         let color_managed = &mut self.color_managed;
         let perceptual = &mut self.perceptual;
@@ -1170,6 +1178,7 @@ impl App {
                 to_points: &to_points,
                 hidpi_scaling: &mut hidpi_scaling,
                 ui_scale: &mut ui_scale,
+                debounce_ms: &mut debounce_ms,
                 can_undo,
                 can_redo,
                 view_zoom,
@@ -1208,6 +1217,22 @@ impl App {
             self.frame_stats.add(t0.elapsed());
         }
         self.activity.main_time += t0.elapsed();
+        // A frame this long is a visible hitch (a slider stops following
+        // the cursor): say so, with whether the UI ran.
+        if t0.elapsed() > Duration::from_millis(100) {
+            log::warn!("slow frame: {:.0} ms (UI {})", t0.elapsed().as_secs_f64() * 1000.0, if run_ui { "run" } else { "cached" });
+        }
+        // The UI waits while the paint thread holds the document: how long.
+        match (doc_busy, self.ui_blocked_since) {
+            (true, None) => self.ui_blocked_since = Some(t0),
+            (false, Some(t)) if run_ui => {
+                self.ui_blocked_since = None;
+                if t.elapsed() > Duration::from_millis(100) {
+                    log::warn!("UI waited {:.0} ms for the document (paint thread busy)", t.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            _ => {}
+        }
         self.last_frame = Some(Instant::now());
         // egui's cursor wish over its widgets is known now.
         self.apply_cursor();
@@ -1218,6 +1243,7 @@ impl App {
         if preset != preset_before { self.select_preset(preset); }
         self.settings.hidpi_scaling = hidpi_scaling;
         self.settings.ui_scale = ui_scale;
+        self.settings.debounce_ms = debounce_ms;
         if self.settings != settings_before {
             self.apply_settings();
             save_settings(self.settings);
@@ -1775,6 +1801,13 @@ impl ApplicationHandler<AppEvent> for App {
         events.extend(self.debounce.event(event, kind, Instant::now()));
         if self.debounce.bounces != before {
             log::info!("mouse button bounce ignored ({} so far)", self.debounce.bounces);
+        } else if kind == DebounceKind::LeftPress {
+            // A release this short that went through: likely a bounce longer
+            // than the debounce (or a very fast double click). Logged, to
+            // tune the setting.
+            if let Some(gap) = self.debounce.last_gap.filter(|g| *g < Duration::from_millis(150)) {
+                log::info!("mouse button up for {} ms only (debounce {} ms)", gap.as_millis(), self.debounce.window.as_millis());
+            }
         }
         for e in events { self.handle_event(e); }
     }

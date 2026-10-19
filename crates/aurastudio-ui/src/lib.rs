@@ -78,6 +78,8 @@ pub struct Model<'a> {
     /// (1.0 = the system's scaling).
     pub hidpi_scaling:      &'a mut bool,
     pub ui_scale:           &'a mut f32,
+    /// Mouse click debounce in ms (View menu; 0: off).
+    pub debounce_ms:        &'a mut u32,
 }
 
 /// Interface sizes offered in the View menu.

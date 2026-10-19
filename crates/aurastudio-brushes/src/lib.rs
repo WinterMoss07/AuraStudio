@@ -102,10 +102,12 @@ impl Preset {
     /// A preset from a parsed .myb brush, with the size / opacity /
     /// hardness it was made with.
     fn mypaint(name: String, group: String, author: String, brush: MyPaintBrush, preview: Option<Cow<'static, [u8]>>, source: Source) -> Self {
-        let (size, opacity) = MyPaintEngine::native_size_and_opacity(&brush);
+        let size = MyPaintEngine::native_size(&brush);
         let mut settings = Brush::new();
         settings.radius = (size as f32 / 2.0).max(0.5);
-        settings.opacity = opacity;
+        // The Opacity slider multiplies the brush's own opacity: 100 %,
+        // the brush as made.
+        settings.opacity = 1.0;
         settings.hardness = MyPaintEngine::native_hardness(&brush);
         Self { name, group, author, engine: Engine::MyPaint(Arc::new(brush)), settings, preview, source }
     }

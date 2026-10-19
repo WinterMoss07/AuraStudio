@@ -16,12 +16,11 @@ fn main() {
     for (k, f) in files.iter().enumerate() {
         let json = std::fs::read_to_string(f).unwrap();
         let preset = match parse_myb(&json) { Ok(b) => b, Err(e) => { eprintln!("{f}: {e:?}"); continue } };
-        let (size, opacity) = MyPaintEngine::native_size_and_opacity(&preset);
+        let size = MyPaintEngine::native_size(&preset);
         let mut e = MyPaintEngine::new(preset);
         let mut b = Brush::new();
         b.color = [40, 60, 120];
         b.radius = (size as f32 / 2.0).clamp(2.0, 30.0);
-        b.opacity = opacity;
         e.sync_from(&b);
         s.base.copy_from_slice(&s.pixels);
         e.begin_stroke();
@@ -33,7 +32,7 @@ fn main() {
             e.stroke_to(&mut s, x, y, 0.15 + 0.85 * t, i as f64 * 0.006);
         }
         e.end_stroke(&mut s);
-        println!("{f}: native size {size}px opacity {opacity:.2}");
+        println!("{f}: native size {size}px");
     }
     let file = std::fs::File::create(out).unwrap();
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);

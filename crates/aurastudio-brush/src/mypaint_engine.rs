@@ -48,21 +48,31 @@ pub struct MyPaintEngine {
     reach: f32,
     /// The preset's own eraser setting (the Eraser tool turns it fully on).
     preset_eraser: f32,
+    /// The Opacity slider: multiplies every dab's opacity. The brush's own
+    /// opacity and its pressure curve stay as the .myb file made them
+    /// (many start at 0 and get everything from pressure).
+    opacity: f32,
 }
 
 impl MyPaintEngine {
     pub fn new(brush: hokusai::Brush) -> Self {
         let preset_eraser = brush.get(BrushSetting::Eraser).base_value;
         Self { brush, preset_eraser, state: BrushState::default(), tiles: HashMap::new(),
-            scratch: Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]), last_time: None, reach: 64.0 }
+            scratch: Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]), last_time: None, reach: 64.0, opacity: 1.0 }
     }
 
-    /// Size (diameter, px) and opacity the .myb file was made with, to show
-    /// them in the UI when the preset is selected.
-    pub fn native_size_and_opacity(brush: &hokusai::Brush) -> (u32, f32) {
+    /// Size (diameter, px) the .myb file was made with, to show it in the
+    /// UI when the preset is selected.
+    pub fn native_size(brush: &hokusai::Brush) -> u32 {
         let r = brush.get(BrushSetting::Radius).base_value.exp();
-        let d = (r * 2.0).round().clamp(1.0, 1000.0) as u32;
-        (d, brush.get(BrushSetting::Opaque).base_value.clamp(0.0, 1.0))
+        (r * 2.0).round().clamp(1.0, 1000.0) as u32
+    }
+
+    /// Start a stroke's random sequences afresh (smudge color sampling):
+    /// the same stroke then paints the same pixels (stroke previews don't
+    /// shimmer from one repaint to the next).
+    pub fn reset_random() {
+        hokusai::brushmodes::reset_get_color_rng();
     }
 
     /// The brush works on paint already there (eraser, smudge, colorize,
@@ -97,7 +107,7 @@ impl MyPaintEngine {
         self.brush.get_mut(BrushSetting::ColorV).base_value = hsv.v;
         let radius = b.radius.max(0.5);
         self.brush.get_mut(BrushSetting::Radius).base_value = radius.ln();
-        self.brush.get_mut(BrushSetting::Opaque).base_value = b.opacity.clamp(0.0, 1.0);
+        self.opacity = b.opacity.clamp(0.0, 1.0);
         self.brush.get_mut(BrushSetting::Hardness).base_value = b.hardness.clamp(0.0, 1.0);
         self.brush.get_mut(BrushSetting::Eraser).base_value = if b.erase { 1.0 } else { self.preset_eraser };
         // Dynamics can grow the dab (pressure, random...), smudge reads
@@ -124,7 +134,7 @@ impl MyPaintEngine {
         // Tiles a dab or a smudge sample may touch around the pen must be
         // loaded first: libmypaint reads them through tile_lookup, which
         // can't load anything.
-        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new() };
+        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), opacity: self.opacity };
         // From the brush's smoothed position (dabs are placed between it and
         // the pen) to the pen, with the margin of the biggest dab so far.
         let prev = if self.state.started { (self.state.actual_x, self.state.actual_y) } else { (x, y) };
@@ -146,7 +156,7 @@ impl MyPaintEngine {
     /// smoothed path, keep the tiles for `resume`. Reloading them from the
     /// layer as it was before the stroke would erase what was painted.
     pub fn lift<S: PaintSurface>(&mut self, surface: &mut S) -> Option<Rect> {
-        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new() };
+        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), opacity: self.opacity };
         self.brush.finish_stroke(&mut self.state, &mut tiles);
         let dirty = std::mem::take(&mut tiles.dirty);
         write_back(&self.tiles, &dirty, surface)
@@ -160,6 +170,8 @@ struct TileCache<'a, S: PaintSurface> {
     scratch: &'a mut Box<TilePixels>,
     surface: &'a mut S,
     dirty:   HashSet<(i32, i32)>,
+    /// The Opacity slider, applied to each dab.
+    opacity: f32,
 }
 
 impl<S: PaintSurface> TileCache<'_, S> {
@@ -211,6 +223,12 @@ impl<S: PaintSurface> TiledSurface for TileCache<'_, S> {
     }
 
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+
+    fn draw_dab(&mut self, dab: &hokusai::Dab) -> bool {
+        if self.opacity >= 1.0 { return hokusai::brushmodes::draw_dab_default(self, dab); }
+        let dab = hokusai::Dab { opaque: dab.opaque * self.opacity, ..*dab };
+        hokusai::brushmodes::draw_dab_default(self, &dab)
+    }
 
     fn tile_lookup(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
         self.tiles.get(&(tx, ty)).map(|b| &**b)

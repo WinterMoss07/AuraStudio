@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn bounce_mid_drag_is_ignored() {
         for chain in [SINGLE, CX] {
-            for bounce_ms in [1, 5, 15, 30, 45] {
+            for bounce_ms in [1, 5, 10, 15, 19] {
                 let mut m = Mouse::new(chain);
                 let (a, mid, b, c) = ((100.0, 100.0), (250.0, 100.0), (400.0, 100.0), (300.0, 250.0));
                 m.down(a).drag(a, mid, 15).up(mid).wait(bounce_ms).down(mid).drag(mid, b, 15).up(b).wait(60);

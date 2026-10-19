@@ -82,6 +82,13 @@ impl DabEngine {
 
     /// One pen sample (canvas pixels). Places the dabs due between the
     /// previous sample and this one. Returns the bounds of what changed.
+    /// Dab spacing in pixels, instead of the automatic one (after
+    /// `sync_from`). Stroke previews space dabs in proportion to the size,
+    /// so a size change scales the stroke instead of shifting its dabs.
+    pub fn set_spacing(&mut self, px: f32) {
+        self.spacing = px.max(0.25);
+    }
+
     pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, x: f32, y: f32, pressure: f32) -> Option<Rect> {
         let p = pressure;
         let mut dirty = None;

@@ -114,6 +114,16 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                             }
                         }
                     });
+                    ui.menu_button("Mouse click debounce", |ui| {
+                        ui.label(RichText::new("A worn mouse button can let go for a few ms while held:\nthat short a release is ignored.").small().color(theme::TEXT_WEAK));
+                        for ms in [0u32, 10, 20, 30, 40, 60, 80] {
+                            let label = if ms == 0 { "Off".to_string() } else { format!("{ms} ms") };
+                            if ui.radio(*m.debounce_ms == ms, label).clicked() {
+                                *m.debounce_ms = ms;
+                                ui.close_menu();
+                            }
+                        }
+                    });
                     ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();
