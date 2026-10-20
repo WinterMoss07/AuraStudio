@@ -191,11 +191,15 @@ fn fuzz() {
     let mut lib = Library::load();
     let mut size = (r.below(300) as u32 + 1, r.below(300) as u32 + 1);
     let doc: SharedDoc = Arc::new(Mutex::new(Document::new(DocId(1), "fuzz", size.0, size.1)));
+    // Odd seeds animate (animation folders, frames, the Cel template).
+    let animate = seed % 2 == 1;
+    if animate { doc.lock().unwrap().kind = aurastudio_document::Kind::Animation; }
     let projection = Arc::new(Mutex::new(Projection::new(size.0, size.1)));
     let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
 
     let ctx = egui::Context::default();
     let mut ui = UiState::new();
+    if animate { ui.show_docker(aurastudio_ui::Tab::CelTemplate); }
     let mut brush = lib.presets[0].settings.clone();
     let mut preset = 0usize;
     let mut canvas_edit = size;
@@ -412,6 +416,9 @@ fn fuzz() {
                 let ids = d.layers.layer_ids();
                 match r.below(10) {
                     0 => { d.layers.add_layer("L"); }
+                    1 if animate && r.chance(0.5) => { d.layers.add_animation_folder("A"); }
+                    // The current frame (, and . in the app).
+                    1 if animate => { d.layers.set_time(1 + r.below(8) as u32); }
                     1 => { d.layers.add_folder("F"); }
                     // Filter layers, marks, groups (merged in the general
                     // merge, saved in the file).
@@ -508,12 +515,18 @@ fn fuzz() {
             println!("SLOW step {step} (kind {kind}): {:.1} s, canvas {size:?}", step_start.elapsed().as_secs_f64());
             slow += 1;
         }
+        // Now and then: the document as it must be (ids, sizes, animation
+        // folders...), the paint thread idle meanwhile (its lock).
+        if step % 64 == 0 {
+            if let Ok(d) = doc.try_lock() { crate::pure::check(&d); }
+        }
         // Keep the run inside this machine's RAM: duplicating folders over
         // and over grows the document exponentially.
         if let Ok(mut d) = doc.try_lock() {
             let bytes = d.layers.layer_count() as u64 * size.0 as u64 * size.1 as u64 * 4;
             if bytes > 400 << 20 || d.layers.layer_count() > 60 {
                 *d = Document::new(DocId(1), "fuzz", 200, 200);
+                if animate { d.kind = aurastudio_document::Kind::Animation; }
                 size = (200, 200);
                 *projection.lock().unwrap() = Projection::new(200, 200);
                 ui.invalidate_all_thumbnails();
@@ -539,8 +552,8 @@ fn fuzz() {
         drained.store(true, Ordering::SeqCst);
     });
     let steps = done;
-    println!("fuzz seed {seed}: {steps} steps in {:.1} s | {ui_frames} UI frames, {strokes} strokes, {ops} other ops, {resets} memory resets, {slow} slow steps | layers {}",
-        t0.elapsed().as_secs_f64(), doc.lock().map(|d| d.layers.layer_count()).unwrap_or(0));
+    println!("fuzz seed {seed}{}: {steps} steps in {:.1} s | {ui_frames} UI frames, {strokes} strokes, {ops} other ops, {resets} memory resets, {slow} slow steps | layers {}",
+        if animate { " (animation)" } else { "" }, t0.elapsed().as_secs_f64(), doc.lock().map(|d| d.layers.layer_count()).unwrap_or(0));
     assert!(!PANICKED.load(Ordering::SeqCst), "a panic happened (see above)");
     assert!(!doc.is_poisoned() && !projection.is_poisoned());
 }

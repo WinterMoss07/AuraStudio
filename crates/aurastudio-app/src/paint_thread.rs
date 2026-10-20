@@ -391,7 +391,9 @@ impl Worker {
                         let t = Instant::now();
                         let filled = {
                             let mut d = doc.lock().unwrap();
-                            d.layers.can_paint().then(|| d.fill(x, y, color, params))
+                            let f = d.layers.can_paint().then(|| d.fill(x, y, color, params));
+                            if d.take_reshown() { add_rect(&mut self.pending, (0, 0, d.layers.width, d.layers.height)); }
+                            f
                         };
                         log::info!("fill: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
                         match filled {
@@ -532,9 +534,13 @@ impl Worker {
         self.sampled = false;
         self.stroke_rect = None;
         self.stats = Stats::default();
-        self.layer = doc.layers.active_id();
         self.size = (doc.layers.width, doc.layers.height);
-        self.active = doc.layers.can_paint() && doc.layers.begin_stroke(self.layer);
+        // (In an animation folder: maybe a new frame, made here.)
+        let target = doc.begin_paint();
+        self.layer = target.unwrap_or(0);
+        self.active = target.is_some() && doc.layers.begin_stroke(self.layer);
+        if !self.active { doc.drop_new_frame(); }
+        self.reshow(doc);
         if !self.active { return false; }
 
         let mut e = Forge::new(forge.clone());
@@ -573,13 +579,23 @@ impl Worker {
         rect
     }
 
+    /// A frame was made or taken back: the whole canvas merges again.
+    fn reshow(&mut self, doc: &mut Document) {
+        if doc.take_reshown() { add_rect(&mut self.pending, (0, 0, doc.layers.width, doc.layers.height)); }
+    }
+
     /// Finish the stroke and record it for undo. Returns the last painted
     /// area and the layer id, or None if nothing was painted.
     fn end(&mut self, doc: &mut Document) -> Option<(Option<Rect>, u64)> {
         let was_active = std::mem::take(&mut self.active);
         // Also after an aborted stroke (layer deleted / canvas resized):
         // whatever was painted before is still recorded for undo.
-        if !std::mem::take(&mut self.sampled) { return None; }
+        if !std::mem::take(&mut self.sampled) {
+            // (A frame made for nothing goes.)
+            doc.drop_new_frame();
+            self.reshow(doc);
+            return None;
+        }
         let id = self.layer;
         let same_size = (doc.layers.width, doc.layers.height) == self.size;
         let mut rect = None;
@@ -602,7 +618,10 @@ impl Worker {
             log::info!("stroke: {} samples | paint {} | max queued {} | undo save {:.1} ms ({} KB history)",
                 self.stats.paint.count, self.stats.paint, self.stats.max_queue,
                 t0.elapsed().as_secs_f64() * 1000.0, doc.history().bytes() / 1024);
+        } else {
+            doc.drop_new_frame();
         }
+        self.reshow(doc);
         // The stroke buffers are freed until the next stroke.
         doc.layers.end_stroke();
         Some((rect, id))

@@ -143,6 +143,8 @@ pub struct Actions {
     pub edit:        Option<EditCmd>,
     /// The Layers docker changed the tree: the undo step's name.
     pub layer_edit:  Option<&'static str>,
+    /// Show this docker (hidden from the Window menu).
+    pub show_docker: Option<dockers::Tab>,
     /// No layer edit is under way (nothing held, no name being typed, no
     /// filter layer's dialog open): one done can be recorded for undo.
     pub layers_idle: bool,
@@ -203,6 +205,8 @@ pub struct UiState {
     color:         dockers::color::ColorState,
     layers:        dockers::layers::LayersState,
     tool_list:     dockers::tool_list::ToolListState,
+    /// Cel template docker: the sub-cel being renamed.
+    cel_rename:    Option<(usize, String, bool)>,
     /// The open filter dialog.
     filter:        Option<filters::FilterDialog>,
     /// The Preferences dialog is open, on this section.
@@ -231,6 +235,7 @@ impl UiState {
             color:         Default::default(),
             layers:        Default::default(),
             tool_list:     Default::default(),
+            cel_rename:    None,
             filter:        None,
             prefs_open:    None,
             select_dialog: None,
@@ -283,6 +288,9 @@ impl UiState {
     }
 
     /// Every layer changed (canvas resize...).
+    /// Show a docker (as the Window menu does).
+    pub fn show_docker(&mut self, tab: dockers::Tab) { dockers::set_shown(&mut self.dock, tab, true); }
+
     pub fn invalidate_all_thumbnails(&mut self) {
         self.layers.invalidate_all();
     }
@@ -355,6 +363,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
                 color:  &mut state.color,
                 layers: &mut state.layers,
                 tool_list: &mut state.tool_list,
+                cel_rename: &mut state.cel_rename,
                 notice: &mut state.notice,
                 m:      model,
                 a:      actions,
@@ -372,6 +381,8 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
             // next docks instead of squashing one.
             state.dock_layout.enforce(&mut state.dock, bar, sep);
         });
+
+    if let Some(tab) = actions.show_docker.take() { dockers::set_shown(&mut state.dock, tab, true); }
 
     if let Some(card) = canvas_card(ctx, model) {
         if model.home {

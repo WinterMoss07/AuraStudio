@@ -8,7 +8,7 @@ mod transform;
 use std::sync::{Arc, Mutex};
 
 use aurastudio_canvas::Rect;
-use aurastudio_layers::{FillParams, LayerStack, Selection};
+use aurastudio_layers::{FillParams, LayerStack, Selection, Target};
 
 pub use history::{History, SavedStep, DEFAULT_BUDGET};
 pub use select::{SelectOp, Shape, Wand};
@@ -80,6 +80,12 @@ pub struct Document {
     /// The layer tree as the history last saw it: a different one is a
     /// layer step to record (`record_tree`).
     tree:       aurastudio_layers::TreeState,
+    /// A frame was made for the stroke under way: the history's serial
+    /// right after (its first stroke joins it as one undo step).
+    new_frame:  Option<u64>,
+    /// A frame was made or taken back: the whole canvas shows another
+    /// drawing (`take_reshown`).
+    reshown:    bool,
 }
 
 /// A filter shown on the active layer while its dialog is open: the
@@ -107,7 +113,7 @@ impl Document {
     /// saved.
     pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
         let tree = layers.tree_state();
-        Self { id, name: name.to_owned(), kind: Kind::default(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None, transform: None, filter: None, tree }
+        Self { id, name: name.to_owned(), kind: Kind::default(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None, transform: None, filter: None, tree, new_frame: None, reshown: false }
     }
 
     /// Something changed (the layer panel edits the stack directly and
@@ -132,16 +138,60 @@ impl Document {
         let before = self.layers.stroke_base_rect(rect);
         // (A layer edit not recorded yet goes first: undone after it.)
         self.record_tree("Layers");
-        self.history.push("Brush stroke", layer_id, rect, &before);
+        self.push_painted("Brush stroke", layer_id, rect, &before);
         self.touch();
     }
+
+    /// The layer a stroke or a fill goes to. In an animation folder with
+    /// no frame drawn at the current frame, the frame is made first (one
+    /// undo step with what is painted: `push_painted`). None: nothing to
+    /// paint on.
+    pub fn begin_paint(&mut self) -> Option<u64> {
+        self.new_frame = None;
+        match self.layers.paint_target()? {
+            Target::Layer(id) => Some(id),
+            Target::NewFrame { folder, frame } => {
+                self.record_tree("Layers");
+                let id = self.layers.make_frame(folder, frame)?;
+                self.record_tree("New frame");
+                self.new_frame = Some(self.history.serial());
+                self.reshown = true;
+                Some(id)
+            }
+        }
+    }
+
+    /// Record what was painted; with the frame just made for it, as one
+    /// step (undone, the frame goes too).
+    fn push_painted(&mut self, label: &'static str, layer_id: u64, rect: Rect, before: &[u8]) {
+        let join = self.new_frame.take() == Some(self.history.serial());
+        let s0 = self.history.serial();
+        self.history.push(label, layer_id, rect, before);
+        if join && self.history.serial() == s0 + 1 { self.history.join_last(label); }
+    }
+
+    /// Nothing was painted after all: the frame made for it goes (no undo
+    /// step left). True if one was taken away.
+    pub fn drop_new_frame(&mut self) -> bool {
+        let Some(s) = self.new_frame.take() else { return false };
+        if s != self.history.serial() { return false; }
+        let gone = self.history.undo(&mut self.layers, &mut self.selection).is_some();
+        self.history.forget_redo();
+        self.tree = self.layers.tree_state();
+        self.touch();
+        self.reshown = true;
+        gone
+    }
+
+    /// Since the last call, a frame was made or taken back (the whole
+    /// canvas is to merge again).
+    pub fn take_reshown(&mut self) -> bool { std::mem::take(&mut self.reshown) }
 
     /// Clear the active layer (white for the background), undoable.
     /// Returns the cleared layer id, or None if it is locked / a folder.
     /// With a selection, only the selected pixels are cleared.
     pub fn clear_active(&mut self) -> Option<(u64, Rect)> {
-        if !self.layers.can_paint() { return None; }
-        let id = self.layers.active_id();
+        let id = self.layers.paint_id()?;
         let rect = match &self.selection {
             Some(s) => s.bbox(),
             None => (0, 0, self.layers.width, self.layers.height),
@@ -160,13 +210,16 @@ impl Document {
     /// Fill tool at (x, y) on the active layer, undoable. Returns the
     /// layer and the rectangle changed.
     pub fn fill(&mut self, x: u32, y: u32, color: [u8; 4], p: FillParams) -> Option<(u64, Rect)> {
-        if !self.layers.can_paint() { return None; }
-        let id = self.layers.active_id();
-        let area = aurastudio_layers::flood(&self.layers, id, x, y, p, self.selection.as_ref())?;
-        let before = self.layers.layer_rect(id, area.bbox)?;
-        let rect = self.layers.fill_area(id, &area, color, self.selection.as_ref())?;
+        let id = self.begin_paint()?;
+        let done = (|| {
+            let area = aurastudio_layers::flood(&self.layers, id, x, y, p, self.selection.as_ref())?;
+            let before = self.layers.layer_rect(id, area.bbox)?;
+            let rect = self.layers.fill_area(id, &area, color, self.selection.as_ref())?;
+            Some((before, rect))
+        })();
+        let Some((before, rect)) = done else { self.drop_new_frame(); return None };
         self.record_tree("Layers");
-        self.history.push("Fill", id, rect, &before);
+        self.push_painted("Fill", id, rect, &before);
         self.touch();
         Some((id, rect))
     }
@@ -309,7 +362,7 @@ impl Document {
     /// transparent), or the whole layer. None on a folder, or with nothing
     /// there to copy.
     pub fn copy(&self) -> Option<Clip> {
-        let id = self.layers.active_id();
+        let id = self.layers.layer_of_active()?;
         // Only where the layer has content (the Paper: whole).
         let aurastudio_layers::Node::Layer(l) = self.layers.node(id)? else { return None };
         let full = (0, 0, self.layers.width, self.layers.height);
@@ -674,5 +727,77 @@ mod tests {
         assert!(d.layers.node(new).is_none(), "undoing the paste takes its layer away");
         d.redo();
         assert_eq!(px(&d, 12, 12), vec![9, 8, 7, 255], "and redo brings it back, pixels too");
+    }
+}
+
+
+#[cfg(test)]
+mod anim_tests {
+    use super::*;
+    use aurastudio_layers::Node;
+
+    fn stroke(d: &mut Document, rgba: [u8; 4]) -> Option<u64> {
+        let id = d.begin_paint()?;
+        assert!(d.layers.begin_stroke(id));
+        d.layers.layer_surface(id).unwrap();
+        let r = (2, 2, 12, 12);
+        assert!(d.layers.begin_stroke(id));
+        { let mut s = d.layers.layer_surface(id).unwrap(); aurastudio_canvas::PaintSurface::prepare(&mut s, r); }
+        d.layers.set_layer_rect(id, r, &rgba.repeat(100));
+        d.commit_stroke(id, r);
+        d.layers.end_stroke();
+        Some(id)
+    }
+
+    /// The first stroke on an empty frame makes "Frame N": one undo step
+    /// takes both away, redo brings both back; a stroke on it after is a
+    /// step of its own.
+    #[test]
+    fn a_new_frame_and_its_stroke_are_one_step() {
+        let mut d = Document::new(DocId(1), "a", 32, 32);
+        let a = d.layers.add_animation_folder("A");
+        d.record_tree("Layers");
+        let steps = d.history().undo_len();
+        d.layers.set_time(3);
+        let sub = stroke(&mut d, [9, 9, 9, 255]).unwrap();
+        assert!(d.take_reshown());
+        assert_eq!(d.layers.frames(a).len(), 1);
+        assert_eq!(d.history().undo_len(), steps + 1, "one step");
+        assert_eq!(d.history().undo_label(), Some("Brush stroke"));
+        d.undo().unwrap();
+        assert!(d.layers.frames(a).is_empty(), "the frame went with it");
+        d.layers.check_animation().unwrap();
+        d.redo().unwrap();
+        assert_eq!(d.layers.frames(a).len(), 1);
+        let Some(Node::Layer(l)) = d.layers.node(sub) else { panic!("sub-cel back") };
+        assert_eq!(l.tiles.pixel(5, 5), [9, 9, 9, 255]);
+        // Again on the same frame: a plain stroke step.
+        assert_eq!(stroke(&mut d, [1, 1, 1, 255]), Some(sub));
+        assert_eq!(d.history().undo_len(), steps + 2);
+        d.undo().unwrap();
+        assert_eq!(d.layers.frames(a).len(), 1);
+        d.layers.check_animation().unwrap();
+    }
+
+    /// A frame made for a stroke that painted nothing goes, leaving no
+    /// undo step.
+    #[test]
+    fn a_frame_for_nothing_goes() {
+        let mut d = Document::new(DocId(1), "a", 32, 32);
+        let a = d.layers.add_animation_folder("A");
+        d.record_tree("Layers");
+        let steps = d.history().undo_len();
+        assert!(d.begin_paint().is_some());
+        assert_eq!(d.layers.frames(a).len(), 1);
+        assert!(d.drop_new_frame());
+        assert!(d.layers.frames(a).is_empty());
+        assert_eq!(d.history().undo_len(), steps);
+        assert_eq!(d.history().redo_len(), 0);
+        assert_eq!(d.layers.active_id(), a);
+        d.layers.check_animation().unwrap();
+        // A fill that fills nothing (outside the canvas) neither.
+        assert!(d.fill(500, 500, [0, 0, 0, 255], FillParams::default()).is_none());
+        assert!(d.layers.frames(a).is_empty());
+        assert_eq!(d.history().undo_len(), steps);
     }
 }

@@ -3,6 +3,58 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.13.0 — 2026-10-20
+
+Step 2 of the animation work: animation folders, frames, cel template.
+
+**Animation folders** (Animation documents)
+- New special folders: an arrow beside the New folder button (and Layer >
+  New special folder): Animation folder; Camera folder and Comics folder
+  listed, grayed out until they come.
+- One animation folder per element. Drawing (brush or fill) on a frame
+  with nothing drawn makes **Frame N** at the current frame, holding the
+  folder's **cel template**: Genga, Douga, Ink, Colo by default. The frame
+  and its first stroke are **one undo step** (no empty frame left behind);
+  a stroke that paints nothing leaves no frame.
+- **Hold**: a frame shows until the next drawn one; drawing over a hold
+  makes a new frame there. `,` / `.`: previous / next frame (shown in the
+  menu bar).
+- Layers docker: the folder (film icon, its number of frames) and one row
+  per frame, its number on a card ("shown" for the one on screen); a
+  click on a frame goes to it. Sub-cels are never rows. Frames have no
+  eye (the current frame decides) and keep their name (their place in
+  time).
+- Nothing else goes into an animation folder (new layers land above it);
+  frames and sub-cels can't be dragged, grouped, duplicated or deleted one
+  by one from the list (a frame can be deleted). Frame moves, copies and
+  clones come with the X-sheet.
+
+**Cel template docker** (shown with the first animation folder; Window
+menu)
+- The sub-cels top to bottom: the radio picks where strokes go, in every
+  frame (a douga stays a douga from frame to frame); eye and lock are the
+  frame's; Apply to folder gives every frame, and the frames to come,
+  those eyes and locks. A locked sub-cel can't be painted, and no frame is
+  made to paint a locked one.
+- Template: add, remove (the pixels kept for undo), move up / down,
+  rename (double click), in every frame at once; undoable.
+- The colo sub-cel is marked "colo" (palette colors come later; it is a
+  plain layer for now).
+
+**Files**
+- Format 4 when a document has animation folders (template, chosen
+  sub-cel, frames, current frame); other documents are still written as
+  format 3, readable by older versions.
+
+**Checked**
+- Tests: frames follow the template and hold; frames stay in their
+  folder; template edits reach every frame; tree undo keeps frames whole;
+  a new frame and its stroke are one step; a frame for nothing goes;
+  animation folders survive a save.
+- Pure fuzz with animation folders, frames, time, sub-cel choice and
+  template edits (invariants checked after every operation); UI fuzz on
+  Animation documents with the Cel template docker shown.
+
 ## 0.12.0 — 2026-10-20
 
 First step of the animation work (spec agreed with Walid: one animation

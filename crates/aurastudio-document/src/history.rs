@@ -134,17 +134,21 @@ pub struct History {
     undo:   VecDeque<Step>,
     redo:   Vec<Step>,
     budget: usize,
+    /// Bumped by every push, undo and redo: the same value later means
+    /// nothing happened in between.
+    serial: u64,
 }
 
 impl History {
     pub fn new(budget: usize) -> Self {
-        Self { undo: VecDeque::new(), redo: Vec::new(), budget }
+        Self { undo: VecDeque::new(), redo: Vec::new(), budget, serial: 0 }
     }
 
     /// Record an action: `before` is the RGBA of `rect` before it.
     pub fn push(&mut self, label: &'static str, layer_id: u64, rect: Rect, before: &[u8]) {
         if rect.0 >= rect.2 || rect.1 >= rect.3 { return; }
         self.redo.clear();
+        self.serial += 1;
         self.undo.push_back(Step::Pixels(PixelStep::new(label, layer_id, rect, before)));
         self.trim();
     }
@@ -152,6 +156,7 @@ impl History {
     /// Record a selection change: `before` is the selection before it.
     pub fn push_selection(&mut self, label: &'static str, before: Option<Selection>) {
         self.redo.clear();
+        self.serial += 1;
         self.undo.push_back(Step::Select(label, before));
         self.trim();
     }
@@ -166,6 +171,7 @@ impl History {
         if let Some(s) = selection { steps.push(Step::Select(label, s)); }
         if steps.is_empty() { return; }
         self.redo.clear();
+        self.serial += 1;
         self.undo.push_back(Step::Group { label, steps, undone: false });
         self.trim();
     }
@@ -174,6 +180,7 @@ impl History {
     /// `removed` the nodes it deleted.
     pub fn push_tree(&mut self, label: &'static str, before: TreeState, removed: Vec<Node>) {
         self.redo.clear();
+        self.serial += 1;
         let bytes = removed.iter().map(Node::bytes).sum();
         self.undo.push_back(Step::Tree(TreeStep { label, state: before, kept: removed, bytes }));
         self.trim();
@@ -185,6 +192,7 @@ impl History {
     pub fn redo_label(&self) -> Option<&'static str> { self.redo.last().map(Step::label) }
 
     pub fn undo(&mut self, layers: &mut LayerStack, selection: &mut Option<Selection>) -> Option<Change> {
+        self.serial += 1;
         // A step whose layer was deleted can't be applied: drop it and go
         // on with the previous one.
         while let Some(mut step) = self.undo.pop_back() {
@@ -197,6 +205,7 @@ impl History {
     }
 
     pub fn redo(&mut self, layers: &mut LayerStack, selection: &mut Option<Selection>) -> Option<Change> {
+        self.serial += 1;
         while let Some(mut step) = self.redo.pop() {
             if let Some(change) = step.swap_into(layers, selection) {
                 self.undo.push_back(step);
@@ -243,12 +252,32 @@ impl History {
             undo: undo.into_iter().filter_map(load).collect(),
             redo: redo.into_iter().filter_map(load).collect(),
             budget,
+            serial: 0,
         };
         h.trim();
         h
     }
 
+    pub fn serial(&self) -> u64 { self.serial }
+
+    /// The last two steps done become one, named `label` (a frame made
+    /// and its first stroke).
+    pub fn join_last(&mut self, label: &'static str) {
+        if self.undo.len() < 2 { return; }
+        let b = self.undo.pop_back().unwrap();
+        let a = self.undo.pop_back().unwrap();
+        self.serial += 1;
+        self.undo.push_back(Step::Group { label, steps: vec![a, b], undone: false });
+    }
+
+    /// Forget the step just undone (it is not to be redone).
+    pub fn forget_redo(&mut self) {
+        self.serial += 1;
+        self.redo.pop();
+    }
+
     pub fn clear(&mut self) {
+        self.serial += 1;
         self.undo.clear();
         self.redo.clear();
     }

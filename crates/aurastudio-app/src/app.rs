@@ -1015,6 +1015,7 @@ impl App {
     fn paint_refusal(&self) -> Option<&'static str> {
         match self.doc.try_lock() {
             Ok(doc) if doc.layers.can_paint() => None,
+            Ok(doc) if doc.layers.anim_of(doc.layers.active_id()).is_some() => Some("This sub-cel or frame is locked"),
             Ok(doc) if doc.layers.active_node().is_folder() => Some("Select a layer to paint (a folder is selected)"),
             Ok(_) => Some("Layer is locked"),
             Err(_) => None,
@@ -1847,6 +1848,21 @@ impl App {
         }
     }
 
+    /// Go `d` frames back or forward (Animation documents; not during a
+    /// stroke or a transform).
+    fn step_frame(&mut self, d: i64) {
+        if self.is_drawing || self.xf.is_some() || self.xf_pending || self.ui.has_dialog() { return; }
+        {
+            let Ok(mut doc) = self.doc.try_lock() else { return };
+            if doc.kind != aurastudio_document::Kind::Animation { return; }
+            let t = (doc.layers.time() as i64 + d).max(1) as u32;
+            if t == doc.layers.time() { return; }
+            doc.layers.set_time(t);
+        }
+        self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc)));
+        self.request_redraw();
+    }
+
     // --- Files -------------------------------------------------------------
 
     /// Biggest canvas side the GPU takes (before the window exists: a
@@ -2640,6 +2656,9 @@ impl App {
                         "5" => self.view_cmd(ViewCmd::ResetRotation),
                         "+" | "=" => self.view_cmd(ViewCmd::ZoomIn),
                         "-" => self.view_cmd(ViewCmd::ZoomOut),
+                        // Previous / next frame (OpenToonz).
+                        "," => self.step_frame(-1),
+                        "." => self.step_frame(1),
                         _ => {}
                     },
                     _ => {}

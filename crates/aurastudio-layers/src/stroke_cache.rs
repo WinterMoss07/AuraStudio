@@ -164,7 +164,7 @@ mod tests {
     }
 
     fn folder(id: u64, blend: FolderBlend, opacity: f32, children: Vec<Node>) -> Node {
-        Node::Folder(Folder { id, name: "f".into(), visible: true, opacity, blend, locked: false, collapsed: false, children, props: Default::default() })
+        Node::Folder(Folder { id, name: "f".into(), visible: true, opacity, blend, locked: false, collapsed: false, children, props: Default::default(), kind: Default::default() })
     }
 
     fn max_diff(a: &[u8], b: &[u8]) -> u8 {

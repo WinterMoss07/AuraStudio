@@ -82,6 +82,7 @@ pub(crate) fn check(d: &Document) {
     assert!(ids.contains(&l.active_id()), "active {} not in the tree", l.active_id());
     for row in l.rows() { assert!(ids.contains(&row.id)); }
     if let Some(r) = l.reference_for(l.active_id()) { assert!(ids.contains(&r) && r != l.active_id()); }
+    if let Err(e) = l.check_animation() { panic!("animation folders: {e}"); }
     let h = d.history();
     assert!(h.undo_len() <= 200);
     assert!(h.undo_len() <= 1 || h.bytes() <= aurastudio_document::DEFAULT_BUDGET, "history over budget");
@@ -289,7 +290,10 @@ impl Run {
         all_nodes(&d.layers.root, &mut ids);
         let any = |r: &mut Rng| ids[r.below(ids.len() as u64) as usize];
         let full = ids.len() >= MAX_NODES;
-        let name = match r.below(22) {
+        // The animation folder the active node is in (or is), and one of
+        // its frames.
+        let anim = d.layers.anim_of(d.layers.active_id()).map(|x| x.0);
+        let name = match r.below(31) {
             0 if !full => { let before: HashSet<u64> = ids.iter().copied().collect(); let id = d.layers.add_layer("L"); assert!(!before.contains(&id), "id reused"); "add layer" }
             1 if !full => { d.layers.add_folder("F"); "add folder" }
             2 if !full => { d.layers.add_filter_layer(random_filter(r)); "add filter layer" }
@@ -306,7 +310,8 @@ impl Run {
             9 if !full => { let some: Vec<u64> = ids.iter().copied().filter(|_| r.chance(0.3)).collect(); d.layers.group_nodes(&some, "G"); "group several" }
             10 => { d.layers.ungroup_active(); "ungroup" }
             11 | 12 => { let id = any(r); d.layers.set_active(id); "select" }
-            13 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { *n.visible_mut() ^= true; } "visibility" }
+            // (A frame has no eye: the current frame decides.)
+            13 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { if n.frame().is_none() { *n.visible_mut() ^= true; } } "visibility" }
             14 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { *n.locked_mut() ^= true; } "lock" }
             15 => { let v = if r.chance(0.2) { 0.0 } else { r.f() }; *d.layers.active_node_mut().opacity_mut() = v; "opacity" }
             16 => {
@@ -321,8 +326,45 @@ impl Run {
             17 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { n.props_mut().clip ^= true; } "clip" }
             18 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { n.props_mut().draft ^= true; } "draft" }
             19 => { let id = any(r); let on = !d.layers.node(id).unwrap().props().reference; d.layers.set_reference(id, on); "reference" }
-            20 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { n.props_mut().label = r.below(9) as u8; *n.name_mut() = format!("n{}", r.below(99)); } "label / name" }
-            _ => { if let Node::Folder(f) = d.layers.active_node_mut() { f.collapsed ^= true; } "fold" }
+            // (Frames and sub-cels are named by the X-sheet and the template.)
+            20 => { let id = any(r); let named = !d.layers.is_anim_part(id); if let Some(n) = d.layers.node_mut(id) { n.props_mut().label = r.below(9) as u8; if named { *n.name_mut() = format!("n{}", r.below(99)); } } "label / name" }
+            21 => { if let Node::Folder(f) = d.layers.active_node_mut() { f.collapsed ^= true; } "fold" }
+            22 if !full => { d.layers.add_animation_folder("A"); "animation folder" }
+            23 | 24 => { let t = 1 + r.below(12) as u32; d.layers.set_time(t); "time" }
+            25 if !full => match anim {
+                Some(f) => { let n = 1 + r.below(12) as u32; d.layers.make_frame(f, n); "frame" }
+                None => "frame: no folder",
+            },
+            26 => match anim {
+                Some(f) => { let n = d.layers.anim(f).unwrap().template.len(); d.layers.set_sub(f, r.below(n as u64 + 1) as usize); "sub-cel chosen" }
+                None => "sub-cel: no folder",
+            },
+            27 => match anim {
+                Some(f) => {
+                    let n = d.layers.anim(f).unwrap().template.len();
+                    let k = r.below(n as u64) as usize;
+                    match r.below(4) {
+                        0 if !full => { d.layers.add_sub(f, r.below(n as u64 + 1) as usize, aurastudio_layers::SubCel::new(&format!("s{}", r.below(1000)), r.chance(0.2))); }
+                        1 => { d.layers.remove_sub(f, k); }
+                        2 => { let name = format!("s{}", r.below(1000)); if !d.layers.anim(f).unwrap().template.iter().any(|t| t.name == name) { d.layers.rename_sub(f, k, &name); } }
+                        _ => { d.layers.move_sub(f, k, r.below(n as u64) as usize); }
+                    }
+                    "template"
+                }
+                None => "template: no folder",
+            },
+            28 => match d.layers.anim_of(d.layers.active_id()) {
+                Some((_, Some(frame))) => { d.layers.apply_to_folder(frame); "apply to folder" }
+                _ => "apply: no frame",
+            },
+            _ => match anim {
+                Some(f) => {
+                    let frames = d.layers.frames(f);
+                    if let Some(&(n, id)) = frames.get(r.below(frames.len() as u64 + 1) as usize) { d.layers.set_active(id); d.layers.set_time(n); }
+                    "frame chosen"
+                }
+                None => "frame chosen: no folder",
+            },
         };
         // Recorded as the app does once the edit is over, or later with
         // the next ones.

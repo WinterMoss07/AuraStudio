@@ -103,6 +103,22 @@ Geometry, Selection, Transform.
   menu bar. It turns features on or off, the interface stays the same:
   animation and camera folders only in an Animation document (grayed out
   elsewhere). Files from before it open as Illustration.
+- **Animation folders** (Animation documents; the arrow beside the
+  New folder button, or Layer > New special folder): one folder per
+  element (a character, smoke...). Drawing on a frame of it with nothing
+  drawn makes **Frame N** (N: the current frame), with the folder's cel
+  template inside it: genga, douga, ink, colo by default. One undo step
+  takes the frame and its first stroke away together. A frame shows until
+  the next one drawn (hold); before the first one, nothing. Strokes go to
+  the sub-cel chosen in the **Cel template** docker (the same one in every
+  frame); its eye and lock are the frame's, and **Apply to folder** gives
+  every frame (and those to come) these states. The template: add, remove,
+  move, rename (double click) a sub-cel, in every frame at once. The
+  layer list shows the folder and its frames (a click on a frame goes to
+  it), never the sub-cels. Nothing else goes into an animation folder;
+  frames stay in theirs. `,` / `.`: previous / next frame (the X-sheet
+  docker comes next). Camera and comics folders are listed, grayed out
+  until they come.
 - **Window** menu: every docker with a check mark, to hide it or show it
   again (beside its usual partner, else in a new dock at the bottom);
   Reset docks.
@@ -203,6 +219,7 @@ the canvas texture).
 | Select all / deselect / reselect / invert | Ctrl+A / Ctrl+D / Ctrl+Shift+D / Ctrl+Shift+I |
 | Selection modes | Shift: add, Alt: subtract, Shift+Alt: intersect (held at the press) |
 | Transform | Ctrl+T; Enter apply, Escape cancel, arrows nudge; Enter again: a new one |
+| Animation | `,` previous frame, `.` next frame |
 | Copy / paste pixels | Ctrl+C / Ctrl+V |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
 | 100 % / fit | `1` / `2` |

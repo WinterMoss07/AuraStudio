@@ -108,6 +108,30 @@ pub fn new_folder(m: &mut Model, a: &mut Actions) {
     a.layer_edit = Some("New folder");
 }
 
+/// A new animation folder (Animation documents), the Cel template docker
+/// shown.
+pub fn new_animation_folder(m: &mut Model, a: &mut Actions) {
+    if m.doc_kind != aurastudio_document::Kind::Animation { return; }
+    let n = m.layers.rows().iter().filter(|r| r.animation).count() + 1;
+    m.layers.add_animation_folder(&format!("Animation {n}"));
+    a.recomposite = true;
+    a.layer_edit = Some("New animation folder");
+    a.show_docker = Some(super::Tab::CelTemplate);
+}
+
+/// The special folders (animation, camera, comics), each in its own kind
+/// of document; grayed out elsewhere, saying why.
+pub fn special_folder_entries(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
+    use aurastudio_document::Kind;
+    let anim = m.doc_kind == Kind::Animation;
+    let b = ui.add_enabled(anim, egui::Button::new("Animation folder")).on_disabled_hover_text("Animation documents only");
+    if b.clicked() { new_animation_folder(m, a); ui.close_menu(); }
+    ui.add_enabled(false, egui::Button::new("Camera folder"))
+        .on_disabled_hover_text(if anim { "Coming with the camera" } else { "Animation documents only" });
+    ui.add_enabled(false, egui::Button::new("Comics folder"))
+        .on_disabled_hover_text(if m.doc_kind == Kind::Comics { "Coming with the comics tools" } else { "Comics documents only" });
+}
+
 /// A new filter layer above the active node, its dialog opened (Cancel
 /// there removes it again).
 pub fn new_filter_layer(st: &mut LayersState, kind: aurastudio_filters::Kind, m: &mut Model, a: &mut Actions) {
@@ -257,19 +281,10 @@ fn set_label(st: &LayersState, l: u8, m: &mut Model, a: &mut Actions) {
     a.layer_edit = Some("Color label");
 }
 
-/// Animation and camera folders: only in an Animation document (grayed
-/// out elsewhere, saying why).
-pub fn animation_entries(ui: &mut Ui, m: &Model) {
-    let why = if m.doc_kind == aurastudio_document::Kind::Animation { "Coming with the X-sheet" } else { "Animation documents only" };
-    for label in ["New animation folder", "New camera folder"] {
-        ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(why);
-    }
-}
-
 /// The Layer menu's entries for the marks and folders.
 pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     ui.menu_button("New filter layer", |ui| filter_layer_menu(ui, st, m, a));
-    animation_entries(ui, m);
+    ui.menu_button("New special folder", |ui| special_folder_entries(ui, m, a));
     ui.separator();
     for cmd in [LayerCmd::Group, LayerCmd::Ungroup] {
         if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(cmd.name()).shortcut_text(cmd.shortcut())).clicked() {
@@ -383,10 +398,15 @@ fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Action
         ui.set_min_width(150.0);
         if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
         ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
-        ui.separator();
-        animation_entries(ui, m);
     }).response.on_hover_text("Layer types");
     if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
+    let arrow = egui::Button::image(egui::Image::new(Icon::Expanded.source()).fit_to_exact_size(vec2(12.0, 12.0)).tint(Color32::from_gray(0xc8)))
+        .frame(false)
+        .min_size(vec2(14.0, 24.0));
+    egui::menu::menu_custom_button(ui, arrow, |ui| {
+        ui.set_min_width(150.0);
+        special_folder_entries(ui, m, a);
+    }).response.on_hover_text("Special folders");
     if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
 }
 
@@ -464,7 +484,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     // arrow), new folder, duplicate; the marks, then group; label filter
     // and delete on the right. Too narrow for one row: two, making and
     // deleting above, the marks below (nothing overlaps).
-    const ONE_ROW: f32 = 3.0 * 26.0 + 14.0 + 6.0 + 4.0 * 26.0 + 12.0 + 2.0 * 26.0;
+    const ONE_ROW: f32 = 3.0 * 26.0 + 2.0 * 14.0 + 6.0 + 4.0 * 26.0 + 12.0 + 2.0 * 26.0;
     if ui.available_width() >= ONE_ROW {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -565,7 +585,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         match c {
             RowMenu::Cmd(cmd) => apply(cmd, st, m, a),
             RowMenu::Label(l) => set_label(st, l, m, a),
-            RowMenu::Rename => st.renaming = m.layers.node(id).map(|n| (id, n.name().to_owned(), true)),
+            RowMenu::Rename => st.renaming = m.layers.node(id).filter(|n| n.frame().is_none()).map(|n| (id, n.name().to_owned(), true)),
             RowMenu::Duplicate => duplicate(st, m, a),
             RowMenu::Delete => delete_layer(st, notice, m, a),
             RowMenu::EditFilter => st.edit_filter = Some((id, false)),
@@ -575,7 +595,13 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     // Applied after the loop: the rows borrow the stack while drawing.
     if let Some((id, e)) = event {
         match e {
-            RowEvent::Select(mods) => select(st, m, id, mods, &shown_ids),
+            RowEvent::Select(mods) => {
+                select(st, m, id, mods, &shown_ids);
+                // A frame chosen: go to it.
+                if let Some(n) = m.layers.node(id).and_then(Node::frame) {
+                    if m.layers.time() != n { m.layers.set_time(n); a.recomposite = true; }
+                }
+            }
             RowEvent::ToggleVisible => {
                 if let Some(node) = m.layers.node_mut(id) { *node.visible_mut() ^= true; }
                 a.recomposite = true;
@@ -776,7 +802,8 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     let active = m.layers.active_id() == row.id;
     let picked = !active && st.selected.contains(&row.id);
     let is_filter = matches!(node, Node::Filter(_));
-    let folder_size = match node { Node::Folder(f) => Some(count(&f.children)), _ => None };
+    let folder_size = match node { Node::Folder(f) if row.frame.is_none() && !row.animation => Some(count(&f.children)), _ => None };
+    let sub_cels = match node { Node::Folder(f) => f.children.len(), _ => 0 };
     let label = label_color(props.label);
 
     let painter = ui.painter_at(rect);
@@ -805,10 +832,11 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         painter.rect_filled(strip, 1.5, c);
     }
 
-    // Eye, at the far left whatever the depth (CSP / Krita).
-    let eye = Rect::from_center_size(pos2(rect.left() + EYE_X, rect.center().y), vec2(22.0, 22.0));
+    // Eye, at the far left whatever the depth (CSP / Krita). A frame has
+    // none: the current frame decides which one shows.
+    let eye = if row.frame.is_some() { Rect::NOTHING } else { Rect::from_center_size(pos2(rect.left() + EYE_X, rect.center().y), vec2(22.0, 22.0)) };
     let (eye_icon, eye_col) = if visible { (Icon::Eye, theme::TEXT) } else { (Icon::EyeClosed, if active { Color32::from_white_alpha(170) } else { theme::TEXT_WEAK }) };
-    crate::icons::paint(ui, eye_icon, eye, 16.0, eye_col);
+    if row.frame.is_none() { crate::icons::paint(ui, eye_icon, eye, 16.0, eye_col); }
 
     // Lock, at the far right (Krita).
     let lock = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(22.0, 22.0));
@@ -845,7 +873,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     }
 
     // Content, indented by folder depth (and clipping).
-    let mut x = eye.right() + 4.0 + row.depth as f32 * INDENT;
+    let mut x = rect.left() + EYE_X + 11.0 + 4.0 + row.depth as f32 * INDENT;
     if row.clipped { x += CLIP_INDENT; }
     let mut toggle_rect = Rect::NOTHING;
     let icon_box = if row.is_folder {
@@ -854,8 +882,16 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         let chevron = if row.collapsed { Icon::Collapsed } else { Icon::Expanded };
         crate::icons::paint(ui, chevron, toggle_rect, 13.0, theme::TEXT_WEAK);
         let b = Rect::from_center_size(pos2(toggle_rect.right() + 4.0 + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
-        let folder = if row.collapsed { Icon::Folder } else { Icon::FolderOpen };
+        let folder = if row.animation { Icon::Film } else if row.collapsed { Icon::Folder } else { Icon::FolderOpen };
         crate::icons::paint(ui, folder, b, 20.0, if active { theme::TEXT } else { label.unwrap_or(theme::TEXT_WEAK) });
+        b
+    } else if let Some(n) = row.frame {
+        // A frame: its number on a card (shown now: brighter).
+        let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
+        let card = Rect::from_center_size(b.center(), vec2(THUMB - 4.0, THUMB - 10.0));
+        painter.rect_filled(card, 4.0, if active { Color32::from_black_alpha(70) } else if visible { theme::WIDGET_HOVER } else { theme::WIDGET });
+        painter.rect_stroke(card, 4.0, Stroke::new(1.0_f32, if visible || active { theme::TEXT } else { theme::BORDER }));
+        painter.text(card.center(), egui::Align2::CENTER_CENTER, n.to_string(), egui::FontId::proportional(if n < 1000 { 13.0 } else { 10.0 }), theme::TEXT);
         b
     } else if is_filter {
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
@@ -885,7 +921,10 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     // "100 % Normal" above the name, like CSP.
     let text_x = icon_box.right() + 8.0;
     let name_rect = Rect::from_min_max(pos2(text_x, rect.center().y - 4.0), pos2(marks_left - 4.0, rect.center().y + 14.0));
+    let frames = if row.animation { m.layers.frames(row.id).len() } else { 0 };
     let info = match folder_size {
+        _ if row.animation => format!("Animation  ·  {frames} frame{}", if frames == 1 { "" } else { "s" }),
+        _ if row.frame.is_some() => format!("{sub_cels} sub-cels{}", if visible { "  ·  shown" } else { "" }),
         Some(n) => format!("{:.0} %  {}  ·  {n} layer{}", opacity * 100.0, blend, if n == 1 { "" } else { "s" }),
         None if is_filter => format!("{:.0} %  Filter: {}", opacity * 100.0, blend),
         None => format!("{:.0} %  {}", opacity * 100.0, blend),
@@ -932,7 +971,8 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
 
     let pt = resp.interact_pointer_pos();
     if resp.double_clicked() && !renaming {
-        if pt.is_some_and(|pt| pt.x >= text_x && pt.x < marks_left) {
+        // (A frame's name is its place in time.)
+        if row.frame.is_none() && pt.is_some_and(|pt| pt.x >= text_x && pt.x < marks_left) {
             st.renaming = Some((row.id, name, true));
             return None;
         }

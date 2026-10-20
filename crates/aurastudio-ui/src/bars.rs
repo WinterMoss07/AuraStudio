@@ -153,8 +153,10 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     let n = m.layers.layer_count();
                     // Angle shown only when the canvas is turned.
                     let angle = if m.view_angle.abs() >= 0.05 { format!("  ·  {:.0}°", m.view_angle) } else { String::new() };
+                    // Animation: the current frame first.
+                    let frame = if m.doc_kind == aurastudio_document::Kind::Animation { format!("Frame {}  ·  ", m.layers.time()) } else { String::new() };
                     ui.label(RichText::new(format!(
-                        "{}  ·  {} × {} px  ·  {} layer{}  ·  {:.0} %{}",
+                        "{frame}{}  ·  {} × {} px  ·  {} layer{}  ·  {:.0} %{}",
                         m.doc_kind.name(), m.layers.width, m.layers.height, n, if n > 1 { "s" } else { "" },
                         m.view_zoom * 100.0, angle,
                     )).small().color(theme::TEXT_WEAK));

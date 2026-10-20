@@ -7,13 +7,13 @@ use std::collections::HashMap;
 
 use aurastudio_canvas::BlendMode;
 
-use crate::{first_layer_id, FolderBlend, LayerStack, Node, Props};
+use crate::{first_layer_id, FolderBlend, FolderKind, LayerStack, Node, Props};
 
 /// A node's settings.
 #[derive(Clone, Debug, PartialEq)]
 enum Settings {
     Layer { name: String, opacity: f32, blend: BlendMode, locked: bool, props: Props },
-    Folder { name: String, opacity: f32, blend: FolderBlend, locked: bool, props: Props },
+    Folder { name: String, opacity: f32, blend: FolderBlend, locked: bool, props: Props, kind: FolderKind },
     Filter { name: String, opacity: f32, locked: bool, props: Props, filter: aurastudio_filters::Filter },
 }
 
@@ -48,13 +48,21 @@ fn shape(n: &Node) -> Shape {
     let (settings, children, collapsed) = match n {
         Node::Layer(l) => (Settings::Layer { name: l.name.clone(), opacity: l.opacity, blend: l.blend, locked: l.locked, props: l.props }, Vec::new(), false),
         Node::Folder(f) => (
-            Settings::Folder { name: f.name.clone(), opacity: f.opacity, blend: f.blend, locked: f.locked, props: f.props },
+            Settings::Folder { name: f.name.clone(), opacity: f.opacity, blend: f.blend, locked: f.locked, props: f.props, kind: undone_kind(&f.kind) },
             f.children.iter().map(shape).collect(),
             f.collapsed,
         ),
         Node::Filter(f) => (Settings::Filter { name: f.name.clone(), opacity: f.opacity, locked: f.locked, props: f.props, filter: f.filter.clone() }, Vec::new(), false),
     };
     Shape { id: n.id(), settings, visible: n.visible(), collapsed, children }
+}
+
+/// A folder's kind as undo keeps it: which sub-cel is chosen is not an
+/// edit (like the active layer).
+fn undone_kind(k: &FolderKind) -> FolderKind {
+    let mut k = k.clone();
+    if let FolderKind::Animation(a) = &mut k { a.sub = 0; }
+    k
 }
 
 /// Take `nodes` apart into `pool` (folders emptied).
@@ -78,8 +86,13 @@ fn build(shapes: &[Shape], pool: &mut HashMap<u64, Node>, current: &HashMap<u64,
             (Node::Layer(l), Settings::Layer { name, opacity, blend, locked, props }) => {
                 (l.name, l.opacity, l.blend, l.locked, l.props) = (name.clone(), *opacity, *blend, *locked, *props);
             }
-            (Node::Folder(f), Settings::Folder { name, opacity, blend, locked, props }) => {
-                (f.name, f.opacity, f.blend, f.locked, f.props) = (name.clone(), *opacity, *blend, *locked, *props);
+            (Node::Folder(f), Settings::Folder { name, opacity, blend, locked, props, kind }) => {
+                // (The sub-cel chosen stays as it is now.)
+                let mut kind = kind.clone();
+                if let FolderKind::Animation(a) = &mut kind {
+                    a.sub = f.anim().map_or(0, |now| now.sub).min(a.template.len().saturating_sub(1));
+                }
+                (f.name, f.opacity, f.blend, f.locked, f.props, f.kind) = (name.clone(), *opacity, *blend, *locked, *props, kind);
                 if !keep { f.collapsed = s.collapsed; }
                 f.children = build(&s.children, pool, current);
             }
@@ -132,6 +145,7 @@ impl LayerStack {
         } else if self.path(self.active).is_none() {
             self.active = first_layer_id(&self.root).unwrap_or(0);
         }
+        self.settle();
         // Leftovers: their children were taken apart, the shapes keep
         // where they go.
         pool.into_values().collect()

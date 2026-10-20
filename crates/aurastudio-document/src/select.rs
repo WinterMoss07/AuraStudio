@@ -125,14 +125,16 @@ impl Document {
     fn wand(&self, x: u32, y: u32, wand: &Wand, aa: bool) -> Option<Selection> {
         let (w, h) = (self.layers.width, self.layers.height);
         if x >= w || y >= h { return None; }
-        let active = self.layers.active_id();
-        // A folder has no pixels of its own: it looks at everything.
+        // A folder has no pixels of its own: it looks at everything (a
+        // frame: its chosen sub-cel).
+        let own = self.layers.layer_of_active();
+        let active = own.unwrap_or(self.layers.active_id());
         let mut p = wand.fill;
-        if p.refer == Refer::Layer && !matches!(self.layers.active_node(), Node::Layer(_)) { p.refer = Refer::All; }
+        if p.refer == Refer::Layer && own.is_none() { p.refer = Refer::All; }
         let grow = p.expand;
         p.expand = 0;
         let pick = p.pick(&self.layers, active);
-        let layer = if matches!(self.layers.active_node(), Node::Layer(_)) { active } else { first_layer(&self.layers.root)? };
+        let layer = match own { Some(id) => id, None => first_layer(&self.layers.root)? };
         let area = if wand.contiguous {
             aurastudio_layers::flood_with(&self.layers, layer, x, y, p, None, pick)?
         } else {

@@ -21,6 +21,8 @@ pub enum Icon {
     EllipseSelect, PolySelect, Wand, Transform,
     SelReplace, SelAdd, SelSubtract, SelIntersect,
     Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Check, Move,
+    // Animation.
+    Film, Minus, ArrowUp, ArrowDown, Camera, Comics,
 }
 
 impl Icon {
@@ -90,6 +92,12 @@ impl Icon {
             Icon::FlipV      => svg!("../icons/flip-vertical.svg"),
             Icon::Check      => svg!("../icons/check.svg"),
             Icon::Move       => svg!("../icons/move.svg"),
+            Icon::Film       => svg!("../icons/film.svg"),
+            Icon::Minus      => svg!("../icons/minus.svg"),
+            Icon::ArrowUp    => svg!("../icons/arrow-up.svg"),
+            Icon::ArrowDown  => svg!("../icons/arrow-down.svg"),
+            Icon::Camera     => svg!("../icons/video.svg"),
+            Icon::Comics     => svg!("../icons/book-open.svg"),
         }
     }
 }

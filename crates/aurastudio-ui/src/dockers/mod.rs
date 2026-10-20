@@ -3,6 +3,7 @@
 //! (aurastudio-layers, aurastudio-brush...), which know nothing about egui.
 
 pub mod canvas;
+pub mod cel_template;
 pub mod color;
 pub mod layers;
 pub mod tool_list;
@@ -14,11 +15,11 @@ use egui_dock::{DockState, NodeIndex, TabViewer};
 use crate::{Actions, Model, Notice};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Tab { Color, ToolOptions, Tools, Layers, Canvas }
+pub enum Tab { Color, ToolOptions, Tools, Layers, Canvas, CelTemplate }
 
 impl Tab {
     /// In the Window menu's order.
-    pub const ALL: [Tab; 5] = [Tab::Color, Tab::Tools, Tab::ToolOptions, Tab::Layers, Tab::Canvas];
+    pub const ALL: [Tab; 6] = [Tab::Color, Tab::Tools, Tab::ToolOptions, Tab::Layers, Tab::Canvas, Tab::CelTemplate];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -27,6 +28,7 @@ impl Tab {
             Tab::Tools       => "Tools",
             Tab::Layers      => "Layers",
             Tab::Canvas      => "Canvas",
+            Tab::CelTemplate => "Cel template",
         }
     }
 
@@ -37,7 +39,7 @@ impl Tab {
             Tab::Tools => Some(Tab::Color),
             Tab::Layers => Some(Tab::Canvas),
             Tab::Canvas => Some(Tab::Layers),
-            Tab::ToolOptions => None,
+            Tab::ToolOptions | Tab::CelTemplate => None,
         }
     }
 }
@@ -82,6 +84,7 @@ pub struct Viewer<'s, 'a> {
     pub color:  &'s mut color::ColorState,
     pub layers: &'s mut layers::LayersState,
     pub tool_list: &'s mut tool_list::ToolListState,
+    pub cel_rename: &'s mut Option<(usize, String, bool)>,
     pub notice: &'s mut Notice,
     pub m:      &'s mut Model<'a>,
     pub a:      &'s mut Actions,
@@ -107,11 +110,12 @@ impl TabViewer for Viewer<'_, '_> {
             Tab::Color       => color::show(ui, self.color, self.m),
             Tab::ToolOptions => tool_options::show(ui, &mut self.tool_list.previews, self.m, self.a),
             Tab::Tools       => tool_list::show(ui, self.tool_list, self.m, self.a),
-            Tab::Layers | Tab::Canvas if self.m.home => {
+            Tab::Layers | Tab::Canvas | Tab::CelTemplate if self.m.home => {
                 ui.label(egui::RichText::new("No document").color(crate::theme::TEXT_WEAK));
             }
             Tab::Layers      => layers::show(ui, self.layers, self.notice, self.m, self.a),
             Tab::Canvas      => canvas::show(ui, self.m, self.a),
+            Tab::CelTemplate => cel_template::show(ui, self.cel_rename, self.m, self.a),
         }).response.rect;
         // Body margins included.
         self.content.insert(*tab, content.height() + 16.0);
@@ -137,7 +141,8 @@ mod tests {
     #[test]
     fn dockers_hide_and_come_back() {
         let mut dock = default_dock();
-        for tab in Tab::ALL { assert!(is_shown(&dock, tab)); }
+        // (The Cel template: hidden at first, shown in animation work.)
+        for tab in Tab::ALL { assert_eq!(is_shown(&dock, tab), tab != Tab::CelTemplate); }
         set_shown(&mut dock, Tab::Tools, false);
         assert!(!is_shown(&dock, Tab::Tools) && is_shown(&dock, Tab::Color));
         set_shown(&mut dock, Tab::Tools, true);
