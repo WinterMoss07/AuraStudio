@@ -500,6 +500,8 @@ impl Run {
             let back = aurastudio_file::read(buf, DocId(1), "back", 1 << 15).expect("a saved file must open").doc;
             assert_eq!(print(&back.layers), print(&d.layers), "the file gives another document");
             assert_eq!(back.layers.active_id(), d.layers.active_id());
+            let rows = |l: &LayerStack| l.rows().iter().map(|r| (r.id, r.depth, r.collapsed, r.clipped, r.locked_by_parent, r.reference_by_parent, r.draft_by_parent, r.below)).collect::<Vec<_>>();
+            assert_eq!(rows(&back.layers), rows(&d.layers), "the file folds, clips or marks other rows");
             assert_eq!(back.history().redo_len(), d.history().export(usize::MAX).1.len());
             back
         };

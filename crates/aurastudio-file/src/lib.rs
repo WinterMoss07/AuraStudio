@@ -636,6 +636,116 @@ mod tests {
         assert_eq!(back.layers.composite_rect((0, 0, 96, 64)), doc.layers.composite_rect((0, 0, 96, 64)));
     }
 
+    /// Everything a node keeps, its pixels as a hash.
+    fn describe(nodes: &[Node], out: &mut Vec<String>) {
+        for n in nodes {
+            out.push(match n {
+                Node::Layer(l) => {
+                    let h = l.tiles.to_rgba().iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3));
+                    format!("layer {} {:?} vis={} op={} {:?} lock={} bg={} {:?} px={h:x}", l.id, l.name, l.visible, l.opacity, l.blend, l.locked, l.background, l.props)
+                }
+                Node::Filter(f) => format!("filter {} {:?} vis={} op={} lock={} {:?} {:?}", f.id, f.name, f.visible, f.opacity, f.locked, f.props, f.filter),
+                Node::Folder(f) => format!("folder {} {:?} vis={} op={} {:?} lock={} fold={} {:?} [{}]", f.id, f.name, f.visible, f.opacity, f.blend, f.locked, f.collapsed, f.props, f.children.len()),
+            });
+            if let Node::Folder(f) = n { describe(&f.children, out); }
+        }
+    }
+
+    fn rows(l: &LayerStack) -> Vec<String> {
+        l.rows().iter().map(|r| format!("{} {} {} {} {} {} {} {} {:?}", r.id, r.depth, r.is_folder, r.collapsed, r.locked_by_parent, r.clipped, r.reference_by_parent, r.draft_by_parent, r.below)).collect()
+    }
+
+    /// Every setting of every kind of node, folders three deep, every
+    /// blend mode, label and filter: all of it comes back from the file.
+    #[test]
+    fn every_layer_setting_comes_back() {
+        use aurastudio_filters::GROUPS;
+        let (w, h) = (130, 70);
+        let mut seed = 7u32;
+        let mut rnd = move || { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); seed >> 8 };
+        let mut id = 0;
+        let mut next = || { id += 1; id };
+        let layer = |id: u64, name: &str, background: bool, rnd: &mut dyn FnMut() -> u32| {
+            let mut l = Layer::new(w, h, background);
+            l.id = id;
+            l.name = name.into();
+            // Some tiles painted, the others left to the fill.
+            let fill = l.tiles.fill();
+            let px: Vec<u8> = (0..w * h * 4).map(|i| if (i / 4 % w) < 70 { (rnd() & 255) as u8 } else { fill[(i % 4) as usize] }).collect();
+            l.tiles = Tiles::from_rgba(w, h, &px, fill);
+            l
+        };
+        let props = |label: u8, clip, reference, draft| Props { label, clip, reference, draft };
+
+        let mut paper = layer(next(), "Paper", true, &mut rnd);
+        paper.locked = true;
+        let mut lines = layer(next(), "Lines", false, &mut rnd);
+        lines.props = props(1, false, true, false);
+        let base = layer(next(), "Base", false, &mut rnd);
+        let mut shadow = layer(next(), "Shadow", false, &mut rnd);
+        (shadow.blend, shadow.opacity, shadow.props) = (BlendMode::Multiply, 0.33, props(3, true, false, false));
+        let clip_blur = FilterLayer {
+            id: next(), name: "Soft".into(), visible: false, opacity: 0.6, locked: true, props: props(4, true, false, false),
+            filter: Filter { values: vec![2.75], ..Filter::new(aurastudio_filters::Kind::GaussianBlur) },
+        };
+        let mut sketch = layer(next(), "Sketch", false, &mut rnd);
+        (sketch.visible, sketch.locked, sketch.props) = (false, true, props(5, false, true, true));
+        let odd = layer(next(), "Ink é 漢字 🎨 \"quoted\"", false, &mut rnd);
+        let deep = Folder { id: next(), name: "Deep".into(), visible: true, opacity: 0.9, blend: FolderBlend::Isolated(BlendMode::Screen),
+            locked: false, collapsed: true, children: vec![Node::Layer(odd)], props: props(6, false, false, false) };
+        let sketch_id = sketch.id;
+        let nested = Folder { id: next(), name: "Nested".into(), visible: false, opacity: 1.0, blend: FolderBlend::PassThrough,
+            locked: true, collapsed: false, children: vec![Node::Layer(sketch), Node::Folder(deep)], props: props(0, false, false, true) };
+        let colors = Folder { id: next(), name: "Colors".into(), visible: true, opacity: 0.7, blend: FolderBlend::Isolated(BlendMode::Multiply),
+            locked: false, collapsed: true, children: vec![Node::Layer(base), Node::Layer(shadow), Node::Filter(clip_blur), Node::Folder(nested)],
+            props: props(2, false, false, false) };
+        let mut root = vec![Node::Layer(paper), Node::Layer(lines), Node::Folder(colors)];
+        for (i, mode) in BlendMode::ALL.iter().enumerate() {
+            let mut l = layer(next(), mode.name(), false, &mut rnd);
+            (l.blend, l.opacity) = (*mode, (i as f32 + 1.0) / 14.0);
+            l.props.label = (i % LABELS.len()) as u8;
+            l.props.clip = i % 3 == 1;
+            root.push(Node::Layer(l));
+        }
+        for kind in GROUPS.iter().flat_map(|g| g.1.iter()) {
+            let mut f = Filter::new(*kind);
+            for v in f.values.iter_mut() { *v *= 1.25; }
+            f.color = [(rnd() & 255) as u8, 40, 200];
+            root.push(Node::Filter(FilterLayer { id: next(), name: kind.name().into(), visible: true, opacity: 0.5, locked: false, props: Props::default(), filter: f }));
+        }
+        let mut doc = Document::new(DocId(1), "t", w, h);
+        doc.layers = LayerStack::from_parts(w, h, root, sketch_id).unwrap();
+        doc.dpi = 350.0;
+
+        let before = { let mut v = Vec::new(); describe(&doc.layers.root, &mut v); v };
+        let back = roundtrip(&doc).doc;
+        let after = { let mut v = Vec::new(); describe(&back.layers.root, &mut v); v };
+        for (a, b) in before.iter().zip(&after) { assert_eq!(a, b); }
+        assert_eq!(before.len(), after.len());
+        assert_eq!(rows(&back.layers), rows(&doc.layers));
+        assert_eq!((back.layers.active_id(), back.dpi, back.layers.width, back.layers.height), (sketch_id, 350.0, w, h));
+        assert_eq!(back.layers.composite_rect((0, 0, w, h)), doc.layers.composite_rect((0, 0, w, h)));
+    }
+
+    /// Where the time goes opening a 2000×3000 JPG (OPEN_JPG=path).
+    #[test]
+    #[ignore]
+    fn open_speed() {
+        let path = std::path::PathBuf::from(std::env::var("OPEN_JPG").unwrap());
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let img = image::ImageReader::open(&path).unwrap().with_guessed_format().unwrap().decode().unwrap().into_rgba8();
+            let decode = t.elapsed();
+            let (w, h) = img.dimensions();
+            let t = std::time::Instant::now();
+            let layers = LayerStack::from_image(w, h, "x", img.as_raw());
+            let tiles = t.elapsed();
+            let t = std::time::Instant::now();
+            let _ = import_image(&path, DocId(1), 16384).unwrap();
+            println!("decode {:.0} ms, tiles {:.0} ms, import_image {:.0} ms ({} layers)", decode.as_secs_f64() * 1e3, tiles.as_secs_f64() * 1e3, t.elapsed().as_secs_f64() * 1e3, layers.layer_count());
+        }
+    }
+
     #[test]
     fn only_the_newest_undo_steps_are_kept() {
         let mut doc = Document::new(DocId(1), "t", 16, 16);
