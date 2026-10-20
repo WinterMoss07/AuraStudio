@@ -460,7 +460,9 @@ impl LayerStack {
         }
         let Some(original) = self.node(src) else { return false };
         let original = clone_shallow(original);
-        let copy = self.clone_node(&original);
+        let mut copy = self.clone_node(&original);
+        // One reference per folder: the copy isn't one (as Duplicate).
+        copy.props_mut().reference = false;
         let id = copy.id();
         let Some(Node::Folder(f)) = self.node_mut(folder) else { return false };
         f.children.push(copy);
@@ -756,6 +758,12 @@ mod timing_tests {
         let sub = f.children.last().unwrap().id();
         s.set_layer_rect(sub, (0, 0, 1, 1), &[99, 0, 0, 255]);
         assert_eq!(marks(&s, a)[1], (2, 2));
+        // A reference frame's copy isn't a second reference.
+        let one = s.frame_at(a, 1).unwrap();
+        s.node_mut(one).unwrap().props_mut().reference = true;
+        assert!(s.copy_frame(a, 1, 8, Onto::Refuse));
+        let Some(Node::Folder(f)) = s.node(a) else { panic!() };
+        assert_eq!(f.children.iter().filter(|n| n.props().reference).count(), 1);
         s.check_animation().unwrap();
     }
 

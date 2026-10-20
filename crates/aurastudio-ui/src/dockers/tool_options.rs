@@ -9,7 +9,7 @@ use crate::widgets::{blend_combo, hardness_slider, opacity_slider, size_slider};
 use crate::{theme, Model, Tool};
 
 /// Height of the stroke preview (points).
-const STRIP: f32 = 56.0;
+const STRIP: f32 = 38.0;
 
 pub fn show(ui: &mut Ui, previews: &mut StrokePreviews, m: &mut Model, a: &mut crate::Actions) {
     if !m.tool.paints() {

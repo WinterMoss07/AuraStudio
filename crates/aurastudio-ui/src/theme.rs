@@ -54,16 +54,16 @@ pub fn apply(ctx: &egui::Context) {
 
     style.text_styles = [
         (TextStyle::Small,     FontId::new(11.0, FontFamily::Proportional)),
-        (TextStyle::Body,      FontId::new(13.0, FontFamily::Proportional)),
-        (TextStyle::Button,    FontId::new(13.0, FontFamily::Proportional)),
+        (TextStyle::Body,      FontId::new(12.5, FontFamily::Proportional)),
+        (TextStyle::Button,    FontId::new(12.5, FontFamily::Proportional)),
         (TextStyle::Heading,   FontId::new(15.0, FontFamily::Proportional)),
         (TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace)),
     ].into();
 
     let s = &mut style.spacing;
-    s.item_spacing    = egui::vec2(6.0, 5.0);
-    s.button_padding  = egui::vec2(7.0, 3.0);
-    s.interact_size.y = 22.0;
+    s.item_spacing    = egui::vec2(5.0, 4.0);
+    s.button_padding  = egui::vec2(6.0, 2.0);
+    s.interact_size.y = 19.0;
     s.slider_width    = 140.0;
     s.window_margin   = Margin::same(8.0);
     s.menu_margin     = Margin::same(6.0);
@@ -119,7 +119,7 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     let mut d = egui_dock::Style::from_egui(style);
     d.main_surface_border_stroke = Stroke::NONE;
     d.tab_bar.bg_fill = PANEL;
-    d.tab_bar.height  = 30.0;
+    d.tab_bar.height  = 25.0;
     d.tab_bar.hline_color = PANEL;
     d.tab_bar.rounding = Rounding::ZERO;
     d.separator.width = 2.0;
@@ -132,7 +132,7 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     d.tab.tab_body.bg_fill = PANEL;
     d.tab.tab_body.stroke  = Stroke::NONE;
     d.tab.tab_body.rounding = Rounding::ZERO;
-    d.tab.tab_body.inner_margin = Margin::same(8.0);
+    d.tab.tab_body.inner_margin = Margin::same(6.0);
     d.tab.hline_below_active_tab_name = false;
     let pill = Rounding::same(2.5);
     for (t, bg, text) in [

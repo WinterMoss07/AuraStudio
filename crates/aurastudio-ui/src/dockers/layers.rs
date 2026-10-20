@@ -11,8 +11,8 @@ use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Str
 use crate::widgets::*;
 use crate::{theme, Actions, BlendMode, Model, Notice};
 
-const THUMB: f32 = 36.0;
-const ROW_H: f32 = 44.0;
+const THUMB: f32 = 28.0;
+const ROW_H: f32 = 34.0;
 const INDENT: f32 = 14.0;
 /// Clipped rows: the thumbnail moves right (the chain shows what to).
 const CLIP_INDENT: f32 = 10.0;
@@ -484,7 +484,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     // arrow), new folder, duplicate; the marks, then group; label filter
     // and delete on the right. Too narrow for one row: two, making and
     // deleting above, the marks below (nothing overlaps).
-    const ONE_ROW: f32 = 3.0 * 26.0 + 2.0 * 14.0 + 6.0 + 4.0 * 26.0 + 12.0 + 2.0 * 26.0;
+    const ONE_ROW: f32 = 3.0 * 22.0 + 2.0 * 14.0 + 6.0 + 4.0 * 22.0 + 12.0 + 2.0 * 22.0;
     if ui.available_width() >= ONE_ROW {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -931,9 +931,9 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     };
     crate::widgets::elided_text(
         &painter,
-        pos2(text_x, rect.center().y - 9.0),
+        pos2(text_x, rect.center().y - 7.0),
         &info,
-        egui::FontId::proportional(10.5),
+        egui::FontId::proportional(10.0),
         if active { Color32::from_white_alpha(200) } else { theme::TEXT_WEAK },
         name_rect.width(),
     );
@@ -958,10 +958,10 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     } else {
         // Long names (an imported image's file name) end with "…" before
         // the marks instead of running under them.
-        let font = if row.is_folder { egui::FontId::proportional(13.5) } else { egui::FontId::proportional(13.0) };
+        let font = if row.is_folder { egui::FontId::proportional(12.5) } else { egui::FontId::proportional(12.0) };
         crate::widgets::elided_text(
             &painter,
-            pos2(text_x, rect.center().y + 7.0),
+            pos2(text_x, rect.center().y + 6.0),
             &name,
             font,
             if active { Color32::WHITE } else { theme::TEXT },

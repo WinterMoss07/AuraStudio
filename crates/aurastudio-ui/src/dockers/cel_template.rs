@@ -13,7 +13,7 @@ use crate::widgets::icon_button;
 use crate::{theme, Actions, Model};
 
 /// Rows of the docker.
-const ROW_H: f32 = 28.0;
+const ROW_H: f32 = 24.0;
 
 /// The frame whose sub-cels are shown: the active one, else the one the
 /// folder shows now.
@@ -67,8 +67,8 @@ pub fn show(ui: &mut Ui, renaming: &mut Option<(usize, String, bool)>, m: &mut M
         // Eye on the left, lock on the right (as in the Layers docker).
         let eye = egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), vec2(22.0, 22.0));
         let lock = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), vec2(22.0, 22.0));
-        crate::icons::paint(ui, if visible { Icon::Eye } else { Icon::EyeClosed }, eye, 16.0, if visible { theme::TEXT } else { theme::TEXT_WEAK });
-        crate::icons::paint(ui, if locked { Icon::Lock } else { Icon::LockOpen }, lock, 15.0,
+        crate::icons::paint(ui, if visible { Icon::Eye } else { Icon::EyeClosed }, eye, 14.0, if visible { theme::TEXT } else { theme::TEXT_WEAK });
+        crate::icons::paint(ui, if locked { Icon::Lock } else { Icon::LockOpen }, lock, 13.0,
             if locked { theme::TEXT } else if on { Color32::from_white_alpha(110) } else { theme::TEXT_WEAK.gamma_multiply(0.5) });
         // The radio: where strokes go.
         let dot = egui::pos2(eye.right() + 12.0, rect.center().y);

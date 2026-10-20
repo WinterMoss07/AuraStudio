@@ -260,7 +260,7 @@ impl Default for ShapeOptions {
 }
 
 /// Width of the toolbox.
-pub const TOOLBOX_WIDTH: f32 = 40.0;
+pub const TOOLBOX_WIDTH: f32 = 34.0;
 
 /// The toolbox: a small block of the UI surface on the left edge of the
 /// canvas, centered, only as tall as its tools (Krita's optimized layout);
@@ -302,7 +302,7 @@ pub fn toolbox(ctx: &egui::Context, at: Pos2, m: &mut Model) -> Rect {
 }
 
 fn tool_button(ui: &mut Ui, group: Group, selected: bool, enabled: bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(TOOLBOX_WIDTH - 8.0, 30.0), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, resp) = ui.allocate_exact_size(vec2(TOOLBOX_WIDTH - 8.0, 26.0), if enabled { Sense::click() } else { Sense::hover() });
     let resp = resp.on_hover_text(format!("{} ({})", group.name(), group.key()));
     let p = ui.painter_at(rect);
     if selected {
@@ -315,7 +315,7 @@ fn tool_button(ui: &mut Ui, group: Group, selected: bool, enabled: bool) -> bool
         (true, true) => theme::TEXT,
         (true, false) => Color32::from_gray(0xc8),
     };
-    crate::icons::paint(ui, group.icon(), rect, 20.0, col);
+    crate::icons::paint(ui, group.icon(), rect, 17.0, col);
     enabled && resp.clicked()
 }
 

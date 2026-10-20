@@ -237,20 +237,20 @@ pub fn drag_autoscroll(ui: &Ui) {
 
 /// Frameless toolbar button with an icon.
 pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), if enabled { Sense::click() } else { Sense::hover() });
     let resp = resp.on_hover_text(tooltip);
     if enabled && resp.hovered() {
         ui.painter().rect_filled(rect, 2.5, theme::WIDGET_HOVER);
     }
     let col = if enabled { theme::TEXT } else { theme::TEXT_WEAK.gamma_multiply(0.45) };
-    crate::icons::paint(ui, icon, rect, 16.0, col);
+    crate::icons::paint(ui, icon, rect, 14.0, col);
     enabled && resp.clicked()
 }
 
 /// An icon button that stays lit while `on` (a layer mark, a filter).
 /// Returns its response (clicked, or a popup under it).
 pub fn icon_toggle(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool, on: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 20.0), if enabled { Sense::click() } else { Sense::hover() });
     let resp = resp.on_hover_text(tooltip);
     if on {
         ui.painter().rect_filled(rect, 2.5, theme::ACCENT_DIM);
@@ -258,7 +258,7 @@ pub fn icon_toggle(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool, on: bo
         ui.painter().rect_filled(rect, 2.5, theme::WIDGET_HOVER);
     }
     let col = if !enabled { theme::TEXT_WEAK.gamma_multiply(0.45) } else if on { theme::TEXT } else { Color32::from_gray(0xc8) };
-    crate::icons::paint(ui, icon, rect, 16.0, col);
+    crate::icons::paint(ui, icon, rect, 14.0, col);
     resp
 }
 
@@ -284,13 +284,13 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
     let from_t = |t: f32| match mid { Some(m) => size_curve::from_t(t, lo, m, hi), None => lo + t * (hi - lo) };
 
     let id = ui.id().with(("fill_slider", id_salt));
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 18.0), Sense::click_and_drag());
     let editing_id = id.with("editing");
     // (text typed so far, focus already given)
     let editing: Option<(String, bool)> = ui.data(|d| d.get_temp(editing_id));
 
     if let Some((mut text, focused)) = editing {
-        ui.painter().rect(rect, 6.0, theme::WIDGET, Stroke::new(1.0_f32, theme::ACCENT));
+        ui.painter().rect(rect, 2.5, theme::WIDGET, Stroke::new(1.0_f32, theme::ACCENT));
         let edit = ui.put(rect, egui::TextEdit::singleline(&mut text)
             .frame(false)
             .hint_text(format(value))
@@ -334,7 +334,7 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
     let shown = new.unwrap_or(value);
     let t = to_t(shown).clamp(0.0, 1.0);
     let painter = ui.painter_at(rect);
-    let r = 6.0;
+    let r = 2.5;
     let bg = if resp.hovered() || resp.dragged() { theme::WIDGET_HOVER } else { theme::WIDGET };
     painter.rect_filled(rect, r, bg);
     if t > 0.0 {
@@ -344,15 +344,15 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
         let right = if t >= 0.999 { r } else { 0.0 };
         painter.rect_filled(fill, egui::Rounding { nw: r, sw: r, ne: right, se: right }, theme::ACCENT);
     }
-    let font = egui::FontId::proportional(12.5);
+    let font = egui::FontId::proportional(11.5);
     let value = painter.layout_no_wrap(format(shown), font.clone(), theme::TEXT);
     let name = painter.layout_no_wrap(label.to_owned(), font, Color32::from_white_alpha(215));
     // Too narrow for both: the value alone (the label shows on hover).
-    let both = name.size().x + value.size().x + 9.0 * 2.0 + 8.0 <= rect.width();
+    let both = name.size().x + value.size().x + 7.0 * 2.0 + 8.0 <= rect.width();
     let y = rect.center().y;
     if both {
-        painter.galley(pos2(rect.left() + 9.0, y - name.size().y / 2.0), name, Color32::WHITE);
-        painter.galley(pos2(rect.right() - 9.0 - value.size().x, y - value.size().y / 2.0), value, Color32::WHITE);
+        painter.galley(pos2(rect.left() + 7.0, y - name.size().y / 2.0), name, Color32::WHITE);
+        painter.galley(pos2(rect.right() - 7.0 - value.size().x, y - value.size().y / 2.0), value, Color32::WHITE);
     } else {
         painter.galley(pos2(rect.center().x - value.size().x / 2.0, y - value.size().y / 2.0), value, Color32::WHITE);
         resp.on_hover_text(label);

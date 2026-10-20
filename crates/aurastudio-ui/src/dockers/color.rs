@@ -71,7 +71,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         // Swatch + hex field, split by hand so the field never overflows.
         let [r, g, b] = m.brush.color;
         let hex_w = 74.0;
-        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
         let swatch = Rect::from_min_max(row.min, pos2(row.right() - hex_w - 4.0, row.bottom()));
         let field = Rect::from_min_max(pos2(row.right() - hex_w, row.top() + 1.0), pos2(row.right(), row.bottom() - 1.0));
         ui.painter().rect_filled(swatch, 3.0, display_color([r, g, b]));

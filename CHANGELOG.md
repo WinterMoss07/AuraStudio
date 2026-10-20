@@ -3,6 +3,20 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.14.2 — 2026-10-20
+
+**Look**
+- Tighter UI: sliders 18 px high (were 24), stroke preview 38 px (was 56),
+  layer rows 34 px with 28 px thumbnails (were 44 / 36), icon buttons
+  22×20 with 14 px icons (were 26×24 / 16), toolbox 34 px wide (was 40).
+- Smaller text and spacing: body 12.5 px, item spacing 5×4, controls 19 px
+  high, dock tabs 25 px, dock margins 6 px; color docker and Cel template
+  rows shorter.
+
+**Fixes**
+- Copying a reference frame made a second reference in the animation
+  folder (found by the fuzz); the copy is no reference, as with Duplicate.
+
 ## 0.14.1 — 2026-10-20
 
 **Look**
