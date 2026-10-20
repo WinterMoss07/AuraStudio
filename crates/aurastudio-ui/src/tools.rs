@@ -18,6 +18,10 @@ pub enum Tool {
     Fill,
     Lasso,
     RectSelect,
+    EllipseSelect,
+    PolySelect,
+    MagicWand,
+    Transform,
     Line,
     Rectangle,
     Ellipse,
@@ -37,6 +41,10 @@ impl Tool {
             Tool::Fill       => "Fill",
             Tool::Lasso      => "Lasso selection",
             Tool::RectSelect => "Rectangle selection",
+            Tool::EllipseSelect => "Ellipse selection",
+            Tool::PolySelect => "Polygon selection",
+            Tool::MagicWand  => "Magic wand",
+            Tool::Transform  => "Transform",
             Tool::Line       => "Line",
             Tool::Rectangle  => "Rectangle",
             Tool::Ellipse    => "Ellipse",
@@ -53,6 +61,10 @@ impl Tool {
             Tool::Fill       => Icon::Fill,
             Tool::Lasso      => Icon::Lasso,
             Tool::RectSelect => Icon::RectSelect,
+            Tool::EllipseSelect => Icon::EllipseSelect,
+            Tool::PolySelect => Icon::PolySelect,
+            Tool::MagicWand  => Icon::Wand,
+            Tool::Transform  => Icon::Transform,
             Tool::Line       => Icon::Line,
             Tool::Rectangle  => Icon::Rectangle,
             Tool::Ellipse    => Icon::Ellipse,
@@ -67,8 +79,12 @@ impl Tool {
             Tool::Eraser     => "Erase",
             Tool::Picker     => "Click: take the color",
             Tool::Fill       => "Click: fill an area",
-            Tool::Lasso      => "Drag: freehand selection",
-            Tool::RectSelect => "Drag: rectangle selection",
+            Tool::Lasso      => "Drag. Shift: add, Alt: subtract",
+            Tool::RectSelect => "Drag. Shift: add, Alt: subtract",
+            Tool::EllipseSelect => "Drag. Shift: add, Alt: subtract",
+            Tool::PolySelect => "Click points. Enter: done",
+            Tool::MagicWand  => "Click. Shift: add, Alt: subtract",
+            Tool::Transform  => "Enter: apply, Esc: cancel",
             Tool::Line       => "Drag. Shift: 15° steps",
             Tool::Rectangle  => "Drag. Shift: square, Alt: centered",
             Tool::Ellipse    => "Drag. Shift: circle, Alt: centered",
@@ -92,16 +108,19 @@ impl Tool {
     pub fn paints(self) -> bool { matches!(self, Tool::Brush | Tool::Eraser) || self.is_shape() }
 
     pub fn is_shape(self) -> bool { Tool::SHAPES.contains(&self) }
+
+    /// Makes a selection.
+    pub fn selects(self) -> bool { matches!(self, Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect | Tool::PolySelect | Tool::MagicWand) }
 }
 
 /// A toolbox entry: a set of tools listed in the Tools docker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Group { Draw, Paint, Eraser, Fill, Picker, Geometry, Selection }
+pub enum Group { Draw, Paint, Eraser, Fill, Picker, Geometry, Selection, Transform }
 
 impl Group {
     /// Toolbox order. No hand or zoom tool: Space / Ctrl+Space drags and
     /// the wheel do that from any tool.
-    pub const ALL: [Group; 7] = [Group::Draw, Group::Paint, Group::Eraser, Group::Fill, Group::Picker, Group::Geometry, Group::Selection];
+    pub const ALL: [Group; 8] = [Group::Draw, Group::Paint, Group::Eraser, Group::Fill, Group::Picker, Group::Geometry, Group::Selection, Group::Transform];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -112,6 +131,7 @@ impl Group {
             Group::Picker => "Color picker",
             Group::Geometry => "Geometry",
             Group::Selection => "Selection",
+            Group::Transform => "Transform",
         }
     }
 
@@ -125,6 +145,7 @@ impl Group {
             Group::Picker => "I",
             Group::Geometry => "U",
             Group::Selection => "M",
+            Group::Transform => "T",
         }
     }
 
@@ -138,6 +159,7 @@ impl Group {
             Group::Picker => Icon::Picker,
             Group::Geometry => Icon::Shapes,
             Group::Selection => Icon::RectSelect,
+            Group::Transform => Icon::Transform,
         }
     }
 
@@ -150,7 +172,8 @@ impl Group {
             Group::Fill => &[Tool::Fill],
             Group::Picker => &[Tool::Picker],
             Group::Geometry => &Tool::SHAPES,
-            Group::Selection => &[Tool::RectSelect, Tool::Lasso],
+            Group::Selection => &[Tool::RectSelect, Tool::EllipseSelect, Tool::Lasso, Tool::PolySelect, Tool::MagicWand],
+            Group::Transform => &[Tool::Transform],
         }
     }
 
@@ -183,7 +206,8 @@ impl Group {
             Tool::Fill => Group::Fill,
             Tool::Picker => Group::Picker,
             Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => Group::Geometry,
-            Tool::RectSelect | Tool::Lasso => Group::Selection,
+            Tool::RectSelect | Tool::EllipseSelect | Tool::Lasso | Tool::PolySelect | Tool::MagicWand => Group::Selection,
+            Tool::Transform => Group::Transform,
         }
     }
 
@@ -261,7 +285,7 @@ pub fn toolbox(ctx: &egui::Context, at: Pos2, m: &mut Model) -> Rect {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     let current = Group::current(*m.tool, *m.preset, m.presets);
                     for g in Group::ALL {
-                        if matches!(g, Group::Fill | Group::Geometry) {
+                        if matches!(g, Group::Fill | Group::Geometry | Group::Selection) {
                             ui.add_space(3.0);
                             let (r, _) = ui.allocate_exact_size(vec2(TOOLBOX_WIDTH - 8.0, 1.0), Sense::hover());
                             ui.painter().rect_filled(r.shrink2(vec2(4.0, 0.0)), 0.0, theme::BORDER);
@@ -302,7 +326,8 @@ pub fn options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     ui.add_space(4.0);
     match *m.tool {
         Tool::Fill => fill_options(ui, m, ui.available_width()),
-        Tool::Lasso | Tool::RectSelect => selection_buttons(ui, m, a),
+        t if t.selects() => selection_options(ui, m, a),
+        Tool::Transform => transform_options(ui, m, a),
         _ => {}
     }
 }
@@ -340,46 +365,288 @@ pub fn stay_inside_option(ui: &mut Ui, m: &mut Model) {
     ui.checkbox(m.stay_inside, "Stay inside the lines");
 }
 
-pub fn selection_buttons(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
+/// Select menu commands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SelectCmd { All, None, Reselect, Invert, Grow(f32), Shrink(f32), Feather(f32), Border(f32), FromLayer }
+
+/// The magic wand's settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WandOptions {
+    /// Largest difference per channel still "the same color".
+    pub tolerance:   u8,
+    pub refer:       aurastudio_layers::Refer,
+    pub skip_drafts: bool,
+    /// Every like pixel touching the one clicked (off: wherever they are).
+    pub contiguous:  bool,
+    /// Grown by this many pixels.
+    pub grow:        u32,
+}
+
+impl Default for WandOptions {
+    fn default() -> Self {
+        Self { tolerance: 32, refer: aurastudio_layers::Refer::Layer, skip_drafts: true, contiguous: true, grow: 0 }
+    }
+}
+
+/// Settings of the selection tools.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectOptions {
+    pub mode:    aurastudio_layers::SelectMode,
+    /// Soft edges one pixel wide (ellipse, lasso, polygon, wand).
+    pub aa:      bool,
+    /// Soft edges this wide (px).
+    pub feather: f32,
+    pub wand:    WandOptions,
+}
+
+impl Default for SelectOptions {
+    fn default() -> Self { Self { mode: Default::default(), aa: true, feather: 0.0, wand: WandOptions::default() } }
+}
+
+/// The selection tools' options: mode, edges, the wand's settings.
+pub fn selection_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
+    use aurastudio_layers::SelectMode as S;
+    use crate::icons::Icon;
+    let w = ui.available_width();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (mode, icon, tip) in [
+            (S::Replace, Icon::SelReplace, "New selection"),
+            (S::Add, Icon::SelAdd, "Add (Shift)"),
+            (S::Subtract, Icon::SelSubtract, "Subtract (Alt)"),
+            (S::Intersect, Icon::SelIntersect, "Intersect (Shift+Alt)"),
+        ] {
+            if crate::widgets::icon_toggle(ui, icon, tip, true, m.select.mode == mode).clicked() { m.select.mode = mode; }
+        }
+    });
+    ui.add_space(2.0);
+    if *m.tool != Tool::RectSelect { ui.checkbox(&mut m.select.aa, "Anti-aliasing"); }
+    let feather = Fill { label: "Feather", range: 0.0..=200.0, mid: Some(20.0), format: &|v| format!("{v:.0} px") };
+    if let Some(v) = fill_slider(ui, "sel_feather", feather, m.select.feather, w) { m.select.feather = v; }
+    if *m.tool == Tool::MagicWand {
+        ui.add_space(4.0);
+        let wd = &mut m.select.wand;
+        let tol = wd.tolerance as f32 / 255.0 * 100.0;
+        if let Some(v) = fill_slider(ui, "wand_tolerance", crate::widgets::percent("Tolerance"), tol, w) {
+            wd.tolerance = (v / 100.0 * 255.0).round() as u8;
+        }
+        let grow = Fill { label: "Grow", range: 0.0..=20.0, mid: None, format: &|v| format!("{v:.0} px") };
+        if let Some(v) = fill_slider(ui, "wand_grow", grow, wd.grow as f32, w) { wd.grow = v as u32; }
+        ui.checkbox(&mut wd.contiguous, "Contiguous");
+        ui.add_space(2.0);
+        ui.label(RichText::new("Refer to").small().color(theme::TEXT_WEAK));
+        ui.horizontal_wrapped(|ui| {
+            use aurastudio_layers::Refer;
+            ui.selectable_value(&mut wd.refer, Refer::Layer, "This layer");
+            ui.selectable_value(&mut wd.refer, Refer::All, "All layers");
+            ui.selectable_value(&mut wd.refer, Refer::References, "References");
+        });
+        let refer = wd.refer;
+        ui.add_enabled_ui(refer != aurastudio_layers::Refer::Layer, |ui| { ui.checkbox(&mut m.select.wand.skip_drafts, "Ignore draft layers"); });
+    }
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui.button("Select all").on_hover_text("Ctrl+A").clicked() { a.select = Some(SelectCmd::All); }
         if ui.add_enabled(m.has_selection, egui::Button::new("Deselect")).on_hover_text("Ctrl+D").clicked() {
             a.select = Some(SelectCmd::None);
         }
+        if ui.add_enabled(m.has_selection, egui::Button::new("Invert")).on_hover_text("Ctrl+Shift+I").clicked() {
+            a.select = Some(SelectCmd::Invert);
+        }
     });
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SelectCmd { All, None }
+/// How the transform tool's handles work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransformMode {
+    /// Move, scale, rotate, skew; Ctrl+corner distorts.
+    #[default]
+    Free,
+    /// Each corner on its own.
+    Perspective,
+    /// A smooth grid to bend.
+    Warp,
+}
+
+/// Settings of the transform tool.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransformOptions {
+    pub mode:        TransformMode,
+    pub interp:      aurastudio_layers::transform::Interp,
+    /// Corners and edges keep the proportions (Shift: free).
+    pub keep_aspect: bool,
+    /// Warp grid cells a side.
+    pub grid:        u32,
+}
+
+impl Default for TransformOptions {
+    fn default() -> Self { Self { mode: TransformMode::Free, interp: Default::default(), keep_aspect: true, grid: 3 } }
+}
+
+/// The transform as numbers, when its box is a parallelogram: center x,
+/// y (px), width and height (% of the source), angle and skew (degrees).
+pub type TransformNumbers = [f64; 6];
+
+/// The transform under way, as the options show it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TransformInfo {
+    pub active:  bool,
+    pub numbers: Option<TransformNumbers>,
+}
+
+/// What the transform tool's options asked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TransformCmd { Apply, Cancel, Reset, FlipH, FlipV, Rotate(f64), Numbers(TransformNumbers), ResetWarp, Grid(u32) }
+
+/// The transform tool's options.
+pub fn transform_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
+    use crate::icons::Icon;
+    use crate::widgets::{icon_button, icon_toggle};
+    let info = m.transform_info;
+    let t = &mut m.transform;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (mode, icon, tip) in [(TransformMode::Free, Icon::Transform, "Free"), (TransformMode::Perspective, Icon::Perspective, "Perspective"), (TransformMode::Warp, Icon::Warp, "Warp")] {
+            if icon_toggle(ui, icon, tip, true, t.mode == mode).clicked() { t.mode = mode; }
+        }
+        ui.add_space(8.0);
+        let on = info.active;
+        if icon_button(ui, Icon::FlipH, "Flip horizontally", on) { a.transform = Some(TransformCmd::FlipH); }
+        if icon_button(ui, Icon::FlipV, "Flip vertically", on) { a.transform = Some(TransformCmd::FlipV); }
+        if icon_button(ui, Icon::RotateLeft, "Rotate 90° left", on) { a.transform = Some(TransformCmd::Rotate(-90.0)); }
+        if icon_button(ui, Icon::RotateRight, "Rotate 90° right", on) { a.transform = Some(TransformCmd::Rotate(90.0)); }
+    });
+    ui.add_space(4.0);
+    let t = &mut m.transform;
+    ui.horizontal(|ui| {
+        use aurastudio_layers::transform::Interp;
+        ui.label(RichText::new("Resampling").small().color(theme::TEXT_WEAK));
+        egui::ComboBox::from_id_salt("transform_interp")
+            .selected_text(match t.interp { Interp::Bicubic => "Bicubic", Interp::Bilinear => "Bilinear", Interp::Nearest => "Nearest" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut t.interp, Interp::Bicubic, "Bicubic");
+                ui.selectable_value(&mut t.interp, Interp::Bilinear, "Bilinear");
+                ui.selectable_value(&mut t.interp, Interp::Nearest, "Nearest");
+            });
+    });
+    if t.mode == TransformMode::Free { ui.checkbox(&mut t.keep_aspect, "Keep proportions"); }
+    if t.mode == TransformMode::Warp {
+        let w = ui.available_width();
+        let grid = Fill { label: "Grid", range: 1.0..=8.0, mid: None, format: &|v| format!("{v:.0} × {v:.0}") };
+        if let Some(v) = fill_slider(ui, "warp_grid", grid, t.grid as f32, w) { a.transform = Some(TransformCmd::Grid(v as u32)); }
+    }
+    // The numbers (a box that is still a parallelogram).
+    if let (Some(mut n), TransformMode::Free) = (info.numbers, m.transform.mode) {
+        ui.add_space(4.0);
+        let before = n;
+        egui::Grid::new("transform_numbers").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
+            let field = |ui: &mut Ui, label: &str, v: &mut f64, suffix: &str, speed: f64| {
+                ui.label(RichText::new(label).small().color(theme::TEXT_WEAK));
+                ui.add(egui::DragValue::new(v).speed(speed).max_decimals(1).suffix(suffix));
+            };
+            field(ui, "X", &mut n[0], " px", 1.0);
+            field(ui, "Y", &mut n[1], " px", 1.0);
+            ui.end_row();
+            field(ui, "W", &mut n[2], " %", 0.5);
+            field(ui, "H", &mut n[3], " %", 0.5);
+            ui.end_row();
+            field(ui, "Angle", &mut n[4], "°", 0.5);
+            field(ui, "Skew", &mut n[5], "°", 0.5);
+            ui.end_row();
+        });
+        if n != before && n.iter().all(|v| v.is_finite()) { a.transform = Some(TransformCmd::Numbers(n)); }
+    }
+    ui.add_space(6.0);
+    let on = info.active;
+    ui.horizontal(|ui| {
+        let apply = egui::Button::new(RichText::new("Apply").color(theme::TEXT)).fill(theme::ACCENT);
+        if ui.add_enabled(on, apply).on_hover_text("Enter").clicked() { a.transform = Some(TransformCmd::Apply); }
+        if ui.add_enabled(on, egui::Button::new("Cancel")).on_hover_text("Esc").clicked() { a.transform = Some(TransformCmd::Cancel); }
+        let reset = if m.transform.mode == TransformMode::Warp { TransformCmd::ResetWarp } else { TransformCmd::Reset };
+        if ui.add_enabled(on, egui::Button::new("Reset")).clicked() { a.transform = Some(reset); }
+    });
+}
+
+/// The transform box drawn over the canvas (canvas pixels).
+#[derive(Default)]
+pub struct TransformOverlay<'a> {
+    /// Box edges, grid lines.
+    pub lines:   &'a [Vec<(f32, f32)>],
+    /// Square handles (corners, edges).
+    pub handles: &'a [(f32, f32)],
+    /// Round handles (warp points).
+    pub points:  &'a [(f32, f32)],
+    pub pivot:   Option<(f32, f32)>,
+}
 
 /// What the tools draw over the canvas this frame, in canvas pixels.
 #[derive(Default)]
 pub struct Overlay<'a> {
-    /// Outlines of the current selection.
-    pub selection: &'a [Vec<(f32, f32)>],
-    /// Lasso or rectangle being drawn (closed when shown).
-    pub drawing:   Option<&'a [(f32, f32)]>,
+    /// Outline of the current selection, moved by `ants_offset` (being
+    /// dragged).
+    pub ants:        &'a [aurastudio_layers::Segment],
+    pub ants_offset: (f32, f32),
+    /// Lasso, polygon or box being drawn (closed when shown).
+    pub drawing:     Option<&'a [(f32, f32)]>,
     /// Shape about to be painted (geometry tools), and its handles.
-    pub shape:     Option<&'a [(f32, f32)]>,
-    pub handles:   &'a [(f32, f32)],
+    pub shape:       Option<&'a [(f32, f32)]>,
+    pub handles:     &'a [(f32, f32)],
     /// Dashed construction lines (the arc's start, control point, end).
-    pub guide:     &'a [(f32, f32)],
+    pub guide:       &'a [(f32, f32)],
+    pub transform:   Option<TransformOverlay<'a>>,
+}
+
+/// One dashed black and white line in `mesh`, screen points; the dashes
+/// follow `phase` (points along the line where it starts).
+fn ant_line(mesh: &mut egui::Mesh, a: Pos2, b: Pos2, phase: f32) {
+    let d = b - a;
+    let len = d.length();
+    if len < 0.01 { return; }
+    let n = d / len;
+    let side = vec2(-n.y, n.x) * 0.5;
+    let quad = |mesh: &mut egui::Mesh, p: Pos2, q: Pos2, c: Color32| {
+        let i = mesh.vertices.len() as u32;
+        for v in [p - side, p + side, q + side, q - side] { mesh.colored_vertex(v, c); }
+        mesh.add_triangle(i, i + 1, i + 2);
+        mesh.add_triangle(i, i + 2, i + 3);
+    };
+    quad(mesh, a, b, Color32::BLACK);
+    const DASH: f32 = 4.0;
+    let mut t = -(phase.rem_euclid(DASH * 2.0));
+    while t < len {
+        let (s, e) = (t.max(0.0), (t + DASH).min(len));
+        if e > s { quad(mesh, a + n * s, a + n * e, Color32::WHITE); }
+        t += DASH * 2.0;
+    }
 }
 
 /// Selection outlines as static "marching ants" (black and white dashes,
-/// not animated: an animation would redraw the UI all the time).
+/// not animated: an animation would redraw the UI all the time), and what
+/// the tools show.
 pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_points: &dyn Fn((f32, f32)) -> (f32, f32)) {
     let painter = ctx.layer_painter(egui::LayerId::background()).with_clip_rect(clip);
-    let outline = |pts: &[(f32, f32)]| {
-        if pts.len() < 2 { return; }
-        let mut v: Vec<Pos2> = pts.iter().map(|&p| { let (x, y) = to_points(p); pos2(x, y) }).collect();
-        v.push(v[0]);
-        painter.add(Shape::line(v.clone(), Stroke::new(1.0_f32, Color32::BLACK)));
-        painter.extend(Shape::dashed_line(&v, Stroke::new(1.0_f32, Color32::WHITE), 4.0, 4.0));
-    };
-    for o in overlay.selection { outline(o); }
-    if let Some(d) = overlay.drawing { outline(d); }
     let pt = |p: (f32, f32)| { let (x, y) = to_points(p); pos2(x, y) };
+    let mut mesh = egui::Mesh::default();
+    let (ox, oy) = overlay.ants_offset;
+    let grown = clip.expand(2.0);
+    for seg in overlay.ants {
+        let (a, b) = (pt((seg[0].0 + ox, seg[0].1 + oy)), pt((seg[1].0 + ox, seg[1].1 + oy)));
+        if !grown.intersects(Rect::from_two_pos(a, b)) { continue; }
+        ant_line(&mut mesh, a, b, a.x + a.y);
+    }
+    let outline = |mesh: &mut egui::Mesh, pts: &[(f32, f32)], closed: bool| {
+        if pts.len() < 2 { return; }
+        let v: Vec<Pos2> = pts.iter().map(|&p| pt(p)).collect();
+        let mut phase = 0.0;
+        let n = if closed { v.len() } else { v.len() - 1 };
+        for i in 0..n {
+            let (a, b) = (v[i], v[(i + 1) % v.len()]);
+            ant_line(mesh, a, b, phase);
+            phase += (b - a).length();
+        }
+    };
+    if let Some(d) = overlay.drawing { outline(&mut mesh, d, true); }
+    if !mesh.is_empty() { painter.add(Shape::mesh(mesh)); }
     if let Some(s) = overlay.shape {
         let v: Vec<Pos2> = s.iter().map(|&p| pt(p)).collect();
         // Dark under light: visible on any color.
@@ -392,6 +659,28 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
     }
     for &h in overlay.handles {
         painter.circle(pt(h), 4.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));
+    }
+    if let Some(t) = &overlay.transform {
+        for l in t.lines {
+            let v: Vec<Pos2> = l.iter().map(|&p| pt(p)).collect();
+            painter.add(Shape::line(v.clone(), Stroke::new(3.0_f32, Color32::from_black_alpha(120))));
+            painter.add(Shape::line(v, Stroke::new(1.0_f32, theme::ACCENT)));
+        }
+        for &h in t.handles {
+            let r = Rect::from_center_size(pt(h), vec2(8.0, 8.0));
+            painter.rect(r, 1.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));
+        }
+        for &h in t.points {
+            painter.circle(pt(h), 4.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));
+        }
+        if let Some(p) = t.pivot {
+            let c = pt(p);
+            painter.circle_stroke(c, 5.0, Stroke::new(3.0_f32, Color32::from_black_alpha(120)));
+            painter.circle_stroke(c, 5.0, Stroke::new(1.5_f32, Color32::WHITE));
+            for d in [vec2(8.0, 0.0), vec2(0.0, 8.0)] {
+                painter.line_segment([c - d, c + d], Stroke::new(1.0_f32, Color32::WHITE));
+            }
+        }
     }
 }
 

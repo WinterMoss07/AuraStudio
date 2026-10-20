@@ -345,10 +345,18 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
         painter.rect_filled(fill, egui::Rounding { nw: r, sw: r, ne: right, se: right }, theme::ACCENT);
     }
     let font = egui::FontId::proportional(12.5);
-    painter.text(pos2(rect.left() + 9.0, rect.center().y), egui::Align2::LEFT_CENTER, label, font.clone(),
-        Color32::from_white_alpha(215));
-    painter.text(pos2(rect.right() - 9.0, rect.center().y), egui::Align2::RIGHT_CENTER, format(shown), font,
-        theme::TEXT);
+    let value = painter.layout_no_wrap(format(shown), font.clone(), theme::TEXT);
+    let name = painter.layout_no_wrap(label.to_owned(), font, Color32::from_white_alpha(215));
+    // Too narrow for both: the value alone (the label shows on hover).
+    let both = name.size().x + value.size().x + 9.0 * 2.0 + 8.0 <= rect.width();
+    let y = rect.center().y;
+    if both {
+        painter.galley(pos2(rect.left() + 9.0, y - name.size().y / 2.0), name, Color32::WHITE);
+        painter.galley(pos2(rect.right() - 9.0 - value.size().x, y - value.size().y / 2.0), value, Color32::WHITE);
+    } else {
+        painter.galley(pos2(rect.center().x - value.size().x / 2.0, y - value.size().y / 2.0), value, Color32::WHITE);
+        resp.on_hover_text(label);
+    }
     new
 }
 

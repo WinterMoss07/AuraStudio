@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 
 use aurastudio_canvas::Rect;
-use aurastudio_layers::{LayerStack, Node, TreeState};
+use aurastudio_layers::{LayerStack, Node, Selection, TreeState};
 
 use crate::Change;
 
@@ -18,6 +18,11 @@ const MAX_STEPS: usize = 200;
 enum Step {
     Pixels(PixelStep),
     Tree(TreeStep),
+    /// The selection to go back to.
+    Select(&'static str, Option<Selection>),
+    /// Steps done as one (a transform: its layers and the selection);
+    /// `undone`: which way the next swap goes.
+    Group { label: &'static str, steps: Vec<Step>, undone: bool },
 }
 
 struct PixelStep {
@@ -39,16 +44,21 @@ struct TreeStep {
 
 impl Step {
     fn label(&self) -> &'static str {
-        match self { Step::Pixels(p) => p.label, Step::Tree(t) => t.label }
+        match self { Step::Pixels(p) => p.label, Step::Tree(t) => t.label, Step::Select(l, _) => l, Step::Group { label, .. } => label }
     }
 
     fn bytes(&self) -> usize {
-        match self { Step::Pixels(p) => p.data.len(), Step::Tree(t) => t.bytes }
+        match self {
+            Step::Pixels(p) => p.data.len(),
+            Step::Tree(t) => t.bytes,
+            Step::Select(_, s) => s.as_ref().map_or(0, Selection::bytes),
+            Step::Group { steps, .. } => steps.iter().map(Step::bytes).sum(),
+        }
     }
 
     /// Undo / redo it: the step now goes the other way. None (and dropped)
     /// if it can't be (its layer is gone).
-    fn swap_into(&mut self, layers: &mut LayerStack) -> Option<Change> {
+    fn swap_into(&mut self, layers: &mut LayerStack, selection: &mut Option<Selection>) -> Option<Change> {
         match self {
             Step::Pixels(p) => p.swap_into(layers).then(|| p.change()),
             Step::Tree(t) => {
@@ -57,7 +67,30 @@ impl Step {
                 t.state = now;
                 t.bytes = made.iter().map(Node::bytes).sum();
                 t.kept = made;
-                Some(Change { layer_id: layers.active_id(), rect: (0, 0, layers.width, layers.height), tree: true })
+                Some(Change { layer_id: layers.active_id(), rect: (0, 0, layers.width, layers.height), tree: true, selection: false, more: Vec::new() })
+            }
+            Step::Select(_, s) => {
+                std::mem::swap(s, selection);
+                Some(Change { layer_id: layers.active_id(), rect: (0, 0, 0, 0), tree: false, selection: true, more: Vec::new() })
+            }
+            Step::Group { steps, undone, .. } => {
+                // Back in the reverse order, forward in the order done.
+                let mut changes = Vec::new();
+                let n = steps.len();
+                for k in 0..n {
+                    let i = if *undone { k } else { n - 1 - k };
+                    if let Some(c) = steps[i].swap_into(layers, selection) { changes.push(c); }
+                }
+                *undone = !*undone;
+                let mut it = changes.into_iter();
+                let mut first = it.next()?;
+                for c in it {
+                    first.tree |= c.tree;
+                    first.selection |= c.selection;
+                    if c.rect.2 > c.rect.0 { first.more.push((c.layer_id, c.rect)); }
+                    first.more.extend(c.more);
+                }
+                Some(first)
             }
         }
     }
@@ -79,7 +112,7 @@ impl PixelStep {
     }
 
     fn change(&self) -> Change {
-        Change { layer_id: self.layer_id, rect: self.rect, tree: false }
+        Change { layer_id: self.layer_id, rect: self.rect, tree: false, selection: false, more: Vec::new() }
     }
 }
 
@@ -95,7 +128,7 @@ pub struct SavedStep {
 
 /// Step labels the app knows; anything else read from a file becomes a
 /// generic one (labels are static strings).
-const LABELS: [&str; 4] = ["Brush stroke", "Clear layer", "Fill", "Paste"];
+const LABELS: [&str; 5] = ["Brush stroke", "Clear layer", "Fill", "Paste", "Transform"];
 
 pub struct History {
     undo:   VecDeque<Step>,
@@ -116,6 +149,27 @@ impl History {
         self.trim();
     }
 
+    /// Record a selection change: `before` is the selection before it.
+    pub fn push_selection(&mut self, label: &'static str, before: Option<Selection>) {
+        self.redo.clear();
+        self.undo.push_back(Step::Select(label, before));
+        self.trim();
+    }
+
+    /// Record pixel steps on several layers and maybe a selection change
+    /// as one: (layer, rect, pixels before) each.
+    pub fn push_group(&mut self, label: &'static str, pixels: Vec<(u64, Rect, Vec<u8>)>, selection: Option<Option<Selection>>) {
+        let mut steps: Vec<Step> = pixels.into_iter()
+            .filter(|(_, r, _)| r.0 < r.2 && r.1 < r.3)
+            .map(|(id, r, px)| Step::Pixels(PixelStep::new(label, id, r, &px)))
+            .collect();
+        if let Some(s) = selection { steps.push(Step::Select(label, s)); }
+        if steps.is_empty() { return; }
+        self.redo.clear();
+        self.undo.push_back(Step::Group { label, steps, undone: false });
+        self.trim();
+    }
+
     /// Record a change of the layer tree: `before` is the tree before it,
     /// `removed` the nodes it deleted.
     pub fn push_tree(&mut self, label: &'static str, before: TreeState, removed: Vec<Node>) {
@@ -130,11 +184,11 @@ impl History {
 
     pub fn redo_label(&self) -> Option<&'static str> { self.redo.last().map(Step::label) }
 
-    pub fn undo(&mut self, layers: &mut LayerStack) -> Option<Change> {
+    pub fn undo(&mut self, layers: &mut LayerStack, selection: &mut Option<Selection>) -> Option<Change> {
         // A step whose layer was deleted can't be applied: drop it and go
         // on with the previous one.
         while let Some(mut step) = self.undo.pop_back() {
-            if let Some(change) = step.swap_into(layers) {
+            if let Some(change) = step.swap_into(layers, selection) {
                 self.redo.push(step);
                 return Some(change);
             }
@@ -142,9 +196,9 @@ impl History {
         None
     }
 
-    pub fn redo(&mut self, layers: &mut LayerStack) -> Option<Change> {
+    pub fn redo(&mut self, layers: &mut LayerStack, selection: &mut Option<Selection>) -> Option<Change> {
         while let Some(mut step) = self.redo.pop() {
-            if let Some(change) = step.swap_into(layers) {
+            if let Some(change) = step.swap_into(layers, selection) {
                 self.undo.push_back(step);
                 self.trim();
                 return Some(change);
@@ -156,13 +210,24 @@ impl History {
     /// The newest `max_undo` undo steps and the redo steps, for saving:
     /// pixel steps only (they apply to the layers that still exist).
     pub fn export(&self, max_undo: usize) -> (Vec<SavedStep>, Vec<SavedStep>) {
-        let save = |s: &Step| match s {
-            Step::Pixels(p) => Some(SavedStep { label: p.label.to_owned(), layer_id: p.layer_id, rect: p.rect, data: p.data.clone() }),
-            Step::Tree(_) => None,
-        };
-        let undo: Vec<SavedStep> = self.undo.iter().filter_map(save).collect();
+        // A group's pixel steps are saved one by one (undone one at a time
+        // once opened), in the order they apply.
+        fn save(s: &Step, redo: bool, out: &mut Vec<SavedStep>) {
+            match s {
+                Step::Pixels(p) => out.push(SavedStep { label: p.label.to_owned(), layer_id: p.layer_id, rect: p.rect, data: p.data.clone() }),
+                Step::Tree(_) | Step::Select(..) => {}
+                Step::Group { steps, .. } => {
+                    let parts: Vec<&Step> = if redo { steps.iter().rev().collect() } else { steps.iter().collect() };
+                    for p in parts { save(p, redo, out); }
+                }
+            }
+        }
+        let mut undo = Vec::new();
+        for s in &self.undo { save(s, false, &mut undo); }
+        let mut redo = Vec::new();
+        for s in &self.redo { save(s, true, &mut redo); }
         let skip = undo.len().saturating_sub(max_undo);
-        (undo.into_iter().skip(skip).collect(), self.redo.iter().filter_map(save).collect())
+        (undo.into_iter().skip(skip).collect(), redo)
     }
 
     /// History read from a file. Steps whose rectangle is empty are

@@ -52,6 +52,11 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         }
                     }
                     ui.separator();
+                    if ui.add_enabled(!m.home, egui::Button::new("Transform").shortcut_text("Ctrl+T")).clicked() {
+                        *m.tool = crate::Tool::Transform;
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.add(egui::Button::new("Preferences…").shortcut_text("Ctrl+K")).clicked() {
                         state.open_prefs();
                         ui.close_menu();
@@ -75,6 +80,33 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     }
                     ui.separator();
                     layers::menu_entries(ui, &mut state.layers, m, a);
+                }));
+                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Select", |ui| {
+                    use crate::SelectCmd as C;
+                    let sel = m.has_selection;
+                    for (label, key, cmd, on) in [
+                        ("All", "Ctrl+A", C::All, true),
+                        ("Deselect", "Ctrl+D", C::None, sel),
+                        ("Reselect", "Ctrl+Shift+D", C::Reselect, !sel),
+                        ("Invert", "Ctrl+Shift+I", C::Invert, true),
+                    ] {
+                        if ui.add_enabled(on, egui::Button::new(label).shortcut_text(key)).clicked() {
+                            a.select = Some(cmd);
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    for (label, kind) in [("Grow…", crate::SelectKind::Grow), ("Shrink…", crate::SelectKind::Shrink), ("Feather…", crate::SelectKind::Feather), ("Border…", crate::SelectKind::Border)] {
+                        if ui.add_enabled(sel, egui::Button::new(label)).clicked() {
+                            state.ask_select(kind);
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("From layer").on_hover_text("Its opaque pixels").clicked() {
+                        a.select = Some(C::FromLayer);
+                        ui.close_menu();
+                    }
                 }));
                 ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Canvas", |ui| {
                     if ui.button("Canvas size…").clicked() {

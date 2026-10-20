@@ -86,7 +86,9 @@ literals written `_f32`, as in egui. Used through `[patch.crates-io]`.
 The interface icons (`crates/aurastudio-ui/icons/*.svg`) come from
 [Lucide](https://lucide.dev), ISC license (`crates/aurastudio-ui/icons/LICENSE-lucide`).
 Recolored to white and drawn with a thinner stroke. `charcoal.svg` is ours,
-drawn in the same style (Lucide has no charcoal stick).
+drawn in the same style (Lucide has no charcoal stick); `flip-horizontal.svg`
+and `flip-vertical.svg` are Lucide's former `flip-horizontal-2` and
+`flip-vertical-2`.
 
 ## Ideas from other programs (no code copied)
 
@@ -97,6 +99,16 @@ drawn in the same style (Lucide has no charcoal stick).
 - Darker folder rows: the Layer Kit plugin for Krita by tenzindraws
   (https://github.com/10zindraws/Layer-Kit, GPL-3.0); its code is not
   used.
+
+## Krita — how its selection and transform tools work
+
+Read, not copied (Krita is GPL): `plugins/tools/selectiontools`,
+`plugins/tools/tool_transform2` (the free transform's matrix order:
+center, scale, shear, rotation, translation; handles, shear along the
+edges, perspective), `libs/image/kis_selection_filters.cpp` (grow, shrink,
+feather as GIMP's), `KisColorSelectionPolicies.h` (the wand's threshold),
+`kis_selection_modifier_mapper.cc` (Shift add, Alt subtract, Shift+Alt
+intersect). AuraStudio's code for them is its own or PhotoCraft's (below).
 
 ## PhotoCraft — filters and their dialogs
 
@@ -117,6 +129,19 @@ here under MIT):
   `crates/ui-egui/src/adjust_editors.rs`, `tone.rs` and
   `filter_preview_ui.rs`. Changes: before / after histograms on one scale,
   a before / after split view filtered on a thread, our theme.
+- Selections and the transform tool (0.11): the anti-aliased polygon fill
+  (exact coverage across, 4 rows a pixel), grow / shrink by an exact
+  distance transform, Border's soft band, the magic wand's anti-aliasing
+  and the outline as merged horizontal / vertical runs (`selection.rs`),
+  from `crates/algo/src/selection.rs` and `crates/ui-egui/src/outline.rs`;
+  the quad homography, Photoshop's Keys bicubic (a = -0.75),
+  premultiplied sampling and the edge coverage (`transform.rs`), from
+  `crates/algo/src/transform.rs`; the drag gestures in the box's own
+  frame, the pivot carried along and the convex stop of a distort
+  (`crates/aurastudio-app/src/xform.rs`), from
+  `crates/ui-egui/src/transform_tool.rs`. Changes: 8-bit tiled coverage,
+  a pyramid instead of a resize for reductions, our own threads, a
+  Catmull-Rom warp grid, Krita's and CSP's modifiers.
 
 The ArtCraft name and logos are not used. PhotoCraft's MIT license:
 

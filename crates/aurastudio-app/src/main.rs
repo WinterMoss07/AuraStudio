@@ -10,7 +10,9 @@ mod painter;
 mod pure;
 mod paint_thread;
 mod projection;
+mod rescue;
 mod shapes;
+mod xform;
 
 use winit::event_loop::{ControlFlow, DeviceEvents, EventLoop};
 
@@ -30,6 +32,12 @@ fn main() {
     // frames waiting for it lag (sliders froze, then jumped).
     event_loop.listen_device_events(DeviceEvents::Never);
 
+    // A crash keeps the work (rescue.rs).
+    rescue::install(app::recovery_path());
     let mut app = app::App::new(event_loop.create_proxy());
-    event_loop.run_app(&mut app).unwrap();
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| event_loop.run_app(&mut app)));
+    match run {
+        Ok(r) => { if let Err(e) = r { log::error!("event loop: {e}"); } }
+        Err(_) => rescue::after_unwind(),
+    }
 }

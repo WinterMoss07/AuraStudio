@@ -23,7 +23,7 @@ use aurastudio_brushes::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_gpu::CanvasView;
 use aurastudio_layers::{FillParams, Selection};
-use aurastudio_ui::{Actions, BlendMode, Model, Overlay, SelectCmd, ShapeOptions, Tool, UiState, ViewCmd};
+use aurastudio_ui::{Actions, BlendMode, Model, Overlay, SelectCmd, SelectOptions, ShapeOptions, Tool, TransformInfo, TransformOptions, UiState, ViewCmd};
 use egui::{pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
 use crate::paint_thread::{Cmd, PaintThread};
@@ -210,6 +210,8 @@ fn fuzz() {
     let mut shape = ShapeOptions::default();
     let mut prefs = aurastudio_ui::Prefs::default();
     let mut stay_inside = false;
+    let mut select_opts = SelectOptions::default();
+    let mut transform_opts = TransformOptions::default();
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
     let t0 = Instant::now();
@@ -235,7 +237,7 @@ fn fuzz() {
                 };
                 let (can_undo, can_redo) = (d.history().undo_len() > 0, d.history().redo_len() > 0);
                 let (undo_label, redo_label) = (d.history().undo_label(), d.history().redo_label());
-                let sel_outlines = d.selection.as_ref().map(|s| s.outlines().to_vec());
+                let ants = d.selection.as_ref().map(|s| s.outline(2)).unwrap_or_default();
                 let selection = d.selection.clone();
                 let to_points = |p: (f32, f32)| { let q = view.canvas_to_screen(p, size, area); (q.0, q.1) };
                 let mut actions = Actions::default();
@@ -264,9 +266,13 @@ fn fuzz() {
                         fill: &mut fill,
                         stay_inside: &mut stay_inside,
                         shape: &mut shape,
-                        has_selection: sel_outlines.is_some(),
+                        has_selection: selection.is_some(),
                         selection: selection.as_ref(),
-                        overlay: Overlay { selection: sel_outlines.as_deref().unwrap_or(&[]), drawing: None, shape: None, handles: &[], guide: &[] },
+                        select: &mut select_opts,
+                        transform: &mut transform_opts,
+                        transform_info: TransformInfo::default(),
+                        renderer: "Vulkan",
+                        overlay: Overlay { ants: &ants, ..Default::default() },
                         to_points: &to_points,
                     };
                     if let Some(n) = open_filter { ui.open_filter_dialog(ctx, n, &model); }
@@ -285,12 +291,22 @@ fn fuzz() {
                 }
                 // As the end of App::render_frame.
                 if let Some(cmd) = actions.view { apply_view(&mut view, cmd, size, area); }
-                match actions.select {
-                    Some(SelectCmd::All) => d.selection = Some(Selection::all(size.0, size.1)),
-                    Some(SelectCmd::None) => d.selection = None,
-                    None => {}
-                }
                 drop(d);
+                if let Some(cmd) = actions.select {
+                    use aurastudio_document::SelectOp;
+                    let op = match cmd {
+                        SelectCmd::All => SelectOp::All,
+                        SelectCmd::None => SelectOp::None,
+                        SelectCmd::Reselect => SelectOp::Reselect,
+                        SelectCmd::Invert => SelectOp::Invert,
+                        SelectCmd::Grow(v) => SelectOp::Grow(v),
+                        SelectCmd::Shrink(v) => SelectOp::Shrink(v),
+                        SelectCmd::Feather(v) => SelectOp::Feather(v),
+                        SelectCmd::Border(v) => SelectOp::Border(v),
+                        SelectCmd::FromLayer => SelectOp::FromLayer(select_opts.mode),
+                    };
+                    pt.send(Cmd::Select { doc: Arc::clone(&doc), op });
+                }
                 if !stroke_open {
                     if actions.undo { pt.send(Cmd::Undo(Arc::clone(&doc))); }
                     if actions.redo { pt.send(Cmd::Redo(Arc::clone(&doc))); }
@@ -330,7 +346,7 @@ fn fuzz() {
             85..=91 => {
                 let d = Arc::clone(&doc);
                 let (w, h) = (size.0 as f32, size.1 as f32);
-                match r.below(7) {
+                match r.below(10) {
                     6 => {
                         // Copy, then paste somewhere (off the canvas too).
                         let clip = d.lock().unwrap().copy();
@@ -351,12 +367,29 @@ fn fuzz() {
                         let (x, y) = (r.range(-0.1, 1.1) * w, r.range(-0.1, 1.1) * h);
                         pt.send(Cmd::Fill { doc: d, x: x.max(0.0) as u32, y: y.max(0.0) as u32, color, params });
                     }
+                    // A transform: begin, previews, apply or cancel.
+                    8 | 9 => {
+                        use crate::paint_thread::TransformAction as T;
+                        let ids = vec![d.lock().unwrap().layers.active_id()];
+                        pt.send(Cmd::Transform { doc: Arc::clone(&d), action: T::Begin(ids) });
+                        let src = (size.0 / 4, size.1 / 4, (size.0 / 4 + 1).max(size.0 * 3 / 4).min(size.0), (size.1 / 4 + 1).max(size.1 * 3 / 4).min(size.1));
+                        for _ in 0..r.below(5) {
+                            pt.send(Cmd::Transform { doc: Arc::clone(&d), action: T::Preview(crate::pure::random_warp(&mut r, src), crate::pure::random_interp(&mut r)) });
+                        }
+                        let end = if r.chance(0.6) { T::Apply(crate::pure::random_warp(&mut r, src), crate::pure::random_interp(&mut r)) } else { T::Cancel };
+                        pt.send(Cmd::Transform { doc: d, action: end });
+                    }
+                    // A selection command (the tools, the Select menu).
+                    5 | 7 => {
+                        let op = crate::pure::random_select_op(&mut r, size.0, size.1);
+                        pt.send(Cmd::Select { doc: d, op });
+                    }
                     // A new selection: lasso, rectangle, all or none.
                     _ => {
                         let sel = match r.below(4) {
                             0 => {
                                 let pts: Vec<(f32, f32)> = (0..r.below(60)).map(|_| (r.range(-0.3, 1.3) * w, r.range(-0.3, 1.3) * h)).collect();
-                                Selection::polygon(size.0, size.1, &pts)
+                                Selection::polygon(size.0, size.1, &pts, r.chance(0.5))
                             }
                             1 => {
                                 let (x, y) = (r.below(size.0 as u64 + 50) as u32, r.below(size.1 as u64 + 50) as u32);

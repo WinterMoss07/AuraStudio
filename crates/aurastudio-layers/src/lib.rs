@@ -6,6 +6,7 @@ pub mod fill;
 mod selection;
 mod stroke_cache;
 mod tiles;
+pub mod transform;
 mod tree;
 
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
@@ -13,8 +14,8 @@ use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
 
 pub use compose::Pick;
 pub use tree::TreeState;
-pub use fill::{flood, flood_with, FillParams, Refer};
-pub use selection::Selection;
+pub use fill::{flood, flood_with, similar_with, FillParams, Refer};
+pub use selection::{Mode as SelectMode, Segment, Selection};
 pub use tiles::{new_tile, Tile, Tiles, TILE_BYTES};
 
 /// Straight-alpha "over": `src` painted on `dst`.
@@ -215,6 +216,9 @@ struct StrokeBuffers {
     layer: u64,
     base:  Vec<Option<Tile>>,
     mask:  Vec<Option<MaskTile>>,
+    /// What clip_stroke last wrote in tiles a soft selection crosses: a
+    /// pixel still holding it wasn't painted again (clipped once only).
+    clipped: Vec<Option<Tile>>,
     /// Merges under / over the layer, for the display (stroke_cache.rs).
     cache: stroke_cache::StrokeCache,
 }
@@ -867,6 +871,7 @@ impl LayerStack {
             layer: id,
             base: (0..tiles).map(|_| None).collect(),
             mask: (0..tiles).map(|_| None).collect(),
+            clipped: (0..tiles).map(|_| None).collect(),
             cache: Default::default(),
         };
         true
@@ -926,38 +931,40 @@ impl LayerStack {
     }
 
     /// Paint `color` over the pixels of `area` in paint layer `id` (the
-    /// fill tool). Returns the rectangle changed.
-    pub fn fill_area(&mut self, id: u64, area: &fill::Area, color: [u8; 4]) -> Option<Rect> {
+    /// fill tool), as much as `sel` selects them. Returns the rectangle
+    /// changed.
+    pub fn fill_area(&mut self, id: u64, area: &fill::Area, color: [u8; 4], sel: Option<&Selection>) -> Option<Rect> {
         let r = area.bbox;
         let mut px = self.layer_rect(id, r)?;
+        let cov = sel.map(|s| s.mask(r));
         let mut i = 0;
         for y in r.1..r.3 {
             for x in r.0..r.2 {
-                if area.contains(x, y) { over(&mut px[i..i + 4], color); }
+                if area.contains(x, y) {
+                    let c = cov.as_ref().map_or(255, |m| m[i / 4]) as u32;
+                    over(&mut px[i..i + 4], [color[0], color[1], color[2], (color[3] as u32 * c / 255) as u8]);
+                }
                 i += 4;
             }
         }
         self.set_layer_rect(id, r, &px).then_some(r)
     }
 
-    /// Clear the selected pixels of paint layer `id` to its fill color.
+    /// Clear the selected pixels of paint layer `id` to its fill color (a
+    /// soft selection clears them partly).
     pub fn clear_selected(&mut self, id: u64, sel: &Selection) -> Option<Rect> {
         let r = sel.bbox();
         let Some(Node::Layer(l)) = self.node(id) else { return None };
         let fill = l.tiles.fill();
-        let mut px = l.tiles.read_rect(r);
-        let mut i = 0;
-        for y in r.1..r.3 {
-            for x in r.0..r.2 {
-                if sel.contains(x, y) { px[i..i + 4].copy_from_slice(&fill); }
-                i += 4;
-            }
-        }
+        let old = l.tiles.read_rect(r);
+        let mut px = fill.repeat(old.len() / 4);
+        sel.blend_rect(r, &old, &mut px);
         self.set_layer_rect(id, r, &px).then_some(r)
     }
 
-    /// Undo what the stroke painted in `rect` outside `sel`: painting only
-    /// changes selected pixels. Call after each engine call.
+    /// Undo what the stroke painted in `rect` outside `sel`, and part of it
+    /// where `sel` is soft: painting only changes selected pixels. Call
+    /// after each engine call.
     pub fn clip_stroke(&mut self, rect: Rect, sel: &Selection) {
         let (w, h) = (self.width, self.height);
         let (x0, y0, x1, y1) = (rect.0.min(w), rect.1.min(h), rect.2.min(w), rect.3.min(h));
@@ -975,12 +982,25 @@ impl LayerStack {
                 let Some(base) = self.stroke.base.get(i).and_then(|b| b.as_ref()) else { continue };
                 let inside_box = tx0 >= sb.0 && ty0 >= sb.1 && tx0 + TILE <= sb.2 && ty0 + TILE <= sb.3;
                 if inside_box && sel.is_rect() { continue; }
+                let r = (x0.max(tx0), y0.max(ty0), x1.min(tx0 + TILE), y1.min(ty0 + TILE));
+                let cov = sel.mask(r);
+                if cov.iter().all(|c| *c == 255) { continue; }
                 let px = l.tiles.tile_mut(tx, ty);
-                for y in y0.max(ty0)..y1.min(ty0 + TILE) {
-                    for x in x0.max(tx0)..x1.min(tx0 + TILE) {
-                        if sel.contains(x, y) { continue; }
+                let mut k = 0;
+                for y in r.1..r.3 {
+                    for x in r.0..r.2 {
+                        let c = cov[k];
+                        k += 1;
+                        if c == 255 { continue; }
                         let o = (((y - ty0) * TILE + x - tx0) * 4) as usize;
-                        px[o..o + 4].copy_from_slice(&base[o..o + 4]);
+                        if c == 0 { px[o..o + 4].copy_from_slice(&base[o..o + 4]); continue; }
+                        let prev = self.stroke.clipped[i].get_or_insert_with(|| base.clone());
+                        if px[o..o + 4] == prev[o..o + 4] { continue; }
+                        let mut out = [0u8; 4];
+                        out.copy_from_slice(&px[o..o + 4]);
+                        Selection::blend_px(&base[o..o + 4], &mut out, c);
+                        px[o..o + 4].copy_from_slice(&out);
+                        prev[o..o + 4].copy_from_slice(&out);
                     }
                 }
             }

@@ -97,6 +97,29 @@ impl Tiles {
         b
     }
 
+    /// Exact bounds of the pixels with alpha (the whole layer for an
+    /// opaque fill). None: nothing shows.
+    pub fn pixel_bounds(&self) -> Option<Rect> {
+        if self.fill[3] > 0 { return Some((0, 0, self.width, self.height)); }
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        for (tx, ty, t) in self.iter() {
+            let (bx, by) = (tx * TILE, ty * TILE);
+            let (tw, th) = ((self.width - bx).min(TILE), (self.height - by).min(TILE));
+            // Skip a tile that can't widen the bounds.
+            if x0 <= bx && y0 <= by && x1 >= bx + tw && y1 >= by + th { continue; }
+            for y in 0..th {
+                let row = &t[(y * TILE * 4) as usize..((y * TILE + tw) * 4) as usize];
+                let Some(a) = row.chunks_exact(4).position(|p| p[3] > 0) else { continue };
+                let b = row.chunks_exact(4).rposition(|p| p[3] > 0).unwrap_or(a);
+                x0 = x0.min(bx + a as u32);
+                x1 = x1.max(bx + b as u32 + 1);
+                y0 = y0.min(by + y);
+                y1 = y1.max(by + y + 1);
+            }
+        }
+        (x0 < x1).then_some((x0, y0, x1, y1))
+    }
+
     /// A pixel of `rect` shows (alpha > 0; the fill's when no tile).
     pub fn any_visible_in(&self, rect: Rect) -> bool {
         let rect = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));

@@ -227,6 +227,52 @@ pub fn flood_with(layers: &LayerStack, layer: u64, x: u32, y: u32, p: FillParams
     Some(area)
 }
 
+/// Every pixel like the one at (x, y), wherever it is (the magic wand
+/// without "contiguous"), looked at as `flood_with` does.
+pub fn similar_with(layers: &LayerStack, layer: u64, x: u32, y: u32, p: FillParams, pick: Option<Pick>) -> Option<Area> {
+    let (w, h) = (layers.width, layers.height);
+    if x >= w || y >= h { return None; }
+    let merged = pick.is_some();
+    let pick = pick.unwrap_or_default();
+    let layer_tiles = match layers.node(layer)? {
+        Node::Layer(l) if !merged => Some(&l.tiles),
+        Node::Layer(_) => None,
+        Node::Folder(_) | Node::Filter(_) => return None,
+    };
+    let seed = match layer_tiles {
+        Some(t) => t.pixel(x, y),
+        None => { let m = layers.composite_pick((x, y, x + 1, y + 1), pick, false); [m[0], m[1], m[2], m[3]] }
+    };
+    let cols = w.div_ceil(TILE);
+    let mut cand = Candidates {
+        layers, layer: layer_tiles, pick, selection: None, seed, tolerance: p.tolerance, cols,
+        tiles: vec![None; (cols * h.div_ceil(TILE)) as usize],
+    };
+    let mut area = Area::new(w, h);
+    let (mut bx0, mut by0, mut bx1, mut by1) = (u32::MAX, u32::MAX, 0, 0);
+    for ty in 0..h.div_ceil(TILE) {
+        for c in 0..cols {
+            for yy in ty * TILE..((ty + 1) * TILE).min(h) {
+                let word = cand.word(yy, c);
+                let edge = w - c * 64;
+                let word = if edge < 64 { word & ((1u64 << edge) - 1) } else { word };
+                if word == 0 { continue; }
+                area.bits[yy as usize * area.cols + c as usize] = word;
+                bx0 = bx0.min(c * 64 + word.trailing_zeros());
+                bx1 = bx1.max(c * 64 + 64 - word.leading_zeros());
+                by0 = by0.min(yy);
+                by1 = by1.max(yy + 1);
+            }
+            // Done with that tile: free it.
+            cand.tiles[(ty * cols + c) as usize] = None;
+        }
+    }
+    if bx0 == u32::MAX { return None; }
+    area.bbox = (bx0, by0, bx1, by1);
+    for _ in 0..p.expand { grow(&mut area, w, h, None); }
+    Some(area)
+}
+
 /// Add every pixel next to the area (8 neighbors), whole words at a time.
 fn grow(area: &mut Area, w: u32, h: u32, selection: Option<&Selection>) {
     let (_, y0, _, y1) = area.bbox;
@@ -331,7 +377,7 @@ mod tests {
                 }
             }
             assert!(s.set_layer_rect(id, (0, 0, w, h), &px));
-            let sel = (round % 2 == 1).then(|| Selection::polygon(w, h, &[(5.0, 3.0), (w as f32 - 2.0, 20.0), (w as f32 / 2.0, h as f32)]).unwrap());
+            let sel = (round % 2 == 1).then(|| Selection::polygon(w, h, &[(5.0, 3.0), (w as f32 - 2.0, 20.0), (w as f32 / 2.0, h as f32)], false).unwrap());
             let (x, y) = (rnd(w), rnd(h));
             let p = FillParams { tolerance: 10, refer: Refer::Layer, skip_drafts: true, expand: 0 };
             let got = flood(&s, id, x, y, p, sel.as_ref());

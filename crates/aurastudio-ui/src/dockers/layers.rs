@@ -363,6 +363,48 @@ fn chain(p: &egui::Painter, c: egui::Pos2) {
     }
 }
 
+/// New layer (its kinds under the arrow), new folder, duplicate.
+fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
+    if icon_button(ui, Icon::NewLayer, "New layer", true) { new_layer(m, a); }
+    let arrow = egui::Button::image(egui::Image::new(Icon::Expanded.source()).fit_to_exact_size(vec2(12.0, 12.0)).tint(Color32::from_gray(0xc8)))
+        .frame(false)
+        .min_size(vec2(14.0, 24.0));
+    egui::menu::menu_custom_button(ui, arrow, |ui| {
+        ui.set_min_width(150.0);
+        if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
+        ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
+    }).response.on_hover_text("Layer types");
+    if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
+    if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
+}
+
+/// Clip, reference, draft, then group / ungroup.
+fn mark_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
+    for (cmd, icon) in [(LayerCmd::Clip, Icon::Clip), (LayerCmd::Reference, Icon::Reference), (LayerCmd::Draft, Icon::Draft)] {
+        if icon_toggle(ui, icon, &cmd.tip(), true, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
+    }
+    let g = group_or_ungroup(st, m.layers);
+    let icon = if g == LayerCmd::Ungroup { Icon::Ungroup } else { Icon::Group };
+    if icon_toggle(ui, icon, &g.tip(), true, false).clicked() { apply(g, st, m, a); }
+}
+
+fn delete_button(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
+    let deletable = st.selected.len() > 1 || m.layers.removal_refused().is_none();
+    if icon_button(ui, Icon::Delete, "Delete", deletable) { delete_layer(st, notice, m, a); }
+}
+
+/// Show only the layers of some color labels.
+fn label_filter_button(ui: &mut Ui, st: &mut LayersState, m: &mut Model) {
+    let fr = icon_toggle(ui, Icon::FilterBy, "Filter by color", true, st.label_filter != 0);
+    let fid = egui::Id::new("layer_filter_popup");
+    egui::popup::popup_below_widget(ui, fid, &fr, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_min_width(LABELS.len() as f32 * 25.0 + 8.0);
+        label_filter_swatches(ui, &mut st.label_filter, m.layers);
+        if ui.add_enabled(st.label_filter != 0, egui::Button::new("Show all")).clicked() { st.label_filter = 0; }
+    });
+    if fr.clicked() { ui.memory_mut(|mem| mem.toggle_popup(fid)); }
+}
+
 // --- Docker ---------------------------------------------------------------
 
 pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
@@ -408,40 +450,32 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
 
     // The actions in one row (CSP): new layer (its other kinds under the
     // arrow), new folder, duplicate; the marks, then group; label filter
-    // and delete on the right.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        if icon_button(ui, Icon::NewLayer, "New layer", true) { new_layer(m, a); }
-        let arrow = egui::Button::image(egui::Image::new(Icon::Expanded.source()).fit_to_exact_size(vec2(12.0, 12.0)).tint(Color32::from_gray(0xc8)))
-            .frame(false)
-            .min_size(vec2(14.0, 24.0));
-        egui::menu::menu_custom_button(ui, arrow, |ui| {
-            ui.set_min_width(150.0);
-            if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
-            ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
-        }).response.on_hover_text("Layer types");
-        if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
-        if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
-        ui.add_space(6.0);
-        for (cmd, icon) in [(LayerCmd::Clip, Icon::Clip), (LayerCmd::Reference, Icon::Reference), (LayerCmd::Draft, Icon::Draft)] {
-            if icon_toggle(ui, icon, &cmd.tip(), true, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
-        }
-        let g = group_or_ungroup(st, m.layers);
-        let icon = if g == LayerCmd::Ungroup { Icon::Ungroup } else { Icon::Group };
-        if icon_toggle(ui, icon, &g.tip(), true, false).clicked() { apply(g, st, m, a); }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let deletable = st.selected.len() > 1 || m.layers.removal_refused().is_none();
-            if icon_button(ui, Icon::Delete, "Delete", deletable) { delete_layer(st, notice, m, a); }
-            let fr = icon_toggle(ui, Icon::FilterBy, "Filter by color", true, st.label_filter != 0);
-            let fid = egui::Id::new("layer_filter_popup");
-            egui::popup::popup_below_widget(ui, fid, &fr, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                ui.set_min_width(LABELS.len() as f32 * 25.0 + 8.0);
-                label_filter_swatches(ui, &mut st.label_filter, m.layers);
-                if ui.add_enabled(st.label_filter != 0, egui::Button::new("Show all")).clicked() { st.label_filter = 0; }
+    // and delete on the right. Too narrow for one row: two, making and
+    // deleting above, the marks below (nothing overlaps).
+    const ONE_ROW: f32 = 3.0 * 26.0 + 14.0 + 6.0 + 4.0 * 26.0 + 12.0 + 2.0 * 26.0;
+    if ui.available_width() >= ONE_ROW {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            make_buttons(ui, st, m, a);
+            ui.add_space(6.0);
+            mark_buttons(ui, st, m, a);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                delete_button(ui, st, notice, m, a);
+                label_filter_button(ui, st, m);
             });
-            if fr.clicked() { ui.memory_mut(|mem| mem.toggle_popup(fid)); }
         });
-    });
+    } else {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            make_buttons(ui, st, m, a);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| delete_button(ui, st, notice, m, a));
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            mark_buttons(ui, st, m, a);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| label_filter_button(ui, st, m));
+        });
+    }
     if st.label_filter != 0 {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Showing").small().color(theme::TEXT_WEAK));

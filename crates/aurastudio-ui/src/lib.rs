@@ -27,7 +27,8 @@ pub use dockers::layers::LayerCmd;
 pub use filters::FilterAction;
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
-pub use tools::{Group, Overlay, SelectCmd, ShapeOptions, Tool, ToolMemory};
+pub use tools::{Group, Overlay, SelectCmd, SelectOptions, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
+pub use prefs::Renderer;
 pub use widgets::set_display_transform;
 
 /// Brush size range, as a diameter in pixels.
@@ -71,6 +72,13 @@ pub struct Model<'a> {
     pub stay_inside:        &'a mut bool,
     pub shape:              &'a mut ShapeOptions,
     pub has_selection:      bool,
+    /// Settings of the selection and transform tools, and the transform
+    /// under way.
+    pub select:             &'a mut SelectOptions,
+    pub transform:          &'a mut TransformOptions,
+    pub transform_info:     TransformInfo,
+    /// The graphics API drawing the window (Preferences).
+    pub renderer:           &'a str,
     /// The selection, if any (what a filter changes).
     pub selection:          Option<&'a aurastudio_layers::Selection>,
     /// Drawn over the canvas, placed with `to_points` (canvas pixel ->
@@ -124,8 +132,10 @@ pub struct Actions {
     pub forget_recent: Option<std::path::PathBuf>,
     /// "Clear list" on the start screen.
     pub clear_recent: bool,
-    /// Select all / deselect.
+    /// Select menu.
     pub select:      Option<SelectCmd>,
+    /// The transform tool's options.
+    pub transform:   Option<TransformCmd>,
     /// Copy / paste pixels.
     pub edit:        Option<EditCmd>,
     /// The Layers docker changed the tree: the undo step's name.
@@ -194,6 +204,8 @@ pub struct UiState {
     filter:        Option<filters::FilterDialog>,
     /// The Preferences dialog is open, on this section.
     prefs_open:    Option<prefs::Section>,
+    /// Select > Grow… (or Shrink, Feather, Border): its pixels.
+    select_dialog: Option<(SelectKind, f32)>,
     dock_layout:   dock_layout::DockLayout,
     dialog:        Option<Dialog>,
     new_form:      Option<home::NewForm>,
@@ -218,6 +230,7 @@ impl UiState {
             tool_list:     Default::default(),
             filter:        None,
             prefs_open:    None,
+            select_dialog: None,
             dock_layout:   Default::default(),
             dialog:        None,
             new_form:      None,
@@ -248,7 +261,17 @@ impl UiState {
 
     /// A dialog is waiting for an answer (the canvas ignores the pen).
     pub fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some()
+        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some() || self.select_dialog.is_some()
+    }
+
+    /// The layers chosen in the Layers docker (several with Ctrl / Shift;
+    /// else the active one).
+    pub fn chosen_layers(&self, layers: &LayerStack) -> Vec<u64> { self.layers.selection(layers) }
+
+    /// Select > Grow… and the like: ask how many pixels.
+    pub fn ask_select(&mut self, kind: SelectKind) {
+        let v = match kind { SelectKind::Feather => 10.0, _ => 5.0 };
+        self.select_dialog = Some((kind, v));
     }
 
     /// The pixels of this layer changed: rebuild its thumbnail.
@@ -354,7 +377,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     }
     if let Some(section) = &mut state.prefs_open {
         let mut reset = false;
-        if !prefs::dialog(ctx, section, model.prefs, model.display_profile, &mut reset) { state.prefs_open = None; }
+        if !prefs::dialog(ctx, section, model.prefs, model.display_profile, model.renderer, &mut reset) { state.prefs_open = None; }
         if reset { state.dock = dockers::default_dock(); }
     }
     // A filter layer to edit (the Layers docker asked).
@@ -373,6 +396,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         if !home::new_dialog(ctx, form, model.max_canvas, actions) { state.new_form = None; }
     }
     dialog(ctx, state, actions);
+    select_dialog(ctx, state, actions);
     // An opacity being dragged, a name typed, a filter layer being tuned:
     // one undo step once done.
     let filter_layer = state.filter.as_ref().is_some_and(|d| !d.targets_layer());
@@ -429,6 +453,59 @@ fn dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
     if choice.is_some() {
         state.dialog = None;
         a.dialog = choice;
+    }
+}
+
+/// The Select menu's commands that take a number of pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectKind { Grow, Shrink, Feather, Border }
+
+impl SelectKind {
+    fn name(self) -> &'static str {
+        match self { SelectKind::Grow => "Grow selection", SelectKind::Shrink => "Shrink selection", SelectKind::Feather => "Feather selection", SelectKind::Border => "Border selection" }
+    }
+}
+
+/// Select > Grow… (Shrink, Feather, Border): how many pixels.
+fn select_dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
+    use egui::RichText;
+    let Some((kind, mut v)) = state.select_dialog else { return };
+    let mut done = None;
+    let modal = egui::Modal::new(egui::Id::new("select_dialog"))
+        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+        .show(ctx, |ui| {
+            ui.set_width(260.0);
+            ui.label(RichText::new(kind.name()).heading());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(if kind == SelectKind::Feather { "Radius" } else { "By" });
+                let r = ui.add(egui::DragValue::new(&mut v).range(1.0..=500.0).speed(0.5).max_decimals(0).suffix(" px"));
+                r.request_focus();
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() { done = Some(false); }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ok = egui::Button::new(RichText::new("OK").color(theme::TEXT)).fill(theme::ACCENT).min_size(egui::vec2(72.0, 26.0));
+                    if ui.add(ok).clicked() { done = Some(true); }
+                });
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) { done = Some(true); }
+        });
+    if modal.should_close() && done.is_none() { done = Some(false); }
+    match done {
+        Some(ok) => {
+            state.select_dialog = None;
+            if ok {
+                a.select = Some(match kind {
+                    SelectKind::Grow => SelectCmd::Grow(v),
+                    SelectKind::Shrink => SelectCmd::Shrink(v),
+                    SelectKind::Feather => SelectCmd::Feather(v),
+                    SelectKind::Border => SelectCmd::Border(v),
+                });
+            }
+        }
+        None => state.select_dialog = Some((kind, v)),
     }
 }
 

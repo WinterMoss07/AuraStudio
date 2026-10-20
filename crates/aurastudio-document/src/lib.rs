@@ -2,6 +2,8 @@
 //! `Arc<Mutex<Document>>`, and the workspace holding the open ones.
 
 mod history;
+mod select;
+mod transform;
 
 use std::sync::{Arc, Mutex};
 
@@ -9,19 +11,24 @@ use aurastudio_canvas::Rect;
 use aurastudio_layers::{FillParams, LayerStack, Selection};
 
 pub use history::{History, SavedStep, DEFAULT_BUDGET};
+pub use select::{SelectOp, Shape, Wand};
 
 /// Stable id of an open document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DocId(pub u64);
 
 /// What an undo / redo changed (to recomposite, refresh the thumbnail).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
-    pub layer_id: u64,
-    pub rect:     Rect,
+    pub layer_id:  u64,
+    pub rect:      Rect,
     /// The layer tree changed (a layer step): everything to merge again,
     /// the layer list to refresh.
-    pub tree:     bool,
+    pub tree:      bool,
+    /// The selection changed.
+    pub selection: bool,
+    /// Other layers changed too (a transform of several).
+    pub more:      Vec<(u64, Rect)>,
 }
 
 pub struct Document {
@@ -39,6 +46,10 @@ pub struct Document {
     saved_revision: u64,
     /// Pixels painting, filling and clearing may change; None: all.
     pub selection:  Option<Selection>,
+    /// The selection last taken away (Reselect).
+    deselected: Option<Selection>,
+    /// A transform under way (its tool is in use).
+    transform:  Option<transform::Session>,
     /// A filter being previewed (its dialog is open).
     filter:     Option<FilterSession>,
     /// The layer tree as the history last saw it: a different one is a
@@ -71,7 +82,7 @@ impl Document {
     /// saved.
     pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
         let tree = layers.tree_state();
-        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, filter: None, tree }
+        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None, transform: None, filter: None, tree }
     }
 
     /// Something changed (the layer panel edits the stack directly and
@@ -128,7 +139,7 @@ impl Document {
         let id = self.layers.active_id();
         let area = aurastudio_layers::flood(&self.layers, id, x, y, p, self.selection.as_ref())?;
         let before = self.layers.layer_rect(id, area.bbox)?;
-        let rect = self.layers.fill_area(id, &area, color)?;
+        let rect = self.layers.fill_area(id, &area, color, self.selection.as_ref())?;
         self.record_tree("Layers");
         self.history.push("Fill", id, rect, &before);
         self.touch();
@@ -162,17 +173,12 @@ impl Document {
             None => s.before.clone(),
             Some(f) => {
                 let mut px = f.apply(&s.before, rw, rh);
-                // Only selected pixels change; a transparent pixel stays
-                // the empty value (no memory taken by invisible colors).
-                let mut i = 0;
-                for y in rect.1..rect.3 {
-                    for x in rect.0..rect.2 {
-                        let outside = self.selection.as_ref().is_some_and(|sel| !sel.contains(x, y));
-                        if outside || (px[i + 3] == 0 && s.before[i + 3] == 0) {
-                            px[i..i + 4].copy_from_slice(&s.before[i..i + 4]);
-                        }
-                        i += 4;
-                    }
+                // Only selected pixels change (soft edges partly); a
+                // transparent pixel stays the empty value (no memory taken
+                // by invisible colors).
+                if let Some(sel) = &self.selection { sel.blend_rect(rect, &s.before, &mut px); }
+                for (p, b) in px.chunks_exact_mut(4).zip(s.before.chunks_exact(4)) {
+                    if p[3] == 0 && b[3] == 0 { p.copy_from_slice(b); }
                 }
                 px
             }
@@ -221,18 +227,18 @@ impl Document {
     pub fn undo(&mut self) -> Option<Change> {
         // (A layer edit not recorded yet comes first.)
         self.record_tree("Layers");
-        let c = self.history.undo(&mut self.layers);
+        let c = self.history.undo(&mut self.layers, &mut self.selection);
         self.after_history(c)
     }
 
     pub fn redo(&mut self) -> Option<Change> {
         if self.record_tree("Layers") { return None; }
-        let c = self.history.redo(&mut self.layers);
+        let c = self.history.redo(&mut self.layers, &mut self.selection);
         self.after_history(c)
     }
 
     fn after_history(&mut self, c: Option<Change>) -> Option<Change> {
-        if let Some(c) = c {
+        if let Some(c) = &c {
             self.touch();
             if c.tree {
                 self.tree = self.layers.tree_state();
@@ -247,15 +253,17 @@ impl Document {
     /// so the history is dropped (Krita does the same without an undoable
     /// resize command).
     pub fn resize(&mut self, width: u32, height: u32) {
-        // A filter being previewed is dropped first (its saved pixels
-        // are for the old size).
+        // A filter or transform being previewed is dropped first (its
+        // saved pixels are for the old size).
         self.filter_cancel();
+        self.transform_cancel();
         self.layers.resize(width, height);
         self.history.clear();
         // (Deleted layers kept for undo have the old size.)
         self.layers.take_removed();
         self.tree = self.layers.tree_state();
         self.selection = None;
+        self.deselected = None;
         self.touch();
     }
 }
@@ -293,13 +301,7 @@ impl Document {
         };
         let mut rgba = self.layers.layer_rect(id, r)?;
         if let Some(sel) = &self.selection {
-            let mut i = 0;
-            for y in r.1..r.3 {
-                for x in r.0..r.2 {
-                    if !sel.contains(x, y) { rgba[i + 3] = 0; }
-                    i += 4;
-                }
-            }
+            for (p, c) in rgba.chunks_exact_mut(4).zip(sel.mask(r)) { p[3] = (p[3] as u32 * c as u32 / 255) as u8; }
         }
         Some(Clip { x: r.0 as i64, y: r.1 as i64, width: r.2 - r.0, height: r.3 - r.1, rgba })
     }
@@ -482,6 +484,7 @@ mod tests {
 
         let c = doc.undo().unwrap();
         assert_eq!((c.layer_id, c.rect), (id, (15, 15, 30, 30)));
+        assert!(!c.selection && c.more.is_empty());
         assert_eq!(px(&doc, id, 16, 16), [255, 0, 0, 255]);
         assert_eq!(px(&doc, id, 25, 25), [255, 255, 255, 0]);
         doc.undo().unwrap();
@@ -627,13 +630,13 @@ mod tests {
         let mut d = Document::new(DocId(1), "t", 64, 64);
         let id = d.layers.active_id();
         assert!(d.layers.set_layer_rect(id, (0, 0, 64, 64), &[9u8, 8, 7, 255].repeat(64 * 64)));
-        d.selection = aurastudio_layers::Selection::polygon(64, 64, &[(10.0, 10.0), (30.0, 10.0), (10.0, 30.0)]);
+        d.selection = aurastudio_layers::Selection::polygon(64, 64, &[(10.0, 10.0), (30.0, 10.0), (10.0, 30.0)], false);
         let clip = d.copy().unwrap();
-        assert_eq!((clip.x, clip.y, clip.width, clip.height), (10, 10, 20, 20));
+        assert_eq!((clip.x, clip.y, clip.width, clip.height), (10, 10, 19, 19));
         let (new, r) = d.paste(&clip).unwrap();
         assert_ne!(new, id);
         assert_eq!(d.layers.active_id(), new);
-        assert_eq!(r, (10, 10, 30, 30));
+        assert_eq!(r, (10, 10, 29, 29));
         let px = |d: &Document, x, y| d.layers.layer_rect(new, (x, y, x + 1, y + 1)).unwrap();
         assert_eq!(px(&d, 12, 12), vec![9, 8, 7, 255]);
         assert_eq!(px(&d, 28, 28)[3], 0, "outside the lasso");

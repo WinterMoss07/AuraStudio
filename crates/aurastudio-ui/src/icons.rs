@@ -17,6 +17,10 @@ pub enum Icon {
     Pencil, Ink, Charcoal, Paint, Watercolor, Airbrush, Blend, Effects, Misc, Plus,
     // Toolbox groups.
     Shapes,
+    // Selection and transform tools.
+    EllipseSelect, PolySelect, Wand, Transform,
+    SelReplace, SelAdd, SelSubtract, SelIntersect,
+    Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Check, Move,
 }
 
 impl Icon {
@@ -70,6 +74,22 @@ impl Icon {
             Icon::Misc       => svg!("../icons/ellipsis.svg"),
             Icon::Plus       => svg!("../icons/plus.svg"),
             Icon::Shapes     => svg!("../icons/shapes.svg"),
+            Icon::EllipseSelect => svg!("../icons/circle-dashed.svg"),
+            Icon::PolySelect => svg!("../icons/vector-polygon.svg"),
+            Icon::Wand       => svg!("../icons/wand-sparkles.svg"),
+            Icon::Transform  => svg!("../icons/scaling.svg"),
+            Icon::SelReplace => svg!("../icons/square-dashed.svg"),
+            Icon::SelAdd     => svg!("../icons/squares-unite.svg"),
+            Icon::SelSubtract => svg!("../icons/squares-subtract.svg"),
+            Icon::SelIntersect => svg!("../icons/squares-intersect.svg"),
+            Icon::Perspective => svg!("../icons/vector-square.svg"),
+            Icon::Warp       => svg!("../icons/grid-3x3.svg"),
+            Icon::RotateLeft => svg!("../icons/rotate-ccw-square.svg"),
+            Icon::RotateRight => svg!("../icons/rotate-cw-square.svg"),
+            Icon::FlipH      => svg!("../icons/flip-horizontal.svg"),
+            Icon::FlipV      => svg!("../icons/flip-vertical.svg"),
+            Icon::Check      => svg!("../icons/check.svg"),
+            Icon::Move       => svg!("../icons/move.svg"),
         }
     }
 }

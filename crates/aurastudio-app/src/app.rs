@@ -16,14 +16,16 @@ use aurastudio_brushes::Library;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
-use aurastudio_document::{Document, SharedDoc, Workspace};
+use aurastudio_document::{Document, SelectOp, Shape, SharedDoc, Wand, Workspace};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
-use aurastudio_layers::{FillParams, Selection};
-use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, Prefs, SelectCmd, ShapeOptions, Tool, ToolMemory, UiState, ViewCmd};
+use aurastudio_layers::{FillParams, SelectMode, Segment};
+use aurastudio_layers::transform::Interp;
+use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, Prefs, SelectCmd, SelectOptions, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformOptions, TransformOverlay, UiState, ViewCmd};
 
 use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
 use crate::debounce::{Debounce, Kind as DebounceKind};
-use crate::paint_thread::{self, Cmd, PaintThread, Timing};
+use crate::paint_thread::{self, Cmd, PaintThread, Timing, TransformAction};
+use crate::xform::{Hit, Mods, Xform};
 use crate::projection::{Projection, SharedProjection};
 
 /// Window title: the name and version.
@@ -55,7 +57,7 @@ enum Pending { Create(aurastudio_ui::NewDoc), Open(PathBuf), Close, Quit }
 
 /// Where unsaved work is autosaved: one file per version, so two versions
 /// side by side don't overwrite each other's.
-fn recovery_path() -> Option<PathBuf> {
+pub fn recovery_path() -> Option<PathBuf> {
     let name = format!("autosave-{}.{EXTENSION}", env!("CARGO_PKG_VERSION"));
     dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(name))
 }
@@ -114,9 +116,13 @@ enum Gesture {
     /// Color picker: picks under the cursor as it moves.
     Pick,
     /// Lasso: its outline so far, canvas pixels.
-    Lasso(Vec<(f32, f32)>),
-    /// Rectangle selection: corner where it started, and the other one.
-    Rect((f32, f32), (f32, f32)),
+    Lasso { pts: Vec<(f32, f32)>, mode: SelectMode },
+    /// Rectangle / ellipse selection: corner where it started, the other
+    /// one; Shift / Alt held at the press (they chose the mode: pressed
+    /// later, they make a square, centered).
+    Box { ellipse: bool, a: (f32, f32), b: (f32, f32), mode: SelectMode, held: (bool, bool) },
+    /// The selection's outline dragged: from, to (canvas pixels).
+    MoveSel { start: (f32, f32), now: (f32, f32) },
     /// Line, rectangle or ellipse being dragged.
     Shape { tool: Tool, start: (f32, f32), end: (f32, f32) },
 }
@@ -125,15 +131,15 @@ enum Gesture {
 /// arc's control lines (start, control point, end).
 type Preview = (Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<(f32, f32)>);
 
-impl Gesture {
-    /// The outline being drawn, canvas pixels.
-    fn outline(&self) -> Option<Vec<(f32, f32)>> {
-        match self {
-            Gesture::Pick | Gesture::Shape { .. } => None,
-            Gesture::Lasso(p) => Some(p.clone()),
-            Gesture::Rect(a, b) => Some(vec![*a, (b.0, a.1), *b, (a.0, b.1)]),
-        }
-    }
+/// The transform box to draw: lines, square handles, round handles, pivot.
+type XformDrawing = (Vec<Vec<(f32, f32)>>, Vec<(f32, f32)>, Vec<(f32, f32)>, Option<(f32, f32)>);
+
+/// The selection's outline traced for the last selection and zoom.
+#[derive(Default)]
+struct Ants {
+    stamp: u64,
+    step:  u32,
+    segs:  Vec<Segment>,
 }
 
 /// View navigation drag in progress.
@@ -155,6 +161,10 @@ pub enum AppEvent {
     Thumbnail { path: PathBuf, w: u32, h: u32, rgba: Vec<u8> },
     /// A save finished (see paint_thread::Event::Saved).
     Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
+    /// The selection changed.
+    Selection,
+    /// A transform began on the paint thread: what moves, or why not.
+    TransformStarted(Result<aurastudio_canvas::Rect, &'static str>),
 }
 
 /// The document locked, if it gets free within `wait`.
@@ -275,6 +285,19 @@ pub struct App {
     arc:        ArcTool,
     /// Left button releases held back BOUNCE (debounce.rs).
     debounce:   Debounce<WindowEvent>,
+    /// Selection tools' settings, the polygon being clicked (points, mode).
+    select:     SelectOptions,
+    poly:       Option<(Vec<(f32, f32)>, SelectMode)>,
+    ants:       Ants,
+    /// Transform tool: its settings, the transform under way (handles),
+    /// one asked for and not started yet.
+    transform_opts: TransformOptions,
+    xf:         Option<Xform>,
+    xf_pending: bool,
+    /// The layers asked for when the transform was started.
+    pending_targets: Vec<u64>,
+    /// The graphics API in use.
+    renderer:   String,
 
     /// The paint thread updated the projection: upload it next frame.
     painted:      bool,
@@ -319,6 +342,8 @@ impl App {
                 paint_thread::Event::LayerChanged { layer_id } => AppEvent::LayerChanged(layer_id),
                 paint_thread::Event::Notice(text) => AppEvent::Notice(text.into()),
                 paint_thread::Event::Saved { doc, path, revision, auto, result } => AppEvent::Saved { doc, path, revision, auto, result },
+                paint_thread::Event::Selection => AppEvent::Selection,
+                paint_thread::Event::TransformStarted(r) => AppEvent::TransformStarted(r),
             });
         });
         // Start with the round pen (the catalog starts with pencils).
@@ -381,6 +406,14 @@ impl App {
             tool_memory: ToolMemory::default(),
             arc:        ArcTool::default(),
             debounce:   Debounce::default(),
+            select:     SelectOptions::default(),
+            poly:       None,
+            ants:       Ants::default(),
+            transform_opts: TransformOptions::default(),
+            xf:         None,
+            xf_pending: false,
+            pending_targets: Vec::new(),
+            renderer:   String::new(),
 
             painted:      false,
             // Upload the first composite.
@@ -507,10 +540,14 @@ impl App {
             },
             None if self.is_drawing => Wanted::Hidden,
             None if self.over_canvas && !self.home => match self.tool {
+                Tool::Transform => self.transform_cursor().unwrap_or(Wanted::System(CursorIcon::Default)),
+                _ if matches!(self.gesture, Some(Gesture::MoveSel { .. })) => Wanted::System(CursorIcon::Move),
                 _ if self.gesture.is_some() || self.picking_with_alt() => Wanted::System(CursorIcon::Crosshair),
+                Tool::RectSelect | Tool::EllipseSelect | Tool::Lasso
+                    if self.window_to_canvas(self.cursor.0, self.cursor.1).is_some_and(|p| self.on_selection(p)) => Wanted::System(CursorIcon::Move),
                 Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc if self.prefs.brush_outline => Wanted::Hidden,
                 Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => Wanted::System(CursorIcon::Crosshair),
-                Tool::Picker | Tool::Fill | Tool::Lasso | Tool::RectSelect => Wanted::System(CursorIcon::Crosshair),
+                Tool::Picker | Tool::Fill | Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect | Tool::PolySelect | Tool::MagicWand => Wanted::System(CursorIcon::Crosshair),
             },
             None if self.over_canvas => Wanted::System(CursorIcon::Default),
             None => self.gpu.as_ref().map_or(Wanted::System(CursorIcon::Default),
@@ -600,6 +637,25 @@ impl App {
         self.modifiers.alt_key() && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Fill)
     }
 
+    /// The selection mode the keys held ask for (Shift: add, Alt:
+    /// subtract, both: intersect), else the options'.
+    fn select_mode(&self) -> SelectMode {
+        match (self.shift_held(), self.modifiers.alt_key()) {
+            (true, true) => SelectMode::Intersect,
+            (true, false) => SelectMode::Add,
+            (false, true) => SelectMode::Subtract,
+            _ => self.select.mode,
+        }
+    }
+
+    /// The press at canvas point `p` is on the selection, with nothing held
+    /// that changes the mode: it drags the outline.
+    fn on_selection(&self, p: (f32, f32)) -> bool {
+        if self.select_mode() != SelectMode::Replace || self.select.mode != SelectMode::Replace { return false; }
+        let Ok(d) = self.doc.try_lock() else { return false };
+        d.selection.as_ref().is_some_and(|s| p.0 >= 0.0 && p.1 >= 0.0 && s.inside(p.0 as u32, p.1 as u32))
+    }
+
     /// Left press on the canvas: what the current tool does.
     fn tool_press(&mut self) {
         let tool = if self.picking_with_alt() { Tool::Picker } else { self.tool };
@@ -627,8 +683,31 @@ impl App {
                     doc: Arc::clone(&self.doc), x: x as u32, y: y as u32, color: [r, g, b, 255], params: self.fill,
                 });
             }
-            Tool::Lasso => self.gesture = at.map(|p| Gesture::Lasso(vec![p])),
-            Tool::RectSelect => self.gesture = at.map(|p| Gesture::Rect(p, p)),
+            Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect => {
+                let Some(p) = at else { return };
+                let (mode, held) = (self.select_mode(), (self.shift_held(), self.modifiers.alt_key()));
+                self.gesture = Some(if self.on_selection(p) {
+                    Gesture::MoveSel { start: p, now: p }
+                } else if tool == Tool::Lasso {
+                    Gesture::Lasso { pts: vec![p], mode }
+                } else {
+                    Gesture::Box { ellipse: tool == Tool::EllipseSelect, a: p, b: p, mode, held }
+                });
+            }
+            Tool::PolySelect => if let Some(p) = at { self.poly_click(p) },
+            Tool::MagicWand => {
+                let Some((x, y)) = at else { return };
+                let (w, h) = self.canvas_size();
+                if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 { return; }
+                let o = self.select.wand;
+                let wand = Wand {
+                    fill: FillParams { tolerance: o.tolerance, refer: o.refer, skip_drafts: o.skip_drafts, expand: o.grow },
+                    contiguous: o.contiguous,
+                };
+                let op = SelectOp::Wand { x: x as u32, y: y as u32, wand, mode: self.select_mode(), aa: self.select.aa, feather: self.select.feather };
+                self.send_select(op);
+            }
+            Tool::Transform => if let Some(p) = at { self.xform_press(p) },
         }
         self.update_cursor();
         self.request_redraw();
@@ -640,35 +719,81 @@ impl App {
         let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
         match &mut self.gesture {
             Some(Gesture::Pick) => self.pick_color(),
-            Some(Gesture::Lasso(points)) => {
+            Some(Gesture::Lasso { pts, .. }) => {
                 // One point per screen pixel or so of travel.
-                let last = *points.last().unwrap();
-                if (at.0 - last.0).abs().max((at.1 - last.1).abs()) * zoom >= 1.5 { points.push(at); }
+                let last = pts.last().copied().unwrap_or(at);
+                if (at.0 - last.0).abs().max((at.1 - last.1).abs()) * zoom >= 1.5 { pts.push(at); }
             }
-            Some(Gesture::Rect(_, end)) | Some(Gesture::Shape { end, .. }) => *end = at,
+            Some(Gesture::Box { b: end, .. }) | Some(Gesture::Shape { end, .. }) | Some(Gesture::MoveSel { now: end, .. }) => *end = at,
             None => return,
         }
         self.request_redraw();
+    }
+
+    /// The box a rectangle / ellipse selection covers: Shift pressed after
+    /// the press makes it square, Alt centers it.
+    fn select_box(&self, a: (f32, f32), b: (f32, f32), held: (bool, bool)) -> ((f32, f32), (f32, f32)) {
+        let square = self.shift_held() && !held.0;
+        let centered = self.modifiers.alt_key() && !held.1;
+        crate::shapes::drag_box(a, b, square, centered)
+    }
+
+    /// What the selection gesture outlines now, canvas pixels.
+    fn gesture_outline(&self) -> Option<Vec<(f32, f32)>> {
+        if self.gesture.is_none() && self.poly.is_some() {
+            // The polygon so far, and on to the cursor.
+            let (pts, _) = self.poly.as_ref()?;
+            let mut v = pts.clone();
+            if let Some(c) = self.window_to_canvas(self.cursor.0, self.cursor.1) { v.push(c); }
+            return Some(v);
+        }
+        match self.gesture.as_ref()? {
+            Gesture::Lasso { pts, .. } => Some(pts.clone()),
+            Gesture::Box { ellipse, a, b, held, .. } => {
+                let (p, q) = self.select_box(*a, *b, *held);
+                Some(if *ellipse { crate::shapes::ellipse(p, q) } else { vec![p, (q.0, p.1), q, (p.0, q.1)] })
+            }
+            _ => None,
+        }
     }
 
     /// Left release: a selection drawn becomes the selection; a click
     /// without dragging deselects (Krita, Photoshop).
     fn tool_release(&mut self) {
         let Some(g) = self.gesture.take() else { return };
-        let (w, h) = self.canvas_size();
         let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
-        let sel = match g {
+        let far = |a: (f32, f32), b: (f32, f32), min: f32| (a.0 - b.0).abs().max((a.1 - b.1).abs()) * zoom >= min;
+        let (aa, feather) = (self.select.aa, self.select.feather);
+        let op = match g {
             Gesture::Pick => { self.update_cursor(); return; }
-            Gesture::Lasso(points) => Selection::polygon(w, h, &points),
-            Gesture::Rect(a, b) if (a.0 - b.0).abs().max((a.1 - b.1).abs()) * zoom >= 3.0 => {
-                let r = (a.0.min(b.0).round().max(0.0) as u32, a.1.min(b.1).round().max(0.0) as u32,
-                         a.0.max(b.0).round().max(0.0) as u32, a.1.max(b.1).round().max(0.0) as u32);
-                Selection::rect(w, h, r)
+            Gesture::MoveSel { start, now } => {
+                let (dx, dy) = ((now.0 - start.0).round() as i64, (now.1 - start.1).round() as i64);
+                if dx == 0 && dy == 0 {
+                    // A click on the selection: deselect.
+                    if !far(start, now, 3.0) { Some(SelectOp::None) } else { None }
+                } else {
+                    Some(SelectOp::Move(dx, dy))
+                }
             }
-            Gesture::Rect(..) => None,
+            Gesture::Lasso { pts, mode } => {
+                let moved = pts.iter().any(|p| far(*p, pts[0], 3.0));
+                if moved && pts.len() >= 3 { Some(SelectOp::Shape { shape: Shape::Polygon(pts), mode, aa, feather }) }
+                else if mode == SelectMode::Replace { Some(SelectOp::None) } else { None }
+            }
+            Gesture::Box { ellipse, a, b, mode, held } => {
+                let (p, q) = self.select_box(a, b, held);
+                if !far(p, q, 3.0) {
+                    if mode == SelectMode::Replace { Some(SelectOp::None) } else { None }
+                } else if ellipse {
+                    Some(SelectOp::Shape { shape: Shape::Ellipse((p.0, p.1, q.0, q.1)), mode, aa, feather })
+                } else {
+                    let r = |v: f32| v.round().max(0.0) as u32;
+                    Some(SelectOp::Shape { shape: Shape::Rect((r(p.0.min(q.0)), r(p.1.min(q.1)), r(p.0.max(q.0)), r(p.1.max(q.1)))), mode, aa, feather })
+                }
+            }
             Gesture::Shape { tool, start, end } => {
                 // A click without dragging draws nothing.
-                if (start.0 - end.0).abs().max((start.1 - end.1).abs()) * zoom >= 2.0 {
+                if far(start, end, 2.0) {
                     let path = self.shape_path(tool, start, end);
                     self.paint_path(path);
                 }
@@ -677,8 +802,43 @@ impl App {
                 return;
             }
         };
-        self.set_selection(sel);
+        if let Some(op) = op { self.send_select(op); }
         self.update_cursor();
+        self.request_redraw();
+    }
+
+    /// Polygon selection: a click adds a point; on the first point (or a
+    /// double click) it closes.
+    fn poly_click(&mut self, p: (f32, f32)) {
+        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        match &mut self.poly {
+            None => {
+                let mode = self.select_mode();
+                self.poly = Some((vec![p], mode));
+            }
+            Some((pts, _)) => {
+                let close = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).hypot(a.1 - b.1) * zoom <= 8.0;
+                if pts.len() >= 3 && close(p, pts[0]) { self.finish_poly(); return; }
+                // A second click on the last point: done.
+                if pts.last().is_some_and(|l| close(p, *l)) { if pts.len() >= 3 { self.finish_poly(); } return; }
+                pts.push(p);
+            }
+        }
+        self.request_redraw();
+    }
+
+    fn finish_poly(&mut self) {
+        let Some((pts, mode)) = self.poly.take() else { return };
+        if pts.len() >= 3 {
+            let op = SelectOp::Shape { shape: Shape::Polygon(pts), mode, aa: self.select.aa, feather: self.select.feather };
+            self.send_select(op);
+        }
+        self.request_redraw();
+    }
+
+    fn send_select(&mut self, op: SelectOp) {
+        self.paint.send(Cmd::Select { doc: Arc::clone(&self.doc), op });
+        self.request_redraw();
     }
 
     /// Path of a line / rectangle / ellipse dragged from `start` to `end`,
@@ -778,18 +938,208 @@ impl App {
         }
     }
 
-    fn set_selection(&mut self, sel: Option<Selection>) {
-        self.doc.lock().unwrap().selection = sel;
+    fn select(&mut self, cmd: SelectCmd) {
+        if self.home || self.is_drawing { return; }
+        if self.xf.is_some() { self.end_transform(true); }
+        let op = match cmd {
+            SelectCmd::All => SelectOp::All,
+            SelectCmd::None => SelectOp::None,
+            SelectCmd::Reselect => SelectOp::Reselect,
+            SelectCmd::Invert => SelectOp::Invert,
+            SelectCmd::Grow(r) => SelectOp::Grow(r),
+            SelectCmd::Shrink(r) => SelectOp::Shrink(r),
+            SelectCmd::Feather(r) => SelectOp::Feather(r),
+            SelectCmd::Border(r) => SelectOp::Border(r),
+            SelectCmd::FromLayer => SelectOp::FromLayer(self.select.mode),
+        };
+        self.send_select(op);
+    }
+
+    // --- Transform tool ------------------------------------------------------
+
+    /// The layers the transform tool takes: those chosen in the Layers
+    /// docker, the paint layers of a chosen folder.
+    fn transform_targets(&self) -> Vec<u64> {
+        let Ok(d) = self.doc.try_lock() else { return Vec::new() };
+        fn layers_in(nodes: &[aurastudio_layers::Node], out: &mut Vec<u64>) {
+            for n in nodes {
+                match n {
+                    aurastudio_layers::Node::Layer(l) => out.push(l.id),
+                    aurastudio_layers::Node::Folder(f) => layers_in(&f.children, out),
+                    aurastudio_layers::Node::Filter(_) => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for id in self.ui.chosen_layers(&d.layers) {
+            match d.layers.node(id) {
+                Some(aurastudio_layers::Node::Layer(_)) => out.push(id),
+                Some(aurastudio_layers::Node::Folder(f)) => layers_in(&f.children, &mut out),
+                _ => {}
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Ask the paint thread to start a transform (its box shows once it
+    /// answers).
+    fn start_transform(&mut self) {
+        if self.home || self.xf.is_some() || self.xf_pending { return; }
+        let targets = self.transform_targets();
+        if targets.is_empty() {
+            self.ui.notify("Select a layer to transform");
+            self.request_redraw();
+            return;
+        }
+        self.xf_pending = true;
+        self.pending_targets = targets.clone();
+        self.paint.send(Cmd::Transform { doc: Arc::clone(&self.doc), action: TransformAction::Begin(targets) });
+    }
+
+    /// Keep (or drop) the transform under way.
+    fn end_transform(&mut self, apply: bool) {
+        self.xf_pending = false;
+        let Some(xf) = self.xf.take() else { return };
+        let action = if apply && xf.changed() { TransformAction::Apply(xf.warp, self.transform_opts.interp) } else { TransformAction::Cancel };
+        self.paint.send(Cmd::Transform { doc: Arc::clone(&self.doc), action });
+        self.update_cursor();
         self.request_redraw();
     }
 
-    fn select(&mut self, cmd: SelectCmd) {
-        if self.home || self.is_drawing { return; }
-        let (w, h) = self.canvas_size();
-        self.set_selection(match cmd {
-            SelectCmd::All => Some(Selection::all(w, h)),
-            SelectCmd::None => None,
-        });
+    /// Show the transform as it is now (fast: bilinear while dragging).
+    fn send_preview(&mut self, fast: bool) {
+        let Some(xf) = &self.xf else { return };
+        let interp = match self.transform_opts.interp { Interp::Nearest => Interp::Nearest, i if !fast => i, _ => Interp::Bilinear };
+        self.paint.send(Cmd::Transform { doc: Arc::clone(&self.doc), action: TransformAction::Preview(xf.warp.clone(), interp) });
+        self.request_redraw();
+    }
+
+    /// Handles' reach, canvas pixels.
+    fn handle_tolerance(&self) -> f64 {
+        9.0 / self.gpu.as_ref().map_or(1.0, |g| g.zoom()).max(1e-3) as f64
+    }
+
+    fn xform_press(&mut self, p: (f32, f32)) {
+        let mode = self.transform_opts.mode;
+        let tol = self.handle_tolerance();
+        let Some(xf) = &mut self.xf else {
+            // None yet (empty layer, cancelled): try again.
+            self.start_transform();
+            return;
+        };
+        if mode == TransformMode::Warp && xf.warp.mesh.is_none() { xf.set_grid(self.transform_opts.grid); }
+        let hit = xf.hit([p.0 as f64, p.1 as f64], tol, mode);
+        xf.press(hit, [p.0 as f64, p.1 as f64]);
+    }
+
+    fn xform_mods(&self) -> Mods {
+        Mods { shift: self.shift_held(), alt: self.modifiers.alt_key(), ctrl: self.ctrl_held() }
+    }
+
+    /// The pointer moved with the transform's handle held.
+    fn xform_drag(&mut self) {
+        let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
+        let (m, mode, keep) = (self.xform_mods(), self.transform_opts.mode, self.transform_opts.keep_aspect);
+        let Some(xf) = &mut self.xf else { return };
+        if xf.drag.is_none() { return; }
+        if xf.drag_to([at.0 as f64, at.1 as f64], m, mode, keep) { self.send_preview(true); }
+    }
+
+    fn xform_release(&mut self) {
+        let Some(xf) = &mut self.xf else { return };
+        if xf.release() { self.send_preview(false); }
+        self.update_cursor();
+    }
+
+    /// Other layers chosen while transforming: the transform so far is
+    /// kept, a new one starts on them.
+    fn follow_transform_targets(&mut self) {
+        if self.tool != Tool::Transform || self.is_drawing || self.xf.as_ref().is_some_and(|x| x.drag.is_some()) { return; }
+        let now = match (&self.xf, self.xf_pending) {
+            (Some(x), _) => x.targets.clone(),
+            (None, true) => self.pending_targets.clone(),
+            (None, false) => return,
+        };
+        let targets = self.transform_targets();
+        if !targets.is_empty() && targets != now {
+            self.end_transform(true);
+            self.start_transform();
+        }
+    }
+
+    /// The options' buttons and fields.
+    fn transform_cmd(&mut self, cmd: TransformCmd) {
+        match cmd {
+            TransformCmd::Apply => return self.end_transform(true),
+            TransformCmd::Cancel => return self.end_transform(false),
+            _ => {}
+        }
+        let Some(xf) = &mut self.xf else { return };
+        match cmd {
+            TransformCmd::Reset => xf.reset(),
+            TransformCmd::FlipH => xf.flip(true),
+            TransformCmd::FlipV => xf.flip(false),
+            TransformCmd::Rotate(d) => xf.rotate(d),
+            TransformCmd::Numbers(n) => xf.set_numbers(n),
+            TransformCmd::ResetWarp => { xf.remember(); xf.warp.mesh = None; }
+            TransformCmd::Grid(n) => { self.transform_opts.grid = n; xf.set_grid(n); }
+            TransformCmd::Apply | TransformCmd::Cancel => {}
+        }
+        self.send_preview(false);
+    }
+
+    /// The box and its handles, canvas pixels.
+    fn transform_overlay_data(&self) -> Option<XformDrawing> {
+        let xf = self.xf.as_ref()?;
+        let mode = self.transform_opts.mode;
+        let f = |p: [f64; 2]| (p[0] as f32, p[1] as f32);
+        let lines = xf.lines(mode);
+        // A small box on screen shows its corners only (see Xform::hit).
+        let q = xf.warp.quad;
+        let small = (0..4).map(|i| (q[(i + 1) % 4][0] - q[i][0]).hypot(q[(i + 1) % 4][1] - q[i][1])).fold(f64::MAX, f64::min) < self.handle_tolerance() * 5.0;
+        let (handles, points) = match mode {
+            TransformMode::Warp => (Vec::new(), xf.mesh_points().into_iter().map(f).collect()),
+            _ if small => (q.iter().copied().map(f).collect(), Vec::new()),
+            _ => (q.iter().copied().chain(xf.edge_handles()).map(f).collect(), Vec::new()),
+        };
+        let pivot = (mode == TransformMode::Free && !small).then(|| f(xf.pivot));
+        Some((lines, handles, points, pivot))
+    }
+
+    /// The cursor over the transform box: what a press there would do.
+    fn transform_cursor(&self) -> Option<crate::cursors::Wanted> {
+        use crate::cursors::Wanted;
+        let xf = self.xf.as_ref()?;
+        let at = self.window_to_canvas(self.cursor.0, self.cursor.1)?;
+        let mode = self.transform_opts.mode;
+        let hit = match &xf.drag { Some(d) => d.hit, None => xf.hit([at.0 as f64, at.1 as f64], self.handle_tolerance(), mode) };
+        let dragging = xf.drag.is_some();
+        // Resize arrows along the handle's direction on screen.
+        let gpu = self.gpu.as_ref()?;
+        let c = { let q = xf.warp.quad; [(q[0][0] + q[2][0]) / 2.0, (q[0][1] + q[2][1]) / 2.0] };
+        let dir = |p: [f64; 2]| {
+            let (a, b) = (gpu.canvas_to_screen((c[0] as f32, c[1] as f32)), gpu.canvas_to_screen((p[0] as f32, p[1] as f32)));
+            let ang = (b.1 - a.1).atan2(b.0 - a.0).to_degrees().rem_euclid(180.0);
+            match ang { a if !(22.5..157.5).contains(&a) => CursorIcon::EwResize, a if a < 67.5 => CursorIcon::NwseResize, a if a < 112.5 => CursorIcon::NsResize, _ => CursorIcon::NeswResize }
+        };
+        // A skew slides along the edge.
+        let skew = |i: usize| {
+            let q = xf.warp.quad;
+            dir([c[0] + q[(i + 1) % 4][0] - q[i][0], c[1] + q[(i + 1) % 4][1] - q[i][1]])
+        };
+        Some(match hit {
+            Hit::Inside => Wanted::System(CursorIcon::Move),
+            Hit::Outside => Wanted::Rotate,
+            Hit::Pivot => Wanted::System(CursorIcon::Crosshair),
+            Hit::Corner(_) if mode == TransformMode::Perspective || self.ctrl_held() => Wanted::System(CursorIcon::Crosshair),
+            Hit::Corner(i) => Wanted::System(dir(xf.warp.quad[i])),
+            Hit::Side(i) => Wanted::System(skew(i)),
+            Hit::Edge(i) if self.ctrl_held() => Wanted::System(skew(i)),
+            Hit::Edge(i) => Wanted::System(dir(xf.edge_handles()[i])),
+            Hit::Point(_) => if dragging { Wanted::HandClosed } else { Wanted::Hand },
+        })
     }
 
     /// Color picker: the merged image's color under the cursor becomes the
@@ -827,9 +1177,15 @@ impl App {
 
     fn set_tool(&mut self, tool: Tool) {
         if tool == self.tool || self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
+        if self.xf.as_ref().is_some_and(|x| x.drag.is_some()) { return; }
         self.finish_arcs();
         self.arc.reset_release();
+        // Leaving the transform keeps it (Krita); a polygon not closed is
+        // dropped.
+        if self.tool == Tool::Transform { self.end_transform(true); }
+        self.poly = None;
         self.tool = tool;
+        if tool == Tool::Transform { self.start_transform(); }
         self.update_cursor();
         self.request_redraw();
     }
@@ -1033,6 +1389,7 @@ impl App {
         self.ctrl_down = false;
         self.nav = None;
         self.gesture = None;
+        self.xform_release();
         if self.arc.active() { self.finish_arcs(); }
         self.arc.reset_release();
         if self.is_drawing {
@@ -1084,6 +1441,11 @@ impl App {
     fn render_frame(&mut self) {
         self.update_outline();
         let preview = self.shape_preview();
+        let drawing = self.gesture_outline();
+        let ants_offset = match &self.gesture { Some(Gesture::MoveSel { start, now }) => ((now.0 - start.0).round(), (now.1 - start.1).round()), _ => (0.0, 0.0) };
+        let xf_data = self.transform_overlay_data();
+        let transform_info = TransformInfo { active: self.xf.is_some(), numbers: self.xf.as_ref().and_then(Xform::numbers) };
+        let transforming = self.xf.is_some() || self.xf_pending;
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
@@ -1115,7 +1477,12 @@ impl App {
         let tool_memory = &mut self.tool_memory;
         let fill = &mut self.fill;
         let stay_inside = &mut self.stay_inside;
-        let drawing = self.gesture.as_ref().and_then(Gesture::outline);
+        // Zoomed out, the outline is traced coarser (its detail can't show).
+        let ants_step = (1.0 / gpu.zoom().max(1e-3)).floor().max(1.0) as u32;
+        let ants = &mut self.ants;
+        let select = &mut self.select;
+        let transform_opts = &mut self.transform_opts;
+        let renderer = self.renderer.as_str();
         let shape = &mut self.shape;
         let snap = gpu.view_snapshot();
         let to_points = move |p: (f32, f32)| snap.to_points(p);
@@ -1137,6 +1504,18 @@ impl App {
             let (can_undo, can_redo) = (doc.history().undo_len() > 0, doc.history().redo_len() > 0);
             let (undo_label, redo_label) = (doc.history().undo_label(), doc.history().redo_label());
             let d = &mut *doc;
+            // The outline, traced again when the selection or the zoom changed.
+            match &d.selection {
+                Some(sel) if sel.stamp() != ants.stamp || ants_step != ants.step => {
+                    let mut step = ants_step.next_power_of_two();
+                    let mut segs = sel.outline(step);
+                    // Very detailed (noise picked by the wand): coarser.
+                    while segs.len() > 120_000 && step < 64 { step *= 2; segs = sel.outline(step); }
+                    *ants = Ants { stamp: sel.stamp(), step: ants_step, segs };
+                }
+                Some(_) => {}
+                None => *ants = Ants::default(),
+            }
             let mut model = Model {
                 brush,
                 presets,
@@ -1149,12 +1528,19 @@ impl App {
                 stay_inside,
                 has_selection: d.selection.is_some(),
                 selection: d.selection.as_ref(),
+                select,
+                transform: transform_opts,
+                transform_info,
+                renderer,
                 overlay: Overlay {
-                    selection: d.selection.as_ref().map_or(&[], |s| s.outlines()),
+                    // (The selection moves with a transform: its box shows.)
+                    ants: if transforming { &[] } else { &ants.segs },
+                    ants_offset,
                     drawing: drawing.as_deref(),
                     shape: preview.as_ref().map(|p| &p.0[..]),
                     handles: preview.as_ref().map_or(&[], |p| &p.1[..]),
                     guide: preview.as_ref().map_or(&[], |p| &p.2[..]),
+                    transform: xf_data.as_ref().map(|(lines, handles, points, pivot)| TransformOverlay { lines, handles, points, pivot: *pivot }),
                 },
                 shape,
                 to_points: &to_points,
@@ -1238,6 +1624,16 @@ impl App {
         }
         self.tool_memory.remember(self.tool, self.preset, &self.library.presets);
         if let Some(cmd) = actions.select { self.select(cmd); }
+        if let Some(cmd) = actions.transform { self.transform_cmd(cmd); }
+        // Warp: its grid shows as soon as the mode is chosen.
+        if let (TransformMode::Warp, Some(xf)) = (self.transform_opts.mode, &mut self.xf) {
+            if xf.warp.mesh.is_none() {
+                let n = self.transform_opts.grid.clamp(1, 8) as usize;
+                xf.warp.mesh = Some(aurastudio_layers::transform::Mesh::new(n, n));
+                want_frame = true;
+            }
+        }
+        self.follow_transform_targets();
         if let Some(cmd) = actions.edit { self.edit_cmd(cmd); }
         if let Some(kind) = actions.import_brushes { self.import_brushes(kind); }
         if let Some((i, medium, before)) = actions.move_brush {
@@ -1322,6 +1718,8 @@ impl App {
     fn file_cmd(&mut self, cmd: FileCmd) {
         if self.is_drawing || self.ui.has_dialog() { return; }
         self.cancel_filter();
+        // What is saved or exported is the transform kept.
+        if matches!(cmd, FileCmd::Save | FileCmd::SaveAs | FileCmd::Export | FileCmd::Close) { self.end_transform(true); }
         match cmd {
             FileCmd::New => self.ui.open_new_dialog(),
             FileCmd::Open => self.open_dialog(),
@@ -1345,6 +1743,7 @@ impl App {
 
     fn request(&mut self, action: Pending) {
         self.cancel_filter();
+        self.end_transform(true);
         let (modified, name) = {
             let d = self.doc.lock().unwrap();
             (d.is_modified(), d.name.clone())
@@ -1439,10 +1838,15 @@ impl App {
     /// Show `doc` in place of the current document.
     fn install(&mut self, doc: Document) {
         let (w, h) = (doc.layers.width, doc.layers.height);
+        // A transform or polygon of the document going away.
+        self.xf = None;
+        self.xf_pending = false;
+        self.poly = None;
         let old = self.doc.lock().unwrap().id();
         self.autosaved_revision = doc.revision();
         self.autosave_at = None;
         self.doc = self.workspace.add(doc);
+        crate::rescue::watch(&self.doc);
         self.workspace.close(old);
         *self.projection.lock().unwrap() = Projection::new(w, h);
         if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
@@ -1555,8 +1959,9 @@ impl App {
     fn check_autosave(&mut self) {
         let Ok(d) = self.doc.try_lock() else { return };
         let rev = d.revision();
-        // (Not a filter's preview: it isn't the document yet.)
-        if !d.is_modified() || rev == self.autosaved_revision || d.filtering() {
+        // (Not a filter's or a transform's preview: it isn't the document
+        // yet.)
+        if !d.is_modified() || rev == self.autosaved_revision || d.filtering() || d.transforming() {
             self.autosave_at = None;
             return;
         }
@@ -1664,11 +2069,31 @@ impl App {
 
     fn undo(&mut self) {
         if self.is_drawing { return; }
+        if let Some(xf) = &mut self.xf {
+            if xf.drag.is_some() { return; }
+            // Inside the transform first.
+            if xf.step_back() { self.send_preview(false); return; }
+            // Nothing done in it: the document's undo, then a new one.
+            self.end_transform(false);
+            self.paint.send(Cmd::Undo(Arc::clone(&self.doc)));
+            self.start_transform();
+            return;
+        }
+        self.poly = None;
         self.paint.send(Cmd::Undo(Arc::clone(&self.doc)));
     }
 
     fn redo(&mut self) {
         if self.is_drawing { return; }
+        if let Some(xf) = &mut self.xf {
+            if xf.drag.is_some() { return; }
+            if xf.step_forward() { self.send_preview(false); return; }
+            if xf.changed() { return; }
+            self.end_transform(false);
+            self.paint.send(Cmd::Redo(Arc::clone(&self.doc)));
+            self.start_transform();
+            return;
+        }
         self.paint.send(Cmd::Redo(Arc::clone(&self.doc)));
     }
 }
@@ -1693,6 +2118,22 @@ impl ApplicationHandler<AppEvent> for App {
                 self.request_redraw();
             }
             AppEvent::Saved { doc, path, revision, auto, result } => self.on_saved(doc, path, revision, auto, result),
+            AppEvent::Selection => self.request_redraw(),
+            AppEvent::TransformStarted(r) => {
+                let wanted = std::mem::take(&mut self.xf_pending) && self.tool == Tool::Transform;
+                match r {
+                    Ok(src) if wanted => {
+                        let mut xf = Xform::new(src, std::mem::take(&mut self.pending_targets));
+                        if self.transform_opts.mode == TransformMode::Warp { xf.set_grid(self.transform_opts.grid); xf.undo.clear(); }
+                        self.xf = Some(xf);
+                    }
+                    // The tool was left meanwhile.
+                    Ok(_) => self.paint.send(Cmd::Transform { doc: Arc::clone(&self.doc), action: TransformAction::Cancel }),
+                    Err(msg) => self.ui.notify(msg),
+                }
+                self.update_cursor();
+                self.request_redraw();
+            }
             AppEvent::Thumbnail { path, w, h, rgba } => {
                 self.ui.set_recent_thumbnail(&path, w, h, &rgba);
                 self.request_redraw();
@@ -1771,7 +2212,29 @@ impl ApplicationHandler<AppEvent> for App {
             let d = self.doc.lock().unwrap();
             (d.layers.width, d.layers.height)
         };
-        let mut gpu = pollster::block_on(GpuState::new(Arc::clone(&window), size));
+        use aurastudio_gpu::Backend;
+        let prefer = match self.prefs.renderer {
+            aurastudio_ui::Renderer::Vulkan => Backend::Vulkan,
+            aurastudio_ui::Renderer::DirectX12 => Backend::DirectX12,
+            aurastudio_ui::Renderer::OpenGl => Backend::OpenGl,
+            aurastudio_ui::Renderer::Metal => Backend::Metal,
+        };
+        let mut gpu = match pollster::block_on(GpuState::new(Arc::clone(&window), size, prefer)) {
+            Ok(g) => g,
+            Err(e) => {
+                // Nothing to draw with at all: say so, don't just vanish.
+                log::error!("no graphics API runs: {e}");
+                rfd::MessageDialog::new()
+                    .set_title("AuraStudio")
+                    .set_description(format!("AuraStudio can't draw its window: no graphics driver it can use was found (Vulkan, DirectX 12, OpenGL). Updating the graphics driver may help.\n\n{e}"))
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
+                event_loop.exit();
+                return;
+            }
+        };
+        self.renderer = gpu.backend().name().to_string();
+        log::info!("graphics: {}", self.renderer);
         gpu.clear_color = aurastudio_ui::theme::backdrop_rgb();
         log::info!("max canvas size: {} px", gpu.max_canvas_size());
 
@@ -1977,6 +2440,9 @@ impl App {
                         self.request_redraw();
                     }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.select(SelectCmd::All),
+                    Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::Reselect),
+                    Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("i") => self.select(SelectCmd::Invert),
+                    Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("t") => self.set_tool(Tool::Transform),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("c") => self.edit_cmd(EditCmd::Copy),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("v") => self.edit_cmd(EditCmd::Paste),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::None),
@@ -1986,6 +2452,24 @@ impl App {
                     // Arc outline: Enter paints it, Escape drops it.
                     Key::Named(NamedKey::Enter) if self.arc.active() => self.finish_arcs(),
                     Key::Named(NamedKey::Escape) if self.arc.active() => self.cancel_arcs(),
+                    // Transform: Enter keeps it, Escape drops it; arrows nudge.
+                    Key::Named(NamedKey::Enter) if self.xf.is_some() => self.end_transform(true),
+                    Key::Named(NamedKey::Escape) if self.xf.is_some() => self.end_transform(false),
+                    Key::Named(k @ (NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::ArrowUp | NamedKey::ArrowDown)) if self.xf.as_ref().is_some_and(|x| x.drag.is_none()) => {
+                        let d = if shift { 10.0 } else { 1.0 };
+                        let (dx, dy) = match k { NamedKey::ArrowLeft => (-d, 0.0), NamedKey::ArrowRight => (d, 0.0), NamedKey::ArrowUp => (0.0, -d), _ => (0.0, d) };
+                        if let Some(xf) = &mut self.xf { xf.nudge(dx, dy); }
+                        self.send_preview(false);
+                    }
+                    // Polygon selection: Enter closes it, Escape drops it,
+                    // Backspace takes back its last point.
+                    Key::Named(NamedKey::Enter) if self.poly.is_some() => self.finish_poly(),
+                    Key::Named(NamedKey::Escape) if self.poly.is_some() => { self.poly = None; self.request_redraw(); }
+                    Key::Named(NamedKey::Backspace) if self.poly.is_some() => {
+                        if let Some((pts, _)) = &mut self.poly { pts.pop(); if pts.is_empty() { self.poly = None; } }
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::Escape) if self.gesture.is_some() => { self.gesture = None; self.update_cursor(); self.request_redraw(); }
                     // View keys (Krita): 1 = 100 %, 2 = fit, 4 / 6 = rotate
                     // by 15 degrees, 5 = reset rotation, + / - = zoom.
                     Key::Character(c) if !ctrl && !alt => match c {
@@ -2022,6 +2506,8 @@ impl App {
                     if self.nav_button == MouseButton::Left { self.end_nav(); }
                 } else if self.is_drawing {
                     self.end_stroke();
+                } else if self.xf.as_ref().is_some_and(|x| x.drag.is_some()) {
+                    self.xform_release();
                 } else if self.gesture.is_some() {
                     self.tool_release();
                 } else if self.arc.wants_release() {
@@ -2073,8 +2559,12 @@ impl App {
                 }
                 if self.nav.is_some() {
                     self.drag_nav();
+                } else if self.xf.as_ref().is_some_and(|x| x.drag.is_some()) {
+                    self.xform_drag();
                 } else if self.gesture.is_some() {
                     self.tool_drag();
+                } else if self.poly.is_some() {
+                    self.request_redraw();
                 } else if self.arc.active() {
                     if let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) { self.arc_move(at); }
                 } else if self.is_drawing && !self.pen_active {

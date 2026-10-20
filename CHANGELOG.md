@@ -3,6 +3,80 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.11.0 — 2026-10-20
+
+**Selections**
+- Selections are 8-bit now (soft edges): painting, fill, filters, copy,
+  Delete and the transform follow a soft edge partly, a hard one fully.
+- New tools in the Selection group (M, again for the next one):
+  ellipse, polygon (click the points; Enter, a double click or a click
+  on the first point closes it, Backspace takes one back, Escape drops
+  it) and the **magic wand**: tolerance, contiguous or every like pixel,
+  this layer / all layers / the references (drafts left out or not), grow.
+- Modes: new, add (Shift), subtract (Alt), intersect (Shift+Alt), held at
+  the press or chosen in the options; anti-aliasing (ellipse, lasso,
+  polygon, wand) and feather.
+- A drag inside the selection moves its outline (rectangle, ellipse,
+  lasso); a click on it deselects.
+- **Select** menu: All (Ctrl+A), Deselect (Ctrl+D), Reselect
+  (Ctrl+Shift+D), Invert (Ctrl+Shift+I), Grow…, Shrink… (round, exact
+  distances), Feather… (a Gaussian, as Photoshop's), Border…, From layer
+  (its opaque pixels).
+- Every selection change is an undo step (Krita, CSP).
+- The marching ants follow any shape (the wand's too), traced at the
+  zoom's detail.
+
+**Transform** (T, Ctrl+T, Edit > Transform)
+- On the active layer, the layers chosen in the Layers docker, a folder's
+  layers, or only what is selected (the rest stays, the selection moves
+  along). Applied when leaving the tool or choosing other layers.
+- Free: move (Shift: 8 directions), corners scale keeping the proportions
+  (Shift: free, Alt: from the pivot; "Keep proportions" in the options),
+  edges stretch one way (Shift: both), outside the box rotates (Shift:
+  15° steps), a drag along an edge skews (Alt: both edges), Ctrl+corner
+  distorts (stops before the box folds over), the pivot can be dragged.
+  X / Y, width, height, angle and skew as numbers; flip horizontally /
+  vertically, a quarter turn left / right, Reset.
+- Perspective: each corner on its own, an edge moves its two corners.
+- Warp: a smooth grid (1 × 1 to 8 × 8) bent by its points, on top of the
+  free transform.
+- Resampling: Bicubic (Photoshop's), Bilinear or Nearest (pixel art),
+  premultiplied (no dark fringes), from a pyramid for big reductions (no
+  aliasing), anti-aliased edges. While dragging, a fast preview; on
+  release, the full quality; on all cores (2 cores: 34 ms for a 1610 ×
+  1247 picture turned and scaled).
+- Enter applies (one undo step), Escape cancels, Ctrl+Z / Ctrl+Y step
+  through the transform's own changes (then the document's), arrows nudge
+  (Shift: 10 px). Saving, exporting or closing applies it first.
+
+**Renderer**
+- Vulkan missing or failing: DirectX 12 (Windows), then OpenGL take over
+  (OpenGL is now built in on Windows too). A message only if none runs.
+- Preferences > Canvas & display: Vulkan, DirectX 12 or OpenGL; the
+  one in use is shown, "A restart is required" when another is chosen.
+
+**Crash rescue**
+- A crash (a panic on any thread) saves the unsaved work to the recovery
+  file — offered at the next start — and says so before closing.
+
+**Interface**
+- Layers docker: too narrow for its row of buttons, it uses two (new
+  layer, folder, duplicate and delete above; clip, reference, draft,
+  group and the label filter below): nothing overlaps any more.
+- Sliders too narrow for their name and value show the value (the name on
+  hover).
+
+**Checked**
+- New tests: shapes, modes, grow / shrink / feather / border, outlines,
+  soft blending, homographies, resampling (moves exact, halving averages,
+  turns keep alpha), the warp grid, transform sessions (cancel, apply,
+  undo, the selection along), the box's gestures and numbers.
+- `pure.rs`: selection commands and transforms (cancel = as before, undo
+  = as before, through the paint thread too), the selection compared by
+  undo n + redo n; `painter.rs`: selections and transforms as a painter
+  makes them; `fuzz.rs`: the Select menu, selection commands and
+  transforms.
+
 ## 0.10.3 — 2026-10-20
 
 **Interface**

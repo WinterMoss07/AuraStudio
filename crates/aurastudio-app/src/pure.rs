@@ -25,9 +25,10 @@ use std::time::{Duration, Instant};
 use aurastudio_brush::PenSample;
 use aurastudio_brushes::Library;
 use aurastudio_canvas::{BlendMode, Rect};
-use aurastudio_document::{DocId, Document, SharedDoc};
+use aurastudio_document::{DocId, Document, SelectOp, Shape, SharedDoc, Wand};
 use aurastudio_filters::{Filter, GROUPS};
-use aurastudio_layers::{FillParams, FolderBlend, LayerStack, Node, Pick, Place, Refer, Selection};
+use aurastudio_layers::transform::{self, Warp};
+use aurastudio_layers::{FillParams, FolderBlend, LayerStack, Node, Pick, Place, Refer, SelectMode, Selection};
 
 use crate::fuzz::{rss_mb, Rng};
 use crate::paint_thread::{Cmd, PaintThread};
@@ -121,6 +122,11 @@ pub(crate) fn print(l: &LayerStack) -> Print {
     }
 }
 
+/// The selection as undo must give it back.
+pub(crate) fn sel_print(s: &Option<Selection>) -> Option<(Rect, u64)> {
+    s.as_ref().map(|s| (s.bbox(), hash(&s.mask(s.bbox()))))
+}
+
 fn random_filter(r: &mut Rng) -> Filter {
     let kinds: Vec<_> = GROUPS.iter().flat_map(|g| g.1.iter().copied()).collect();
     let mut f = Filter::new(kinds[r.below(kinds.len() as u64) as usize]);
@@ -150,9 +156,66 @@ fn random_selection(r: &mut Rng, w: u32, h: u32) -> Option<Selection> {
         2 => Selection::rect(w, h, (r.below(w as u64 + 20) as u32, r.below(h as u64 + 20) as u32, r.below(w as u64 * 2 + 2) as u32, r.below(h as u64 * 2 + 2) as u32)),
         _ => {
             let pts: Vec<(f32, f32)> = (0..r.below(30)).map(|_| (r.range(-0.4, 1.4) * fw, r.range(-0.4, 1.4) * fh)).collect();
-            Selection::polygon(w, h, &pts)
+            Selection::polygon(w, h, &pts, r.chance(0.5))
         }
     }
+}
+
+/// Any selection command, on a `w` × `h` canvas (sometimes off it).
+pub(crate) fn random_select_op(r: &mut Rng, w: u32, h: u32) -> SelectOp {
+    let (fw, fh) = (w as f32, h as f32);
+    let mode = [SelectMode::Replace, SelectMode::Add, SelectMode::Subtract, SelectMode::Intersect][r.below(4) as usize];
+    let (aa, feather) = (r.chance(0.6), if r.chance(0.2) { r.range(0.5, 30.0) } else { 0.0 });
+    let pt = |r: &mut Rng| (r.range(-0.3, 1.3) * fw, r.range(-0.3, 1.3) * fh);
+    let px = |r: &mut Rng| r.range(1.0, 25.0);
+    match r.below(16) {
+        0..=2 => { let (a, b) = (pt(r), pt(r)); SelectOp::Shape { shape: Shape::Rect((a.0.min(b.0).max(0.0) as u32, a.1.min(b.1).max(0.0) as u32, a.0.max(b.0).max(0.0) as u32, a.1.max(b.1).max(0.0) as u32)), mode, aa, feather } }
+        3 | 4 => { let (a, b) = (pt(r), pt(r)); SelectOp::Shape { shape: Shape::Ellipse((a.0, a.1, b.0, b.1)), mode, aa, feather } }
+        5 | 6 => SelectOp::Shape { shape: Shape::Polygon((0..r.below(40)).map(|_| pt(r)).collect()), mode, aa, feather },
+        7 | 8 => {
+            let fill = FillParams { tolerance: r.below(256) as u8, refer: [Refer::Layer, Refer::All, Refer::References][r.below(3) as usize], skip_drafts: r.chance(0.5), expand: r.below(4) as u32 };
+            SelectOp::Wand { x: r.below(w as u64) as u32, y: r.below(h as u64) as u32, wand: Wand { fill, contiguous: r.chance(0.6) }, mode, aa, feather }
+        }
+        9 => [SelectOp::All, SelectOp::None, SelectOp::Reselect, SelectOp::Invert][r.below(4) as usize].clone(),
+        10 => SelectOp::Grow(px(r)),
+        11 => SelectOp::Shrink(px(r)),
+        12 => SelectOp::Feather(px(r)),
+        13 => SelectOp::Border(px(r)),
+        14 => SelectOp::FromLayer(mode),
+        _ => SelectOp::Move(r.range(-1.2, 1.2) as i64 * w as i64 / 3, r.range(-1.2, 1.2) as i64 * h as i64 / 3),
+    }
+}
+
+/// Any transform of `src`: moved, scaled (flipped, tiny, huge), turned,
+/// distorted, bent.
+pub(crate) fn random_warp(r: &mut Rng, src: Rect) -> Warp {
+    let c = transform::corners(src);
+    let (sw, sh) = ((src.2 - src.0) as f64, (src.3 - src.1) as f64);
+    let (cx, cy) = ((src.0 + src.2) as f64 / 2.0, (src.1 + src.3) as f64 / 2.0);
+    let s = |r: &mut Rng| if r.chance(0.1) { r.range(0.001, 0.05) as f64 } else if r.chance(0.1) { r.range(3.0, 12.0) as f64 } else { r.range(0.3, 2.0) as f64 } * if r.chance(0.15) { -1.0 } else { 1.0 };
+    let (kx, ky, a) = (s(r), s(r), r.range(-3.2, 3.2) as f64);
+    let (dx, dy) = (r.range(-1.0, 1.0) as f64 * sw, r.range(-1.0, 1.0) as f64 * sh);
+    let (sn, cs) = a.sin_cos();
+    let mut quad = c.map(|p| {
+        let (x, y) = ((p[0] - cx) * kx, (p[1] - cy) * ky);
+        [cx + dx + x * cs - y * sn, cy + dy + x * sn + y * cs]
+    });
+    if r.chance(0.3) {
+        let k = r.below(4) as usize;
+        let to = { let mut q = quad; q[k] = [q[k][0] + r.range(-0.8, 0.8) as f64 * sw, q[k][1] + r.range(-0.8, 0.8) as f64 * sh]; q };
+        quad = transform::keep_convex(quad, to);
+    }
+    let mesh = r.chance(0.3).then(|| {
+        let n = 1 + r.below(5) as usize;
+        let mut m = transform::Mesh::new(n, n);
+        for p in &mut m.pts { if r.chance(0.5) { p[0] += r.range(-0.3, 0.3) as f64; p[1] += r.range(-0.3, 0.3) as f64; } }
+        m
+    });
+    Warp { quad, mesh }
+}
+
+pub(crate) fn random_interp(r: &mut Rng) -> transform::Interp {
+    [transform::Interp::Nearest, transform::Interp::Bilinear, transform::Interp::Bicubic][r.below(3) as usize]
 }
 
 fn random_fill(r: &mut Rng) -> FillParams {
@@ -272,6 +335,7 @@ impl Run {
         let mut d = self.doc.lock().unwrap();
         // (A layer edit not recorded yet is recorded by the undo: it counts.)
         let before = print(&d.layers);
+        let sel_before = sel_print(&d.selection);
         // (After the undo has recorded it.)
         let mut redo_before = None;
         let mut done = 0;
@@ -287,11 +351,51 @@ impl Run {
         assert_eq!(back, done, "undid {done} steps, redid {back}");
         assert_eq!(Some(d.history().redo_len()), redo_before, "not the same redo steps as before");
         let after = print(&d.layers);
+        assert_eq!(sel_print(&d.selection), sel_before, "undo {done} then redo {back}: the selection differs");
         if before != after {
             let what = if before.tree != after.tree { "tree" } else if before.visible != after.visible { "visibility" } else if before.pixels != after.pixels { "pixels" } else { "size" };
             panic!("undo {done} then redo {back}: the {what} differs\nbefore {before:?}\nafter {after:?}");
         }
         *self.checks.entry("undo n + redo n = same").or_default() += 1;
+    }
+
+    /// A transform on some layers, previewed a few times, then cancelled
+    /// (the layers as they were) or applied (undo gives them back).
+    fn transform_op(&mut self) -> &'static str {
+        let mut d = self.doc.lock().unwrap();
+        let r = &mut self.r;
+        let ids = d.layers.layer_ids();
+        let mut targets: Vec<u64> = ids.iter().copied().filter(|_| r.chance(0.3)).collect();
+        if targets.is_empty() || r.chance(0.3) { targets = vec![d.layers.active_id()]; }
+        // (What isn't recorded yet is, before: it isn't part of the check.)
+        d.record_tree("pure");
+        let before = print(&d.layers);
+        let sel_before = sel_print(&d.selection);
+        let Ok(src) = d.transform_begin(&targets) else { return "transform: nothing" };
+        assert!(src.2 > src.0 && src.3 > src.1 && src.2 <= d.layers.width && src.3 <= d.layers.height, "source {src:?}");
+        for _ in 0..1 + r.below(3) {
+            let (w, i) = (random_warp(r, src), random_interp(r));
+            d.transform_preview(&w, i);
+        }
+        if r.chance(0.4) {
+            d.transform_cancel();
+            assert!(print(&d.layers) == before, "cancelling a transform left the layers changed");
+            assert_eq!(sel_print(&d.selection), sel_before);
+            *self.checks.entry("transform cancelled = as before").or_default() += 1;
+            return "transform cancelled";
+        }
+        let (w, i) = (random_warp(r, src), random_interp(r));
+        d.transform_apply(&w, i);
+        assert!(!d.transforming());
+        if r.chance(0.5) {
+            d.undo();
+            assert!(print(&d.layers) == before, "undoing a transform left the layers changed");
+            assert_eq!(sel_print(&d.selection), sel_before, "undoing a transform left the selection changed");
+            *self.checks.entry("transform undone = as before").or_default() += 1;
+            let after = d.redo();
+            assert!(after.is_some(), "the transform can't be redone");
+        }
+        "transform applied"
     }
 
     fn merge_check(&mut self) {
@@ -419,7 +523,15 @@ impl Run {
                 "fill"
             }
             470..=499 => { self.doc.lock().unwrap().clear_active(); "clear" }
-            500..=559 => { let mut d = self.doc.lock().unwrap(); let (w, h) = (d.layers.width, d.layers.height); d.selection = random_selection(&mut self.r, w, h); "selection" }
+            500..=529 => { let mut d = self.doc.lock().unwrap(); let (w, h) = (d.layers.width, d.layers.height); d.selection = random_selection(&mut self.r, w, h); "selection" }
+            530..=559 => {
+                let mut d = self.doc.lock().unwrap();
+                let (w, h) = (d.layers.width, d.layers.height);
+                let op = random_select_op(&mut self.r, w, h);
+                d.select(&op);
+                if let Some(s) = &d.selection { assert_eq!(s.size(), (w, h), "selection of another size"); assert!(s.bbox().2 <= w && s.bbox().3 <= h); }
+                "select command"
+            }
             560..=599 => {
                 let mut d = self.doc.lock().unwrap();
                 if d.layers.layer_count() < MAX_NODES / 2 {
@@ -456,10 +568,38 @@ impl Run {
                 "resize"
             }
             870..=871 => { self.new_doc(); "new document" }
+            872..=911 => self.transform_op(),
             _ => {
                 // Copy / paste / undo through the paint thread's queue.
                 let doc = Arc::clone(&self.doc);
-                match self.r.below(4) {
+                match self.r.below(6) {
+                    4 => {
+                        let (w, h) = { let d = self.doc.lock().unwrap(); (d.layers.width, d.layers.height) };
+                        let op = random_select_op(&mut self.r, w, h);
+                        self.pt.send(Cmd::Select { doc, op });
+                    }
+                    5 => {
+                        // A transform through the queue: begin, previews, apply or not.
+                        use crate::paint_thread::TransformAction as T;
+                        let ids = vec![self.doc.lock().unwrap().layers.active_id()];
+                        self.pt.send(Cmd::Transform { doc: Arc::clone(&doc), action: T::Begin(ids) });
+                        self.sync();
+                        let src = {
+                            let d = self.doc.lock().unwrap();
+                            let (w, h) = (d.layers.width, d.layers.height);
+                            d.transforming().then_some((w / 4, h / 4, (w / 4 + 1).max(w * 3 / 4).min(w), (h / 4 + 1).max(h * 3 / 4).min(h)))
+                        };
+                        if let Some(src) = src {
+                            for _ in 0..1 + self.r.below(4) {
+                                let (w, i) = (random_warp(&mut self.r, src), random_interp(&mut self.r));
+                                self.pt.send(Cmd::Transform { doc: Arc::clone(&doc), action: T::Preview(w, i) });
+                            }
+                            // Commands refused while it shows.
+                            if self.r.chance(0.3) { self.pt.send(Cmd::Undo(Arc::clone(&doc))); }
+                            let end = if self.r.chance(0.6) { T::Apply(random_warp(&mut self.r, src), random_interp(&mut self.r)) } else { T::Cancel };
+                            self.pt.send(Cmd::Transform { doc, action: end });
+                        }
+                    }
                     0 => self.pt.send(Cmd::Undo(doc)),
                     1 => self.pt.send(Cmd::Redo(doc)),
                     2 => self.pt.send(Cmd::Clear(doc)),

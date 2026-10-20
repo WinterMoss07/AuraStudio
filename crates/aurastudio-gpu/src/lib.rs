@@ -36,7 +36,32 @@ struct CursorUniform {
 /// Below this outline radius (screen pixels) a crosshair is shown instead.
 const MIN_OUTLINE_RADIUS: f32 = 3.0;
 
+/// Graphics APIs the window can be drawn with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend { Vulkan, DirectX12, OpenGl, Metal }
+
+impl Backend {
+    fn wgpu(self) -> Backends {
+        match self { Backend::Vulkan => Backends::VULKAN, Backend::DirectX12 => Backends::DX12, Backend::OpenGl => Backends::GL, Backend::Metal => Backends::METAL }
+    }
+
+    /// Built for this system.
+    fn available(self) -> bool {
+        match self {
+            Backend::Metal => cfg!(target_os = "macos"),
+            Backend::DirectX12 => cfg!(windows),
+            Backend::Vulkan => !cfg!(target_os = "macos"),
+            Backend::OpenGl => true,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self { Backend::Vulkan => "Vulkan", Backend::DirectX12 => "DirectX 12", Backend::OpenGl => "OpenGL", Backend::Metal => "Metal" }
+    }
+}
+
 pub struct GpuState {
+    backend:         Backend,
     surface:         Surface<'static>,
     device:          Device,
     queue:           Queue,
@@ -99,53 +124,61 @@ pub struct GpuState {
 }
 
 impl GpuState {
-    /// `canvas_size`: initial canvas width and height in pixels.
-    pub async fn new(window: Arc<Window>, canvas_size: (u32, u32)) -> Self {
+    /// `canvas_size`: initial canvas width and height in pixels. The
+    /// graphics API `prefer`, else the next one that runs (Vulkan, DirectX
+    /// 12, OpenGL); AURASTUDIO_BACKEND overrides. Err: none runs.
+    pub async fn new(window: Arc<Window>, canvas_size: (u32, u32), prefer: Backend) -> Result<Self, String> {
         let size = window.inner_size();
 
-        // Vulkan (lowest RAM), Metal on macOS; AURASTUDIO_BACKEND overrides.
-        let backend = match std::env::var("AURASTUDIO_BACKEND").ok().as_deref() {
-            Some("dx12")   => Backends::DX12,
-            Some("vulkan") => Backends::VULKAN,
-            Some("metal")  => Backends::METAL,
-            Some("gl")     => Backends::GL,
-            _ if cfg!(target_os = "macos") => Backends::METAL,
-            _ => Backends::VULKAN,
+        let forced = match std::env::var("AURASTUDIO_BACKEND").ok().as_deref() {
+            Some("dx12")   => Some(Backend::DirectX12),
+            Some("vulkan") => Some(Backend::Vulkan),
+            Some("metal")  => Some(Backend::Metal),
+            Some("gl")     => Some(Backend::OpenGl),
+            _ => None,
         };
-
-        let instance = Instance::new(InstanceDescriptor {
-            backends: backend,
-            ..Default::default()
-        });
-
-        let surface = instance.create_surface(Arc::clone(&window)).unwrap();
-
-        let adapter = instance
-            .request_adapter(&RequestAdapterOptions {
+        let mut order = vec![forced.unwrap_or(prefer)];
+        for b in [Backend::Metal, Backend::Vulkan, Backend::DirectX12, Backend::OpenGl] {
+            if !order.contains(&b) && b.available() { order.push(b); }
+        }
+        let mut errors = Vec::new();
+        let mut found = None;
+        for b in order {
+            let instance = Instance::new(InstanceDescriptor { backends: b.wgpu(), ..Default::default() });
+            let surface = match instance.create_surface(Arc::clone(&window)) {
+                Ok(s) => s,
+                Err(e) => { errors.push(format!("{}: {e}", b.name())); continue; }
+            };
+            let adapter = instance.request_adapter(&RequestAdapterOptions {
                 power_preference:       PowerPreference::HighPerformance,
                 compatible_surface:     Some(&surface),
                 force_fallback_adapter: false,
-            })
-            .await
-            .expect("No GPU adapter found");
-
-        let (device, queue) = adapter
-            .request_device(
+            }).await;
+            let Some(adapter) = adapter else { errors.push(format!("{}: no adapter", b.name())); continue };
+            let device = adapter.request_device(
                 &DeviceDescriptor {
                     label:             None,
                     required_features: Features::empty(),
                     // The biggest texture the GPU takes (it caps the canvas size).
-                    required_limits:   Limits {
-                        max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
-                        ..Limits::default()
-                    },
+                    // What this GPU has (an older one, or OpenGL, has less
+                    // than wgpu's defaults); its biggest texture caps the
+                    // canvas size.
+                    required_limits:   adapter.limits(),
                     // Small memory blocks (the default reserves 128 MB chunks).
                     memory_hints:      MemoryHints::MemoryUsage,
                 },
                 None,
-            )
-            .await
-            .expect("Failed to create device");
+            ).await;
+            match device {
+                Ok((device, queue)) => {
+                    if b != prefer { log::warn!("graphics: {} unavailable, using {}", prefer.name(), b.name()); }
+                    found = Some((b, surface, adapter, device, queue));
+                    break;
+                }
+                Err(e) => errors.push(format!("{}: {e}", b.name())),
+            }
+        }
+        let Some((backend, surface, adapter, device, queue)) = found else { return Err(errors.join("; ")) };
 
         let caps   = surface.get_capabilities(&adapter);
         // Non-sRGB surface: the pixels are sRGB already (else encoded twice).
@@ -310,7 +343,8 @@ impl GpuState {
         );
         let egui_renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
 
-        Self {
+        Ok(Self {
+            backend,
             surface, device, queue, config,
             canvas_pipeline, view_buffer, view_bind_group, canvas_bgl,
             nearest_sampler, nearest_bind_group,
@@ -332,8 +366,11 @@ impl GpuState {
             dpi_scale,
             pixel_exact: false,
             ui_scale: 1.0,
-        }
+        })
     }
+
+    /// The graphics API drawing the window.
+    pub fn backend(&self) -> Backend { self.backend }
 
     /// Biggest canvas side the GPU accepts (max 2D texture size).
     pub fn max_canvas_size(&self) -> u32 {
@@ -447,6 +484,11 @@ impl GpuState {
     /// current zoom / rotation / pan. Not clamped: off-canvas is fine.
     pub fn screen_to_canvas(&self, pos: (f32, f32)) -> (f32, f32) {
         self.view.screen_to_canvas(pos, self.canvas_size(), self.viewport)
+    }
+
+    /// Canvas pixel -> window position (physical pixels).
+    pub fn canvas_to_screen(&self, p: (f32, f32)) -> (f32, f32) {
+        self.view.canvas_to_screen(p, self.canvas_size(), self.viewport)
     }
 
     /// The current view, to place UI drawn over the canvas (selection

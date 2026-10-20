@@ -6,6 +6,35 @@ use egui::{RichText, Ui};
 
 use crate::theme;
 
+/// The graphics API the canvas is drawn with (taken at startup).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Renderer { Vulkan, DirectX12, OpenGl, Metal }
+
+impl Renderer {
+    /// Those this system may have, in order.
+    pub fn offered() -> &'static [Renderer] {
+        if cfg!(target_os = "macos") { &[Renderer::Metal, Renderer::OpenGl] }
+        else if cfg!(windows) { &[Renderer::Vulkan, Renderer::DirectX12, Renderer::OpenGl] }
+        else { &[Renderer::Vulkan, Renderer::OpenGl] }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self { Renderer::Vulkan => "Vulkan", Renderer::DirectX12 => "DirectX 12", Renderer::OpenGl => "OpenGL", Renderer::Metal => "Metal" }
+    }
+
+    fn key(self) -> &'static str {
+        match self { Renderer::Vulkan => "vulkan", Renderer::DirectX12 => "dx12", Renderer::OpenGl => "gl", Renderer::Metal => "metal" }
+    }
+
+    fn from_key(k: &str) -> Option<Self> {
+        [Renderer::Vulkan, Renderer::DirectX12, Renderer::OpenGl, Renderer::Metal].into_iter().find(|r| r.key() == k)
+    }
+}
+
+impl Default for Renderer {
+    fn default() -> Self { Renderer::offered()[0] }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prefs {
     // Interface.
@@ -23,6 +52,9 @@ pub struct Prefs {
     pub color_managed:    bool,
     /// Perceptual intent (off: relative colorimetric).
     pub perceptual:       bool,
+    /// Graphics API wanted (the next start uses it; another one if it
+    /// can't run).
+    pub renderer:         Renderer,
     // Brushes and input.
     /// The brush outline replaces the cursor over the canvas (off: a
     /// crosshair).
@@ -39,7 +71,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             ui_scale: 1.0, brush_previews: true, open_maximized: true,
-            hidpi_scaling: true, color_managed: true, perceptual: true,
+            hidpi_scaling: true, color_managed: true, perceptual: true, renderer: Renderer::default(),
             brush_outline: true, debounce_ms: 20,
             autosave_minutes: 5,
         }
@@ -65,6 +97,7 @@ impl Prefs {
                 "hidpi_image_scaling" => p.hidpi_scaling = b,
                 "color_managed" => p.color_managed = b,
                 "perceptual" => p.perceptual = b,
+                "renderer" => if let Some(r) = Renderer::from_key(v).filter(|r| Renderer::offered().contains(r)) { p.renderer = r },
                 "brush_outline" => p.brush_outline = b,
                 "click_debounce_ms" => if let Ok(v) = v.parse::<u32>() { p.debounce_ms = v.min(200) },
                 "autosave_minutes" => if let Ok(v) = v.parse::<u32>() { p.autosave_minutes = v.min(120) },
@@ -76,9 +109,9 @@ impl Prefs {
 
     pub fn to_text(&self) -> String {
         format!(
-            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\n",
+            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\n",
             self.ui_scale, self.brush_previews, self.open_maximized, self.hidpi_scaling, self.color_managed,
-            self.perceptual, self.brush_outline, self.debounce_ms, self.autosave_minutes,
+            self.perceptual, self.renderer.key(), self.brush_outline, self.debounce_ms, self.autosave_minutes,
         )
     }
 }
@@ -100,7 +133,7 @@ impl Section {
 
 /// The Preferences dialog. Changes apply at once. Returns false once
 /// closed. `profile`: the monitor profile's name, if one was found.
-pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile: Option<&str>, reset_docks: &mut bool) -> bool {
+pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile: Option<&str>, in_use: &str, reset_docks: &mut bool) -> bool {
     let mut open = true;
     let modal = egui::Modal::new(egui::Id::new("preferences"))
         .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
@@ -111,7 +144,7 @@ pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile
             // A fixed height: a separator in a horizontal row takes all the
             // height it is offered, and a modal offers what it had last
             // frame, so the window grew a little more every frame.
-            const H: f32 = 280.0;
+            const H: f32 = 330.0;
             ui.horizontal_top(|ui| {
                 ui.set_height(H);
                 ui.vertical(|ui| {
@@ -126,7 +159,7 @@ pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile
                     ui.set_height(H);
                     match section {
                         Section::Interface => interface(ui, p, reset_docks),
-                        Section::Display => display(ui, p, profile),
+                        Section::Display => display(ui, p, profile, in_use),
                         Section::Brushes => brushes(ui, p),
                         Section::Files => files(ui, p),
                     }
@@ -172,7 +205,16 @@ fn interface(ui: &mut Ui, p: &mut Prefs, reset_docks: &mut bool) {
     if ui.button("Reset docks").clicked() { *reset_docks = true; }
 }
 
-fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>) {
+fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>, in_use: &str) {
+    title(ui, "Renderer");
+    ui.horizontal_wrapped(|ui| {
+        for &r in Renderer::offered() { ui.radio_value(&mut p.renderer, r, r.name()); }
+    });
+    if !in_use.is_empty() && p.renderer.name() != in_use {
+        ui.label(RichText::new(format!("In use: {in_use}. A restart is required.")).small().color(theme::ACCENT));
+    } else {
+        note(ui, "Another one is used if it can't run.");
+    }
     title(ui, "Zoom");
     ui.checkbox(&mut p.hidpi_scaling, "HiDPI image scaling");
     note(ui, "Off: 100 % is one image pixel per screen pixel.");
@@ -215,7 +257,7 @@ mod tests {
 
     #[test]
     fn prefs_round_trip_and_old_files_read() {
-        let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, ..Prefs::default() };
+        let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl, ..Prefs::default() };
         assert_eq!(Prefs::from_text(&p.to_text()), p);
         // A 0.7 settings file.
         let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");
@@ -233,7 +275,7 @@ mod tests {
                 events: vec![egui::Event::PointerMoved(egui::pos2(600.0 + frame as f32, 400.0))],
                 ..Default::default()
             };
-            let _ = ctx.run(input, |ctx| { dialog(ctx, &mut section, &mut p, None, &mut reset); });
+            let _ = ctx.run(input, |ctx| { dialog(ctx, &mut section, &mut p, None, "Vulkan", &mut reset); });
             heights.push(ctx.memory(|m| m.area_rect(egui::Id::new("preferences"))).map_or(0.0, |r| r.height()));
         }
         assert!(heights[39] > 100.0 && heights[39] < 600.0, "{heights:?}");

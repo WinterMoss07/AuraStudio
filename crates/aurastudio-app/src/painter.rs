@@ -37,7 +37,7 @@ static PANICKED: AtomicBool = AtomicBool::new(false);
 type P = (f32, f32);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Work { Sketch, Paint, Blend, Ink, Erase, Shape, Fill, Lasso, Paste, Layers, Undo, Save }
+enum Work { Sketch, Paint, Blend, Ink, Erase, Shape, Fill, Lasso, Paste, Layers, Undo, Save, Select, Transform }
 
 #[derive(Default)]
 struct Stat { n: u64, samples: u64, busy: Duration, pen: Duration, worst: Duration, worst_ratio: f64, lagging: u64 }
@@ -247,7 +247,7 @@ fn painter_session() {
             d.layers.set_active(id);
         }
         let start = s.focus();
-        match s.r.below(100) {
+        match s.r.below(112) {
             // Sketching: small pencils, many quick strokes, light pressure.
             0..=24 => {
                 let preset = pencils[s.r.below(pencils.len() as u64) as usize];
@@ -330,7 +330,7 @@ fn painter_session() {
                     let rr = s.r.range(150.0, 600.0) * s.k;
                     (start.0 + rr * a.cos(), start.1 + rr * a.sin())
                 }).collect();
-                let sel = Selection::polygon(size.0, size.1, &pts);
+                let sel = Selection::polygon(size.0, size.1, &pts, true);
                 s.timed(Work::Lasso, |s| s.doc.lock().unwrap().selection = sel);
                 let preset = paints[s.r.below(paints.len() as u64) as usize];
                 let path = s.path(start, 900.0, 1500.0);
@@ -348,7 +348,7 @@ fn painter_session() {
                 s.timed(Work::Paste, |s| {
                     let clip = {
                         let mut d = s.doc.lock().unwrap();
-                        d.selection = Selection::polygon(size.0, size.1, &pts);
+                        d.selection = Selection::polygon(size.0, size.1, &pts, true);
                         let c = d.copy();
                         d.selection = None;
                         c
@@ -430,6 +430,61 @@ fn painter_session() {
                     for _ in 0..rdo { s.pt.send(Cmd::Redo(Arc::clone(&s.doc))); }
                 });
             }
+            // Selections as a painter makes them: the wand on the merged
+            // picture, a lasso, a feathered ellipse, grow / shrink, invert.
+            100..=105 => {
+                use aurastudio_document::{SelectOp, Shape, Wand};
+                use aurastudio_layers::SelectMode;
+                let mode = [SelectMode::Replace, SelectMode::Replace, SelectMode::Add, SelectMode::Subtract][s.r.below(4) as usize];
+                let (x, y) = (start.0.clamp(0.0, size.0 as f32 - 1.0) as u32, start.1.clamp(0.0, size.1 as f32 - 1.0) as u32);
+                let k = s.k;
+                let op = match s.r.below(6) {
+                    0 | 1 => {
+                        let fill = FillParams { tolerance: 10 + s.r.below(60) as u8, refer: aurastudio_layers::Refer::All, skip_drafts: true, expand: s.r.below(3) as u32 };
+                        SelectOp::Wand { x, y, wand: Wand { fill, contiguous: s.r.chance(0.8) }, mode, aa: true, feather: 0.0 }
+                    }
+                    2 => SelectOp::Shape { shape: Shape::Polygon((0..60).map(|i| { let a = i as f32 * 0.105; let rr = (200.0 + 80.0 * (a * 3.0).sin()) * k; (start.0 + rr * a.cos(), start.1 + rr * a.sin()) }).collect()), mode, aa: true, feather: 0.0 },
+                    3 => SelectOp::Shape { shape: Shape::Ellipse((start.0, start.1, start.0 + 500.0 * k, start.1 + 300.0 * k)), mode, aa: true, feather: s.r.range(0.0, 40.0) * k },
+                    4 => [SelectOp::Grow(8.0 * k), SelectOp::Shrink(6.0 * k), SelectOp::Feather(12.0 * k), SelectOp::Invert][s.r.below(4) as usize].clone(),
+                    _ => SelectOp::None,
+                };
+                s.timed(Work::Select, |s| s.pt.send(Cmd::Select { doc: Arc::clone(&s.doc), op }));
+                // Paint or fill inside it.
+                if s.r.chance(0.5) {
+                    let preset = paints[s.r.below(paints.len() as u64) as usize];
+                    let path = s.path(start, 700.0, 1500.0);
+                    let radius = s.r.range(30.0, 150.0);
+                    s.stroke(Work::Paint, preset, radius, &path, 0.9, false);
+                }
+            }
+            // Transform the layer (or what is selected): a drag of 30 to 90
+            // previews, then the final quality, then kept.
+            106..=109 => {
+                use aurastudio_layers::transform::{corners, Interp, Warp};
+                use crate::paint_thread::TransformAction as T;
+                let ids = vec![s.doc.lock().unwrap().layers.active_id()];
+                let steps = 30 + s.r.below(60);
+                let (dx, dy, rot, scale) = (s.r.range(-300.0, 300.0) as f64 * s.k as f64, s.r.range(-300.0, 300.0) as f64 * s.k as f64, s.r.range(-0.6, 0.6) as f64, s.r.range(0.6, 1.4) as f64);
+                let keep = s.r.chance(0.8);
+                s.timed(Work::Transform, |s| {
+                    s.pt.send(Cmd::Transform { doc: Arc::clone(&s.doc), action: T::Begin(ids) });
+                    s.sync();
+                    let Some(src) = s.doc.lock().unwrap().transform_source() else { return };
+                    let c = ((src.0 + src.2) as f64 / 2.0, (src.1 + src.3) as f64 / 2.0);
+                    let warp = |t: f64| {
+                        let (a, k) = (rot * t, 1.0 + (scale - 1.0) * t);
+                        let q = corners(src).map(|p| { let (x, y) = ((p[0] - c.0) * k, (p[1] - c.1) * k); [c.0 + dx * t + x * a.cos() - y * a.sin(), c.1 + dy * t + x * a.sin() + y * a.cos()] });
+                        Warp { quad: q, mesh: None }
+                    };
+                    for i in 1..=steps {
+                        s.pt.send(Cmd::Transform { doc: Arc::clone(&s.doc), action: T::Preview(warp(i as f64 / steps as f64), Interp::Bilinear) });
+                        // The pointer at 120 Hz.
+                        std::thread::sleep(Duration::from_millis(8));
+                    }
+                    let end = if keep { T::Apply(warp(1.0), Interp::Bicubic) } else { T::Cancel };
+                    s.pt.send(Cmd::Transform { doc: Arc::clone(&s.doc), action: end });
+                });
+            }
             // A huge soft brush (1000 px) sweeping a background.
             _ => {
                 let preset = pick(&s.lib, &["soft round", "airbrush"]).first().copied().unwrap_or(round[0]);
@@ -446,12 +501,14 @@ fn painter_session() {
             crate::pure::check(&d);
             if ops.is_multiple_of(200) {
                 let before = crate::pure::print(&d.layers);
+                let sel_before = crate::pure::sel_print(&d.selection);
                 let n = s.r.below(8) + 1;
                 let done = (0..n).filter(|_| d.undo().is_some()).count();
                 crate::pure::check(&d);
                 let back = (0..done).filter(|_| d.redo().is_some()).count();
                 assert_eq!(back, done);
                 assert!(crate::pure::print(&d.layers) == before, "undo {done} + redo {back}: another document");
+                assert!(crate::pure::sel_print(&d.selection) == sel_before, "undo {done} + redo {back}: another selection");
                 undo_checks += 1;
             }
         }

@@ -29,7 +29,7 @@ UI stays quiet so the painting gets the room.
   cursors.
 - Toolbox by groups: Draw (pencil, ink, charcoal & pastel, misc), Paint
   (paint, watercolor, airbrush, blend & smudge, texture & FX), Eraser,
-  Fill, Picker, Geometry, Selection. The Tools docker lists the group's
+  Fill, Picker, Geometry, Selection, Transform. The Tools docker lists the group's
   tools or brushes (by medium); each group remembers its last tool and
   brush; its key pressed again goes to its next tool. Imported brushes
   get a medium from their name. Brushes and medium icons drag and drop;
@@ -45,11 +45,34 @@ UI stays quiet so the painting gets the room.
   drops a slider drag or ends a stroke); Windows' Alt menu mode is off.
 
 **Tools** — toolbox on the canvas's left edge, centered (Krita's optimized
-layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker, Rectangle and Lasso selection.
+layout; Lucide icons across the UI): Brush, Eraser, Fill, Color picker,
+Geometry, Selection, Transform.
 - Fill referring to this layer, all layers or the reference layers
   (drafts left out or not), tolerance, expand under
   anti-aliased lines; an A4 page in ~10–50 ms.
-- Painting, fill and Delete stay inside the selection.
+- **Selections** (8-bit, soft edges): rectangle, ellipse, lasso, polygon
+  (clicks; Enter, a double click or the first point closes it) and the
+  **magic wand** (tolerance, contiguous or every like pixel, this layer /
+  all layers / references, grow). New, add (Shift), subtract (Alt),
+  intersect (Shift+Alt); anti-aliasing and feather in the options; a drag
+  inside the selection moves its outline. Select menu: all, deselect,
+  reselect, invert, grow, shrink, feather, border (round, as Photoshop's),
+  from layer (its opaque pixels). Every change is undoable. Marching ants
+  traced at the zoom's detail.
+- Painting, fill, filters, copy and Delete stay inside the selection (a
+  soft edge partly).
+- **Transform** (T, Ctrl+T): the layer, the layers chosen in the Layers
+  docker or a folder's, or only what is selected (the selection moves
+  along). Free: move (Shift: 8 directions), scale by the corners
+  (proportions kept, Shift: free; Alt: from the pivot) and the edges,
+  rotate outside the box (Shift: 15° steps), skew along an edge, Ctrl+corner
+  to distort, a pivot to drag; X / Y, size, angle and skew as numbers;
+  flips and quarter turns. Perspective: each corner on its own. Warp: a
+  smooth grid (1 × 1 to 8 × 8) to bend. Resampling Bicubic (Photoshop's),
+  Bilinear or Nearest (pixel art), with a pyramid for big reductions;
+  fast preview while dragging, full quality on release, on all cores.
+  Enter applies (one undo step), Escape cancels, Ctrl+Z steps back inside
+  the transform, arrows nudge (Shift: 10 px).
 - Geometry tools (U cycles them), drawn with the current brush: Line
   (Shift: 15° steps), Rectangle and Ellipse (Shift: square / circle, Alt:
   from the center), and **Arc** (like OpenToonz's): drag or click from
@@ -92,9 +115,10 @@ follow the W3C Filter Effects spec.
   A blur of an A4 300 dpi layer: ~0.4 s on 2 cores.
 
 **Preferences** — Edit > Preferences… (Ctrl+K): interface size, brush
-strokes in the Tools docker, open maximized, HiDPI scaling, color
-management and intent, brush outline cursor, click debounce, autosave
-delay. Kept in `settings.txt`.
+strokes in the Tools docker, open maximized, renderer (Vulkan, DirectX 12
+on Windows, OpenGL; another one is used when it can't run, a restart
+switches), HiDPI scaling, color management and intent, brush outline
+cursor, click debounce, autosave delay. Kept in `settings.txt`.
 
 **Layers** — Paper + Layer 1 for new documents, folders, opacity, blend,
 lock, rename, undo / redo with a memory budget. What the Layers docker
@@ -136,6 +160,8 @@ the canvas texture).
   the UI thread, the full image only on the GPU.
 - 64 × 64 tiled layers: an empty layer costs nothing.
 - Idle = 0 % CPU; strokes far off the canvas pause instead of freezing.
+- A crash keeps the work: the document goes to the recovery file, offered
+  at the next start, and a message says so.
 - `fuzz.rs`: headless crash hunt on the real UI and paint thread;
   `painter.rs`: a painting session (sketch, big brushes, smudge, ink,
   fills, lasso copy / paste, undo, saves) with per-stroke timings
@@ -157,9 +183,11 @@ the canvas texture).
 | Paint | pen / left mouse |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
 | Clear layer (or the selection) | Delete |
-| Tools | B brush, E eraser, G fill, I picker, U line / rectangle / ellipse / arc, M rectangle selection, L lasso |
+| Tools | B brush, E eraser, G fill, I picker, U line / rectangle / ellipse / arc, M selection (again: rectangle, ellipse, lasso, polygon, magic wand), T transform |
 | Pick a color | Alt + click (brush, eraser, fill) |
-| Select all / deselect | Ctrl+A / Ctrl+D |
+| Select all / deselect / reselect / invert | Ctrl+A / Ctrl+D / Ctrl+Shift+D / Ctrl+Shift+I |
+| Selection modes | Shift: add, Alt: subtract, Shift+Alt: intersect (held at the press) |
+| Transform | Ctrl+T; Enter apply, Escape cancel, arrows nudge |
 | Copy / paste pixels | Ctrl+C / Ctrl+V |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
 | 100 % / fit | `1` / `2` |
@@ -230,8 +258,8 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 | `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
 | `aurastudio-brush` | Forge, the brush engine (`src/forge`), `.myb` reader |
 | `aurastudio-brushes` | brush library: built-in presets, bundled MyPaint collection, import |
-| `aurastudio-layers` | layer tree, folders, lock, compositing |
-| `aurastudio-document` | documents, workspace, undo history |
+| `aurastudio-layers` | layer tree, folders, lock, compositing, selections, transforms (resampling) |
+| `aurastudio-document` | documents, workspace, undo history, selection commands, the transform under way |
 | `aurastudio-color` | monitor ICC profile, sRGB → display transform (3D LUT) |
 | `aurastudio-gpu` | wgpu renderer: canvas, view transform, color LUT, brush outline, egui |
 | `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
@@ -256,6 +284,10 @@ See `NOTICE.md` for third-party code and assets.
       interface follows (log line `display scaling: …`).
 - [ ] Brush import dialog (files and folder) and that imports come back at
       the next launch.
+- [ ] Transform on a big page with the pen: the preview keeps up while
+      dragging (log lines `transform preview: … ms`).
+- [ ] Renderer: DirectX 12 and OpenGL chosen in Preferences, after a
+      restart (log line `graphics: …`).
 
 **Priority: one tile manager for all the memory**
 - [ ] **A single manager for every tile in memory** (Krita's tile data

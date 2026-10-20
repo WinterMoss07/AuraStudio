@@ -1,0 +1,247 @@
+//! A transform under way: the layers it moves as they were, what is left
+//! of them once what moves is lifted out, and what moves (the selected
+//! pixels, else all of them), shown transformed until applied (one undo
+//! step, the selection moved along) or cancelled.
+
+use aurastudio_canvas::Rect;
+use aurastudio_layers::transform::{render, Interp, Source, Warp};
+use aurastudio_layers::{Node, Selection, Tiles};
+
+use crate::Document;
+
+pub(crate) struct Session {
+    /// What moves, canvas pixels.
+    src:       Rect,
+    targets:   Vec<Target>,
+    /// The selection when it began (what was lifted), and as a source to
+    /// move it along.
+    selection: Option<(Selection, Source)>,
+    /// Pixels changed by the last preview.
+    shown:     Rect,
+    /// Pixels any preview wrote (put back by Cancel, saved for undo).
+    touched:   Rect,
+}
+
+struct Target {
+    id:     u64,
+    before: Tiles,
+    /// The layer with what moves taken out.
+    base:   Tiles,
+    source: Source,
+}
+
+fn union(a: Rect, b: Rect) -> Rect {
+    if a.2 <= a.0 || a.3 <= a.1 { return b; }
+    if b.2 <= b.0 || b.3 <= b.1 { return a; }
+    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+}
+
+fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+    let r = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    (r.0 < r.2 && r.1 < r.3).then_some(r)
+}
+
+impl Document {
+    /// Start transforming paint layers `ids` (locked ones, folders and
+    /// filter layers are left out). The selection, if any, says what
+    /// moves. Returns what moves, or why nothing can.
+    pub fn transform_begin(&mut self, ids: &[u64]) -> Result<Rect, &'static str> {
+        self.transform_cancel();
+        self.filter_cancel();
+        let ids: Vec<u64> = ids.iter().copied().filter(|&id| matches!(self.layers.node(id), Some(Node::Layer(_))) && !self.layers.is_locked(id)).collect();
+        if ids.is_empty() { return Err("Layer is locked or is a folder"); }
+        // What shows of them, inside the selection.
+        let mut src = (0, 0, 0, 0);
+        for &id in &ids {
+            let Some(Node::Layer(l)) = self.layers.node(id) else { continue };
+            if let Some(b) = l.tiles.pixel_bounds() { src = union(src, b); }
+        }
+        if let Some(s) = &self.selection { src = intersect(src, s.bbox()).unwrap_or((0, 0, 0, 0)); }
+        if src.2 <= src.0 || src.3 <= src.1 { return Err("Nothing to transform"); }
+        let mask = self.selection.as_ref().map(|s| s.mask(src));
+        let mut targets = Vec::new();
+        for id in ids {
+            let Some(Node::Layer(l)) = self.layers.node(id) else { continue };
+            let before = l.tiles.clone();
+            let mut px = before.read_rect(src);
+            let base = match (&self.selection, &mask) {
+                (Some(sel), Some(m)) => {
+                    for (p, c) in px.chunks_exact_mut(4).zip(m) { p[3] = (p[3] as u32 * *c as u32 / 255) as u8; }
+                    let mut base = before.clone();
+                    let r = sel.bbox();
+                    let old = base.read_rect(r);
+                    let mut cleared = before.fill().repeat(old.len() / 4);
+                    sel.blend_rect(r, &old, &mut cleared);
+                    base.write_rect(r, &cleared);
+                    base
+                }
+                _ => {
+                    // All of it moves: what is left is empty (the pixels
+                    // around kept as they are, invisible colors too).
+                    let mut base = before.clone();
+                    base.write_rect(src, &before.fill().repeat((src.2 - src.0) as usize * (src.3 - src.1) as usize));
+                    base
+                }
+            };
+            targets.push(Target { id, source: Source::new(src, &px), before, base });
+        }
+        let selection = self.selection.clone().map(|s| {
+            let m = s.mask(src);
+            let px: Vec<u8> = m.iter().flat_map(|c| [0, 0, 0, *c]).collect();
+            (s, Source::new(src, &px))
+        });
+        self.transform = Some(Session { src, targets, selection, shown: (0, 0, 0, 0), touched: (0, 0, 0, 0) });
+        Ok(src)
+    }
+
+    pub fn transforming(&self) -> bool { self.transform.is_some() }
+
+    /// What the transform under way moves.
+    pub fn transform_source(&self) -> Option<Rect> { self.transform.as_ref().map(|s| s.src) }
+
+    /// The layers being transformed.
+    pub fn transform_targets(&self) -> Vec<u64> {
+        self.transform.as_ref().map_or_else(Vec::new, |s| s.targets.iter().map(|t| t.id).collect())
+    }
+
+    /// Show the layers transformed by `warp`. Returns the area to redraw.
+    pub fn transform_preview(&mut self, warp: &Warp, interp: Interp) -> Option<Rect> {
+        let (w, h) = (self.layers.width, self.layers.height);
+        let s = self.transform.as_mut()?;
+        let dest = warp.dest_rect(s.src, w, h).unwrap_or((0, 0, 0, 0));
+        let now = union(s.src, dest);
+        let area = union(s.shown, now);
+        s.shown = now;
+        s.touched = union(s.touched, area);
+        let (aw, ah) = ((area.2 - area.0) as usize, (area.3 - area.1) as usize);
+        if aw == 0 || ah == 0 { return None; }
+        for t in &s.targets {
+            let mut px = t.base.read_rect(area);
+            render(&t.source, warp, interp, area, &mut px);
+            self.layers.set_layer_rect(t.id, area, &px);
+        }
+        Some(area)
+    }
+
+    /// Keep the transform (one undo step, the selection moved along).
+    /// Returns the layers and the area changed.
+    pub fn transform_apply(&mut self, warp: &Warp, interp: Interp) -> Option<(Vec<u64>, Rect)> {
+        let (w, h) = (self.layers.width, self.layers.height);
+        self.transform_preview(warp, interp);
+        let s = self.transform.take()?;
+        let area = s.touched;
+        let mut steps = Vec::new();
+        for t in &s.targets {
+            if self.layers.node(t.id).is_none() { continue; }
+            steps.push((t.id, area, t.before.read_rect(area)));
+            if let Some(Node::Layer(l)) = self.layers.node_mut(t.id) {
+                for ty in area.1 / 64..area.3.div_ceil(64) {
+                    for tx in area.0 / 64..area.2.div_ceil(64) { l.tiles.drop_if_fill(tx, ty); }
+                }
+            }
+        }
+        // The selection goes along.
+        let moved = s.selection.as_ref().map(|(old, src)| {
+            let dest = warp.dest_rect(s.src, w, h)?;
+            let (dw, dh) = ((dest.2 - dest.0) as usize, (dest.3 - dest.1) as usize);
+            let mut px = vec![0u8; dw * dh * 4];
+            render(src, warp, interp, dest, &mut px);
+            let mask: Vec<u8> = px.chunks_exact(4).map(|p| p[3]).collect();
+            // (What was selected outside the moved part stays.)
+            let rest = Selection::combine(Some(old), Selection::rect(w, h, s.src), aurastudio_layers::SelectMode::Subtract);
+            Selection::combine(rest.as_ref(), Selection::from_mask(w, h, dest, &mask), aurastudio_layers::SelectMode::Add)
+        });
+        self.record_tree("Layers");
+        let sel_step = match moved {
+            Some(new) if new != self.selection => Some(std::mem::replace(&mut self.selection, new)),
+            _ => None,
+        };
+        self.history.push_group("Transform", steps, sel_step);
+        self.touch();
+        Some((s.targets.iter().map(|t| t.id).collect(), area))
+    }
+
+    /// Put the layers back as they were. Returns them and the area.
+    pub fn transform_cancel(&mut self) -> Option<(Vec<u64>, Rect)> {
+        let s = self.transform.take()?;
+        let r = s.touched;
+        if r.2 > r.0 && r.3 > r.1 {
+            for t in &s.targets { self.layers.set_layer_rect(t.id, r, &t.before.read_rect(r)); }
+        }
+        Some((s.targets.iter().map(|t| t.id).collect(), r))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DocId;
+    use aurastudio_layers::transform::corners;
+
+    fn px(d: &Document, id: u64, x: u32, y: u32) -> [u8; 4] {
+        let Some(Node::Layer(l)) = d.layers.node(id) else { panic!() };
+        l.tiles.pixel(x, y)
+    }
+
+    #[test]
+    fn move_apply_undo_cancel() {
+        let mut d = Document::new(DocId(1), "t", 100, 100);
+        let id = d.layers.add_layer("ink");
+        d.layers.set_layer_rect(id, (10, 10, 30, 30), &[0u8, 0, 255, 255].repeat(400));
+        let src = d.transform_begin(&[id]).unwrap();
+        assert_eq!(src, (10, 10, 30, 30));
+        let moved = Warp { quad: corners((50, 60, 70, 80)), mesh: None };
+        d.transform_preview(&moved, Interp::Bicubic).unwrap();
+        assert_eq!(px(&d, id, 55, 65), [0, 0, 255, 255]);
+        assert_eq!(px(&d, id, 15, 15)[3], 0);
+        // Cancel: as it was.
+        d.transform_cancel().unwrap();
+        assert_eq!(px(&d, id, 15, 15), [0, 0, 255, 255]);
+        assert_eq!(px(&d, id, 55, 65)[3], 0);
+        // Apply: one step, undone at once.
+        d.transform_begin(&[id]).unwrap();
+        d.transform_preview(&Warp { quad: corners((0, 0, 5, 5)), mesh: None }, Interp::Bilinear);
+        d.record_tree("New layer");
+        let n = d.history().undo_len();
+        d.transform_apply(&moved, Interp::Bicubic).unwrap();
+        assert!(!d.transforming());
+        assert_eq!(d.history().undo_len(), n + 1);
+        assert_eq!(d.history().undo_label(), Some("Transform"));
+        assert_eq!(px(&d, id, 55, 65), [0, 0, 255, 255]);
+        assert_eq!(px(&d, id, 2, 2)[3], 0, "the old preview is gone");
+        d.undo();
+        assert_eq!(px(&d, id, 15, 15), [0, 0, 255, 255]);
+        assert_eq!(px(&d, id, 55, 65)[3], 0);
+        d.redo();
+        assert_eq!(px(&d, id, 55, 65), [0, 0, 255, 255]);
+        assert!(d.transform_begin(&[]).is_err());
+        let empty = d.layers.add_layer("empty");
+        assert_eq!(d.transform_begin(&[empty]), Err("Nothing to transform"));
+    }
+
+    #[test]
+    fn a_selection_says_what_moves_and_goes_along() {
+        let mut d = Document::new(DocId(1), "t", 100, 100);
+        let (a, b) = (d.layers.add_layer("a"), d.layers.add_layer("b"));
+        d.layers.set_layer_rect(a, (0, 0, 100, 100), &[255u8, 0, 0, 255].repeat(10_000));
+        d.layers.set_layer_rect(b, (0, 0, 100, 100), &[0u8, 255, 0, 255].repeat(10_000));
+        d.selection = Selection::rect(100, 100, (0, 0, 20, 20));
+        let src = d.transform_begin(&[a, b]).unwrap();
+        assert_eq!(src, (0, 0, 20, 20));
+        let warp = Warp { quad: corners((50, 50, 70, 70)), mesh: None };
+        d.transform_apply(&warp, Interp::Bicubic).unwrap();
+        for (id, c) in [(a, [255, 0, 0, 255]), (b, [0, 255, 0, 255])] {
+            assert_eq!(px(&d, id, 5, 5)[3], 0, "lifted out");
+            assert_eq!(px(&d, id, 30, 5), c, "the rest stays");
+            assert_eq!(px(&d, id, 60, 60), c);
+        }
+        assert_eq!(d.selection.as_ref().unwrap().bbox(), (50, 50, 70, 70));
+        d.undo();
+        assert_eq!(d.selection.as_ref().unwrap().bbox(), (0, 0, 20, 20));
+        assert_eq!(px(&d, a, 5, 5), [255, 0, 0, 255]);
+        assert_eq!(px(&d, b, 5, 5), [0, 255, 0, 255]);
+        // Saved: the group's steps one by one.
+        let (_, redo) = d.history().export(100);
+        assert_eq!(redo.iter().filter(|s| s.label == "Transform").count(), 2);
+    }
+}

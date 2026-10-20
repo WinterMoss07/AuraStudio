@@ -46,14 +46,32 @@ pub enum Cmd {
     /// The filter dialog: show / keep / drop a filter on the active layer.
     /// Only the latest of the previews waiting is done.
     Filter { doc: SharedDoc, action: aurastudio_ui::FilterAction },
+    /// A selection command (tools, Select menu), undoable.
+    Select { doc: SharedDoc, op: aurastudio_document::SelectOp },
+    /// The transform tool. Only the latest of the previews waiting is done.
+    Transform { doc: SharedDoc, action: TransformAction },
     /// Save the document to `path` (after the strokes sent before). The
     /// file is written on its own thread; painting goes on meanwhile.
     /// `origin`: autosaves only, the file the work belongs to.
     Save { doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool },
 }
 
+/// What the transform tool asks.
+#[derive(Clone, Debug)]
+pub enum TransformAction {
+    /// Start on these layers (the selection says what moves).
+    Begin(Vec<u64>),
+    Preview(aurastudio_layers::transform::Warp, aurastudio_layers::transform::Interp),
+    Apply(aurastudio_layers::transform::Warp, aurastudio_layers::transform::Interp),
+    Cancel,
+}
+
 /// What the worker reports to the main thread (through `notify`).
 pub enum Event {
+    /// The selection changed (its outline to draw).
+    Selection,
+    /// A transform began: what moves (canvas pixels), or why it can't.
+    TransformStarted(Result<Rect, &'static str>),
     /// The projection has new changed areas to upload.
     Painted,
     /// A layer's pixels changed for good (stroke done, undo...): refresh
@@ -77,7 +95,14 @@ impl PaintThread {
         let worker = Worker::new(projection, Arc::new(notify));
         let handle = std::thread::Builder::new()
             .name("paint".into())
-            .spawn(move || worker.run(rx))
+            .spawn(move || {
+                // Its panic unwound (the document is free again): keep the
+                // work before closing (rescue.rs).
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run(rx))).is_err() {
+                    #[cfg(not(test))]
+                    crate::rescue::after_unwind();
+                }
+            })
             .expect("spawn paint thread");
         Self { tx: Some(tx), handle: Some(handle) }
     }
@@ -187,7 +212,7 @@ impl Worker {
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
                 match cmd {
-                    Cmd::Begin { doc, .. } | Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) | Cmd::Fill { doc, .. } | Cmd::Paste { doc, .. }
+                    Cmd::Begin { doc, .. } | Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) | Cmd::Fill { doc, .. } | Cmd::Paste { doc, .. } | Cmd::Select { doc, .. }
                         if doc.lock().unwrap().filtering() =>
                     {
                         // The layer shows a filter's preview: nothing else
@@ -195,8 +220,61 @@ impl Worker {
                         events.push(Event::Notice("Apply or cancel the filter first"));
                         self.doc = Some(doc);
                     }
+                    Cmd::Begin { doc, .. } | Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) | Cmd::Fill { doc, .. } | Cmd::Paste { doc, .. } | Cmd::Select { doc, .. } | Cmd::Filter { doc, .. }
+                        if doc.lock().unwrap().transforming() =>
+                    {
+                        // The same with a transform shown.
+                        events.push(Event::Notice("Apply or cancel the transform first"));
+                        self.doc = Some(doc);
+                    }
                     Cmd::Filter { action: aurastudio_ui::FilterAction::Preview(_), .. }
                         if queue.iter().any(|c| matches!(c, Cmd::Filter { .. })) => {}
+                    // Never under a stroke (its snapshot would no longer
+                    // match the layer).
+                    Cmd::Transform { action: TransformAction::Begin(_), .. } if self.active => {
+                        events.push(Event::Notice("Finish the stroke first"));
+                    }
+                    Cmd::Transform { action: TransformAction::Preview(..), .. }
+                        if queue.iter().any(|c| matches!(c, Cmd::Transform { .. })) => {}
+                    Cmd::Transform { doc, action } => {
+                        let t = Instant::now();
+                        let mut d = doc.lock().unwrap();
+                        let name = match &action { TransformAction::Begin(_) => "begin", TransformAction::Preview(..) => "preview", TransformAction::Apply(..) => "apply", TransformAction::Cancel => "cancel" };
+                        match action {
+                            TransformAction::Begin(ids) => {
+                                let r = d.transform_begin(&ids);
+                                events.push(Event::TransformStarted(r));
+                            }
+                            TransformAction::Preview(w, i) => {
+                                if let Some(r) = d.transform_preview(&w, i) { add_rect(&mut self.pending, r); }
+                            }
+                            TransformAction::Apply(w, i) => {
+                                let had = d.selection.clone();
+                                if let Some((ids, r)) = d.transform_apply(&w, i) {
+                                    if r.2 > r.0 { add_rect(&mut self.pending, r); }
+                                    for id in ids { events.push(Event::LayerChanged { layer_id: id }); }
+                                }
+                                if d.selection != had { events.push(Event::Selection); }
+                            }
+                            TransformAction::Cancel => {
+                                if let Some((ids, r)) = d.transform_cancel() {
+                                    if r.2 > r.0 { add_rect(&mut self.pending, r); }
+                                    for id in ids { events.push(Event::LayerChanged { layer_id: id }); }
+                                }
+                            }
+                        }
+                        drop(d);
+                        log::info!("transform {name}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+                        self.doc = Some(doc);
+                        flush = true;
+                    }
+                    Cmd::Select { doc, op } => {
+                        let t = Instant::now();
+                        let changed = doc.lock().unwrap().select(&op);
+                        if t.elapsed() > Duration::from_millis(30) { log::info!("{}: {:.0} ms", op.label(), t.elapsed().as_secs_f64() * 1000.0); }
+                        if changed { events.push(Event::Selection); }
+                        self.doc = Some(doc);
+                    }
                     Cmd::Recomposite(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_))) => {}
                     Cmd::Recomposite(doc) => self.recomposite(doc),
                     Cmd::Filter { doc, action } => {
@@ -362,16 +440,25 @@ impl Worker {
 
     /// An undo / redo done: show what changed (a layer step: everything).
     fn history_step(&mut self, doc: SharedDoc, c: Option<aurastudio_document::Change>, none_msg: &'static str, events: &mut Vec<Event>) {
-        match c {
-            Some(c) if c.tree => {
-                self.recomposite(doc);
-                events.push(Event::LayerChanged { layer_id: c.layer_id });
-            }
-            c => {
-                self.report(c.map(|c| (c.layer_id, c.rect)), none_msg, events);
-                self.doc = Some(doc);
+        let Some(c) = c else {
+            events.push(Event::Notice(none_msg));
+            self.doc = Some(doc);
+            return;
+        };
+        if c.selection { events.push(Event::Selection); }
+        if c.tree {
+            self.recomposite(doc);
+            events.push(Event::LayerChanged { layer_id: c.layer_id });
+            for (id, _) in c.more { events.push(Event::LayerChanged { layer_id: id }); }
+            return;
+        }
+        for (id, r) in std::iter::once((c.layer_id, c.rect)).chain(c.more) {
+            if r.2 > r.0 && r.3 > r.1 {
+                add_rect(&mut self.pending, r);
+                events.push(Event::LayerChanged { layer_id: id });
             }
         }
+        self.doc = Some(doc);
     }
 
     /// End the open stroke (recorded for undo) and report its layer.
