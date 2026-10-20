@@ -20,7 +20,7 @@ pub fn show(ui: &mut Ui, previews: &mut StrokePreviews, m: &mut Model, a: &mut c
     let name = if m.tool.is_shape() { format!("{} · {}", m.tool.name(), p.name) } else { p.name.clone() };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), STRIP), egui::Sense::hover());
     // The preview's empty half shows the canvas desk's color.
-    ui.painter().rect_filled(rect, 4.0, theme::DESK);
+    ui.painter().rect_filled(rect, 2.0, theme::DESK);
     let settings = aurastudio_brush::Brush { erase: *m.tool == Tool::Eraser, ..m.brush.clone() };
     let stroke = Stroke { preset: p, settings: &settings, shape: m.tool.stroke_shape(), mode: Mode::Detail };
     previews.show(ui, rect, Slot::ToolOptions, stroke, Some(&name));

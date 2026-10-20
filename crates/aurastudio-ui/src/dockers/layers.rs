@@ -348,7 +348,7 @@ fn label_list(ui: &mut Ui, current: u8) -> Option<u8> {
     for (i, (name, _)) in LABELS.iter().enumerate() {
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width().max(120.0), 22.0), Sense::click());
         if resp.hovered() || current as usize == i {
-            ui.painter().rect_filled(r, 4.0, if current as usize == i { theme::ACCENT_DIM } else { theme::WIDGET_HOVER });
+            ui.painter().rect_filled(r, 2.0, if current as usize == i { theme::ACCENT_DIM } else { theme::WIDGET_HOVER });
         }
         swatch(ui.painter(), pos2(r.left() + 13.0, r.center().y), i as u8, 6.0);
         ui.painter().text(pos2(r.left() + 26.0, r.center().y), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(13.0), theme::TEXT);
@@ -381,10 +381,10 @@ const CHAIN: Color32 = Color32::from_rgb(110, 200, 255);
 /// Two links of a chain, upright around `c`: half on the clipped row,
 /// half on the one under it.
 fn chain(p: &egui::Painter, c: egui::Pos2) {
-    p.rect_filled(Rect::from_center_size(c, vec2(11.0, 21.0)), 5.5, Color32::from_black_alpha(150));
+    p.rect_filled(Rect::from_center_size(c, vec2(11.0, 21.0)), 2.5, Color32::from_black_alpha(150));
     let s = Stroke::new(1.7_f32, CHAIN);
     for dy in [-4.5, 4.5] {
-        p.rect_stroke(Rect::from_center_size(c + vec2(0.0, dy), vec2(6.5, 10.5)), 3.2, s);
+        p.rect_stroke(Rect::from_center_size(c + vec2(0.0, dy), vec2(6.5, 10.5)), 2.0, s);
     }
 }
 
@@ -529,7 +529,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     let mut dropped = None;
     let mut menu_cmd = None;
     let mut shown_ids = Vec::new();
-    Frame::none().fill(theme::DESK).rounding(6.0).show(ui, |ui| {
+    Frame::none().fill(theme::DESK).rounding(3.0).show(ui, |ui| {
         ui.set_min_height(list_h);
         egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
@@ -774,7 +774,7 @@ fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row, selected: &[u64]) -> O
     let p = ui.painter();
     let stroke = Stroke::new(2.0_f32, theme::DROP);
     match place {
-        Place::Inside => { p.rect_stroke(r.shrink(1.0), 5.0, stroke); }
+        Place::Inside => { p.rect_stroke(r.shrink(1.0), 2.5, stroke); }
         Place::Above => { p.hline(r.x_range(), r.top(), stroke); }
         Place::Below => { p.hline(r.x_range(), r.bottom(), stroke); }
     }
@@ -822,9 +822,9 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     } else {
         Color32::TRANSPARENT
     };
-    painter.rect_filled(body, 5.0, bg);
+    painter.rect_filled(body, 2.5, bg);
     if row.is_folder && !active {
-        painter.rect_stroke(body, 5.0, Stroke::new(1.0_f32, theme::BORDER));
+        painter.rect_stroke(body, 2.5, Stroke::new(1.0_f32, theme::BORDER));
     }
     // The label: a strip on the left edge.
     if let Some(c) = label {
@@ -889,15 +889,15 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         // A frame: its number on a card (shown now: brighter).
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
         let card = Rect::from_center_size(b.center(), vec2(THUMB - 4.0, THUMB - 10.0));
-        painter.rect_filled(card, 4.0, if active { Color32::from_black_alpha(70) } else if visible { theme::WIDGET_HOVER } else { theme::WIDGET });
-        painter.rect_stroke(card, 4.0, Stroke::new(1.0_f32, if visible || active { theme::TEXT } else { theme::BORDER }));
+        painter.rect_filled(card, 2.0, if active { Color32::from_black_alpha(70) } else if visible { theme::WIDGET_HOVER } else { theme::WIDGET });
+        painter.rect_stroke(card, 2.0, Stroke::new(1.0_f32, if visible || active { theme::TEXT } else { theme::BORDER }));
         painter.text(card.center(), egui::Align2::CENTER_CENTER, n.to_string(), egui::FontId::proportional(if n < 1000 { 13.0 } else { 10.0 }), theme::TEXT);
         b
     } else if is_filter {
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
         let tile = Rect::from_center_size(b.center(), vec2(THUMB - 6.0, THUMB - 6.0));
-        painter.rect_filled(tile, 4.0, if active { Color32::from_black_alpha(70) } else { theme::WIDGET });
-        painter.rect_stroke(tile, 4.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }));
+        painter.rect_filled(tile, 2.0, if active { Color32::from_black_alpha(70) } else { theme::WIDGET });
+        painter.rect_stroke(tile, 2.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }));
         crate::icons::paint(ui, Icon::FilterLayer, tile, 18.0, theme::TEXT);
         b
     } else {

@@ -161,7 +161,7 @@ impl View {
 
         // Draw.
         let p = ui.painter_at(r);
-        p.rect_filled(r, 3.0, theme::DESK);
+        p.rect_filled(r, 2.0, theme::DESK);
         let dest = Rect::from_min_max(
             pos2(r.left() + (shown.0 as f32 * kf - x0) * s, r.top() + (shown.1 as f32 * kf - y0) * s),
             pos2(r.left() + (shown.2 as f32 * kf - x0) * s, r.top() + (shown.3 as f32 * kf - y0) * s),
@@ -208,7 +208,7 @@ impl View {
         } else {
             p.text(r.center(), Align2::CENTER_CENTER, "Nothing painted here", egui::FontId::proportional(12.0), theme::TEXT_WEAK);
         }
-        p.rect_stroke(r, 3.0, Stroke::new(1.0_f32, theme::BORDER));
+        p.rect_stroke(r, 2.0, Stroke::new(1.0_f32, theme::BORDER));
         // The hand opens over the picture and closes on it while it is
         // dragged (even out of the view); the line gets the resize arrows.
         let holding = resp.dragged() || resp.is_pointer_button_down_on();

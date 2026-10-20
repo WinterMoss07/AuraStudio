@@ -217,8 +217,8 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                                     let (r, resp) = ui.allocate_exact_size(card, Sense::click());
                                     let resp = resp.on_hover_text(p.note);
                                     let bg = if on { theme::ACCENT_DIM } else if resp.hovered() { theme::WIDGET_HOVER } else { theme::WIDGET };
-                                    ui.painter().rect_filled(r, 6.0, bg);
-                                    if on { ui.painter().rect_stroke(r, 6.0, Stroke::new(1.5_f32, theme::ACCENT)); }
+                                    ui.painter().rect_filled(r, 3.0, bg);
+                                    if on { ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5_f32, theme::ACCENT)); }
                                     page_icon(ui, Rect::from_center_size(pos2(r.center().x, r.top() + 30.0), vec2(38.0, 38.0)), p.w, p.h, theme::TEXT_WEAK);
                                     ui.painter().text(pos2(r.center().x, r.top() + 64.0), Align2::CENTER_CENTER, p.name, FontId::proportional(12.5), theme::TEXT);
                                     ui.painter().text(pos2(r.center().x, r.top() + 84.0), Align2::CENTER_CENTER, size_line(p), FontId::proportional(10.5), theme::TEXT_WEAK);
@@ -261,7 +261,7 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                             let on = (form.h >= form.w) == portrait;
                             let (r, resp) = ui.allocate_exact_size(vec2(30.0, 26.0), Sense::click());
                             let resp = resp.on_hover_text(if portrait { "Portrait" } else { "Landscape" });
-                            if on { ui.painter().rect_filled(r, 4.0, theme::ACCENT_DIM); } else if resp.hovered() { ui.painter().rect_filled(r, 4.0, theme::WIDGET_HOVER); }
+                            if on { ui.painter().rect_filled(r, 2.0, theme::ACCENT_DIM); } else if resp.hovered() { ui.painter().rect_filled(r, 2.0, theme::WIDGET_HOVER); }
                             let (w, h) = if portrait { (3.0, 4.0) } else { (4.0, 3.0) };
                             page_icon(ui, r.shrink(5.0), w, h, if on { theme::TEXT } else { theme::TEXT_WEAK });
                             if resp.clicked() && !on { std::mem::swap(&mut form.w, &mut form.h); }
@@ -378,7 +378,7 @@ fn big_button(ui: &mut Ui, rect: Rect, text: &str, key: &str, primary: bool) -> 
     let p = ui.painter();
     let hover = resp.hovered();
     if primary {
-        p.rect_filled(rect, 17.0, if hover { theme::ACCENT.gamma_multiply(1.15) } else { theme::ACCENT });
+        p.rect_filled(rect, 4.0, if hover { theme::ACCENT.gamma_multiply(1.15) } else { theme::ACCENT });
     } else {
         p.rect(rect, 17.0, if hover { theme::WIDGET } else { Color32::TRANSPARENT }, Stroke::new(1.0_f32, theme::TEXT_WEAK));
     }
@@ -422,9 +422,9 @@ fn recent_card(ui: &mut Ui, r: &RecentFile, card: f32, a: &mut Actions) {
     let (rect, resp) = ui.allocate_exact_size(vec2(card, card + 38.0), Sense::click());
     let resp = resp.on_hover_text(r.path.display().to_string());
     let p = ui.painter_at(rect);
-    if resp.hovered() { p.rect_filled(rect, 8.0, theme::WIDGET); }
+    if resp.hovered() { p.rect_filled(rect, 3.0, theme::WIDGET); }
     let img = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(card - 12.0, card - 12.0));
-    p.rect_filled(img, 6.0, theme::PANEL);
+    p.rect_filled(img, 3.0, theme::PANEL);
     if let Some(t) = &r.thumb {
         let s = t.size_vec2();
         let k = (img.width() / s.x).min(img.height() / s.y);

@@ -306,9 +306,9 @@ fn tool_button(ui: &mut Ui, group: Group, selected: bool, enabled: bool) -> bool
     let resp = resp.on_hover_text(format!("{} ({})", group.name(), group.key()));
     let p = ui.painter_at(rect);
     if selected {
-        p.rect_filled(rect, 6.0, theme::ACCENT_DIM);
+        p.rect_filled(rect, 3.0, theme::ACCENT_DIM);
     } else if enabled && resp.hovered() {
-        p.rect_filled(rect, 6.0, theme::WIDGET_HOVER);
+        p.rect_filled(rect, 3.0, theme::WIDGET_HOVER);
     }
     let col = match (enabled, selected) {
         (false, _) => theme::TEXT_WEAK.gamma_multiply(0.45),

@@ -3,6 +3,15 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.14.1 — 2026-10-20
+
+**Look**
+- Sharper: corners 2.5 px on widgets, rows, tabs and buttons (were 5–6),
+  3–4 px on menus, dialogs and the canvas (were 8–10).
+- The docks' gray is lighter (#282829, was #1f1f1f); widgets, hover and
+  borders one step lighter to keep their contrast; the areas set into the
+  docks (#181818) stay as they were.
+
 ## 0.14.0 — 2026-10-20
 
 Step 3 of the animation work: the X-sheet / timeline and playback

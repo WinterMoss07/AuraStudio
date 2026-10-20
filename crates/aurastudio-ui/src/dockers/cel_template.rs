@@ -63,7 +63,7 @@ pub fn show(ui: &mut Ui, renaming: &mut Option<(usize, String, bool)>, m: &mut M
         let on = r == anim.sub;
         let p = ui.painter_at(rect);
         let bg = if on { theme::ACCENT } else if resp.hovered() { theme::WIDGET_HOVER } else { theme::WIDGET };
-        p.rect_filled(rect.shrink2(vec2(0.0, 1.0)), 5.0, bg);
+        p.rect_filled(rect.shrink2(vec2(0.0, 1.0)), 2.5, bg);
         // Eye on the left, lock on the right (as in the Layers docker).
         let eye = egui::Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), vec2(22.0, 22.0));
         let lock = egui::Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), vec2(22.0, 22.0));

@@ -22,12 +22,12 @@ pub const FIELD: Color32 = theme::DESK;
 pub fn graph(ui: &mut Ui, h: f32, sense: Sense) -> (Rect, Response, Painter) {
     let (r, resp) = ui.allocate_exact_size(vec2(WIDTH, h), sense);
     let p = ui.painter_at(r.expand(1.0));
-    p.rect_filled(r, 3.0, FIELD);
+    p.rect_filled(r, 2.0, FIELD);
     (r.shrink(1.0), resp, p)
 }
 
 pub fn frame(p: &Painter, r: Rect) {
-    p.rect_stroke(r.expand(1.0), 3.0, Stroke::new(1.0_f32, theme::BORDER));
+    p.rect_stroke(r.expand(1.0), 2.0, Stroke::new(1.0_f32, theme::BORDER));
 }
 
 /// Light grid lines at quarters (and the diagonal, for a curve).
@@ -253,9 +253,9 @@ pub fn slider(ui: &mut Ui, id: &str, spec: Spec, v: &mut f32) -> bool {
     let mark = !matches!(track, Track::Fill(f) if f == default);
     match track {
         Track::Fill(from) => {
-            p.rect_filled(bar, 3.0, theme::WIDGET);
+            p.rect_filled(bar, 2.0, theme::WIDGET);
             let (a, b) = (to_x(from.clamp(lo, hi)), to_x(*v));
-            p.rect_filled(Rect::from_x_y_ranges(a.min(b)..=a.max(b), bar.y_range()), 3.0, theme::ACCENT);
+            p.rect_filled(Rect::from_x_y_ranges(a.min(b)..=a.max(b), bar.y_range()), 2.0, theme::ACCENT);
         }
         Track::Colors(stops) => gradient(&p, bar, stops),
         Track::Alpha(c) => {
@@ -263,7 +263,7 @@ pub fn slider(ui: &mut Ui, id: &str, spec: Spec, v: &mut f32) -> bool {
             gradient(&p, bar, &[c.gamma_multiply(0.0), c]);
         }
     }
-    p.rect_stroke(bar, 3.0, Stroke::new(1.0_f32, theme::BORDER));
+    p.rect_stroke(bar, 2.0, Stroke::new(1.0_f32, theme::BORDER));
     if mark {
         // The default's mark.
         let x = to_x(default);

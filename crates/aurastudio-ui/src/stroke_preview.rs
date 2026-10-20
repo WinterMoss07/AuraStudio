@@ -143,7 +143,7 @@ fn name_label(painter: &egui::Painter, rect: Rect, name: &str) {
     let galley = painter.layout_no_wrap(name.to_string(), font, theme::TEXT);
     let size = galley.size() + vec2(8.0, 2.0);
     let r = Rect::from_min_size(rect.right_bottom() - size - vec2(3.0, 3.0), size);
-    painter.rect_filled(r, 3.0, Color32::from_black_alpha(150));
+    painter.rect_filled(r, 2.0, Color32::from_black_alpha(150));
     painter.galley(r.left_top() + vec2(4.0, 1.0), galley, theme::TEXT);
 }
 

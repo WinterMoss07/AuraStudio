@@ -74,8 +74,8 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
         let swatch = Rect::from_min_max(row.min, pos2(row.right() - hex_w - 4.0, row.bottom()));
         let field = Rect::from_min_max(pos2(row.right() - hex_w, row.top() + 1.0), pos2(row.right(), row.bottom() - 1.0));
-        ui.painter().rect_filled(swatch, 6.0, display_color([r, g, b]));
-        ui.painter().rect_stroke(swatch, 6.0, Stroke::new(1.0_f32, theme::BORDER));
+        ui.painter().rect_filled(swatch, 3.0, display_color([r, g, b]));
+        ui.painter().rect_stroke(swatch, 3.0, Stroke::new(1.0_f32, theme::BORDER));
 
         let edit = ui.put(field, egui::TextEdit::singleline(&mut st.hex).horizontal_align(Align::Center));
         if edit.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && edit.has_focus() {
@@ -103,7 +103,7 @@ fn mode_tab(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(44.0, 22.0), Sense::click());
     let p = ui.painter();
     if selected || resp.hovered() {
-        p.rect_filled(rect, 5.0, if selected { theme::WIDGET } else { theme::WIDGET_HOVER.gamma_multiply(0.6) });
+        p.rect_filled(rect, 2.5, if selected { theme::WIDGET } else { theme::WIDGET_HOVER.gamma_multiply(0.6) });
     }
     let col = if selected { theme::TEXT } else { theme::TEXT_WEAK };
     p.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(12.0), col);

@@ -159,7 +159,7 @@ pub fn channel_row(
 
     let painter = ui.painter_at(rect.expand(2.0));
     paint_gradient(&painter, bar, color_at);
-    painter.rect_stroke(bar, 3.0, Stroke::new(1.0_f32, theme::BORDER));
+    painter.rect_stroke(bar, 2.0, Stroke::new(1.0_f32, theme::BORDER));
 
     // Marker: a thin line on the bar plus a small triangle under it.
     let x = bar.left() + *value * bar.width();
@@ -205,7 +205,7 @@ pub fn drag_ghost(ctx: &egui::Context, text: &str) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag_ghost")));
     let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), theme::TEXT);
     let r = Rect::from_min_size(p + vec2(14.0, 6.0), galley.size() + vec2(12.0, 6.0));
-    painter.rect_filled(r, 4.0, theme::ACCENT_DIM);
+    painter.rect_filled(r, 2.0, theme::ACCENT_DIM);
     painter.galley(r.min + vec2(6.0, 3.0), galley, theme::TEXT);
 }
 
@@ -240,7 +240,7 @@ pub fn icon_button(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool) -> boo
     let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
     let resp = resp.on_hover_text(tooltip);
     if enabled && resp.hovered() {
-        ui.painter().rect_filled(rect, 5.0, theme::WIDGET_HOVER);
+        ui.painter().rect_filled(rect, 2.5, theme::WIDGET_HOVER);
     }
     let col = if enabled { theme::TEXT } else { theme::TEXT_WEAK.gamma_multiply(0.45) };
     crate::icons::paint(ui, icon, rect, 16.0, col);
@@ -253,9 +253,9 @@ pub fn icon_toggle(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool, on: bo
     let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
     let resp = resp.on_hover_text(tooltip);
     if on {
-        ui.painter().rect_filled(rect, 5.0, theme::ACCENT_DIM);
+        ui.painter().rect_filled(rect, 2.5, theme::ACCENT_DIM);
     } else if enabled && resp.hovered() {
-        ui.painter().rect_filled(rect, 5.0, theme::WIDGET_HOVER);
+        ui.painter().rect_filled(rect, 2.5, theme::WIDGET_HOVER);
     }
     let col = if !enabled { theme::TEXT_WEAK.gamma_multiply(0.45) } else if on { theme::TEXT } else { Color32::from_gray(0xc8) };
     crate::icons::paint(ui, icon, rect, 16.0, col);

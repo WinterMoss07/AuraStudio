@@ -7,7 +7,7 @@ use egui::{Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Vis
 
 /// The UI surface: menu bar, tool options bar, docks, and the thin frame
 /// around the canvas.
-pub const PANEL:        Color32 = Color32::from_rgb(0x1f, 0x1f, 0x1f);
+pub const PANEL:        Color32 = Color32::from_rgb(0x28, 0x28, 0x29);
 /// Same surface (kept as a name for "behind everything").
 pub const BACKDROP:     Color32 = PANEL;
 /// Around the image, inside the canvas card (GPU clear color).
@@ -15,21 +15,21 @@ pub const DESK:         Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
 /// Inset areas inside a card (layer list).
 pub const SURFACE:      Color32 = Color32::from_rgb(0x22, 0x22, 0x23);
 /// Widgets and list rows.
-pub const WIDGET:       Color32 = Color32::from_rgb(0x2e, 0x2e, 0x2f);
-pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x39, 0x39, 0x3b);
-pub const BORDER:       Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+pub const WIDGET:       Color32 = Color32::from_rgb(0x33, 0x33, 0x35);
+pub const WIDGET_HOVER: Color32 = Color32::from_rgb(0x3e, 0x3e, 0x41);
+pub const BORDER:       Color32 = Color32::from_rgb(0x3a, 0x3a, 0x3b);
 /// Selection and slider fill: the logo's blue-violet.
 pub const ACCENT:       Color32 = Color32::from_rgb(0x72, 0x5e, 0xea);
 /// The accent toned down (selected tool, hovered separators, drop zones):
 /// 45 % of it over the panel gray.
-pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x44, 0x3b, 0x7a);
+pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x49, 0x40, 0x80);
 /// Where a dragged item would land (CSP: a thin red line).
 pub const DROP:         Color32 = Color32::from_rgb(0xe5, 0x48, 0x4d);
 pub const TEXT:         Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
 pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0xaf, 0xaf, 0xb3);
 
 /// Corner radius of the canvas.
-pub const CANVAS_ROUNDING: f32 = 10.0;
+pub const CANVAS_ROUNDING: f32 = 4.0;
 /// Frame of UI surface left of and below the canvas (where nothing is
 /// docked yet).
 pub const CANVAS_FRAME: f32 = 3.0;
@@ -74,8 +74,8 @@ pub fn apply(ctx: &egui::Context) {
     v.extreme_bg_color  = SURFACE;
     v.faint_bg_color    = WIDGET;
     v.window_stroke     = Stroke::new(1.0_f32, BORDER);
-    v.window_rounding   = Rounding::same(10.0);
-    v.menu_rounding     = Rounding::same(8.0);
+    v.window_rounding   = Rounding::same(4.0);
+    v.menu_rounding     = Rounding::same(3.0);
     v.window_shadow.color = Color32::from_black_alpha(90);
     v.popup_shadow.color  = Color32::from_black_alpha(90);
     v.selection.bg_fill   = ACCENT;
@@ -84,7 +84,7 @@ pub fn apply(ctx: &egui::Context) {
     v.override_text_color = Some(TEXT);
     v.slider_trailing_fill = true;
 
-    let r = Rounding::same(6.0);
+    let r = Rounding::same(2.5);
     let w = &mut v.widgets;
     w.noninteractive.bg_fill   = PANEL;
     w.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
@@ -134,7 +134,7 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     d.tab.tab_body.rounding = Rounding::ZERO;
     d.tab.tab_body.inner_margin = Margin::same(8.0);
     d.tab.hline_below_active_tab_name = false;
-    let pill = Rounding::same(6.0);
+    let pill = Rounding::same(2.5);
     for (t, bg, text) in [
         (&mut d.tab.active, WIDGET_HOVER, TEXT),
         (&mut d.tab.focused, WIDGET_HOVER, TEXT),

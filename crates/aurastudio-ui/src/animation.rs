@@ -231,7 +231,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
     let fps = (*m.fps).max(1);
 
     let p = ui.painter_at(area);
-    p.rect_filled(area, 4.0, theme::DESK);
+    p.rect_filled(area, 2.0, theme::DESK);
     // Cells.
     let cp = p.with_clip_rect(cells);
     let active = m.layers.active_id();
@@ -251,8 +251,8 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
             if drawn {
                 let id = frames.iter().find(|x| x.0 == f).map(|x| x.1);
                 let on = id == Some(active);
-                cp.rect_filled(r.shrink(1.5), 3.0, color.gamma_multiply(if on { 1.0 } else { 0.75 } * dim));
-                if on { cp.rect_stroke(r.shrink(1.0), 3.0, Stroke::new(1.5_f32, Color32::WHITE)); }
+                cp.rect_filled(r.shrink(1.5), 2.0, color.gamma_multiply(if on { 1.0 } else { 0.75 } * dim));
+                if on { cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.5_f32, Color32::WHITE)); }
                 cp.text(r.center(), Align2::CENTER_CENTER, f.to_string(), FontId::proportional(if g.vertical { 11.5 } else { 10.0 }), Color32::WHITE);
             } else if held {
                 // A hold: a line through the cell (a continue line).
@@ -284,7 +284,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
         if let Some(c) = cols.iter().position(|x| *x == folder) {
             let copy = ui.input(|i| i.modifiers.command);
             let r = g.cell(c, to);
-            cp.rect_stroke(r.shrink(1.0), 3.0, Stroke::new(2.0_f32, if copy { theme::TEXT } else { theme::ACCENT }));
+            cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0_f32, if copy { theme::TEXT } else { theme::ACCENT }));
             if to != from { cp.text(r.center(), Align2::CENTER_CENTER, if copy { "+" } else { "↦" }, FontId::proportional(12.0), theme::TEXT); }
         }
     }
@@ -310,7 +310,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
         if !r.intersects(layer_head) { continue; }
         let Some(n) = m.layers.node(folder) else { continue };
         let on = Some(folder) == active_folder;
-        lp.rect_filled(r, 4.0, if on { theme::ACCENT_DIM } else { theme::WIDGET });
+        lp.rect_filled(r, 2.0, if on { theme::ACCENT_DIM } else { theme::WIDGET });
         lp.rect_filled(Rect::from_min_size(r.min, if g.vertical { vec2(r.width(), 3.0) } else { vec2(3.0, r.height()) }), 1.0, folder_color(m.layers, folder));
         let (eye, lock, name) = if g.vertical {
             (Rect::from_center_size(pos2(r.left() + 12.0, r.bottom() - 12.0), vec2(20.0, 20.0)),

@@ -154,11 +154,11 @@ fn medium_icons(ui: &mut Ui, st: &mut ToolListState, group: Group, mediums: &[&s
             if resp.drag_started() { resp.dnd_set_drag_payload(MediumDrag(md.to_string())); }
             let resp = resp.on_hover_text(md);
             let bg = if on { Some(theme::ACCENT) } else if resp.hovered() { Some(theme::WIDGET_HOVER) } else { None };
-            if let Some(bg) = bg { ui.painter().rect_filled(rect, 5.0, bg); }
+            if let Some(bg) = bg { ui.painter().rect_filled(rect, 2.5, bg); }
             crate::icons::paint(ui, medium_icon(md), rect, 17.0, if on { theme::TEXT } else { theme::TEXT_WEAK });
             // A brush dropped here moves to this medium, at the end.
             if resp.dnd_hover_payload::<BrushDrag>().is_some() {
-                ui.painter().rect_stroke(rect.shrink(1.0), 5.0, Stroke::new(2.0_f32, theme::DROP));
+                ui.painter().rect_stroke(rect.shrink(1.0), 2.5, Stroke::new(2.0_f32, theme::DROP));
             }
             if let Some(d) = resp.dnd_release_payload::<BrushDrag>() {
                 a.move_brush = Some((d.0, md.to_string(), None));
@@ -194,7 +194,7 @@ fn medium_icons(ui: &mut Ui, st: &mut ToolListState, group: Group, mediums: &[&s
         }
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         let resp = resp.on_hover_text("New medium");
-        if resp.hovered() { ui.painter().rect_filled(rect, 5.0, theme::WIDGET_HOVER); }
+        if resp.hovered() { ui.painter().rect_filled(rect, 2.5, theme::WIDGET_HOVER); }
         crate::icons::paint(ui, Icon::Plus, rect, 15.0, theme::TEXT_WEAK);
         if resp.clicked() { a.add_medium = group.kind(); }
     });
@@ -251,7 +251,7 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
         let selected = t == *m.tool;
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
         let resp = resp.on_hover_text(t.hint());
-        ui.painter().rect_filled(rect, 4.0, if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE });
+        ui.painter().rect_filled(rect, 2.0, if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE });
         if t.is_shape() {
             if let Some(p) = m.presets.get(*m.preset) {
                 let settings = aurastudio_brush::Brush { erase: false, ..m.brush.clone() };
@@ -263,7 +263,7 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
             ui.painter().text(rect.left_center() + vec2(ROW + 4.0, 0.0), egui::Align2::LEFT_CENTER, t.name(),
                 egui::FontId::proportional(13.0), theme::TEXT);
         }
-        if selected { ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5_f32, theme::ACCENT)); }
+        if selected { ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.5_f32, theme::ACCENT)); }
         if resp.clicked() { *m.tool = t; }
     }
 }
@@ -275,7 +275,7 @@ fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, sele
     let resp = resp.on_hover_text(format!("{}\n{}  ·  {}", p.name, p.author, p.origin.label()));
     if !ui.is_rect_visible(rect) { return resp; }
     let bg = if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE };
-    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_filled(rect, 2.0, bg);
     // The selected brush is shown with its current settings.
     let settings = if selected { current } else { &p.settings };
     if strokes {
@@ -286,7 +286,7 @@ fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, sele
         ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, &p.name, egui::FontId::proportional(13.0), theme::TEXT);
     }
     if selected {
-        ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5_f32, theme::ACCENT));
+        ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.5_f32, theme::ACCENT));
     }
     resp
 }
