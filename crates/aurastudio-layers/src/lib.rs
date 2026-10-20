@@ -1,13 +1,5 @@
-//! Layer tree: paint layers, folders (groups) and filter layers, like
-//! Krita / CSP.
-//!
-//! Stored bottom to top. Each node has a stable `id`; the active node is
-//! tracked by id, so reordering or moving in and out of folders never
-//! changes which layer you paint on.
-//!
-//! Every node also has `Props`: a color label (Krita's colors), clipping
-//! to the node below (CSP / Photoshop clipping masks), and CSP's reference
-//! and draft marks (see `compose.rs` and `fill.rs` for what they do).
+//! The layer tree (Krita / CSP): paint layers, folders and filter layers,
+//! bottom to top, each with a stable id and its marks (`Props`).
 
 mod compose;
 pub mod fill;
@@ -67,10 +59,8 @@ pub struct Props {
     pub draft:     bool,
 }
 
-/// A filter layer (Krita): the filter applied to what is under it, kept
-/// editable. In a pass-through folder or at the top level: everything
-/// under it; in an isolated folder: that folder's content under it;
-/// clipped: only where its base shows.
+/// A filter layer (Krita): its filter over what is under it (in an
+/// isolated folder: the folder's content; clipped: its base).
 pub struct FilterLayer {
     pub id:      u64,
     pub name:    String,
@@ -102,9 +92,8 @@ pub struct Layer {
 /// How a folder combines its content with what is below it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FolderBlend {
-    /// Default (Krita / CSP): children blend straight onto the layers
-    /// below, as if the folder weren't there; the folder opacity scales
-    /// its children.
+    /// Children blend onto the layers below as if the folder weren't there
+    /// (Krita / CSP default).
     #[default]
     PassThrough,
     /// Children are first merged together on their own, then the result
@@ -168,9 +157,8 @@ impl Node {
     }
 }
 
-/// Pixel a layer is cleared to: opaque white for the background,
-/// transparent for the others. Transparent pixels keep a white RGB so a
-/// compositing bug that ignores alpha shows white, not black.
+/// What a layer is cleared to: white for the background, else
+/// transparent (white RGB: a bug ignoring alpha shows white).
 fn clear_pixel(background: bool) -> [u8; 4] {
     if background { [255, 255, 255, 255] } else { [255, 255, 255, 0] }
 }
@@ -220,11 +208,8 @@ pub struct Row {
 /// Coverage of one tile in the stroke mask (one byte per pixel).
 type MaskTile = Box<[u8; (TILE * TILE) as usize]>;
 
-/// Per-stroke buffers of the layer being painted, by tile: what the layer
-/// was before the stroke, and how much the stroke covers each pixel.
-///
-/// A tile gets them the first time the brush reaches it, and they go
-/// when the stroke ends: a stroke costs memory only where it goes.
+/// The painted layer's stroke buffers, by tile (only where the brush
+/// went): the layer before the stroke and the stroke's coverage.
 #[derive(Default)]
 struct StrokeBuffers {
     layer: u64,
@@ -358,9 +343,7 @@ impl LayerStack {
         }
     }
 
-    /// A new document's layers (CSP): a locked white "Paper" at the
-    /// bottom, so it can't be painted on by mistake, and an empty
-    /// "Layer 1" above it, active.
+    /// A new document (CSP): a locked white Paper, an empty Layer 1 active.
     pub fn new_document(width: u32, height: u32) -> Self {
         let mut s = Self::new(width, height);
         if let Some(Node::Layer(paper)) = s.root.first_mut() {
@@ -372,10 +355,8 @@ impl LayerStack {
         s
     }
 
-    /// A new document from a picture (an opened PNG / JPG...): the picture
-    /// is the bottom layer, as it is (no Paper under it), and an empty
-    /// "Layer 1" above it is active, so painting never lands on the picture
-    /// by mistake.
+    /// A picture opened (PNG, JPG...): it is the bottom layer, an empty
+    /// Layer 1 above it active.
     pub fn from_image(width: u32, height: u32, name: &str, rgba: &[u8]) -> Self {
         let mut s = Self::new(width, height);
         if let Some(Node::Layer(l)) = s.root.first_mut() {
@@ -388,10 +369,7 @@ impl LayerStack {
         s
     }
 
-    /// Rebuild a stack read from a file. Checked, never trusted: every
-    /// layer must have `width * height` pixels, ids must be unique, and
-    /// there must be at least one paint layer. An unknown active id falls
-    /// back to the topmost layer.
+    /// A stack read from a file, checked: sizes, unique ids, a paint layer.
     pub fn from_parts(width: u32, height: u32, root: Vec<Node>, active: u64) -> Result<Self, String> {
         fn walk(nodes: &[Node], size: (u32, u32), ids: &mut std::collections::HashSet<u64>) -> Result<(), String> {
             for n in nodes {
@@ -474,11 +452,8 @@ impl LayerStack {
     pub fn layer_count(&self) -> usize { count_layers(&self.root) }
 
     /// Where a filter on the active layer works: the selection's bounds,
-    /// else what is painted (a layer whose empty parts are transparent),
-    /// else the whole canvas (the paper changes everywhere); grown by
-    /// `margin` px for the filters that reach out (a blur, a shadow).
-    /// None: the active layer can't be painted; an empty rect: nothing
-    /// painted.
+    /// else what is painted, else the canvas, grown by `margin`. None: not
+    /// paintable; empty: nothing painted.
     pub fn filter_area(&self, selection: Option<&Selection>, margin: u32) -> Option<(u64, Rect)> {
         if !self.can_paint() { return None; }
         let id = self.active;
@@ -686,6 +661,7 @@ impl LayerStack {
 
     /// The node `id` is clipped and shows only where its base does: the
     /// base, or None if it isn't clipped or has nothing under it.
+    #[cfg(test)]
     pub fn clip_base(&self, id: u64) -> Option<u64> {
         let path = self.path(id)?;
         let (last, parent) = path.split_last()?;
@@ -695,14 +671,6 @@ impl LayerStack {
         nodes[..*last].iter().rev().find(|n| !n.props().clip).map(|n| n.id())
     }
 
-    /// Ids of the nodes with a reference mark (themselves or through a
-    /// folder), visible.
-    pub fn has_reference(&self) -> bool {
-        fn any(nodes: &[Node]) -> bool {
-            nodes.iter().any(|n| n.visible() && (n.props().reference || matches!(n, Node::Folder(f) if any(&f.children))))
-        }
-        any(&self.root)
-    }
 
     fn clone_node(&mut self, n: &Node) -> Node {
         match n {
@@ -1113,10 +1081,7 @@ impl LayerStack {
         out
     }
 
-    /// Composite of `rect` (inside the canvas) into `out`, RGBA rows tightly
-    /// packed. Always opaque (white under everything): blended straight
-    /// into the bytes, Normal in integer math; only isolated folders take
-    /// the premultiplied path. ~5 ns/px (examples/bench_composite.rs).
+    /// The merge of `rect` into `out` (RGBA rows), on white. ~5 ns/px.
     pub fn composite_rect_to(&self, rect: Rect, out: &mut [u8]) {
         let (x0, y0, x1, y1) = rect;
         if x0 >= x1 || y0 >= y1 { return; }
@@ -1132,9 +1097,7 @@ impl LayerStack {
         }
     }
 
-    /// Small merged image (at most `max` px), without merging the whole
-    /// canvas: one row in every few is merged, then shrunk across. For file
-    /// previews; a big canvas takes a few ms instead of a full merge.
+    /// A small merged image (file previews): sampled rows, shrunk.
     pub fn composite_preview(&self, max: u32) -> (u32, u32, Vec<u8>) {
         let (w, h) = (self.width, self.height);
         let k = (max as f32 / w.max(h) as f32).min(1.0);
@@ -1218,9 +1181,8 @@ fn blend_layer_opaque(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode)
     let op8 = (opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
     if op8 == 0 { return; }
     if mode == BlendMode::Normal {
-        // dst += (src - dst) * a, a = alpha * opacity, in blocks: skip a
-        // fully transparent block, else plain u16 math over every byte
-        // (the compiler vectorizes it; a per-pixel branch doesn't).
+        // dst += (src - dst) * a by blocks (skipping empty ones), u16 math
+        // the compiler vectorizes.
         const B: usize = 64;
         for (dc, sc) in dst.chunks_mut(B * 4).zip(src.chunks(B * 4)) {
             // OR of whole pixels (vectorizes, a strided byte read doesn't).
@@ -1656,7 +1618,6 @@ mod layer_tree_tests {
         // A reference folder marks what it holds.
         s.node_mut(g).unwrap().props_mut().reference = true;
         assert!(s.rows().iter().find(|r| r.id == b).unwrap().reference_by_parent);
-        assert!(s.has_reference());
         assert!(s.ungroup_active());
         assert_eq!(s.active_id(), b);
         assert!(s.node(g).is_none());

@@ -1,22 +1,10 @@
-//! The general merge: clipping masks, filter layers, and merges of some
-//! layers only (the fill tool's references, exports without the drafts).
+//! The general merge, for clipping, filter layers and merges of some
+//! layers only (references, exports without drafts): node by node over a
+//! block grown by the filter layers' reach, in premultiplied floats.
 //!
-//! The plain merge (`composite_row_opaque`, a few ns per pixel) goes row
-//! by row through the tree. A filter layer needs the merge of what is
-//! under it over a whole area (a blur reads its neighbors), so this one
-//! goes node by node over a block: the area asked for, grown by what the
-//! filter layers reach, in bands. It works in premultiplied floats: slower,
-//! used only when the tree needs it.
-//!
-//! Clipping (CSP, Photoshop with "blend clipped layers as group"): a
-//! clipped node shows only where its base — the nearest node under it
-//! that isn't clipped, in the same folder — has pixels. The base and its
-//! clipped nodes are merged on their own (each clipped node with its own
-//! blend mode and opacity, over the base), then that is blended down
-//! with the base's blend mode and opacity: lowering the base's opacity
-//! fades the whole group. A hidden base hides what is clipped to it; a
-//! clipped node at the bottom of its folder has no base and shows as it
-//! is.
+//! Clipping (Photoshop's "blend clipped layers as group"): a base and the
+//! clipped nodes over it are merged on their own, then blended down with
+//! the base's mode and opacity. A hidden base hides them.
 
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, Rect};
@@ -128,12 +116,9 @@ impl LayerStack {
 }
 
 impl LayerStack {
-    /// Rows per band to merge `rect` with a margin of `m`: BAND without
-    /// one; else the margin is
-    /// merged again for each band, so all at once when it fits (~24 M
-    /// pixels), else bands at least twice the margin tall. Sizes clamped to
-    /// the canvas (a margin as big as the canvas made every band merge all
-    /// of it again: 50 s on an A4 page).
+    /// Rows per band for a margin of `m`: BAND without one; else all at
+    /// once when it fits (~24 M px), else bands twice the margin tall (the
+    /// margin is merged again per band).
     fn band_rows(&self, rect: Rect, m: u32) -> u32 {
         // No margin: plain bands (short: the document is locked for one at
         // a time while the UI waits).
@@ -147,9 +132,8 @@ impl LayerStack {
         band.max(1)
     }
 
-    /// `rect` cut in bands to merge one at a time (to show them as they
-    /// come): `rows` tall, or as the general merge needs them (bands of
-    /// 64 rows each reading a 500 px margin would merge it 16 times over).
+    /// `rect` in bands to merge one at a time: `rows` tall, or taller when
+    /// a filter layer's margin needs it.
     pub fn merge_bands(&self, rect: Rect, rows: u32) -> Vec<Rect> {
         let rows = if self.needs_general_merge() { self.band_rows(rect, self.merge_margin()).max(rows) } else { rows.max(1) };
         (rect.1..rect.3).step_by(rows as usize).map(|y| (rect.0, y, rect.2, (y + rows).min(rect.3))).collect()
@@ -203,9 +187,8 @@ fn compose(nodes: &[Node], b: &mut Block, scale: f32, pick: Pick, in_reference: 
         let is_filter = matches!(base, Node::Filter(_));
         let wanted = !is_filter && clipped.iter().any(|c| taken(c, pick, base_ref));
         if !taken(base, pick, in_reference) {
-            // (A hidden base hides its clipped nodes. Left out because
-            // only a reference is looked at: the reference may be one of
-            // them, shown on its own.)
+            // A hidden base hides its clipped nodes; left out by a reference
+            // pick, the reference may be among them.
             if pick.reference.is_some() && !in_reference && base.visible() {
                 for c in clipped {
                     if taken(c, pick, false) { draw(c, b, scale, pick, false, mask, false, stop); }

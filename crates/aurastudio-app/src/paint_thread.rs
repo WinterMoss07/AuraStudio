@@ -1,16 +1,8 @@
-//! Brush painting on its own thread: the main thread reads the pen and
-//! displays, samples queue up here and are painted in batches.
-//!
-//! Rule: a brush paints on this ONE thread. Splitting a stroke or a dab
-//! across threads was measured slower (gathering the pieces costs more).
-//!
-//! Undo, redo, clear... go through the same queue: they apply after the
-//! samples sent before them (Ctrl+Z right after a stroke undoes it).
-//!
-//! Like Krita, this thread also merges the changed areas into the
-//! projection (a list of rectangles); the UI thread only uploads them.
-//! Keeping up with the pen: updated after every batch; behind (huge
-//! brush): every UPDATE_PERIOD at most.
+//! The paint thread: pen samples queue up here and are painted in batches,
+//! on this one thread (splitting a stroke was slower). Undo, clear, fill...
+//! go through the same queue, after what was sent before them. It also
+//! merges the changed areas for the screen (Krita), at least every
+//! UPDATE_PERIOD.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -30,10 +22,8 @@ use crate::projection::{add_rect, union, SharedProjection};
 const UPDATE_PERIOD: Duration = Duration::from_millis(8);
 
 pub enum Cmd {
-    /// Start a stroke on the active layer of `doc` with these settings and
-    /// this Forge brush (from the selected preset). `limit`: stay inside
-    /// the lines (CSP's anti-overflow), found as these fill settings would
-    /// from where the stroke starts.
+    /// A stroke on the active layer; `limit`: stay inside the lines, the
+    /// area these fill settings find from the start.
     Begin { doc: SharedDoc, brush: Brush, forge: Arc<ForgeBrush>, limit: Option<aurastudio_layers::FillParams> },
     /// Merge the whole canvas again (layer visibility, opacity, order,
     /// a filter layer's values...). Only the latest of those waiting is

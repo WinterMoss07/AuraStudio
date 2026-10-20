@@ -9,12 +9,8 @@ pub type Rect = (u32, u32, u32, u32);
 /// Side of the squares layers are stored in (see aurastudio-layers).
 pub const TILE: u32 = 64;
 
-/// Anything the brush engines can paint on (a paint layer).
-///
-/// Three planes: the layer pixels (RGBA), the stroke base (the pixels as
-/// they were before the stroke, RGBA) and the stroke mask (coverage, one
-/// byte per pixel). A layer stores them in TILE squares, so the engines
-/// ask for them a run of pixels at a time, a run never crossing a tile.
+/// What brushes paint on: layer pixels, the pixels before the stroke and
+/// the stroke's coverage, by runs that never cross a tile.
 pub trait PaintSurface {
     fn width(&self)  -> u32;
     fn height(&self) -> u32;
@@ -94,10 +90,7 @@ impl Canvas {
             view_formats:    &[],
         });
 
-        // No initial upload: wgpu zero-fills new textures, and the app
-        // uploads the real composite before the first frame. (It used to
-        // build a full white canvas on the CPU here: 16 MB at 2048 px, up
-        // to 1 GB at 16384 px, for nothing.)
+        // No initial upload: the app uploads the merge before the first frame.
         let view    = texture.create_view(&TextureViewDescriptor::default());
         let sampler = device.create_sampler(&SamplerDescriptor {
             label:          Some("canvas_sampler"),

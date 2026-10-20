@@ -1,11 +1,5 @@
-//! Tools: the vertical toolbox on the left of the canvas (fused with its
-//! edge, like Krita's), each tool's options, and what the tools draw over
-//! the canvas (selection outline, lasso being drawn).
-//!
-//! The toolbox shows groups of tools (Draw, Paint, Eraser, Fill, Picker,
-//! Geometry, Selection); the Tools docker lists the chosen group's tools
-//! (or brushes). New tools join a group, the toolbox stays short. Each
-//! group remembers the tool (and brush) last used in it.
+//! Toolbox (groups of tools, each remembering its last tool and brush),
+//! tool options, and what tools draw over the canvas.
 
 use std::collections::HashMap;
 
@@ -327,29 +321,23 @@ pub fn fill_options(ui: &mut Ui, m: &mut Model, w: f32) {
     ui.label(RichText::new("Refer to").small().color(theme::TEXT_WEAK));
     ui.horizontal_wrapped(|ui| {
         use aurastudio_layers::Refer;
-        ui.selectable_value(&mut m.fill.refer, Refer::Layer, "This layer").on_hover_text("Only this layer's own pixels stop the fill");
-        ui.selectable_value(&mut m.fill.refer, Refer::All, "All layers").on_hover_text("Lines on any visible layer stop the fill");
-        ui.selectable_value(&mut m.fill.refer, Refer::References, "References")
-            .on_hover_text("Only the reference layer (lighthouse in the Layers docker) stops the fill: color under the line art whatever else is painted. In a folder, its own reference counts");
+        ui.selectable_value(&mut m.fill.refer, Refer::Layer, "This layer");
+        ui.selectable_value(&mut m.fill.refer, Refer::All, "All layers");
+        ui.selectable_value(&mut m.fill.refer, Refer::References, "References");
     });
     let active = m.layers.active_id();
     if m.fill.refer == aurastudio_layers::Refer::References && m.layers.reference_for(active).is_none() {
-        ui.label(RichText::new("No reference layer for this layer: mark the line art with the lighthouse in the Layers docker.").small().color(theme::DROP));
+        ui.label(RichText::new("No reference layer").small().color(theme::DROP));
     }
     ui.add_enabled_ui(m.fill.refer != aurastudio_layers::Refer::Layer, |ui| {
-        ui.checkbox(&mut m.fill.skip_drafts, "Ignore draft layers").on_hover_text("Sketches marked as drafts don't stop the fill");
+        ui.checkbox(&mut m.fill.skip_drafts, "Ignore draft layers");
     });
 }
 
 /// Brushes: "stay inside the lines" (CSP's anti-overflow).
 pub fn stay_inside_option(ui: &mut Ui, m: &mut Model) {
     ui.add_space(2.0);
-    let refs = m.layers.reference_for(m.layers.active_id()).is_some();
-    ui.checkbox(m.stay_inside, "Stay inside the lines").on_hover_text(if refs {
-        "The stroke stays in the area of the reference layer's lines where it starts (it starts free on a line itself)"
-    } else {
-        "No reference layer: the lines of the other layers are used. Mark the line art with the lighthouse in the Layers docker"
-    });
+    ui.checkbox(m.stay_inside, "Stay inside the lines");
 }
 
 pub fn selection_buttons(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
@@ -411,7 +399,7 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
 pub fn shape_options(ui: &mut Ui, m: &mut Model) {
     if *m.tool == Tool::Arc {
         ui.add_space(4.0);
-        ui.checkbox(&mut m.shape.multipoint, "Multipoint").on_hover_text("Arcs follow each other. Enter: done");
+        ui.checkbox(&mut m.shape.multipoint, "Multipoint").on_hover_text("Enter: done");
     }
 }
 

@@ -1,8 +1,4 @@
-//! ForgeBrush settings — 1:1 with libmypaint's `brushsettings.json` keys.
-//!
-//! The string keys returned by [`BrushSetting::cname`] and accepted by
-//! [`BrushSetting::from_cname`] are the exact identifiers used in `.myb`
-//! JSON files, so brushes authored for libmypaint round-trip cleanly.
+//! The settings, named as in .myb files.
 
 use core::fmt;
 

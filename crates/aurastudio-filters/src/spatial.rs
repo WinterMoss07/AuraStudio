@@ -1,13 +1,6 @@
-//! Filters that read neighbors: Gaussian blur (the W3C spec's three box
-//! blurs), Unsharp Mask, Minimum / Maximum for thickening and thinning
-//! lines, Find Edges, Emboss, Drop Shadow.
-//!
-//! Unsharp Mask's threshold, Emboss, Find Edges, the round Minimum /
-//! Maximum and the drop shadow's spread follow PhotoCraft's Photoshop
-//! measurements (`crates/algo/src/{sharpen,stylize,other}.rs`,
-//! `crates/compose/src/effects.rs`), Copyright (c) 2026 ArtCraft Team and
-//! the PhotoCraft contributors, MIT License (see NOTICE). Changes: 8 / 16
-//! bit planes, transparent layers (line art) handled, threads.
+//! Filters reading neighbors: Gaussian blur (W3C's three box blurs),
+//! Unsharp Mask, Minimum / Maximum, Find Edges, Emboss, Drop Shadow
+//! (after PhotoCraft, MIT, see NOTICE).
 
 /// 16-bit premultiplied planes (65535 = 1.0), one per channel.
 pub type Planes = [Vec<u16>; 4];
@@ -69,11 +62,8 @@ pub fn par_rows(out: &mut [u8], w: usize, f: impl Fn(usize, &mut [u8]) + Sync) {
 
 pub fn blur_reach(sigma: f32) -> u32 { (3.0 * sigma).ceil() as u32 + 2 }
 
-/// feGaussianBlur with standard deviation `sigma` px on one channel. From
-/// 2 px, the spec's three box blurs: d = floor(σ × 3 × √(2π) / 4 + 0.5);
-/// odd d: three boxes of d centered; even d: two of d (centered half a
-/// pixel left, then right) and one of d + 1. Below 2 px, the Gaussian
-/// itself. Rows, then columns (a whole row of column sums at a time).
+/// feGaussianBlur on one channel: three box blurs from σ = 2 (as the
+/// spec), the Gaussian itself below.
 pub fn gaussian_blur(px: &mut [u16], w: usize, h: usize, sigma: f32) {
     if sigma <= 0.0 || w == 0 || h == 0 { return; }
     if sigma >= 2.0 {
@@ -169,11 +159,8 @@ pub fn unsharp(src: &[u8], w: usize, h: usize, amount: f32, sigma: f32, threshol
     out
 }
 
-/// Thicken (`grow` true) or thin dark lines by `radius` px, a square or
-/// (`round`) a disc: Photoshop's Minimum / Maximum, on line art as well
-/// as on paper. Colors take the darkest (thicken) or lightest (thin)
-/// painted neighbor, alpha the largest or smallest: black lines on white
-/// paper and black lines on a transparent layer both get thicker.
+/// Thicken or thin dark lines (Minimum / Maximum), square or round, on
+/// paper or line art.
 pub fn lines(src: &[u8], w: usize, h: usize, radius: f32, round: bool, grow: bool) -> Vec<u8> {
     if radius < 0.5 || w == 0 || h == 0 { return src.to_vec(); }
     // A transparent pixel's color doesn't count: lightest for a min,

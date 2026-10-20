@@ -1,31 +1,12 @@
-//! The [`ForgeBrush`] value: a full configuration consumed by the stroke engine.
-
-use std::collections::BTreeMap;
+//! A brush: every setting's base value and input curves, and Forge's
+//! options.
 
 use crate::forge::mapping::SettingValue;
 use crate::forge::setting::{BrushSetting, NUM_SETTINGS};
 
-/// A setting hokusai doesn't (yet) recognise. Held as raw JSON so a parsed
-/// brush can be re-serialised without losing data — important for working
-/// with brush packs authored against newer libmypaint than this crate.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct UnknownSetting {
-    pub base_value: f32,
-    /// `(input_name, points)` — input names are kept as strings so we can
-    /// passthrough inputs hokusai doesn't recognise either.
-    pub inputs: BTreeMap<String, Vec<(f32, f32)>>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ForgeBrush {
-    pub version: u32,
-    pub group: Option<String>,
-    pub parent_brush_name: Option<String>,
-    pub comment: Option<String>,
     settings: Vec<SettingValue>,
-    /// Settings hokusai didn't recognise on parse, kept by string key for
-    /// lossless round-trip via `hokusai-brush`.
-    pub unknown_settings: BTreeMap<String, UnknownSetting>,
     /// What Forge adds to libmypaint's model.
     pub options: ForgeOptions,
 }
@@ -37,10 +18,7 @@ pub enum Painting {
     /// up, smudge and blending read what is already there.
     #[default]
     BuildUp,
-    /// Krita's wash: each dab pulls a stroke mask toward its opacity, never
-    /// past it, and the mask is blended onto the layer as it was before
-    /// the stroke, by the brush's blend mode. A stroke never gets more
-    /// opaque than its strongest dab.
+    /// Krita's wash (wash.rs).
     Wash,
 }
 
@@ -64,26 +42,14 @@ pub struct ForgeOptions {
     pub spacing: Spacing,
     /// A dab where the pen lands (Krita); libmypaint waits for a move.
     pub dab_on_press: bool,
-    /// Stroke previews: each dab's random numbers come from its place on
-    /// the path (dab n draws from seed n × this stride), each pen event's
-    /// from its number, instead of one sequence for the stroke. With
-    /// `Spacing::Fixed`, a size change then keeps every dab's grain,
-    /// offset and angle: the texture grows in place instead of being
-    /// redrawn. Dropping every other dab (stride doubled) keeps the rest.
+    /// Stroke previews: random numbers by dab place (seed n × stride), so
+    /// a size change keeps each dab's grain.
     pub seeds_by_place: Option<u32>,
 }
 
 impl ForgeBrush {
     pub fn new() -> Self {
-        Self {
-            version: 3,
-            group: None,
-            parent_brush_name: None,
-            comment: None,
-            settings: vec![SettingValue::default(); NUM_SETTINGS],
-            unknown_settings: BTreeMap::new(),
-            options: ForgeOptions::default(),
-        }
+        Self { settings: vec![SettingValue::default(); NUM_SETTINGS], options: ForgeOptions::default() }
     }
 
     /// A round brush in Krita's way: wash painting, auto spacing, opacity
@@ -97,7 +63,6 @@ impl ForgeBrush {
             base_value: 1.0,
             inputs: vec![InputMapping { input: BrushInput::Pressure, points: vec![(0.0, 0.0), (1.0, 1.0)] }],
             combine: Combine::Multiply,
-            ..SettingValue::default()
         });
         b.options = ForgeOptions { painting: Painting::Wash, spacing: Spacing::Auto(0.8), dab_on_press: true, seeds_by_place: None };
         b

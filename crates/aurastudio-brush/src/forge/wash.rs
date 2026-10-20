@@ -1,16 +1,8 @@
-//! Wash painting (`Painting::Wash`, Krita's indirect painting): each dab
-//! pulls the stroke mask toward its opacity, never past it:
-//! `if mask < cap: mask += (cap - mask) × shape`. The changed pixels are
-//! the layer as before the stroke with the brush color blended at the
-//! mask's coverage. A stroke never gets more opaque than its strongest
-//! dab; soft edges add up smoothly.
-//!
-//! Falling pressure: Krita's averaged opacity (a target that follows a
-//! rise at once, decays 10 % of the gap per dab); without it the front of
-//! each stronger dab stayed visible ("beads").
-//!
-//! Shape: opaque to `radius × hardness`, then a smoothstep fade (at least
-//! the 1 px anti-aliasing).
+//! Wash painting (Krita's indirect painting): each dab pulls the stroke
+//! mask toward its opacity, never past it; the layer is the pre-stroke
+//! pixels with the color at the mask's coverage. Falling pressure follows
+//! Krita's averaged opacity (no "beads"). Shape: opaque to radius ×
+//! hardness, then a smoothstep.
 
 use aurastudio_canvas::{blend::unit_to_u8, tile_run, BlendMode, PaintSurface, Rect};
 
@@ -72,15 +64,13 @@ impl Wash {
             if xa >= xb { continue; }
             let dy2 = dy * dy;
             let (mut row_x0, mut row_x1) = (i32::MAX, i32::MIN);
-            // In chunks (never across a layer tile): first the new
-            // coverage of the whole chunk (plain arithmetic the compiler
-            // vectorizes), then the layer pixels only where it changed.
+            // By chunks within a tile: the new coverage (vectorized), then the
+            // pixels where it changed.
             let mut x = xa;
             while x < xb {
                 let n = tile_run(x as u32, ((xb - x) as usize).min(CHUNK));
                 let (prow, brow, mrow) = surface.span_mut(x as u32, py as u32, n);
-                // Already at this dab's opacity (the middle of a stroke at
-                // steady pressure): nothing to do.
+                // Already at this opacity: nothing to do.
                 if min_u8(mrow) >= target {
                     x += n as i32;
                     continue;
@@ -110,9 +100,7 @@ impl Wash {
                 let mut new = [0u8; CHUNK];
                 let new = &mut new[..n];
                 if falling {
-                    // Krita's creamy alpha darken with averageOpacity >
-                    // opacity: lerp(src, average, mask / average), never
-                    // lowering a pixel.
+                    // Krita's alpha darken with a higher average: never lowers a pixel.
                     for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
                         let src = capf * sh as f32 * (1.0 / 256.0);
                         let m = cur as f32;

@@ -103,9 +103,7 @@ impl GpuState {
     pub async fn new(window: Arc<Window>, canvas_size: (u32, u32)) -> Self {
         let size = window.inner_size();
 
-        // Vulkan by default (lowest RAM in our tests), Metal on macOS.
-        // AURASTUDIO_BACKEND=dx12|vulkan|metal|gl overrides it, to compare
-        // latency per GPU driver without rebuilding.
+        // Vulkan (lowest RAM), Metal on macOS; AURASTUDIO_BACKEND overrides.
         let backend = match std::env::var("AURASTUDIO_BACKEND").ok().as_deref() {
             Some("dx12")   => Backends::DX12,
             Some("vulkan") => Backends::VULKAN,
@@ -136,16 +134,12 @@ impl GpuState {
                 &DeviceDescriptor {
                     label:             None,
                     required_features: Features::empty(),
-                    // Ask for the biggest texture the GPU supports (often
-                    // 16384) instead of wgpu's portable default (8192): it
-                    // caps the canvas size.
+                    // The biggest texture the GPU takes (it caps the canvas size).
                     required_limits:   Limits {
                         max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
                         ..Limits::default()
                     },
-                    // Small GPU memory blocks: the default (Performance)
-                    // reserves 128 MB chunks at a time on Vulkan, for a few
-                    // MB of staging and UI buffers.
+                    // Small memory blocks (the default reserves 128 MB chunks).
                     memory_hints:      MemoryHints::MemoryUsage,
                 },
                 None,
@@ -154,18 +148,13 @@ impl GpuState {
             .expect("Failed to create device");
 
         let caps   = surface.get_capabilities(&adapter);
-        // Non-sRGB surface: canvas pixels are already sRGB-encoded bytes and
-        // must reach the screen unchanged. With an sRGB surface the GPU
-        // encoded them a second time: everything looked lighter, mid-tones
-        // were compressed and gradients banded. egui also expects this.
+        // Non-sRGB surface: the pixels are sRGB already (else encoded twice).
         let format = caps.formats.iter().copied()
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
 
-        // Lowest latency first: Mailbox (newest frame at the next vsync),
-        // then Immediate (DWM still syncs a window), Fifo last (blocks until
-        // the refresh: ~14 ms more lag measured). Frames are on demand: no
-        // spinning. AURASTUDIO_PRESENT=mailbox|immediate|fifo overrides.
+        // Lowest latency first: Mailbox, Immediate, then Fifo (~14 ms more);
+        // AURASTUDIO_PRESENT overrides.
         let wanted = match std::env::var("AURASTUDIO_PRESENT").ok().as_deref() {
             Some("mailbox")   => vec![PresentMode::Mailbox],
             Some("immediate") => vec![PresentMode::Immediate],
@@ -505,12 +494,8 @@ impl GpuState {
         self.egui_ctx.is_using_pointer() || self.egui_ctx.dragged_id().is_some()
     }
 
-    /// True while an egui text/number field is being edited: shortcuts like
-    /// Delete must then go to the field, not the canvas.
-    ///
-    /// Not egui's wants_keyboard_input(): that is true whenever ANY widget
-    /// has focus, including a button just clicked (e.g. the delete-layer
-    /// button), which silently disabled the Delete shortcut.
+    /// A text field is being edited (not wants_keyboard_input: a clicked
+    /// button has focus too, which disabled Delete).
     pub fn ui_wants_keyboard(&self) -> bool {
         self.text_input_active
     }
@@ -527,20 +512,13 @@ impl GpuState {
         self.egui_state.on_window_event(&self.window, event).repaint
     }
 
-    /// True if a press at `pos` (physical window pixels) should start a
-    /// stroke: inside the canvas area and not under any egui panel.
-    ///
-    /// We don't rely on egui's own "consumed" flag for this: it is based on
-    /// the pointer position of egui's *last frame*, which is stale because
-    /// we only redraw on demand (ControlFlow::Wait), so it rejected clicks
-    /// made on the canvas.
+    /// A press at `pos` starts a stroke: over the canvas, under no panel
+    /// (egui's own flag is a frame late here).
     pub fn is_canvas_at(&self, pos: (f32, f32)) -> bool {
         let [vx, vy, vw, vh] = self.viewport;
         let inside = pos.0 >= vx && pos.0 < vx + vw && pos.1 >= vy && pos.1 < vy + vh;
         let ppp = self.egui_ctx.pixels_per_point();
-        // Docked panels are already outside the viewport. Here we only look
-        // for floating windows/popups above the canvas: egui keeps a
-        // full-window Background-order layer, which must not count.
+        // Floating windows over the canvas (not egui's background layer).
         let over_ui = self.egui_ctx
             .layer_id_at(egui::pos2(pos.0 / ppp, pos.1 / ppp))
             .is_some_and(|layer| layer.order != egui::Order::Background);
@@ -628,18 +606,13 @@ impl GpuState {
                     free_rect = Some(ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("aurastudio_canvas_rect")))
                         .unwrap_or_else(|| ctx.available_rect()));
                 });
-                // When egui wants its next frame: right away (layout not
-                // settled, a click changed something) or later (tooltip,
-                // fading notice). The app schedules it; requesting a redraw
-                // from inside a redraw is dropped by winit.
+                // When egui wants its next frame (the app schedules it).
                 self.repaint_delay = full_output.viewport_output.get(&egui::ViewportId::ROOT)
                     .map(|v| v.repaint_delay);
 
                 // egui asks for IME (text input) only while a text field is focused.
                 self.text_input_active = full_output.platform_output.ime.is_some();
-                // The app picks the cursor (brush outline, hands): keep egui's
-                // suggestion for it, and let egui itself always ask for the
-                // same one, so it never touches the window cursor again.
+                // The app picks the cursor: egui's wish is kept for it.
                 let mut platform_output = full_output.platform_output;
                 self.egui_cursor = std::mem::replace(&mut platform_output.cursor_icon, egui::CursorIcon::Default);
                 self.egui_state.handle_platform_output(&self.window, platform_output);
@@ -785,13 +758,8 @@ impl GpuState {
         let suboptimal = output.suboptimal;
         output.present();
 
-        // The swapchain still works but no longer matches the window
-        // (resize in progress, maximize, DPI or monitor change): rebuild
-        // it at the window's real size, otherwise Vulkan reports it on
-        // every single frame.
-        // Only once per suboptimal episode: while Windows shows the taskbar
-        // thumbnail, presents can stay suboptimal whatever we do, and
-        // rebuilding on every frame would only cost time.
+        // Suboptimal swapchain (resize, DPI change): rebuilt once per episode
+        // (the taskbar thumbnail keeps it suboptimal).
         if suboptimal && !self.swapchain_rebuilt {
             let size = self.window.inner_size();
             if size.width > 0 && size.height > 0 {

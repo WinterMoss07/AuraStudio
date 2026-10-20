@@ -1,18 +1,5 @@
-//! Tools docker: the tools of the group chosen in the toolbox, each as a
-//! row with its stroke preview (stroke_preview.rs) and its name in the
-//! corner.
-//!
-//! - Brush groups (Draw, Paint, Eraser): a row of icons, one per medium
-//!   (pencil, ink...), then that medium's brushes. Search looks in every
-//!   brush; picking one from another group switches to it.
-//! - Geometry: the shape tools, drawn with the current brush (1 to 15 px thick).
-//! - Fill, Picker, Selection: their tools by icon and name.
-//!
-//! Click selects; each brush keeps its own size / opacity / blend mode,
-//! and the selected one's stroke follows its settings. Brushes drag and
-//! drop to another place in the list, or onto another medium's icon;
-//! medium icons drag and drop among themselves. The + after them makes a
-//! medium of one's own (right click: rename, remove when empty).
+//! Tools docker: the chosen group's tools or brushes (by medium, with
+//! their stroke previews); drag and drop, search, mediums of one's own.
 
 use aurastudio_brushes::stroke_preview::{Mode, Shape};
 use aurastudio_brushes::{mediums_of, Library, Preset};
@@ -198,7 +185,7 @@ fn medium_icons(ui: &mut Ui, st: &mut ToolListState, group: Group, mediums: &[&s
                         ui.close_menu();
                     }
                     let empty = !m.presets.iter().any(|p| p.medium == md);
-                    if ui.add_enabled(empty, egui::Button::new("Remove")).on_disabled_hover_text("Move its brushes out first").clicked() {
+                    if ui.add_enabled(empty, egui::Button::new("Remove")).on_disabled_hover_text("Not empty").clicked() {
                         a.remove_medium = Some(md.to_string());
                         ui.close_menu();
                     }

@@ -34,9 +34,11 @@ Apache-2.0), a Rust port of libmypaint (https://github.com/mypaint/libmypaint,
 ISC): brush settings, inputs and curves, the stroke path, libmypaint's dab
 blending and the `.myb` reader. Changed since: Krita-style curve modes,
 wash painting, auto spacing, a dab on press, path clipping to the canvas,
-and speedups that keep MyPaint brushes' output identical (the spectral
-mix takes the brush color's logarithms once per dab, `wgm_mix`; the trace
-checks run in debug builds only).
+speedups that keep MyPaint brushes' output identical (the spectral mix
+takes the brush color's logarithms once per dab, `wgm_mix`; the speed
+inputs' constants once per event; the dab mask buffer kept), only the
+pixels the dabs reach written back, and hokusai's .myb writer, debug
+traces and unused state removed.
 
 The MIT license of hokusai:
 

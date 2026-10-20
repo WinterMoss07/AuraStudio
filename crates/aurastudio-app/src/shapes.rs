@@ -1,7 +1,5 @@
-//! Geometry tools: the path of each shape, in canvas pixels, as points
-//! close enough together for the brush to follow (the brush engine spaces
-//! its dabs itself). The shape is then painted as a stroke with the current
-//! brush, so it gets the brush's look, the selection and undo for free.
+//! Geometry tools: each shape's path as close points, painted as a stroke
+//! with the current brush.
 
 type P = (f32, f32);
 

@@ -13,14 +13,11 @@ aurastudio-brush  = { path = "../aurastudio-brush" }
 aurastudio-input  = { path = "../aurastudio-input" }
 aurastudio-gpu    = { path = "../aurastudio-gpu" }
 winit             = "0.30"
-wgpu              = "23"
 pollster          = "0.3"
 env_logger        = "0.11"
 log               = "0.4"
 raw-window-handle = "0.6"
-egui-wgpu = "0.30"
 egui = "0.30"
-egui-winit = "0.30"
 aurastudio-layers = { path = "../aurastudio-layers" }
 aurastudio-document = { path = "../aurastudio-document" }
 aurastudio-file = { path = "../aurastudio-file" }

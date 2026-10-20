@@ -272,7 +272,7 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                         ui.label(RichText::new(CATEGORIES[c].1[i].note).small().color(theme::TEXT_WEAK));
                     }
                     let mb = pw as f64 * ph as f64 * 4.0 / (1024.0 * 1024.0);
-                    ui.label(RichText::new(format!("≈ {mb:.0} MB for the image shown; each layer only takes memory where it is painted."))
+                    ui.label(RichText::new(format!("≈ {mb:.0} MB; layers only take memory where painted."))
                         .small().color(theme::TEXT_WEAK));
                     let too_big = pw > max_side || ph > max_side;
                     if too_big {
@@ -392,7 +392,7 @@ fn recent_grid(ui: &mut Ui, recent: &mut [RecentFile], a: &mut Actions) {
                 ui.label(RichText::new("Recent").strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let clear = egui::Button::new(RichText::new("Clear list").small().color(theme::TEXT_WEAK)).frame(false);
-                    if ui.add(clear).on_hover_text("The files stay on disk").clicked() {
+                    if ui.add(clear).clicked() {
                         a.clear_recent = true;
                     }
                 });

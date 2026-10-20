@@ -3,6 +3,45 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.10.3 — 2026-10-20
+
+**Interface**
+- Dock tabs: the plain arrow over them; the closed hand only while one
+  is dragged (as brushes and layers).
+- Layers docker: the arrow next to New layer lists layer types only
+  (paint layer, filter layers); New folder has its own button beside it;
+  group / ungroup sits right of draft, away from the folder button.
+- Tooltips: the name, and the shortcut in parentheses when there is one
+  ("Clip to layer below (Ctrl+Alt+G)", "Reference layer"); the long
+  explanations are gone, from tooltips and the dialogs' notes too.
+
+**Brush engine (Forge / hokusai)**
+- A stroke step writes back only the pixels its dabs reached, not their
+  whole 64 × 64 tiles: small brushes paint up to twice as fast (charcoal
+  at 2 px: 0.19 → 0.09 ms per pen sample, pencil 0.105 → 0.077).
+- Fixed: those whole tiles went through fix15 and back to 8 bits, so
+  nearly transparent pixels next to a stroke, untouched by it, shifted by
+  one level (the reference renders of 40 brushes changed by that alone).
+- The dab mask buffer is kept from dab to dab (no allocation per dab);
+  the speed curves' constants are worked out once per pen event; Fixed
+  and Auto spacing skip libmypaint's dab count.
+- Removed: hokusai's .myb writer and what only it used (unknown
+  settings and inputs kept for a round trip, brush metadata), seven
+  write-only state fields (one cost a color conversion per dab), unused
+  sRGB, fix15 and tile helpers, the debug traces.
+
+**Clean-up**
+- Dead code removed elsewhere too (a filter flag, a layer query, three
+  unused dependencies of the app). A stale doc fixed.
+- Comments cut down: about 4350 lines → 3050, the brush engine's history
+  notes gone, module docs to a few lines. The code is 26 600 lines (was
+  28 400).
+
+**Checked**
+- Every bundled brush paints the same pixels as before the clean-up,
+  except for the fix above (reference renders).
+- Pure fuzz 300 000 operations, painter 30 000 actions: no failure.
+
 ## 0.10.2 — 2026-10-20
 
 **Testing**

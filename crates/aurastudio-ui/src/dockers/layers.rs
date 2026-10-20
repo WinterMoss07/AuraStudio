@@ -1,18 +1,6 @@
-//! Layers docker (CSP / Krita): color label, blend mode and opacity of the
-//! active node; one row of actions (new and the other kinds under its
-//! arrow, duplicate, group / ungroup, clip, reference, draft, label
-//! filter, delete); then the layer tree: eye, color label, thumbnail /
-//! folder / filter icon, "100 % Normal" over the name, marks, lock, and a
-//! chain across clipped rows. Ctrl / Shift + click select several rows;
-//! rows drag and drop above, below, or into a folder (the list scrolls at
-//! its edges); a right click opens their menu. What it changes becomes an
-//! undo step once done (the app records it).
-//!
-//! Marks (`aurastudio_layers::Props`): a color label (Krita's colors, the
-//! list can be filtered by them, as Krita and the Label Box plugin do),
-//! clipping to the node below (CSP), reference and draft (CSP). Folders
-//! stand out from layers (Layer Kit darkens them). Filter layers (Krita)
-//! open their filter's dialog on a double-click.
+//! Layers docker (CSP / Krita): label, blend mode, opacity; one row of
+//! actions; the tree (drag and drop, Ctrl / Shift selection, right-click
+//! menu, chains across clipped rows). Its edits become undo steps.
 
 use std::collections::{HashMap, HashSet};
 
@@ -187,21 +175,20 @@ impl LayerCmd {
             LayerCmd::Draft => "Draft layer",
         }
     }
+    /// Its name, and its shortcut in parentheses.
+    pub fn tip(self) -> String {
+        match self.shortcut() {
+            "" => self.name().to_owned(),
+            k => format!("{} ({k})", self.name()),
+        }
+    }
+
     pub fn shortcut(self) -> &'static str {
         match self {
             LayerCmd::Group => "Ctrl+G",
             LayerCmd::Ungroup => "Ctrl+Shift+G",
             LayerCmd::Clip => "Ctrl+Alt+G",
             LayerCmd::Reference | LayerCmd::Draft => "",
-        }
-    }
-    pub fn hint(self) -> &'static str {
-        match self {
-            LayerCmd::Group => "Put the selected layers in a new folder (Ctrl+click, Shift+click to select several)",
-            LayerCmd::Ungroup => "Take the folder's layers out and remove the folder",
-            LayerCmd::Clip => "Chain to the layer below: show only where it has pixels (several layers can chain to the same one)",
-            LayerCmd::Reference => "What the fill tool and \"Stay inside the lines\" look at (CSP's reference layer): mark the line art. One per folder: the layers of a folder look at its own",
-            LayerCmd::Draft => "A sketch: shown, but left out of fills, references and exports (CSP's draft layer)",
         }
     }
     /// The active node has it on (for a check mark).
@@ -275,7 +262,7 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     ui.menu_button("New filter layer", |ui| filter_layer_menu(ui, st, m, a));
     ui.separator();
     for cmd in [LayerCmd::Group, LayerCmd::Ungroup] {
-        if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(cmd.name()).shortcut_text(cmd.shortcut())).on_hover_text(cmd.hint()).clicked() {
+        if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(cmd.name()).shortcut_text(cmd.shortcut())).clicked() {
             apply(cmd, st, m, a);
             ui.close_menu();
         }
@@ -283,7 +270,7 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     ui.separator();
     for cmd in [LayerCmd::Clip, LayerCmd::Reference, LayerCmd::Draft] {
         let label = format!("{} {}", if cmd.is_on(m.layers) { "✔" } else { "   " }, cmd.name());
-        if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).on_hover_text(cmd.hint()).clicked() {
+        if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() {
             apply(cmd, st, m, a);
             ui.close_menu();
         }
@@ -302,7 +289,7 @@ fn filter_layer_menu(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut A
         if k > 0 { ui.separator(); }
         ui.label(RichText::new(*group).small().color(theme::TEXT_WEAK));
         for &kind in *kinds {
-            if ui.button(kind.name()).on_hover_text(kind.hint()).clicked() {
+            if ui.button(kind.name()).clicked() {
                 new_filter_layer(st, kind, m, a);
                 ui.close_menu();
             }
@@ -391,7 +378,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         ui.spacing_mut().item_spacing.x = 4.0;
         let left = ui.cursor().left();
         let label = m.layers.active_node().props().label;
-        let lr = icon_toggle(ui, Icon::Label, "Color label (of the selected layers)", true, false);
+        let lr = icon_toggle(ui, Icon::Label, "Color label", true, false);
         if let Some(c) = label_color(label) {
             ui.painter().circle_filled(lr.rect.right_bottom() + vec2(-6.0, -6.0), 3.5, c);
         }
@@ -403,7 +390,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         if let Node::Filter(f) = m.layers.active_node() {
             let id = f.id;
             let b = egui::Button::new(format!("{}…", f.filter.kind.name())).min_size(vec2(96.0, 24.0));
-            if ui.add(b).on_hover_text("Edit the filter (or double-click the layer)").clicked() { st.edit_filter = Some((id, false)); }
+            if ui.add(b).clicked() { st.edit_filter = Some((id, false)); }
         } else {
             node_blend_combo(ui, m, a);
         }
@@ -419,8 +406,9 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         }
     });
 
-    // The actions in one row (CSP): new (and the other kinds under the
-    // arrow), duplicate, folder, the marks; delete on the right.
+    // The actions in one row (CSP): new layer (its other kinds under the
+    // arrow), new folder, duplicate; the marks, then group; label filter
+    // and delete on the right.
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         if icon_button(ui, Icon::NewLayer, "New layer", true) { new_layer(m, a); }
@@ -428,33 +416,26 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
             .frame(false)
             .min_size(vec2(14.0, 24.0));
         egui::menu::menu_custom_button(ui, arrow, |ui| {
-            ui.set_min_width(170.0);
-            if ui.button("New paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
-            if ui.button("New folder").clicked() { new_folder(m, a); ui.close_menu(); }
-            ui.menu_button("New filter layer", |ui| filter_layer_menu(ui, st, m, a))
-                .response.on_hover_text("An adjustment of what is under it, kept editable (Krita)");
-        }).response.on_hover_text("Other kinds of layers");
-        ui.add_space(2.0);
+            ui.set_min_width(150.0);
+            if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
+            ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
+        }).response.on_hover_text("Layer types");
+        if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
         if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
-        let g = group_or_ungroup(st, m.layers);
-        let (icon, tip) = match g {
-            LayerCmd::Ungroup => (Icon::Ungroup, format!("Ungroup ({})\n{}", g.shortcut(), g.hint())),
-            _ => (Icon::Group, format!("Group ({})\n{}", g.shortcut(), g.hint())),
-        };
-        if icon_toggle(ui, icon, &tip, true, false).clicked() { apply(g, st, m, a); }
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         for (cmd, icon) in [(LayerCmd::Clip, Icon::Clip), (LayerCmd::Reference, Icon::Reference), (LayerCmd::Draft, Icon::Draft)] {
-            let tip = format!("{}{}\n{}", cmd.name(), if cmd.shortcut().is_empty() { String::new() } else { format!(" ({})", cmd.shortcut()) }, cmd.hint());
-            if icon_toggle(ui, icon, &tip, true, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
+            if icon_toggle(ui, icon, &cmd.tip(), true, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
         }
+        let g = group_or_ungroup(st, m.layers);
+        let icon = if g == LayerCmd::Ungroup { Icon::Ungroup } else { Icon::Group };
+        if icon_toggle(ui, icon, &g.tip(), true, false).clicked() { apply(g, st, m, a); }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let deletable = st.selected.len() > 1 || m.layers.removal_refused().is_none();
             if icon_button(ui, Icon::Delete, "Delete", deletable) { delete_layer(st, notice, m, a); }
-            let fr = icon_toggle(ui, Icon::FilterBy, "Show only the layers with some color labels", true, st.label_filter != 0);
+            let fr = icon_toggle(ui, Icon::FilterBy, "Filter by color", true, st.label_filter != 0);
             let fid = egui::Id::new("layer_filter_popup");
             egui::popup::popup_below_widget(ui, fid, &fr, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                 ui.set_min_width(LABELS.len() as f32 * 25.0 + 8.0);
-                ui.label(RichText::new("Show the labels").small().color(theme::TEXT_WEAK));
                 label_filter_swatches(ui, &mut st.label_filter, m.layers);
                 if ui.add_enabled(st.label_filter != 0, egui::Button::new("Show all")).clicked() { st.label_filter = 0; }
             });
@@ -631,7 +612,7 @@ fn label_filter_swatches(ui: &mut Ui, mask: &mut u16, layers: &LayerStack) {
             let on = *mask >> i & 1 == 1;
             let usable = in_use >> i & 1 == 1;
             let (r, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), if usable { Sense::click() } else { Sense::hover() });
-            let resp = resp.on_hover_text(if usable { name.to_string() } else { format!("{name} (no layer has it)") });
+            let resp = resp.on_hover_text(*name);
             let p = ui.painter();
             let fade = if usable { 1.0 } else { 0.25 };
             match label_color(i as u8) {
@@ -694,10 +675,10 @@ fn row_menu(ui: &mut Ui, m: &Model, id: u64) -> Option<RowMenu> {
     ui.separator();
     for (cmd, on) in [(LayerCmd::Clip, p.clip), (LayerCmd::Reference, p.reference), (LayerCmd::Draft, p.draft)] {
         let label = format!("{} {}", if on { "✔" } else { "   " }, cmd.name());
-        if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).on_hover_text(cmd.hint()).clicked() { out = Some(RowMenu::Cmd(cmd)); }
+        if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() { out = Some(RowMenu::Cmd(cmd)); }
     }
     ui.separator();
-    if ui.add(egui::Button::new("Group").shortcut_text("Ctrl+G")).on_hover_text(LayerCmd::Group.hint()).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
+    if ui.add(egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
     if node.is_folder() && ui.add(egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
     if out.is_some() { ui.close_menu(); }
     out

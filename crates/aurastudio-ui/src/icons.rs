@@ -1,8 +1,4 @@
-//! Interface icons: Lucide (https://lucide.dev, ISC license, see
-//! icons/LICENSE-lucide), white in the SVG files and tinted when drawn, so
-//! one file serves every state (selected, disabled...). The SVGs are
-//! rasterized by egui_extras at the screen's resolution: sharp at any
-//! interface scale.
+//! Lucide icons (ISC, see icons/LICENSE-lucide), white, tinted when drawn.
 
 use egui::{vec2, Color32, ImageSource, Rect, Ui};
 

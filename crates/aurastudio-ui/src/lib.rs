@@ -1,9 +1,5 @@
-//! AuraStudio user interface (egui): menu and options bars, the toolbox,
-//! the dock column (tabs rearrangeable, floatable), the canvas card.
-//!
-//! The app lends its data through `Model` each frame; the UI edits it and
-//! reports what the app must do in `Actions`. `bars`: menu + options bar,
-//! `dockers/`: one file per tab, `widgets`: shared widgets, `theme`.
+//! The interface (egui): the app lends its data in `Model`, the UI reports
+//! what to do in `Actions`.
 
 pub mod theme;
 mod bars;

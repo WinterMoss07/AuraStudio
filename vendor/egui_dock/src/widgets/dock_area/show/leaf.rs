@@ -972,10 +972,9 @@ impl<Tab> DockArea<'_, Tab> {
         let tab_width = preferred_width.unwrap_or(0.0).at_least(minimum_width);
 
         let (_, tab_rect) = ui.allocate_space(vec2(tab_width, ui.available_height()));
-        let mut response = ui.interact(tab_rect, id, Sense::click_and_drag());
-        if ui.ctx().dragged_id().is_none() && self.draggable_tabs {
-            response = response.on_hover_cursor(CursorIcon::Grab);
-        }
+        // AuraStudio: the plain arrow over a tab; the hand only while one
+        // is dragged (Grabbing above).
+        let response = ui.interact(tab_rect, id, Sense::click_and_drag());
 
         let tab_style = if focused || is_being_dragged {
             if response.has_focus() {

@@ -1,11 +1,5 @@
-//! Per-pixel color work: Hue / Saturation with its six color ranges and
-//! Black & White, measured on Photoshop; the W3C spec's sepia matrix.
-//!
-//! Hue / Saturation and Black & White are adapted from PhotoCraft
-//! (`crates/compose/src/adjust.rs`, `crates/doc/src/adjust.rs`),
-//! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors,
-//! MIT License (see NOTICE). Changes: hue tables of 360 entries, our
-//! parameter layout.
+//! Hue / Saturation (six ranges) and Black & White, measured on Photoshop,
+//! adapted from PhotoCraft (MIT, see NOTICE); the W3C sepia matrix.
 
 /// Photoshop's default Black & White weights (%): reds, yellows, greens,
 /// cyans, blues, magentas.

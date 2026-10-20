@@ -1,27 +1,16 @@
-//! Pixel blending — port of libmypaint's `brushmodes.c`.
-//!
-//! Coordinate / color conventions:
-//! - Tile pixels are RGBA **fix15** (`u16` in `[0, 32768]`), **premultiplied**
-//!   alpha, **linear sRGB**.
-//! - Dab position `(x, y)` is in world-pixel space (sub-pixel f32).
-//! - Dab `color` is straight-alpha linear sRGB; we premultiply at blend time.
-//!
-//! Implements libmypaint's `BlendMode_Normal_and_Eraser` plus the
-//! `Colorize` / `Posterize` / `LockAlpha` overlays. The spectral `paint`
-//! pigment-mixing mode is still deferred.
+//! Dab blending: libmypaint's brushmodes.c and the dab mask of
+//! mypaint-tiled-surface.c, with the same integer truncations. Tiles are
+//! fix15 premultiplied; the dab color is straight.
 
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
 use crate::forge::color::RgbaF32;
-use crate::forge::fix15::{self, FIX15_ONE};
+use crate::forge::fix15::FIX15_ONE;
 use crate::forge::surface::{Dab, TiledSurface};
 use crate::forge::tile::{TilePixels, TILE_SIZE};
 
-/// Two-segment hardness falloff matching libmypaint's `calculate_opa`.
-///
-/// `rr` is squared normalized distance (`r² / radius²`). Returns 0 outside
-/// the dab. At `rr = hardness` the two segments meet at value `hardness`,
-/// giving a smooth ramp from 1 at center to 0 at the edge.
+/// libmypaint's calculate_opa: the hardness falloff at squared normalized
+/// distance `rr`.
 #[inline]
 fn opa_at(rr: f32, hardness: f32) -> f32 {
     if rr > 1.0 {
@@ -81,10 +70,7 @@ fn closest_point_to_line(lx: f32, ly: f32, px: f32, py: f32) -> (f32, f32) {
     (lx * t, ly * t)
 }
 
-/// libmypaint's `calculate_rr_antialiased`. Returns an AA-corrected
-/// squared normalised distance for sub-pixel edge fading. Used for
-/// dabs with `radius < 3` where the plain `rr_at` value would alias
-/// hard at the dab boundary.
+/// libmypaint's calculate_rr_antialiased (dabs under 3 px).
 #[inline]
 fn rr_at_aa(
     px: f32,
@@ -147,42 +133,17 @@ fn rr_at_aa(
 ///
 /// This is the function `TiledSurface::draw_dab` defaults to.
 pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) -> bool {
-    // libmypaint's draw_dab_internal rejects degenerate dabs outright —
-    // mirror that so low-pressure ramps don't lay down a sub-pixel "smear"
-    // hokusai used to render as a linear falloff. Without the hardness ≤ 0
-    // check, AA pushes the brush into a regime libmypaint treats as a
-    // no-op.
+    // (Rejected by libmypaint's draw_dab_internal.)
     if dab.radius < 0.1 || dab.hardness <= 0.0 || dab.opaque <= 0.0 {
         return false;
     }
-    // AuraStudio patch: debug build only (a getenv per dab otherwise).
-    if cfg!(debug_assertions) && std::env::var("HOKUSAI_TRACE_DABS").is_ok() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static COUNT: AtomicUsize = AtomicUsize::new(0);
-        let n = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-        eprintln!(
-            "  hok#{}: ({:9.4},{:9.4}) r={:8.5} hard={:7.5} opaq={:7.5} aspect={:7.4} ang={:8.3} paint={:4.2} rgb=({:8.5},{:8.5},{:8.5}) er={:7.5}",
-            n, dab.x, dab.y, dab.radius, dab.hardness, dab.opaque,
-            dab.aspect_ratio, dab.angle, dab.paint,
-            dab.color.r, dab.color.g, dab.color.b, dab.alpha_eraser,
-        );
-    }
-    // libmypaint rejects radius < 0.1 above and otherwise renders with
-    // the actual radius (mypaint-tiled-surface.c:575). hokusai used to
-    // floor at 0.5 here, which made very thin pencils render thicker.
     let radius = dab.radius;
     let aspect = dab.aspect_ratio.max(1.0);
-    // C render_dab_mask: `float angle_rad = angle/360*2*M_PI` — f32 up to
-    // the `*2`, then promoted to double for the M_PI multiply and narrowed
-    // back. Keep the same rounding points.
+    // f32, then f64 for the π, as C.
     let angle = ((dab.angle / 360.0 * 2.0) as f64 * std::f64::consts::PI) as f32;
     let cs = angle.cos();
     let sn = angle.sin();
-    // libmypaint's render_dab_mask uses per-pixel sub-pixel sampling
-    // (calculate_rr_antialiased) for `radius < 3`. Larger dabs fall back
-    // to the plain rr formula since aliasing is invisible. Pre-compute
-    // `r_aa_start` here so the render functions can branch on a single
-    // scalar instead of re-deriving it per pixel.
+    // Sub-pixel sampling under 3 px (render_dab_mask).
     let r_aa_start = if radius < 3.0 {
         let aa_border = 1.0_f32;
         let start = if radius > aa_border {
@@ -194,17 +155,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     } else {
         -1.0
     };
-    // anti_aliasing was baked into the (radius, hardness) pair earlier
-    // in stroke.rs::build_dab — same trick libmypaint uses in
-    // prepare_and_draw_dab. dab.anti_aliasing is unused on the render
-    // side; the per-pixel sub-pixel sampling for small dabs is driven by
-    // the libmypaint-correct `r_aa_start` path computed above.
-    let _ = dab.anti_aliasing;
-
-    // libmypaint's AABB is `radius + 1` for both axes — the elliptical
-    // dab's extent in WORLD coords is bounded by the major axis (radius),
-    // regardless of rotation (mypaint-tiled-surface.c floors all four
-    // corners).
+    // Bounds: radius + 1, whatever the ellipse's angle.
     let r_ext = radius + 1.0;
     let x0 = (dab.x - r_ext).floor() as i32;
     let y0 = (dab.y - r_ext).floor() as i32;
@@ -216,8 +167,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let tx1 = x1.div_euclid(TILE_SIZE as i32);
     let ty1 = y1.div_euclid(TILE_SIZE as i32);
 
-    // C truncates the straight-alpha colour to fix15 once, up front
-    // (`op->color_r = color_r * (1<<15)`).
+    // Truncated to fix15 once, as C.
     let src = clamp_color(dab.color);
     let src_r = (src.r * FIX15_ONE as f32) as u32;
     let src_g = (src.g * FIX15_ONE as f32) as u32;
@@ -233,16 +183,17 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     // process_op: `op->normal = (1-lock_alpha)(1-colorize)(1-posterize)`.
     let normal_f = (1.0 - lock_alpha) * (1.0 - colorize) * (1.0 - posterize);
 
-    // C passes each blend's opacity as `float-product * (1<<15)` into a
-    // uint16_t parameter — truncation happens exactly once, here.
+    // Opacities truncated once, as C's uint16_t parameters.
     let fix = |v: f32| -> u32 { (v * FIX15_ONE as f32) as u32 };
 
-    let mut mask_entries: Vec<(usize, usize, u32)> = Vec::new();
+    // (Kept from dab to dab: no allocation per dab.)
+    thread_local! {
+        static MASK: std::cell::RefCell<Vec<(usize, usize, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let mut mask_entries = MASK.with(|m| std::mem::take(&mut *m.borrow_mut()));
     let mut painted = false;
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            // render_dab_mask works in tile-local coordinates and computes
-            // the bbox from the local centre.
             let xl = dab.x - (tx * TILE_SIZE as i32) as f32;
             let yl = dab.y - (ty * TILE_SIZE as i32) as f32;
             collect_dab_mask(
@@ -261,8 +212,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
             }
 
             let tile = surface.tile_request_start(tx, ty);
-            // The pass structure and opacity compositions mirror
-            // process_op (mypaint-tiled-surface.c) exactly.
+            // The passes of process_op (mypaint-tiled-surface.c).
             if paint < 1.0 {
                 if normal_f != 0.0 {
                     let opacity = fix(normal_f * opaque_f * (1.0 - paint));
@@ -334,13 +284,11 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
             painted = true;
         }
     }
+    MASK.with(|m| *m.borrow_mut() = mask_entries);
     painted
 }
 
-/// Build the per-tile dab mask exactly like `render_dab_mask`: bbox from
-/// `floor(local centre ± (radius+1))` clamped to the tile, sub-pixel AA
-/// for radius < 3, and fix15 quantisation (`opa * (1<<15)` truncated) with
-/// zero entries dropped.
+/// The dab's mask on one tile (render_dab_mask): non-zero fix15 entries.
 #[allow(clippy::too_many_arguments)]
 fn collect_dab_mask(
     entries: &mut Vec<(usize, usize, u32)>,
@@ -469,7 +417,7 @@ fn blend_lock_alpha_paint(
         src_g as f32 / ONE as f32,
         src_b as f32 / ONE as f32,
     );
-    // AuraStudio patch: the brush color's logs, once per dab.
+    // (The brush color's logs, once per dab.)
     let log_a = fastlog2_all(&spec_a);
     for &(lx, ly, mask) in entries {
         let mut opa_a = mask * opacity / ONE;
@@ -501,10 +449,8 @@ fn blend_lock_alpha_paint(
     }
 }
 
-/// `draw_dab_pixels_BlendMode_Color` — Adobe "Color" non-separable blend:
-/// transfer the destination's BT.601 luminance onto the source hue/chroma,
-/// in the same scaled-int arithmetic (LUMA coefficients are floats, the
-/// clip steps are integer divisions).
+/// draw_dab_pixels_BlendMode_Color: the canvas's luminance with the
+/// brush's hue and chroma.
 fn blend_color(
     tile: &mut TilePixels,
     entries: &[(usize, usize, u32)],
@@ -517,8 +463,7 @@ fn blend_color(
     for &(lx, ly, mask) in entries {
         let p = &mut tile[ly][lx];
         let a = p[3] as u32;
-        // De-premult — `checked_div` matches C's "leave r=g=b=0 when
-        // alpha is 0" fallback exactly.
+        // Straight color (0 where alpha is 0, as C).
         let mut r = (ONE * p[0] as u32).checked_div(a).unwrap_or(0) as u16;
         let mut g = (ONE * p[1] as u32).checked_div(a).unwrap_or(0) as u16;
         let mut b = (ONE * p[2] as u32).checked_div(a).unwrap_or(0) as u16;
@@ -602,8 +547,7 @@ fn blend_posterize(
         let r = p[0] as f32 / ONE as f32;
         let g = p[1] as f32 / ONE as f32;
         let b = p[2] as f32 / ONE as f32;
-        // C: `(1<<15) * ROUND(r * posterize_num) / posterize_num` with
-        // ROUND(x) = floor(x + 0.5) and integer division.
+        // C: (1 << 15) * floor(r * n + 0.5) / n, integer division.
         let post_r = ONE * ((r * posterize_num as f32 + 0.5).floor() as u32) / posterize_num;
         let post_g = ONE * ((g * posterize_num as f32 + 0.5).floor() as u32) / posterize_num;
         let post_b = ONE * ((b * posterize_num as f32 + 0.5).floor() as u32) / posterize_num;
@@ -634,7 +578,7 @@ fn blend_normal_paint(
         src_g as f32 / ONE as f32,
         src_b as f32 / ONE as f32,
     );
-    // AuraStudio patch: the brush color's logs, once per dab.
+    // (The brush color's logs, once per dab.)
     let log_a = fastlog2_all(&spec_a);
     for &(lx, ly, mask) in entries {
         let opa_a = mask * opacity / ONE;
@@ -686,7 +630,7 @@ fn blend_normal_and_eraser_paint(
         src_g as f32 / ONE as f32,
         src_b as f32 / ONE as f32,
     );
-    // AuraStudio patch: the brush color's logs, once per dab.
+    // (The brush color's logs, once per dab.)
     let log_a = fastlog2_all(&spec_a);
     for &(lx, ly, mask) in entries {
         let opa_a = mask * opacity / ONE;
@@ -742,87 +686,8 @@ fn clamp_color(c: RgbaF32) -> RgbaF32 {
     }
 }
 
-/// Backend-agnostic version of [`get_color_default`]: takes a
-/// `sample(px, py)` closure that returns a single fix15 RGBA pixel
-/// (`[r, g, b, a]`, premultiplied, linear sRGB). Backends that can't
-/// hand out raw `TilePixels` (e.g. a `Pixmap`-only surface) can
-/// override `TiledSurface::get_color` to delegate here, passing a
-/// closure that reads from their own buffer.
-///
-/// Coordinates outside the painted area should be reported as fully
-/// transparent (`[0, 0, 0, 0]`).
-pub fn get_color_via_sample<F>(x: f32, y: f32, radius: f32, sample: F) -> RgbaF32
-where
-    F: Fn(i32, i32) -> [u16; 4],
-{
-    let radius = radius.max(1.0); // libmypaint floors get_color radius at 1.0 (mypaint-tiled-surface.c:659)
-    let inv_r2 = 1.0 / (radius * radius);
-    let r_ext = radius + 1.0;
-    let x0 = (x - r_ext).floor() as i32;
-    let y0 = (y - r_ext).floor() as i32;
-    let x1 = (x + r_ext).ceil() as i32;
-    let y1 = (y + r_ext).ceil() as i32;
-
-    let mut sum_r = 0.0f32;
-    let mut sum_g = 0.0f32;
-    let mut sum_b = 0.0f32;
-    let mut sum_a = 0.0f32;
-    let mut sum_w = 0.0f32;
-
-    for py in y0..=y1 {
-        for px in x0..=x1 {
-            let rr = rr_at(px as f32, py as f32, x, y, 1.0, 1.0, 0.0, inv_r2);
-            if rr > 1.0 {
-                continue;
-            }
-            let w = opa_at(rr, 0.5);
-            let p = sample(px, py);
-            sum_r += fix15::to_f32(p[0]) * w;
-            sum_g += fix15::to_f32(p[1]) * w;
-            sum_b += fix15::to_f32(p[2]) * w;
-            sum_a += fix15::to_f32(p[3]) * w;
-            sum_w += w;
-        }
-    }
-    if sum_w <= 0.0 {
-        return RgbaF32 {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        };
-    }
-    // libmypaint's get_color_internal returns STRAIGHT-alpha color, not
-    // premultiplied (mypaint-tiled-surface.c:758-765). The accumulator
-    // sums premultiplied pixels, then divides RGB by sum_a after the
-    // mask-weighted alpha average. hokusai was returning the
-    // premultiplied average straight to the caller, so smudge brushes
-    // sampling a partially-transparent canvas mixed in artificially
-    // dark RGB.
-    let alpha = sum_a / sum_w;
-    if alpha <= 0.0 {
-        return RgbaF32 {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        };
-    }
-    RgbaF32 {
-        r: (sum_r / sum_a).clamp(0.0, 1.0),
-        g: (sum_g / sum_a).clamp(0.0, 1.0),
-        b: (sum_b / sum_a).clamp(0.0, 1.0),
-        a: alpha.clamp(0.0, 1.0),
-    }
-}
-
-/// macOS/BSD libc `rand()` (Park-Miller 7^5, seed 1) — libmypaint's
-/// `get_color_pixels_accumulate` consumes it for the sparse pixel sampling
-/// it does when the sample radius exceeds 2 px. libc's state is
-/// process-global; ours is thread-local and reset per render via
-/// [`reset_get_color_rng`] so each replay matches a fresh reference
-/// process. (glibc uses a different generator — sparse sampling parity is
-/// only bit-exact against a macOS/BSD-built libmypaint.)
+/// macOS / BSD libc rand() (Park-Miller), which libmypaint's sparse color
+/// sampling uses; thread-local, reset per stroke preview.
 const C_RAND_MAX: i32 = 2147483647;
 
 thread_local! {
@@ -853,12 +718,7 @@ fn c_rand() -> i32 {
     })
 }
 
-/// The per-tile pixel sweep shared by both get_color flavours — mirrors
-/// `render_dab_mask`'s geometry exactly: per-tile bbox from
-/// `floor(centre ± (radius+1))`, hardness-0.5 falloff, the sub-pixel AA
-/// path for radius < 3, and the fix15 mask quantisation (`opa * (1<<15)`
-/// truncated; zero entries are skipped without advancing the sample
-/// interval counter).
+/// The sampling mask of one tile (render_dab_mask's, hardness 0.5).
 #[inline]
 fn for_each_mask_pixel<F: FnMut(usize, usize, u32)>(
     x: f32,
@@ -905,12 +765,8 @@ fn for_each_mask_pixel<F: FnMut(usize, usize, u32)>(
     }
 }
 
-/// Average color in a circle of `radius` around `(x, y)`, mask-weighted
-/// with the same falloff a hardness=0.5 dab produces — bit-exact port of
-/// libmypaint's legacy sampler (`get_color_pixels_legacy`), which
-/// accumulates per tile in u32 fix15 arithmetic (`opa * channel >> 15`
-/// with truncation) before widening to float. Uses
-/// [`TiledSurface::tile_lookup`] for read-only sampling.
+/// libmypaint's legacy color sampling (get_color_pixels_legacy), per tile
+/// in u32 fix15; straight color.
 pub fn get_color_default<S: TiledSurface + ?Sized>(
     surface: &S,
     x: f32,
@@ -960,8 +816,6 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
     sum_a /= sum_weight;
     let a_out = sum_a.clamp(0.0, 1.0);
     if sum_a > 0.0 {
-        // Legacy sampling un-premultiplies with the weight-normalised
-        // alpha (`demul`), clamping against rounding errors.
         RgbaF32 {
             r: (sum_r / sum_weight / sum_a).clamp(0.0, 1.0),
             g: (sum_g / sum_weight / sum_a).clamp(0.0, 1.0),
@@ -969,9 +823,7 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
             a: a_out,
         }
     } else {
-        // All transparent — libmypaint hands back an "ugly" green so bugs
-        // show up; the colour must round-trip identically through the
-        // smudge bucket cache.
+        // All transparent: libmypaint's green.
         RgbaF32 {
             r: 0.0,
             g: 1.0,
@@ -981,15 +833,8 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
     }
 }
 
-/// Port of libmypaint's `Surface2::get_color_pigment`
-/// (`get_color_pixels_accumulate` with `paint >= 0`): a mask-weighted
-/// running average blending a 10-channel spectral WGM with the
-/// alpha-weighted linear average by `paint`. For radii above 2 px the
-/// reference only samples every `radius*7`-th masked pixel plus a
-/// `1/(7*radius)` random subset (via libc `rand()` — see [`c_rand`]);
-/// smaller radii sample every pixel.
-///
-/// Returns straight-alpha.
+/// libmypaint's get_color_pigment: spectral (WGM) and linear averages
+/// mixed by `paint`, a sparse sample above 2 px. Straight color.
 pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
     surface: &S,
     x: f32,
@@ -1016,18 +861,14 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
 
     let mut sum_weight = 0.0_f32;
     let mut sum_a = 0.0_f32;
-    // The spectral accumulator starts from the spectrum of black — the
-    // reference never special-cases the first sample, it just WGM-mixes
-    // into this initial value with fac_a = 1.
+    // Starts from black's spectrum, as libmypaint.
     let mut avg_spectral = rgb_to_spectral(0.0, 0.0, 0.0);
     let mut avg_rgb = [0.0_f32; 3];
 
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
             let tile_opt = surface.tile_lookup(tx, ty);
-            // Rolling counter — a fresh one per tile, like the local in
-            // get_color_pixels_accumulate. Advances only over non-zero
-            // mask entries (zeros are RLE-skipped in the reference).
+            // Per tile, counting non-zero mask entries only.
             let mut interval_counter: u32 = 0;
             for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| {
                 let sampled = interval_counter == 0
@@ -1112,25 +953,6 @@ mod tests {
         assert_eq!(opa_at(0.0, 1.0), 1.0);
         assert_eq!(opa_at(0.99, 1.0), 1.0);
         assert_eq!(opa_at(1.01, 1.0), 0.0);
-    }
-
-    #[test]
-    fn get_color_via_sample_averages_solid_fill() {
-        // Sample a 5×5 region painted pure red at full alpha. The
-        // mask-weighted average should be ≈ (1, 0, 0, 1).
-        let sample = |_px: i32, _py: i32| {
-            [
-                crate::forge::fix15::FIX15_ONE as u16,
-                0,
-                0,
-                crate::forge::fix15::FIX15_ONE as u16,
-            ]
-        };
-        let c = get_color_via_sample(2.0, 2.0, 1.0, sample);
-        assert!((c.r - 1.0).abs() < 1e-3, "red: {}", c.r);
-        assert!(c.g.abs() < 1e-3);
-        assert!(c.b.abs() < 1e-3);
-        assert!((c.a - 1.0).abs() < 1e-3);
     }
 
     #[test]

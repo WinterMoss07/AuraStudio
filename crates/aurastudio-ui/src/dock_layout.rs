@@ -1,9 +1,5 @@
-//! Minimum heights for stacked docks: a separator dragged into a dock at
-//! its minimum (its content, or a fixed one for scrolling lists) pushes the
-//! docks beyond it (CSP / Krita), instead of squashing it.
-//!
-//! The column's nested splits are handled as a flat list of absolute
-//! heights; the fractions are recomputed from them.
+//! Minimum dock heights: a separator dragged into a dock at its minimum
+//! pushes the next ones (CSP / Krita).
 
 use std::collections::HashMap;
 

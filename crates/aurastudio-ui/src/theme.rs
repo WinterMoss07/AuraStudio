@@ -46,12 +46,8 @@ pub fn apply(ctx: &egui::Context) {
     // Ctrl + / - / 0 belong to the canvas, not to egui's own UI zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut style = (*ctx.style()).clone();
-    // egui waits for the pointer to be still before showing a tooltip, and
-    // asks for a new frame right away on every frame until then. A pen
-    // hovering over the tablet is never still (it jitters by a pixel): over
-    // any widget with a tooltip, that was hundreds of frames per second
-    // (Immediate present mode) and the idle CPU use. Tooltips now show
-    // after their usual delay, from a timer.
+    // Tooltips after a delay, from a timer (a hovering pen is never still:
+    // egui asked for hundreds of frames a second).
     style.interaction.show_tooltips_only_when_still = false;
     // Interface text is not selectable / copyable (only text fields are).
     style.interaction.selectable_labels = false;

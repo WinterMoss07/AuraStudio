@@ -1,9 +1,5 @@
-//! Filter menu and dialogs. A dialog floats beside the canvas: the layer
-//! before and after side by side in its own preview (zoom, pan, a line to
-//! drag), the filter's controls with pictures of what it does, what it
-//! will change. The active layer shows the result too (Preview on
-//! canvas), Apply keeps it (undoable), Cancel or Escape puts the layer
-//! back. The filters themselves: aurastudio_filters.
+//! Filter menu and dialogs: before / after preview, controls, Apply
+//! (undoable) or Cancel.
 
 // Pixel code indexes channels side by side (p[c], table[c]...).
 #![allow(clippy::needless_range_loop)]
@@ -84,7 +80,7 @@ pub fn menu(ui: &mut Ui, open: &mut Option<FilterDialog>, m: &Model) {
         if k > 0 { ui.separator(); }
         ui.label(RichText::new(*group).small().color(theme::TEXT_WEAK));
         for &kind in *kinds {
-            if ui.add_enabled(why.is_none(), egui::Button::new(format!("{}…", kind.name()))).on_hover_text(kind.hint()).clicked() {
+            if ui.add_enabled(why.is_none(), egui::Button::new(format!("{}…", kind.name()))).clicked() {
                 *open = new_dialog(ui.ctx(), kind, m);
                 ui.close_menu();
             }
@@ -178,16 +174,16 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
             let count = if px >= 1_000_000 { format!("{:.1} M", px as f64 / 1e6) } else { format!("{px}") };
             match d.target {
                 Target::Layer => draw::info(ui, &format!("{} {w} × {h} px, {count} painted pixels", if src.selection { "In the selection:" } else { "On the layer:" })),
-                Target::FilterLayer { .. } => draw::info(ui, "A filter layer: everything under it, changed until you change it again (double-click the layer)"),
+                Target::FilterLayer { .. } => draw::info(ui, "Filter layer: double-click it to edit it again"),
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.checkbox(&mut d.preview, "Preview on canvas").on_hover_text("The layer shows the result while the dialog is open");
+                ui.checkbox(&mut d.preview, "Preview on canvas");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let b = egui::Button::new(RichText::new("Apply").color(theme::TEXT)).fill(theme::ACCENT).min_size(egui::vec2(80.0, 26.0));
                     if ui.add(b).on_hover_text("Enter").clicked() { apply = true; }
                     if ui.button("Cancel").on_hover_text("Escape").clicked() { open = false; }
-                    if ui.button("Reset").on_hover_text("Every value back to its default").clicked() {
+                    if ui.button("Reset").clicked() {
                         d.filter.values = kind.defaults();
                     }
                 });

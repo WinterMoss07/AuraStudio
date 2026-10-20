@@ -1,10 +1,5 @@
-//! Tiled pixel storage (Krita, CSP and Photoshop do the same).
-//!
-//! A layer is cut into TILE × TILE squares, and only the squares that
-//! differ from the layer's fill color (transparent, or white for the
-//! Paper) exist in memory. An empty layer costs nothing, a sketch on an A4
-//! page only the squares it covers. Before, every layer held every pixel:
-//! 33 MB per layer at A4 300 dpi, 200 MB at B4 600 dpi, painted or not.
+//! Tiled pixels: only the tiles that differ from the layer's fill color
+//! exist (an empty layer costs nothing).
 
 use aurastudio_canvas::{Rect, TILE};
 

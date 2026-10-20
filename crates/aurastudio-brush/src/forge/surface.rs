@@ -1,9 +1,4 @@
-//! `TiledSurface` abstraction and the `Dab` description passed to it.
-//!
-//! Backends only need to implement tile lending; `draw_dab` and `get_color`
-//! ship as default implementations so every backend gets identical pixels.
-//! The defaults cover libmypaint's Normal+Eraser, Colorize, Posterize, and
-//! LockAlpha blend modes; the spectral `paint` mode is still deferred.
+//! What a dab is drawn on (tiles lent by the engine) and the dab itself.
 
 use crate::forge::color::RgbaF32;
 use crate::forge::tile::TilePixels;
@@ -24,24 +19,13 @@ pub struct Dab {
     pub posterize: f32,
     pub posterize_num: f32,
     pub paint: f32,
-    pub anti_aliasing: f32,
 }
 
 pub trait TiledSurface {
     fn tile_request_start(&mut self, tx: i32, ty: i32) -> &mut TilePixels;
     fn tile_request_end(&mut self, tx: i32, ty: i32);
 
-    fn begin_atomic(&mut self) {}
-    /// Returns the list of tiles modified since the last `begin_atomic`.
-    fn end_atomic(&mut self) -> Vec<(i32, i32)> {
-        Vec::new()
-    }
-
-    /// Render one dab. Returns whether any pixel was modified.
-    ///
-    /// Default impl applies libmypaint's Normal+Eraser blend in linear sRGB
-    /// fix15, plus colorize / posterize / lock_alpha when those dab fields
-    /// are non-zero. The spectral `paint` mode is still deferred.
+    /// Draw one dab; true if a pixel changed.
     fn draw_dab(&mut self, dab: &Dab) -> bool {
         crate::forge::brushmodes::draw_dab_default(self, dab)
     }
@@ -52,25 +36,12 @@ pub trait TiledSurface {
         None
     }
 
-    /// Average color within `radius` of `(x, y)`. Used by smudge / color
-    /// picker.
-    ///
-    /// The default reads through [`Self::tile_lookup`] and silently returns
-    /// a transparent result for backends that don't implement it. Backends
-    /// without raw tile access (e.g. a single `Pixmap`-backed surface)
-    /// can override and forward to
-    /// [`crate::forge::brushmodes::get_color_via_sample`] with their own
-    /// per-pixel reader.
+    /// Average color around (x, y) (smudge).
     fn get_color(&self, x: f32, y: f32, radius: f32) -> RgbaF32 {
         crate::forge::brushmodes::get_color_default(self, x, y, radius)
     }
 
-    /// libmypaint's `get_color_pigment`: alpha-weighted running WGM
-    /// average in 10-channel spectral space, blended with the
-    /// alpha-weighted linear average by `paint`. `paint < 0` falls
-    /// back to plain [`Self::get_color`] (legacy sampling); `paint >=
-    /// 0` runs the spectral path so blender / watercolour brushes mix
-    /// the way libmypaint's `Surface2::get_color_pigment` does.
+    /// The pigment average (paint ≥ 0), else get_color.
     fn get_color_pigment(&self, x: f32, y: f32, radius: f32, paint: f32) -> RgbaF32 {
         if paint < 0.0 {
             self.get_color(x, y, radius)

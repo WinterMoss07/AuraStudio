@@ -1069,12 +1069,9 @@ impl App {
         self.render_if_due();
     }
 
-    /// Render now if a frame is wanted and the last one is old enough,
-    /// instead of waiting for the window system: on Windows, RedrawRequested
-    /// comes from WM_PAINT, sent only once the message queue is empty. Pen
-    /// packets or a fast mouse keep it busy: strokes showed nothing until
-    /// the pen was lifted, sliders froze then jumped. New paint: every 4 ms
-    /// at most; anything else: one frame per display refresh.
+    /// Render now when a frame is due (Windows sends WM_PAINT only once the
+    /// queue is empty: pen packets kept it from ever coming). New paint:
+    /// every 4 ms at most; else one frame per refresh.
     fn render_if_due(&mut self) {
         let min = if self.painted { PAINT_FRAME } else { self.frame_interval };
         if !self.painted && !self.redraw_wanted { return; }
@@ -1960,10 +1957,8 @@ impl App {
                     // The start screen has nothing to edit or move.
                     _ if self.home => {}
                     Key::Named(NamedKey::Delete) if !key.repeat && !alt => self.clear_active_layer(),
-                    // Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo (Krita, CSP,
-                    // Photoshop). Holding the keys repeats, like everywhere.
-                    // While building an arc outline, Ctrl+Z takes back its
-                    // last arc (nothing is on the layer yet).
+                    // Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y (repeat when held); building an arc
+                    // outline, Ctrl+Z takes back its last arc.
                     Key::Character(c) if ctrl && !shift && c.eq_ignore_ascii_case("z") && self.arc.active() => self.undo_arc(),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => {
                         if shift { self.redo() } else { self.undo() }

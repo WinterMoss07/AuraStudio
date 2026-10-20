@@ -1,13 +1,5 @@
-//! Canvas view: zoom, rotation and pan, as one 2D transform.
-//!
-//! canvas pixel -> screen pixel:
-//!     screen = area_center + pan + zoom * R(angle) * (canvas - canvas_size / 2)
-//!
-//! `zoom` is in screen pixels per canvas pixel (1.0 = 100 %), `pan` in
-//! physical screen pixels, `angle` in radians (clockwise on screen, since
-//! screen y points down). The GPU gets the same transform as a matrix, and
-//! pen positions go through the exact inverse, so a stroke always lands
-//! under the pen whatever the zoom or rotation.
+//! Canvas view: screen = area_center + pan + zoom·R(angle)·(canvas −
+//! size / 2), and its exact inverse for the pen.
 
 /// Zoom limits: 1 % to 6400 % (Krita goes to 10000 %, CSP to 6400 %).
 pub const MIN_ZOOM: f32 = 0.01;
@@ -95,13 +87,8 @@ impl CanvasView {
         self.fit = false;
     }
 
-    /// Multiply the zoom by `factor`, around the screen point `pivot`.
-    /// Pivot for turning the view. Zoomed out so far that the whole
-    /// picture would fit in the area (zoom at or below "Fit to window"):
-    /// its own center, wherever it was moved, so it spins in place. Zoomed
-    /// in further: the middle of the area, around what is being looked at.
-    /// Depends on the zoom only, never on the position: nudging the picture
-    /// a few pixels never changes the pivot.
+    /// Where the view turns: the picture's center while it fits in the
+    /// area (it spins in place), else the area's middle.
     pub fn rotation_pivot(&self, canvas: (u32, u32), area: Area) -> (f32, f32) {
         if self.zoom <= self.fit_zoom(canvas, area) * 1.001 {
             self.canvas_to_screen((canvas.0 as f32 / 2.0, canvas.1 as f32 / 2.0), canvas, area)

@@ -1,10 +1,6 @@
-//! Fill tool: the area of similar color around a point, then painted.
-//!
-//! The area is found on the merged image (to color under line art on
-//! another layer, the usual case), on the reference layers only (CSP:
-//! the line art, whatever is painted around it), or on the layer itself.
-//! Draft layers are left out unless asked. The merged image is made only
-//! for the tiles the fill goes through, never whole.
+//! Fill tool: the area of similar color around a point, found on the
+//! merge (drafts left out), the reference or the layer itself, tile by
+//! tile as the fill goes.
 
 use aurastudio_canvas::{Rect, TILE};
 
@@ -55,9 +51,7 @@ impl FillParams {
     }
 }
 
-/// Pixels of the area and their bounding box. One bit per pixel, a row
-/// stored as one 64-bit word per tile column (TILE = 64): a tile row is a
-/// word, and growing the area is a few shifts per word.
+/// The area: one bit per pixel (a word per tile row), and its bounds.
 pub struct Area {
     cols: usize,
     bits: Vec<u64>,

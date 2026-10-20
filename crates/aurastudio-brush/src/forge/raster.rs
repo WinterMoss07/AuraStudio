@@ -51,14 +51,11 @@ pub fn erase_pixels(out: &mut [u8], base: &[u8], cov: &[u8]) {
     }
 }
 
-/// Layer pixels = brush color over the pre-stroke pixels at the given
-/// coverages. Recomputing an unchanged pixel gives the same value, so whole
-/// runs are written without per-pixel tests; normal blend over an opaque or
-/// empty run is plain arithmetic the compiler vectorizes.
+/// Brush color over the pre-stroke pixels at these coverages (whole runs,
+/// vectorized).
 pub fn write_pixels(out: &mut [u8], base: &[u8], cov: &[u8], color: [u8; 3], blend: BlendMode) {
     if blend == BlendMode::Normal {
-        // Run alpha in one pass over whole pixels (vectorizes, a per-byte
-        // `all` doesn't): AND of all = opaque, OR of all = empty.
+        // Opaque run (AND) or empty run (OR), in one pass.
         let (mut and, mut or) = (u32::MAX, 0u32);
         for b in base.chunks_exact(4) {
             let w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
@@ -66,8 +63,7 @@ pub fn write_pixels(out: &mut [u8], base: &[u8], cov: &[u8], color: [u8; 3], ble
             or |= w;
         }
         if and >> 24 == 255 {
-            // Byte by byte over the whole run (RGBA alike: the alpha byte
-            // gives 255 again), with each pixel's coverage repeated 4 times.
+            // Byte by byte (the alpha byte stays 255).
             let mut a4 = [0u8; CHUNK * 4];
             let a4 = &mut a4[..out.len()];
             for (d, &a) in a4.chunks_exact_mut(4).zip(cov) {

@@ -1,10 +1,4 @@
-//! Finding the monitor's ICC profile.
-//!
-//! AURASTUDIO_DISPLAY_ICC=<path to .icc/.icm> overrides it on every
-//! platform (testing, or a profile the OS doesn't know about).
-//! Windows: the profile assigned to the monitor the window is on (Color
-//! Management > Devices), or Windows' default (usually sRGB).
-//! Other platforms: none yet (treated as sRGB).
+//! The monitor's ICC profile (Windows; AURASTUDIO_DISPLAY_ICC overrides).
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplayProfile {

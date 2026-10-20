@@ -1,16 +1,6 @@
-//! Each filter's controls, with pictures of what it does: the layer's
-//! histogram before and after, the tone curve, the colors of the painting
-//! before and after, a hard edge or a line as the filter leaves it, a
-//! sample lit or shadowed. Every picture runs the filter itself (the
-//! same code as the canvas), so it shows what you get.
-//!
-//! The Levels and Hue / Saturation editors (channel histogram with input
-//! and output handles, spectrum bars with the color range's handles)
-//! follow PhotoCraft's (`crates/ui-egui/src/adjust_editors.rs`),
-//! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, MIT
-//! License (see NOTICE). Changes: before / after histograms on one scale,
-//! clipping counts; Threshold's histogram is the luminosity it splits on
-//! (PhotoCraft drew the RGB one).
+//! Each filter's controls and pictures of what it does, made by the
+//! filter itself (Levels and Hue / Saturation after PhotoCraft, MIT,
+//! see NOTICE).
 
 use std::hash::{Hash, Hasher};
 
@@ -167,7 +157,7 @@ fn brightness_contrast(ui: &mut Ui, f: &mut Filter, src: &Source, info: &mut Vec
     let lo = if legacy { -100.0 } else { -50.0 };
     if draw::slider(ui, "contrast", Spec::new("Contrast", lo, 100.0, 0.0, "").track(Track::Fill(0.0)), &mut c) { f.values[1] = c; }
     let mut l = legacy;
-    if ui.checkbox(&mut l, "Use legacy").on_hover_text("Before Photoshop CS3: a straight shift and stretch, clips sooner").changed() {
+    if ui.checkbox(&mut l, "Use legacy").changed() {
         f.values[idx::LEGACY] = if l { 1.0 } else { 0.0 };
         if !l { f.values[1] = f.values[1].max(-50.0); }
     }
@@ -182,7 +172,7 @@ fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut 
         ui.label(RichText::new("Channel").color(theme::TEXT_WEAK));
         draw::choice(ui, &mut st.channel, &["RGB", "Red", "Green", "Blue"]);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            auto = ui.button("Auto").on_hover_text("Black and white points where 0.1 % of the pixels are darker / lighter").clicked();
+            auto = ui.button("Auto").clicked();
         });
     });
     let ch = st.channel.min(3);
@@ -227,11 +217,11 @@ fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut 
     }
     ui.horizontal(|ui| {
         ui.set_width(WIDTH);
-        ui.add(egui::DragValue::new(&mut lv[0]).range(0.0..=253.0).speed(1.0)).on_hover_text("Input black: this level and below become black");
+        ui.add(egui::DragValue::new(&mut lv[0]).range(0.0..=253.0).speed(1.0)).on_hover_text("Input black");
         ui.add_space(78.0);
-        ui.add(egui::DragValue::new(&mut lv[1]).range(0.01..=9.99).speed(0.01).fixed_decimals(2)).on_hover_text("Midtones (gamma): above 1 lighter, below darker");
+        ui.add(egui::DragValue::new(&mut lv[1]).range(0.01..=9.99).speed(0.01).fixed_decimals(2)).on_hover_text("Midtones");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(egui::DragValue::new(&mut lv[2]).range(2.0..=255.0).speed(1.0)).on_hover_text("Input white: this level and above become white");
+            ui.add(egui::DragValue::new(&mut lv[2]).range(2.0..=255.0).speed(1.0)).on_hover_text("Input white");
         });
     });
     ui.add_space(4.0);
@@ -241,9 +231,9 @@ fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut 
     }
     ui.horizontal(|ui| {
         ui.set_width(WIDTH);
-        ui.add(egui::DragValue::new(&mut lv[3]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output black: the darkest level left");
+        ui.add(egui::DragValue::new(&mut lv[3]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output black");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(egui::DragValue::new(&mut lv[4]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output white: the lightest level left");
+            ui.add(egui::DragValue::new(&mut lv[4]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output white");
         });
     });
     lv[0] = lv[0].min(253.0);
@@ -403,7 +393,7 @@ fn hue_saturation(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, inf
     let mut l = f.values[base + 2].clamp(-100.0, 100.0);
     if draw::slider(ui, "light", Spec::new("Lightness", -100.0, 100.0, 0.0, "%").track(Track::Colors(&[Color32::BLACK, now, Color32::WHITE])), &mut l) { f.values[base + 2] = l; }
     let mut c = colorize;
-    if ui.checkbox(&mut c, "Colorize").on_hover_text("One hue for everything, the lightness kept: tint a sketch, a grisaille").changed() {
+    if ui.checkbox(&mut c, "Colorize").changed() {
         f.values[idx::COLORIZE] = if c { 1.0 } else { 0.0 };
         let h = f.values[0];
         f.values[0] = if c { h.rem_euclid(360.0) } else if h > 180.0 { h - 360.0 } else { h };
@@ -476,7 +466,7 @@ fn black_white(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State) {
         if ui.checkbox(&mut on, "Tint").changed() { f.values[idx::TINT] = if on { 1.0 } else { 0.0 }; }
         ui.add_enabled_ui(on, |ui| { egui::color_picker::color_edit_button_srgb(ui, &mut f.color); });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Default").on_hover_text("Photoshop's default weights").clicked() { f.values[..6].copy_from_slice(&BW_DEFAULTS); }
+            if ui.small_button("Default").clicked() { f.values[..6].copy_from_slice(&BW_DEFAULTS); }
         });
     });
     palette(ui, f, src, st);
@@ -525,7 +515,7 @@ fn lines(ui: &mut Ui, f: &mut Filter, info: &mut Vec<String>) {
     let mut r = f.v(0);
     if draw::slider(ui, "radius", Spec::new("Radius", 0.0, 50.0, 1.0, "px").step(0.5).pow(1.8), &mut r) { f.values[0] = r; }
     let mut round = f.v(idx::ROUND) >= 0.5;
-    if ui.checkbox(&mut round, "Round").on_hover_text("A disc instead of a square: round line ends and corners").changed() {
+    if ui.checkbox(&mut round, "Round").changed() {
         f.values[idx::ROUND] = if round { 1.0 } else { 0.0 };
     }
     let w = 6;

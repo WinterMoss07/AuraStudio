@@ -1,8 +1,5 @@
-//! Forge, AuraStudio's brush engine (engine.rs has the overview).
-//!
-//! Its core comes from hokusai (github.com/reearth/hokusai, MIT OR
-//! Apache-2.0, a Rust port of libmypaint, ISC): settings, inputs, curves,
-//! the stroke path and libmypaint's dab blending. See NOTICE.md.
+//! Forge, the brush engine (overview in engine.rs). Its core comes from
+//! hokusai (MIT OR Apache-2.0), a Rust port of libmypaint: see NOTICE.md.
 
 pub mod brush;
 pub mod brushmodes;

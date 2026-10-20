@@ -115,10 +115,7 @@ mod imp {
 
     fn push_info(hwnd: HWND, state: &HookState, info: &POINTER_PEN_INFO) {
         let mut point = info.pointerInfo.ptPixelLocation;
-        // Physical client pixels, same unit as winit's CursorMoved and the
-        // wgpu surface. efude divides by the DPI scale (its UI works in
-        // logical pixels); doing that here put pen samples at 1/scale of
-        // their real position on high-DPI screens.
+        // Physical pixels, like winit's (efude's logical ones were off on HiDPI).
         if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool() {
             let packet = PenPacket {
                 x: point.x as f32,
@@ -472,11 +469,8 @@ pub fn window_dpi(hwnd: isize) -> Option<u32> {
 #[cfg(not(target_os = "windows"))]
 pub fn window_dpi(_hwnd: isize) -> Option<u32> { None }
 
-/// Turn off Windows' keyboard "menu mode": pressing and releasing Alt (or
-/// F10) alone, or Alt + a letter, sends the window SC_KEYMENU, and the
-/// next key goes to an (invisible) menu instead of the app. Alt is the
-/// color picker modifier here, so that ate shortcuts. Alt+Space (the
-/// window menu: move, minimize, close) and Alt+F4 keep working.
+/// Turn off Windows' Alt menu mode (Alt is the picker: it ate shortcuts);
+/// Alt+Space and Alt+F4 still work.
 #[cfg(target_os = "windows")]
 pub fn disable_alt_menu(hwnd: isize) -> bool {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};

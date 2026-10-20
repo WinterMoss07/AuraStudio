@@ -1,16 +1,10 @@
-//! Forge, AuraStudio's brush engine: libmypaint's model (its ~60 settings,
-//! inputs and curves, its stroke path and dab rules) grown with Krita's
-//! ways (curves that multiply, wash painting, auto spacing). Brushes from
-//! other formats are read into it (.myb today; Krita next).
-//!
-//! Two ways to reach the layer (`Painting`):
-//! - Build-up: the tiles a stroke touches are loaded from the layer as
-//!   before the stroke into 64x64 premultiplied fix15 tiles (1.0 = 1 <<
-//!   15, sRGB-encoded values like our layers), libmypaint's dab blending
-//!   applies (eraser, smudge, colorize... read the colors already there),
-//!   and the changed tiles are written back.
-//! - Wash: dabs go through the layer's stroke mask (wash.rs), with the
-//!   brush's blend mode.
+//! Forge, the brush engine: libmypaint's settings, curves and stroke path,
+//! with Krita's additions (curves that multiply, wash painting, auto
+//! spacing). Two ways to the layer (`Painting`):
+//! - Build-up: the stroke's tiles, loaded from the layer as before the
+//!   stroke into fix15, get libmypaint's dab blending (smudge, eraser...),
+//!   and the changed pixels are written back.
+//! - Wash: dabs go through the stroke mask (wash.rs).
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,8 +40,7 @@ impl PenSample {
 
 const ONE: u32 = 1 << 15;
 const TS: i32 = TILE_SIZE as i32;
-// libmypaint tiles line up with the layer tiles: a libmypaint tile row is
-// one run of a layer tile.
+// libmypaint's tiles are the layer's tiles.
 const _: () = assert!(TILE_SIZE as u32 == aurastudio_canvas::TILE);
 
 /// Settings by which a brush works on the paint already on the layer.
@@ -61,10 +54,7 @@ pub struct Forge {
     state: BrushState,
     /// Working tiles of the current stroke, loaded from the layer.
     tiles: HashMap<(i32, i32), Box<TilePixels>>,
-    /// Shared stand-in for every tile outside the canvas: dabs there are
-    /// drawn into it and thrown away. Storing a tile per off-canvas spot
-    /// ran out of memory (zoomed out, a stroke leaving the canvas spans
-    /// millions of tiles).
+    /// Every tile outside the canvas (dabs there are thrown away).
     scratch: Box<TilePixels>,
     /// Pen time of the previous sample, seconds.
     last_time: Option<f64>,
@@ -147,8 +137,7 @@ impl Forge {
         self.brush.get_mut(BrushSetting::Hardness).base_value = b.hardness.clamp(0.0, 1.0);
         self.brush.get_mut(BrushSetting::Eraser).base_value = if b.erase { 1.0 } else { self.preset_eraser };
         self.blend = b.blend;
-        // Dynamics can grow the dab (pressure, random...), smudge reads
-        // around it: keep a generous margin.
+        // Margin: dynamics grow the dab, smudge reads around it.
         self.reach = (radius * 3.0 + 16.0).min(4096.0);
     }
 
@@ -174,11 +163,8 @@ impl Forge {
         self.wash.begin_stroke();
     }
 
-    /// One pen sample. Only the path over the canvas (plus a margin)
-    /// is painted: zoomed out, samples can land millions of pixels away,
-    /// and dabs out there take seconds and show nothing. Off it, the
-    /// stroke pauses like a lifted pen and starts afresh where it comes
-    /// back.
+    /// One pen sample. Only the path over the canvas (and a margin) is
+    /// painted; off it, the stroke pauses like a lifted pen.
     pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, p: PenSample) -> Option<Rect> {
         let prev = self.last.replace(p);
         let m = (self.reach + 64.0).max(256.0);
@@ -213,18 +199,15 @@ impl Forge {
         if self.washes() {
             return self.wash_step(surface, |b, st, t| { b.stroke_to(st, t, x, y, pressure, tilt.0, tilt.1, dtime); });
         }
-        // Tiles a dab or a smudge sample may touch around the pen must be
-        // loaded first: libmypaint reads them through tile_lookup, which
-        // can't load anything.
-        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), opacity: self.opacity };
-        // From the brush's smoothed position (dabs are placed between it and
-        // the pen) to the pen, with the margin of the biggest dab so far.
+        // The tiles dabs and smudge samples may touch, loaded first
+        // (tile_lookup can't load), around the path and the biggest dab.
+        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), area: None, opacity: self.opacity };
         let prev = if self.state.started { (self.state.actual_x, self.state.actual_y) } else { (x, y) };
         let reach = self.reach.max(self.state.actual_radius * 3.0 + 16.0);
         tiles.preload(x.min(prev.0) - reach, y.min(prev.1) - reach, x.max(prev.0) + reach, y.max(prev.1) + reach);
         self.brush.stroke_to(&mut self.state, &mut tiles, x, y, pressure, tilt.0, tilt.1, dtime);
-        let dirty = std::mem::take(&mut tiles.dirty);
-        write_back(&self.tiles, &dirty, surface)
+        let (dirty, area) = (std::mem::take(&mut tiles.dirty), tiles.area);
+        write_back(&self.tiles, &dirty, area, surface)
     }
 
     /// End of stroke: let libmypaint finish its smoothed path.
@@ -249,10 +232,10 @@ impl Forge {
                 }
             });
         }
-        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), opacity: self.opacity };
+        let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), area: None, opacity: self.opacity };
         self.brush.finish_stroke(&mut self.state, &mut tiles);
-        let dirty = std::mem::take(&mut tiles.dirty);
-        write_back(&self.tiles, &dirty, surface)
+        let (dirty, area) = (std::mem::take(&mut tiles.dirty), tiles.area);
+        write_back(&self.tiles, &dirty, area, surface)
     }
 }
 
@@ -263,6 +246,10 @@ struct TileCache<'a, S: PaintSurface> {
     scratch: &'a mut Box<TilePixels>,
     surface: &'a mut S,
     dirty:   HashSet<(i32, i32)>,
+    /// Pixels the dabs may have changed (x0, y0, x1, y1): only those are
+    /// written back, not the whole tiles (a small brush touches a few
+    /// pixels of each).
+    area:    Option<(i32, i32, i32, i32)>,
     /// The Opacity slider, applied to each dab.
     opacity: f32,
 }
@@ -318,6 +305,13 @@ impl<S: PaintSurface> TiledSurface for TileCache<'_, S> {
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
 
     fn draw_dab(&mut self, dab: &Dab) -> bool {
+        // (As draw_dab_default's bounds: radius + 1 around the center.)
+        let r = dab.radius + 1.0;
+        let b = ((dab.x - r).floor() as i32, (dab.y - r).floor() as i32, (dab.x + r).floor() as i32 + 1, (dab.y + r).floor() as i32 + 1);
+        self.area = Some(match self.area {
+            None => b,
+            Some(a) => (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)),
+        });
         if self.opacity >= 1.0 { return crate::forge::brushmodes::draw_dab_default(self, dab); }
         let dab = Dab { opaque: dab.opaque * self.opacity, ..*dab };
         crate::forge::brushmodes::draw_dab_default(self, &dab)
@@ -401,8 +395,7 @@ fn to_fix15(p: [u8; 4]) -> [u16; 4] {
 fn from_fix15(p: [u16; 4]) -> [u8; 4] {
     let a = (p[3] as u32).min(ONE);
     if a == ONE {
-        // Opaque (most painted pixels): same rounding as below, without
-        // the divisions (a third of a big brush's write-back).
+        // Opaque: no division.
         let c = |v: u16| ((v as u32 * 255 + ONE / 2) >> 15).min(255) as u8;
         return [c(p[0]), c(p[1]), c(p[2]), 255];
     }
@@ -410,25 +403,24 @@ fn from_fix15(p: [u16; 4]) -> [u8; 4] {
     if a8 == 0 {
         return [255, 255, 255, 0];
     }
-    // (v * 255 + a / 2) / a, by one reciprocal instead of three integer
-    // divisions. Exact: the quotient's fraction is a multiple of 1 / a
-    // (≥ 2^-15), far above the f64 product's error, which the tiny bias
-    // keeps from rounding an exact integer down.
+    // (v * 255 + a / 2) / a by one reciprocal: exact (see the test).
     let inv = 1.0 / a as f64;
     let c = |v: u16| (((v as u32 * 255 + a / 2) as f64 * inv + 1e-9) as u32).min(255) as u8;
     [c(p[0]), c(p[1]), c(p[2]), a8]
 }
 
-/// Copy the changed tiles into the layer pixels; returns their bounds.
-fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dirty: &HashSet<(i32, i32)>, surface: &mut S) -> Option<Rect> {
+/// Copy the changed pixels (of the dirty tiles, inside `area`) into the
+/// layer; returns their bounds.
+fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dirty: &HashSet<(i32, i32)>, area: Option<(i32, i32, i32, i32)>, surface: &mut S) -> Option<Rect> {
     let (w, h) = (surface.width(), surface.height());
+    let a = area?;
     let mut out: Option<Rect> = None;
     for &(tx, ty) in dirty {
         let Some(tile) = tiles.get(&(tx, ty)) else { continue };
-        let x0 = (tx * TS).max(0);
-        let y0 = (ty * TS).max(0);
-        let x1 = (tx * TS + TS).min(w as i32);
-        let y1 = (ty * TS + TS).min(h as i32);
+        let x0 = (tx * TS).max(0).max(a.0);
+        let y0 = (ty * TS).max(0).max(a.1);
+        let x1 = (tx * TS + TS).min(w as i32).min(a.2);
+        let y1 = (ty * TS + TS).min(h as i32).min(a.3);
         if x0 >= x1 || y0 >= y1 { continue; }
         for y in y0..y1 {
             let row = &tile[(y - ty * TS) as usize][(x0 - tx * TS) as usize..];

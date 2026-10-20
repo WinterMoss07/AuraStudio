@@ -1,15 +1,5 @@
-//! Stroke previews in the Tools and Tool options dockers: a stroke painted
-//! by the brush itself (aurastudio_brushes::stroke_preview), kept until
-//! the brush's settings or the strip's size change.
-//!
-//! Painting one takes 2 to 50 ms (textured MyPaint brushes): a thread of
-//! its own paints them, one at a time (each brush still paints on one
-//! thread), and sleeps when there is nothing to do. Only the latest
-//! request per strip counts, and a strip asked for again keeps its place
-//! in the queue: dragging a slider, the Tool options strip and the
-//! selected brush's row in the Tools docker are painted in turn (the row
-//! used to wait until the slider was let go). One request per strip per
-//! frame at most. The old picture stays until the new one.
+//! Stroke previews, painted on a thread of their own (2-50 ms each), the
+//! latest request per strip; the old picture stays until the new one.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

@@ -1,15 +1,7 @@
-//! The layer tree without its pixels, to undo what the Layers docker does
-//! (new, delete, move, group, clip, marks, names, blend modes...).
-//!
-//! A `TreeState` holds every node's settings and where it sits, never
-//! pixels. Going back to one takes the nodes out of the tree (pixels and
-//! all), then puts them back as the state says; the nodes it doesn't
-//! have (created since) come out, and the history keeps them for the
-//! redo. A deleted node is kept the same way (`LayerStack::take_removed`).
-//! So the pixels are moved, never copied.
-//!
-//! Visibility and folded folders are left as they are (Photoshop, CSP:
-//! hiding a layer isn't an action to undo).
+//! The layer tree without pixels, to undo the Layers docker's edits.
+//! Going back to a state takes the nodes out and puts them back as it
+//! says; the nodes it lacks wait in the history (pixels moved, never
+//! copied). Visibility and folding are not undone (Photoshop, CSP).
 
 use std::collections::HashMap;
 
@@ -119,10 +111,8 @@ impl LayerStack {
         TreeState { root: self.root.iter().map(shape).collect(), active: self.active }
     }
 
-    /// Put the tree back as `state` says, with the nodes of the tree and
-    /// `kept` (deleted ones). Returns the nodes left over (made since),
-    /// taken apart. Refused (the tree as it was, everything else given
-    /// back) if the result would have no paint layer.
+    /// The tree as `state` says, from its nodes and `kept`; returns the
+    /// nodes left over. Refused if no paint layer would remain.
     pub fn restore_tree(&mut self, state: &TreeState, kept: Vec<Node>) -> Vec<Node> {
         let now = self.tree_state();
         let mut pool = HashMap::new();

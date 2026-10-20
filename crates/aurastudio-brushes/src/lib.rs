@@ -1,11 +1,5 @@
-//! Brush library: the presets of the Tools docker, by medium.
-//!
-//! - Bundled: assets/brushes/catalog.txt (our round brushes and a choice of
-//!   the MyPaint collection, CC0), embedded at build time.
-//! - Imported .myb files, copied to the user's data folder; their medium
-//!   is guessed from their name.
-//!
-//! Each preset keeps its own size, opacity, hardness and blend mode.
+//! Brush library: the bundled presets (catalog.txt) and imported .myb
+//! files, by medium, each with its own size, opacity, hardness, blend.
 
 pub mod stroke_preview;
 

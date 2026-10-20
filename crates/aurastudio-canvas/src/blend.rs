@@ -1,14 +1,5 @@
-//! Blend modes, shared by layer compositing and brushes.
-//!
-//! Formulas from the W3C "Compositing and Blending" spec, which Photoshop,
-//! Krita and CSP also follow. Like those apps (default setting), blending
-//! happens on sRGB-encoded values, not linear light.
-//!
-//! General source-over with a blend function B (premultiplied result):
-//!   co = cs·αs·(1-αb) + cb·αb·(1-αs) + αs·αb·B(cb, cs)
-//!   αo = αs + αb·(1-αs)
-//! with cs, cb straight (non-premultiplied) colors. On a transparent
-//! backdrop (αb = 0) every mode paints like Normal.
+//! Blend modes (W3C Compositing and Blending, on sRGB values like
+//! Photoshop, Krita, CSP), for compositing and brushes.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum BlendMode {
@@ -103,14 +94,9 @@ fn hard_light(b: f32, s: f32) -> f32 {
 /// Premultiplied RGBA, 0..1.
 pub type Premul = [f32; 4];
 
-/// Blend a straight source color `cs` with alpha `a_s` onto a premultiplied
-/// backdrop, in place.
-///
-/// Called per pixel by every painting and compositing loop. The Normal
-/// path is kept tiny and always inlined; the other modes live in a separate
-/// function. With the 13-mode `match` inline, LLVM stopped inlining this
-/// once it had enough call sites, and every loop (brush, hokusai,
-/// compositing) got 2.5-3x slower.
+/// A straight color `cs` at alpha `a_s` over a premultiplied backdrop.
+/// Normal is inlined, the other modes apart (all inline, LLVM stopped
+/// inlining it: every loop 2.5-3× slower).
 #[inline(always)]
 pub fn blend_over(dst: &mut Premul, cs: [f32; 3], a_s: f32, mode: BlendMode) {
     if a_s <= 0.0 { return; }
@@ -153,11 +139,8 @@ pub fn blend_pixel_u8(backdrop: [u8; 4], color: [u8; 3], a_s: f32, mode: BlendMo
     to_straight_u8(p)
 }
 
-/// Brush paint: `color` at 8-bit coverage `cov` over a straight-alpha
-/// layer pixel. Same result as blend_pixel_u8, with integer fast paths
-/// for the common cases of Normal mode: empty pixel (new layer) and
-/// opaque pixel (background, painted areas). Other cases go through
-/// blend_pixel_u8.
+/// `color` at coverage `cov` over a straight pixel (blend_pixel_u8, with
+/// integer fast paths for Normal over empty or opaque pixels).
 #[inline(always)]
 pub fn paint_pixel_u8(backdrop: [u8; 4], color: [u8; 3], cov: u8, mode: BlendMode) -> [u8; 4] {
     if mode == BlendMode::Normal {
@@ -186,12 +169,7 @@ pub fn to_straight_u8(p: Premul) -> [u8; 4] {
     [q(p[0]), q(p[1]), q(p[2]), unit_to_u8(a)]
 }
 
-/// 0..1 -> 0..255, rounded to nearest (clamped).
-///
-/// Not `f32::round()`: on baseline x86-64 that is a call into libm, not an
-/// instruction, and with several per pixel it took 20-25 % of the painting
-/// and compositing time. For non-negative values, `+ 0.5` then truncation
-/// gives exactly the same result.
+/// 0..1 → 0..255, rounded (+ 0.5: f32::round is a libm call on x86-64).
 #[inline(always)]
 pub fn unit_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8

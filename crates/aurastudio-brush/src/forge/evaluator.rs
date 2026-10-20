@@ -1,9 +1,5 @@
-//! Setting evaluator: turn a [`ForgeBrush`] + normalized input values into the
-//! per-setting evaluated values needed by the dab loop.
-//!
-//! Matches the core of libmypaint's `update_states_and_setting_values` —
-//! input normalization (pressure, speed, tilt …) is the stroke engine's job;
-//! this module is the pure `(base_value + Σ mapping.eval(input_value))` step.
+//! Every setting's value at given inputs: base + Σ curve(input) (Krita's
+//! modes: base × factors).
 
 use crate::forge::brush::ForgeBrush;
 use crate::forge::input::{BrushInput, NUM_INPUTS};
@@ -60,12 +56,7 @@ impl Default for SettingValues {
     }
 }
 
-/// Evaluate every setting on `brush` at the given normalized inputs.
-///
-/// For each setting: `value = base_value + Σ mapping.eval(inputs[mapping.input])`.
-/// libmypaint clamps a handful of settings after evaluation (e.g. `opaque`
-/// into `[0, 2]`); that clamping is intentionally **not** done here so the
-/// stroke engine can apply setting-specific post-processing in one place.
+/// Every setting at `inputs` (no clamping: the stroke code does it).
 pub fn evaluate(brush: &ForgeBrush, inputs: &InputValues) -> SettingValues {
     let mut out = SettingValues::new();
     for (i, sv) in brush.settings().iter().enumerate() {

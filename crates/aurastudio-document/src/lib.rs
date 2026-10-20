@@ -277,9 +277,7 @@ impl Document {
     /// there to copy.
     pub fn copy(&self) -> Option<Clip> {
         let id = self.layers.active_id();
-        // Only where the layer has content: copying a whole page that is
-        // mostly empty would put hundreds of MB on the clipboard. (The
-        // Paper's content is its white: it copies whole.)
+        // Only where the layer has content (the Paper: whole).
         let aurastudio_layers::Node::Layer(l) = self.layers.node(id)? else { return None };
         let full = (0, 0, self.layers.width, self.layers.height);
         let content = if l.background { Some(full) } else { l.tiles.content_bounds() };

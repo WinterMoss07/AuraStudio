@@ -121,11 +121,8 @@ pub fn snap(t: f32, display_max: f32) -> f32 {
     (t * display_max).round() / display_max
 }
 
-/// One color channel: label, gradient bar showing what the color becomes
-/// across the whole range (recomputed every frame from the current color),
-/// a marker under the bar, and an editable value. `value` is 0..1; the
-/// number box shows it as 0..`display_max` (255, 360 or 100).
-/// Returns true when the user changed the value.
+/// One color channel: label, gradient bar, marker, value (0..1 shown as
+/// 0..`display_max`). True when changed.
 pub fn channel_row(
     ui: &mut Ui,
     width: f32,

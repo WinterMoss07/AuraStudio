@@ -1,13 +1,6 @@
-//! Merge cache for the layer being painted (Krita's idea): during a
-//! stroke only that layer changes, so the merge of everything under it,
-//! and of everything over it, is kept per tile. Showing the stroke then
-//! blends three things per pixel instead of every layer: with 35 painted
-//! layers, big brushes were spending most of their time re-merging the
-//! untouched ones.
-//!
-//! Over the painted layer, only "normal" blending can be pre-merged
-//! (A over (B over C) = (A over B) over C); with another mode up there,
-//! or the layer inside an isolated folder, the full merge is used.
+//! During a stroke only one layer changes: the merges under and over it
+//! are kept per tile (Krita), three blends per pixel instead of every
+//! layer. Over it, only normal blending can be pre-merged.
 
 use aurastudio_canvas::{Rect, TILE};
 
@@ -52,9 +45,8 @@ impl LayerStack {
         self.stroke.cache = StrokeCache::default();
     }
 
-    /// The merged image of `rect` for the display while a stroke is being
-    /// painted (see the module doc). Same result as `composite_rect`, to
-    /// rounding; it falls back to it when the cache can't be used.
+    /// The merge of `rect` while a stroke is painted (composite_rect's
+    /// result, from the cache when it can).
     pub fn composite_rect_stroke(&mut self, rect: Rect) -> Vec<u8> {
         let r = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
         if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }

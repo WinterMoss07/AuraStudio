@@ -1,17 +1,7 @@
-//! Image filters for painters.
-//!
-//! The tone and color adjustments, Unsharp Mask, Minimum / Maximum, Find
-//! Edges, Emboss and the drop shadow follow Photoshop as PhotoCraft
-//! measured it (MIT, see NOTICE): same sliders, same results. Gaussian
-//! blur, sepia, invert and opacity follow the W3C Filter Effects Module
-//! Level 1 (https://www.w3.org/TR/filter-effects-1/): its three box blurs,
-//! its matrices and transfer functions.
-//!
-//! As in the spec: color work on straight (non-premultiplied) colors,
-//! blurs on premultiplied ones. Values are the layer's sRGB-encoded ones.
-//! Outside the image, edge pixels repeat: no dark or transparent fringe
-//! at the canvas border. Pixels are straight RGBA, 8 bits, rows tightly
-//! packed.
+//! Filters: tones, colors, sharpening, lines, edges and shadow as
+//! Photoshop (PhotoCraft's measurements, MIT, see NOTICE); blur, sepia,
+//! invert, opacity per the W3C Filter Effects spec. Straight 8-bit RGBA,
+//! blurs premultiplied, edges repeated.
 
 // Pixel code indexes channels side by side (p[c], table[c]...).
 #![allow(clippy::needless_range_loop)]
@@ -111,25 +101,26 @@ impl Kind {
         }
     }
 
-    /// One line on what it does.
+
+    /// One line under the dialog's title.
     pub fn hint(self) -> &'static str {
         match self {
-            Kind::BrightnessContrast => "Lighten or darken, more or less contrast; black and white stay put",
-            Kind::Levels => "Black point, white point and midtones, per channel, over the histogram",
-            Kind::HueSaturation => "Turn the hues, saturate or dull, per color range or colorize",
-            Kind::BlackWhite => "Grayscale with a say for each color: how light reds, blues… become",
-            Kind::Invert => "Negative image (W3C invert())",
-            Kind::Posterize => "A few flat tones per channel: cel-shading, screen-print looks",
-            Kind::Threshold => "Pure black or white from the luminosity: clean line art from a scan",
-            Kind::Sepia => "Old-photo browns (W3C sepia())",
-            Kind::Opacity => "Fade the layer (W3C opacity())",
-            Kind::GaussianBlur => "Soft blur (W3C feGaussianBlur: three box blurs)",
-            Kind::UnsharpMask => "Crisper edges: more contrast where the image changes",
-            Kind::Thicken => "Dark lines grow (Photoshop's Minimum), on paper or a transparent layer",
-            Kind::Thin => "Dark lines shrink (Photoshop's Maximum)",
-            Kind::FindEdges => "Outlines of what's painted, dark on white",
-            Kind::Emboss => "Gray relief, lit from an angle",
-            Kind::DropShadow => "A soft shadow under what's painted, in a color of your choice",
+            Kind::BrightnessContrast => "Lighter, darker, more or less contrast",
+            Kind::Levels => "Black point, white point, midtones",
+            Kind::HueSaturation => "Hue, saturation, lightness",
+            Kind::BlackWhite => "Grayscale, each color its own lightness",
+            Kind::Invert => "Negative",
+            Kind::Posterize => "A few flat tones",
+            Kind::Threshold => "Black or white",
+            Kind::Sepia => "Old-photo browns",
+            Kind::Opacity => "Fade the layer",
+            Kind::GaussianBlur => "Soft blur",
+            Kind::UnsharpMask => "Crisper edges",
+            Kind::Thicken => "Dark lines grow",
+            Kind::Thin => "Dark lines shrink",
+            Kind::FindEdges => "Outlines, dark on white",
+            Kind::Emboss => "Gray relief",
+            Kind::DropShadow => "A soft shadow under the layer",
         }
     }
 
@@ -182,8 +173,6 @@ impl Kind {
         }
     }
 
-    /// Its dialog draws the layer's histogram.
-    pub fn uses_histogram(self) -> bool { matches!(self, Kind::BrightnessContrast | Kind::Levels | Kind::Posterize | Kind::Threshold | Kind::Invert) }
 }
 
 /// A filter with its values (`Kind::defaults` layout), ready to apply.

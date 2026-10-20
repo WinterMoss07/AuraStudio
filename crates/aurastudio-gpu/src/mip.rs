@@ -1,11 +1,5 @@
-//! Mipmaps of the canvas texture: half-size copies down to one pixel, so a
-//! zoomed-out canvas samples an averaged image instead of skipping pixels
-//! (thin 2-3 px lines vanished at 25 %). Only the changed areas are
-//! rebuilt, on the GPU, right before the canvas is drawn: a stroke costs a
-//! few small draws per level, not a full rebuild.
-//!
-//! Each level is the 2x2 average of the level above (one bilinear sample
-//! between four texels), in the stored sRGB values, like Krita's LOD.
+//! Canvas mipmaps (thin lines stay visible zoomed out), rebuilt on the GPU
+//! only where the canvas changed; 2×2 averages of the stored values.
 
 use aurastudio_canvas::{Canvas, Rect};
 use wgpu::*;

@@ -1,18 +1,7 @@
-//! Undo / redo history of one document.
-//!
-//! Memory first: a step only stores the rectangle an action touched, never
-//! a whole layer (unless the action covered it), LZ4-compressed. A stroke
-//! on an empty layer is mostly transparent pixels and shrinks a lot. The
-//! history has a byte budget; the oldest steps are dropped beyond it.
-//!
-//! A step holds ONE buffer: the pixels to put back. Undoing swaps it with
-//! the current pixels, which become the redo data, so undo and redo cost
-//! no extra copy of the image.
-//!
-//! Layer steps (what the Layers docker does) work the same way: the tree
-//! as it was (settings and order, no pixels), swapped with the tree as it
-//! is; the nodes only one side has (deleted, or made) wait in the step
-//! with their pixels.
+//! Undo / redo of one document, within a byte budget. A pixel step keeps
+//! the touched rectangle, LZ4-compressed, swapped with the layer on undo
+//! (no extra copy); a layer step keeps the tree as it was and the nodes
+//! only one side has.
 
 use std::collections::VecDeque;
 
@@ -164,11 +153,8 @@ impl History {
         None
     }
 
-    /// The newest `max_undo` undo steps (oldest first) and every redo step
-    /// (next to redo last), for saving. Only the pixel steps: a layer step
-    /// holds the tree it goes back to, not kept in the file (the pixel
-    /// steps still apply: they only touch layers that exist, and are
-    /// skipped for the others, as for a deleted layer).
+    /// The newest `max_undo` undo steps and the redo steps, for saving:
+    /// pixel steps only (they apply to the layers that still exist).
     pub fn export(&self, max_undo: usize) -> (Vec<SavedStep>, Vec<SavedStep>) {
         let save = |s: &Step| match s {
             Step::Pixels(p) => Some(SavedStep { label: p.label.to_owned(), layer_id: p.layer_id, rect: p.rect, data: p.data.clone() }),

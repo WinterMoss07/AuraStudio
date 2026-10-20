@@ -1,14 +1,6 @@
-//! Mouse button bounce filter, in front of everything (UI, canvas, tools).
-//!
-//! A worn mouse switch "chatters": while held, it opens and closes again
-//! within a few ms. Without a filter, that is a real release then a real
-//! press: a slider drag stops, a stroke ends, an arc gets validated. Each
-//! left button release is held back `window` (View menu, 20 ms by
-//! default: old mice bounce for 15-20 ms); a press coming back in that
-//! time cancels both (the button stays down). Cursor moves in between are
-//! held too, so nothing sees them before it knows whether the button was
-//! released: after a real release they come after it (no stroke tail),
-//! after a bounce they continue the drag.
+//! Mouse button bounce filter: a left release is held back `window` ms
+//! (and the moves after it); a press within it cancels both, the button
+//! stays down (worn switches chatter: cut strokes, dropped drags).
 
 use std::time::{Duration, Instant};
 

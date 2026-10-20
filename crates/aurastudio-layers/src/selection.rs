@@ -1,7 +1,4 @@
-//! Selections: which pixels painting, filling and clearing may change.
-//!
-//! Stored as one bit per pixel (a B4 page at 600 dpi: 6.5 MB), plus the
-//! outline it was made from, to draw it.
+//! Selections: one bit per pixel, and the outline to draw.
 
 use aurastudio_canvas::Rect;
 

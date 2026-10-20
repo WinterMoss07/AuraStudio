@@ -1,21 +1,8 @@
-// The loops in this module mirror libmypaint's `rng-double.c` line-for-line;
-// rewriting them with iterator combinators would obscure the C correspondence.
+// rng-double.c's loops, line for line.
 #![allow(clippy::needless_range_loop, clippy::manual_memcpy)]
 
-//! libmypaint-compatible PRNG.
-//!
-//! Port of Knuth's TAOCP 3.6 exercise 3.6-15 lagged-Fibonacci-via-`mod_sum`
-//! generator as shipped in libmypaint as `rng-double.c`. libmypaint
-//! initialises this with seed `1000` for every fresh brush, then consumes
-//! it for the `Random` input, dab-position jitter (`offset_by_random`,
-//! `tracking_noise`) and `radius_by_random`. Matching the sequence is
-//! required for any byte-exact parity on those brushes.
-//!
-//! The previous MT19937-based generator produced statistically similar
-//! gaussians but the wrong sequence and a 1/√3 too-small standard
-//! deviation (`rand_gauss` here uses `sum * √3 − 2√3`, not the older
-//! `sum * 0.5 − 1`). That mismatch alone showed up as ≈ 0.8–1.0 MAD on
-//! charcoal fixtures.
+//! libmypaint's random numbers (rng-double.c: Knuth's lagged Fibonacci,
+//! seed 1000), the same sequence.
 
 const KK: usize = 10; // long lag
 const LL: usize = 7; // short lag
@@ -95,8 +82,7 @@ impl BrushRng {
         for j in LL..KK {
             self.ran_u[j - LL] = u[j];
         }
-        // Warm-up: run `get_array` 10 times into a scratch buffer
-        // (libmypaint discards these values).
+        // Warm-up: 10 arrays thrown away, as libmypaint.
         let mut warmup = [0.0_f64; KK + KK - 1];
         for _ in 0..10 {
             get_array(&mut self.ran_u, &mut warmup, KK + KK - 1);
@@ -113,8 +99,7 @@ impl BrushRng {
 
     /// Uniform [0, 1) as `f64` — libmypaint's `rng_double_next`.
     pub fn next_unit_f64(&mut self) -> f64 {
-        // libmypaint stops reading from the buffer once it has consumed `KK`
-        // values (it overwrites `buf[KK]` with a sentinel). Mirror that.
+        // Refill after KK values, as libmypaint.
         if self.buf_pos >= KK {
             return self.cycle();
         }
@@ -136,8 +121,7 @@ impl BrushRng {
             + self.next_unit_f64()
             + self.next_unit_f64()
             + self.next_unit_f64();
-        // Constants come straight from libmypaint's helpers.c — they are
-        // sqrt(3) and 2*sqrt(3) truncated to 11 decimals.
+        // √3 and 2√3 to 11 decimals, as helpers.c.
         const SCALE: f64 = 1.732_050_807_57;
         const OFFSET: f64 = 3.464_101_615_14;
         (s * SCALE - OFFSET) as f32
@@ -158,9 +142,6 @@ fn get_array(ran_u: &mut [f64; KK], aa: &mut [f64], n: usize) {
     for j in KK..n {
         aa[j] = mod_sum(aa[j - KK], aa[j - LL]);
     }
-    // libmypaint then walks `i` over [0, KK) while `j` continues from `n`,
-    // refilling `ran_u`. The first LL entries fold two `aa` values; the
-    // remaining KK - LL fold the freshly written `ran_u`.
     for i in 0..LL {
         let j = n + i;
         ran_u[i] = mod_sum(aa[j - KK], aa[j - LL]);

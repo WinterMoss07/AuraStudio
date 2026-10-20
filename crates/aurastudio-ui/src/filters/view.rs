@@ -1,15 +1,6 @@
-//! The dialog's preview: the layer before and after the filter, side by
-//! side on either part of a line you drag; zoom (wheel, buttons, a
-//! double-click for 100 %) and pan (drag). Zoomed out, a reduced copy is
-//! filtered (sizes in pixels reduced with it, as PhotoCraft's preview);
-//! from 100 % the layer's own pixels. The filtering runs on a thread of
-//! its own: the dialog never waits.
-//!
-//! The view math (centering, clamping, zoom steps) is adapted from
-//! PhotoCraft (`crates/ui-egui/src/filter_preview_ui.rs`), Copyright (c)
-//! 2026 ArtCraft Team and the PhotoCraft contributors, MIT License (see
-//! NOTICE). Changes: a before / after split instead of press-and-hold,
-//! crops filtered off the UI thread.
+//! The dialog's preview: before / after on either side of a line, zoom
+//! and pan, filtered on its own thread (view math after PhotoCraft, MIT,
+//! see NOTICE).
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -68,8 +59,8 @@ impl View {
         let row = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let mut z = None;
-            if ui.selectable_label(self.zoom.is_none(), "Fit").on_hover_text("The whole painted area").clicked() { z = Some(None); }
-            if ui.selectable_label(self.zoom == Some(1.0), "100 %").on_hover_text("One layer pixel per point").clicked() { z = Some(Some(1.0)); }
+            if ui.selectable_label(self.zoom.is_none(), "Fit").clicked() { z = Some(None); }
+            if ui.selectable_label(self.zoom == Some(1.0), "100 %").clicked() { z = Some(Some(1.0)); }
             if ui.button("−").clicked() { z = Some(Some(step(s, false))); }
             if ui.button("+").clicked() { z = Some(Some(step(s, true))); }
             ui.label(RichText::new(format!("{:.0} %", s * 100.0)).color(theme::TEXT_WEAK));

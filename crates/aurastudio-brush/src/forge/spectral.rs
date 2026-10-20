@@ -1,32 +1,13 @@
-// The SPECTRAL_{R,G,B} tables below are libmypaint-sourced constants written
-// at higher precision than f32 can store — the extra digits document the
-// upstream value, even though they round identically. Don't lint them.
+// libmypaint's constants, digits as written there.
 #![allow(clippy::excessive_precision)]
 
-//! Spectral upsampling / downsampling for libmypaint's pigment-style
-//! "paint" blend mode.
-//!
-//! libmypaint represents pigment mixing in 10 spectral channels (a
-//! reduced approximation of the full 36-channel reflectance curves
-//! Scharf / Sigg / Hege publish). Mixing two reflectances with a
-//! weighted geometric mean (WGM) closely matches how real paint
-//! mixes — which RGB linear-light mixing fails to replicate, most
-//! visibly for "blue + yellow → green" or "red + green → muddy
-//! brown".
-//!
-//! Tables come straight from `libmypaint/helpers.c` v1.6.1
-//! (`T_MATRIX_SMALL`, `spectral_r_small`, etc.). The WGM offset
-//! `WGM_EPSILON = 0.001` matches `helpers.h`.
-//!
-//! Inputs and outputs are straight-alpha linear sRGB in `[0, 1]`.
+//! libmypaint's pigment mixing: colors as 10 spectral channels mixed by a
+//! weighted geometric mean (blue + yellow give green). Tables from
+//! libmypaint 1.6.1's helpers.c.
 
 const WGM_EPSILON: f32 = 0.001;
 
-/// Approximate `log2(x)` matching libmypaint's `fastlog2` (from Paul
-/// Mineiro's fastapprox library — vendored into libmypaint via
-/// `brushlib/fastapprox/fastlog.h`). Used so hokusai's WGM spectral
-/// mixing produces the same numerical output as libmypaint's
-/// `fastpow` chain.
+/// libmypaint's fastlog2 (fastapprox).
 #[inline]
 fn fastlog2(x: f32) -> f32 {
     let vx = x.to_bits();
@@ -48,10 +29,7 @@ fn fastpow2(p: f32) -> f32 {
     f32::from_bits(bits)
 }
 
-/// Approximate `x.powf(p)` matching libmypaint's `fastpow` — relative
-/// error ≈ 2 % per call, but exactly the same arithmetic libmypaint
-/// uses in `mix_colors` and `get_color_pixels_accumulate`, so the
-/// spectral path produces bit-identical output to the reference.
+/// libmypaint's fastpow (~2 % error, same as libmypaint's).
 #[inline]
 pub fn fastpow(x: f32, p: f32) -> f32 {
     fastpow2(p * fastlog2(x))
@@ -67,16 +45,13 @@ pub fn fastlog2_all(spec: &[f32; 10]) -> [f32; 10] {
     out
 }
 
-/// `fastpow2` for the WGM mix, branch-free so the 10 channels vectorize
-/// (AuraStudio patch). Bit-identical to `fastpow2` for `p <= 127`: the
-/// exponent is clamped to [-126, 127], where the truncating casts can't
-/// overflow, so the unchecked casts give what `as` gives.
+/// fastpow2, branch-free (the 10 channels vectorize); the same results
+/// for p ≤ 127.
 #[inline(always)]
 fn fastpow2_wgm(p: f32) -> f32 {
     let offset = if p < 0.0 { 1.0 } else { 0.0 };
     let clipp = p.clamp(-126.0, 127.0);
-    // SAFETY: clipp is finite and in [-126, 127] (NaN never reaches
-    // here: the inputs are finite logs of positive values times weights).
+    // SAFETY: clipp is finite, in [-126, 127].
     let w = unsafe { clipp.to_int_unchecked::<i32>() };
     let z = clipp - w as f32 + offset;
     let v = (1 << 23) as f32 * (clipp + 121.274_055 + 27.728_022 / (4.842_525_7 - z) - 1.490_129_1 * z);
@@ -189,10 +164,7 @@ pub fn rgb_to_spectral(r: f32, g: f32, b: f32) -> [f32; 10] {
     out
 }
 
-/// Downsample 10 spectral channels back to straight-alpha linear sRGB.
-/// Negative `T_MATRIX` rows can push the result below `WGM_EPSILON`;
-/// the `(tmp - WGM_EPSILON) / offset` step undoes the upsample epsilon
-/// and clamps the result into `[0, 1]`.
+/// 10 spectral channels back to RGB, 0..1.
 pub fn spectral_to_rgb(spec: &[f32; 10]) -> (f32, f32, f32) {
     let offset = 1.0 - WGM_EPSILON;
     let mut tmp = [0.0_f32; 3];
@@ -205,14 +177,8 @@ pub fn spectral_to_rgb(spec: &[f32; 10]) -> (f32, f32, f32) {
     (out(tmp[0]), out(tmp[1]), out(tmp[2]))
 }
 
-/// Port of libmypaint's `mix_colors` (helpers.c) — blends two RGBA
-/// straight-alpha colours `a` and `b` (the "current smudge state" and
-/// the "sampled / brush" colour) with weight `fac` for `a`. When
-/// `paint_mode > 0` the colour channels mix in spectral space via WGM;
-/// when `paint_mode < 1` a linear mix is layered in proportionally so a
-/// fractional setting fades smoothly between the two.
-///
-/// Returns `[r, g, b, a]` straight-alpha.
+/// libmypaint's mix_colors: `a` weighted `fac` with `b`, spectral by
+/// `paint_mode`, linear for the rest. Straight RGBA.
 pub fn mix_colors(a: [f32; 4], b: [f32; 4], fac: f32, paint_mode: f32) -> [f32; 4] {
     let opa_a = fac;
     let opa_b = 1.0 - opa_a;
@@ -231,13 +197,7 @@ pub fn mix_colors(a: [f32; 4], b: [f32; 4], fac: f32, paint_mode: f32) -> [f32; 
         let spec_b = rgb_to_spectral(b[0], b[1], b[2]);
         let mut mix = [0.0_f32; 10];
         for i in 0..10 {
-            // helpers.c `mix_colors` deliberately uses the REAL powf
-            // ("called infrequently enough that we can afford to not use
-            // the faster approximations") — unlike the per-pixel blend
-            // loops in brushmodes.c, which do use fastpow. Running fastpow
-            // here shifted every smudge-bucket mix by its ~2 % error, and
-            // the bucket → dab colour → canvas → resample feedback loop
-            // amplified that into a visible colour drift (Round#1).
+            // The real powf, as helpers.c (fastpow's error drifted the smudge colors).
             mix[i] = spec_a[i].powf(sfac_a) * spec_b[i].powf(sfac_b);
         }
         let (r, g, b_) = spectral_to_rgb(&mix);
@@ -255,10 +215,7 @@ pub fn mix_colors(a: [f32; 4], b: [f32; 4], fac: f32, paint_mode: f32) -> [f32; 
     result
 }
 
-/// Sigmoid-ish factor libmypaint uses to fade between additive and
-/// spectral blending at low canvas alpha. `x` is the destination
-/// alpha in `[0, 1]`; returns a value in roughly the same range with
-/// a smooth transition centred near `x ≈ 0.375`.
+/// Additive to spectral blending by the canvas alpha.
 pub fn spectral_blend_factor(x: f32) -> f32 {
     const VER_FAC: f32 = 1.65;
     const HOR_FAC: f32 = 8.0;

@@ -1,9 +1,5 @@
-//! Tone curves measured on Photoshop: Brightness / Contrast (modern and
-//! legacy), Levels with its midtone toe, Posterize, Threshold.
-//!
-//! Adapted from PhotoCraft (`crates/compose/src/adjust.rs`),
-//! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors,
-//! MIT License (see NOTICE). Changes: 8-bit tables, our parameter layout.
+//! Tone curves measured on Photoshop (Brightness / Contrast, Levels,
+//! Posterize, Threshold), adapted from PhotoCraft (MIT, see NOTICE).
 
 /// Output level of the Brightness curve's knee.
 const BRIGHTNESS_KNEE: f32 = 126.0 / 255.0;

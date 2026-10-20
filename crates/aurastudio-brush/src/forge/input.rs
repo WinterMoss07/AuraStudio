@@ -1,7 +1,4 @@
-//! ForgeBrush inputs — drivers fed by the application each `stroke_to` call.
-//!
-//! String names match libmypaint's `brushsettings.json` `inputs` keys, so
-//! `.myb` files round-trip without translation.
+//! The inputs curves read, named as in .myb files.
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(usize)]

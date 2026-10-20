@@ -1,7 +1,5 @@
-//! The arc tool's state between clicks (it lives across presses and
-//! releases), modeled on OpenToonz's arc / multi-arc tool. Kept apart
-//! from the window code so press / release / move sequences can be
-//! tested, mouse button bounce included (filtered before, debounce.rs).
+//! The arc tool between clicks (OpenToonz's multi-arc), apart from the
+//! window code to be tested.
 
 use crate::shapes;
 

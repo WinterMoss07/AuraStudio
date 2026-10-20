@@ -1,13 +1,5 @@
-//! Drawing pieces of the filter dialogs: graphs, histograms, gradient
-//! bars, triangle handles, value sliders with a colored track, the angle
-//! dial.
-//!
-//! The histogram, gradient bar and handle drawing are adapted from
-//! PhotoCraft (`crates/ui-egui/src/tone.rs`, `adjust_editors.rs`),
-//! Copyright (c) 2026 ArtCraft Team and the PhotoCraft contributors, MIT
-//! License (see NOTICE). Changes: bars drawn per bin (PhotoCraft's last
-//! bin sloped down to the corner and its first half bin was missing), a
-//! shared scale for before / after histograms, our theme.
+//! Filter dialog drawings: histograms, bars, handles, sliders, the angle
+//! dial (after PhotoCraft, MIT, see NOTICE).
 
 use egui::{epaint, pos2, vec2, Align2, Color32, FontId, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, Ui};
 
@@ -279,7 +271,7 @@ pub fn slider(ui: &mut Ui, id: &str, spec: Spec, v: &mut f32) -> bool {
     }
     let active = resp.hovered() || resp.dragged();
     handle(&p, to_x(*v), bar.bottom() - 2.0, if active { theme::TEXT } else { Color32::from_gray(210) }, resp.dragged());
-    resp.on_hover_text("Drag; Shift: finer; double-click: default");
+    resp.on_hover_text("Double-click: reset");
     *v != before
 }
 
@@ -310,7 +302,7 @@ pub fn angle(ui: &mut Ui, label: &str, deg: &mut f32, default: f32) -> bool {
         p.line_segment([c, tip], Stroke::new(1.6_f32, theme::TEXT));
         p.circle_filled(tip, 3.0, theme::ACCENT);
         p.circle_filled(c, 2.0, theme::TEXT_WEAK);
-        resp.on_hover_text("Drag around; Shift: 15° steps; double-click: default");
+        resp.on_hover_text("Double-click: reset");
         ui.label(RichText::new(label).color(theme::TEXT));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(RichText::new("°").color(theme::TEXT_WEAK));

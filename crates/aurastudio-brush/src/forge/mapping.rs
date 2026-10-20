@@ -11,30 +11,14 @@ pub struct InputMapping {
 }
 
 impl InputMapping {
-    pub fn new(input: BrushInput) -> Self {
-        Self {
-            input,
-            points: Vec::new(),
-        }
-    }
-
-    /// Evaluate the piecewise-linear curve at `x`. Mirrors libmypaint's
-    /// `mypaint_mapping_calculate` (mypaint-mapping.c): starts with the
-    /// first two knots, walks forward while `x > x1`, and if the resulting
-    /// bracket has `x0 == x1` or `y0 == y1` returns `y0` directly to dodge
-    /// division by zero on duplicate-x knots (Dieterle/Posterizer's
-    /// opaque_multiply curve has `[(0,0),(0,1),(1,1)]` exactly).
+    /// The curve at `x`, as libmypaint's mypaint_mapping_calculate (first and
+    /// last segments extended; a flat or vertical one gives its y0).
     pub fn eval(&self, x: f32) -> f32 {
         let p = &self.points;
         match p.len() {
             0 => 0.0,
             1 => p[0].1,
             _ => {
-                // libmypaint scans the points left-to-right starting from the
-                // second one; whatever segment we land on at the end of the
-                // scan is what gets used (which means below-range input
-                // clamps to the first segment, above-range extrapolates from
-                // the last segment, with the same special case applied).
                 let (mut x0, mut y0) = p[0];
                 let (mut x1, mut y1) = p[1];
                 #[allow(clippy::needless_range_loop)]
@@ -51,9 +35,6 @@ impl InputMapping {
                 if x0 == x1 || y0 == y1 {
                     y0
                 } else {
-                    // Linear interpolation. The formula matches libmypaint's
-                    // `(y1*(x-x0) + y0*(x1-x)) / (x1-x0)` and extrapolates
-                    // naturally when x is outside [x0, x1].
                     (y1 * (x - x0) + y0 * (x1 - x)) / (x1 - x0)
                 }
             }
@@ -61,13 +42,9 @@ impl InputMapping {
     }
 }
 
-/// How a setting's input curves combine with its base value.
-///
-/// - `MyPaint`: `base + Σ curve(input)`, each curve an offset (.myb files).
-/// - The others are Krita's: each curve gives a factor (usually 0..1) and
-///   the setting is `base × combined factors`; for a logarithmic setting
-///   (radius...) that is `base + ln(factor)`. One curve: its factor. More:
-///   their product (Krita's default), sum, max, min, or max − min.
+/// How a setting's curves combine: MyPaint adds offsets (base + Σ); the
+/// others (Krita) multiply factors (base × product, sum, max, min or
+/// max − min; + ln(factor) for a logarithmic setting).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Combine {
     #[default]
@@ -102,12 +79,6 @@ pub struct SettingValue {
     pub base_value: f32,
     pub inputs: Vec<InputMapping>,
     pub combine: Combine,
-    /// Input mappings on this setting whose input name hokusai doesn't
-    /// know about. Kept verbatim so a `.myb` parse + serialize cycle
-    /// stays lossless even for brush packs that use inputs hokusai
-    /// hasn't ported yet (or third-party extensions). The mapping is
-    /// not consulted during evaluation.
-    pub unknown_inputs: std::collections::BTreeMap<String, Vec<(f32, f32)>>,
 }
 
 impl SettingValue {
@@ -116,7 +87,6 @@ impl SettingValue {
             base_value: v,
             inputs: Vec::new(),
             combine: Combine::MyPaint,
-            unknown_inputs: std::collections::BTreeMap::new(),
         }
     }
 }

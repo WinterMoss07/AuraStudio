@@ -1,12 +1,5 @@
-//! What the paint thread hands to the screen: pieces of the merged image.
-//!
-//! Like Krita, the merge happens off the UI thread (here, on the paint
-//! thread right after painting). Only the changed rectangles are merged,
-//! each into a small buffer of its own, and queued here; the UI thread
-//! copies them to the GPU texture and drops them. The whole merged image
-//! only exists on the GPU: no second copy in RAM (33 MB at A4 300 dpi,
-//! 200 MB at B4 600 dpi). It has its own small lock, separate from the
-//! document's, so neither thread waits long for the other.
+//! The changed pieces of the merged image, from the paint thread to the
+//! GPU (the whole image only exists there), behind their own lock.
 
 use std::sync::{Arc, Mutex};
 
@@ -47,10 +40,8 @@ impl Projection {
     }
 }
 
-/// Add `r` to a list of changed areas, merging it into an existing one
-/// when that costs no more area than keeping both. Kept as a list (Krita
-/// does the same): one bounding box of a long diagonal stroke covers mostly
-/// untouched pixels, and merging / uploading them was most of the old cost.
+/// Add `r` to the changed areas, merged with one when that costs no more
+/// area (a list, not one box: a diagonal stroke's box is mostly empty).
 pub fn add_rect(list: &mut Vec<Rect>, r: Rect) {
     if r.0 >= r.2 || r.1 >= r.3 { return; }
     for d in list.iter_mut() {

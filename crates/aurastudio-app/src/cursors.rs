@@ -1,7 +1,5 @@
-//! Mouse cursors: the app decides which one shows (egui only suggests one
-//! over its widgets), and draws its own hand and rotate cursors (the
-//! system has no open / closed hand on Windows: winit falls back to the
-//! four-arrow "move" cross there).
+//! Mouse cursors: the app picks them and draws its own hand and rotate
+//! cursors (Windows has no hand cursor).
 
 use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use winit::{

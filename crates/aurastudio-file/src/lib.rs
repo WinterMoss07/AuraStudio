@@ -1,25 +1,7 @@
-//! Files: the AuraStudio document format (`.aurs`) and image import /
-//! export.
-//!
-//! An `.aurs` file is a zip archive (like Krita's .kra or OpenRaster's
-//! .ora), every entry stored as is:
-//!
-//! - `mimetype`: `application/x-aurastudio`, first, so the type can be
-//!   told from the first bytes;
-//! - `document.json`: canvas size, resolution, active layer, the layer
-//!   tree (names, folders, filter layers, opacity, blend, visibility,
-//!   locks, color labels, clipping, reference and draft marks) and the
-//!   undo / redo steps;
-//! - `layers/<id>.tiles`: each layer's painted tiles (64 × 64 RGBA), each
-//!   LZ4-compressed (fast both ways); an empty layer has none. Format 1
-//!   (before tiled layers) held `layers/<id>.lz4`, every pixel: still read;
-//! - `history/undo-<n>.lz4`, `history/redo-<n>.lz4`: the newest undo steps,
-//!   as the history keeps them in memory;
-//! - `preview.png`: the merged image, at most 512 px, for file browsers and
-//!   the start screen.
-//!
-//! Reading never trusts the file: sizes, ids and lengths are checked, and a
-//! damaged file gives an error, never a crash or a huge allocation.
+//! `.aurs` documents (a zip like .kra / .ora, entries stored: mimetype,
+//! document.json, layers/<id>.tiles LZ4, history/, preview.png) and image
+//! import / export. Reading checks everything: a damaged file gives an
+//! error, never a crash.
 
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};

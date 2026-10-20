@@ -1,9 +1,5 @@
-//! Display color management: sRGB canvas pixels converted through the
-//! monitor's ICC profile, so they look right on it (like Krita, Photoshop).
-//!
-//! The transform (moxcms) is baked into a 3D lookup table the GPU applies
-//! per pixel; the color docker uses the same table. The UI itself is not
-//! converted (its grays stay neutral).
+//! Display color management: the canvas through the monitor's ICC profile
+//! (moxcms, as a 3D table on the GPU); the UI isn't converted.
 
 mod monitor;
 

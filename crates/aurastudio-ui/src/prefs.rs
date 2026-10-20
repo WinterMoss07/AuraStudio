@@ -134,7 +134,7 @@ pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile
             });
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Restore defaults").on_hover_text("Every preference back to its default").clicked() {
+                if ui.button("Restore defaults").clicked() {
                     *p = Prefs::default();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -165,18 +165,16 @@ fn interface(ui: &mut Ui, p: &mut Prefs, reset_docks: &mut bool) {
     });
     note(ui, "On top of the system's display scaling.");
     title(ui, "Tools docker");
-    ui.checkbox(&mut p.brush_previews, "Show brush strokes")
-        .on_hover_text("Off: brush names only (lighter on slow machines)");
+    ui.checkbox(&mut p.brush_previews, "Show brush strokes");
     title(ui, "Window");
     ui.checkbox(&mut p.open_maximized, "Open maximized");
     ui.add_space(6.0);
-    if ui.button("Reset docks").on_hover_text("Docks back to their default places").clicked() { *reset_docks = true; }
+    if ui.button("Reset docks").clicked() { *reset_docks = true; }
 }
 
 fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>) {
     title(ui, "Zoom");
-    ui.checkbox(&mut p.hidpi_scaling, "HiDPI image scaling")
-        .on_hover_text("100 % shows the image at the size of the interface");
+    ui.checkbox(&mut p.hidpi_scaling, "HiDPI image scaling");
     note(ui, "Off: 100 % is one image pixel per screen pixel.");
     title(ui, "Color management");
     note(ui, &format!("Monitor profile: {}", profile.unwrap_or("none found (sRGB)")));
@@ -191,15 +189,14 @@ fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>) {
 
 fn brushes(ui: &mut Ui, p: &mut Prefs) {
     title(ui, "Cursor");
-    ui.checkbox(&mut p.brush_outline, "Brush outline over the canvas")
-        .on_hover_text("Off: a crosshair");
+    ui.checkbox(&mut p.brush_outline, "Brush outline over the canvas");
     title(ui, "Mouse click debounce");
     ui.horizontal_wrapped(|ui| {
         for ms in DEBOUNCES {
             ui.radio_value(&mut p.debounce_ms, ms, if ms == 0 { "Off".to_string() } else { format!("{ms} ms") });
         }
     });
-    note(ui, "Ignores a worn mouse button's double release (a stroke cut in two).");
+    note(ui, "Ignores a worn mouse button's double release.");
 }
 
 fn files(ui: &mut Ui, p: &mut Prefs) {
@@ -209,7 +206,7 @@ fn files(ui: &mut Ui, p: &mut Prefs) {
             ui.radio_value(&mut p.autosave_minutes, m, if m == 0 { "Never".to_string() } else { format!("{m} min") });
         }
     });
-    note(ui, "Unsaved work goes to a recovery file this long after a change; it is offered back if AuraStudio doesn't close normally.");
+    note(ui, "Unsaved work is kept for recovery after this delay.");
 }
 
 #[cfg(test)]

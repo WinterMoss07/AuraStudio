@@ -1,30 +1,8 @@
-//! Stroke previews: a stroke painted by Forge with the brush's current
-//! settings, as the Tools and Tool options dockers show it.
-//!
-//! - `Mode::List` (the Tools docker): the stroke alone, light, on nothing
-//!   (the UI shows through). Erasers and blenders are drawn as if they
-//!   painted: the list shows the shape of the stroke (hard, soft,
-//!   textured, tapered).
-//! - `Mode::Detail` (Tool options), like Clip Studio Paint: the left half
-//!   is light gray paint, the right half nothing (the dark UI shows
-//!   through); the stroke starts in the paint and leaves it. A brush paints
-//!   over both, an eraser cuts through the paint, a blender drags it out.
-//!
-//! The size follows the brush's (true size for small brushes, compressed
-//! for big ones); the path stays the same whatever the size. Geometry
-//! tools draw their shape 1 to 15 px thick (what the brush really paints,
-//! dynamics included), whatever the brush size.
-//!
-//! A size change only grows or shrinks the dabs, like Clip Studio Paint:
-//! - the dabs keep their places along the path (`Spacing::Fixed`): the
-//!   brush's own density (dabs per radius, at its real size) rounded to
-//!   a spacing of ½, 1, 2, 4... px, with a fade into the next step (every
-//!   other dab dropped, the rest in place) when it gets near it;
-//! - each dab's random numbers come from its place
-//!   (`ForgeOptions::seeds_by_place`): textures grow instead of being
-//!   redrawn;
-//! - a brush whose dynamics paint past its radius gets a smaller size,
-//!   continuously: how far past is measured once per brush (`overflow`).
+//! Stroke previews painted by Forge: alone in the Tools list (erasers and
+//! blenders drawn as paint), over half a gray band in Tool options (CSP).
+//! A size change only grows the dabs: they keep their places (fixed
+//! spacing, ½, 1, 2, 4... px) and their random numbers (seeds by place);
+//! a brush painting past its radius gets a smaller size (`overflow`).
 
 use aurastudio_brush::forge::{BrushSetting, Spacing};
 use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
