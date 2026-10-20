@@ -10,6 +10,12 @@
 //! painting would trail the pen), worst cases, and memory.
 //!
 //!     PAINT_SECS=1200 cargo test --release -p aurastudio painter_session -- --ignored --nocapture
+//!
+//! PAINT_OPS stops it after that many actions; PAINT_SIZE=600x850 paints
+//! a smaller page with everything scaled to it (brushes, gestures), to run
+//! many more actions. Every action is followed by the document checks of
+//! the pure fuzz (pure.rs), and now and then undo n + redo n must give the
+//! same document back.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +43,16 @@ enum Work { Sketch, Paint, Blend, Ink, Erase, Shape, Fill, Lasso, Paste, Layers,
 struct Stat { n: u64, samples: u64, busy: Duration, pen: Duration, worst: Duration, worst_ratio: f64, lagging: u64 }
 
 impl Stat {
+    fn merge(&mut self, o: &Stat) {
+        self.n += o.n;
+        self.samples += o.samples;
+        self.busy += o.busy;
+        self.pen += o.pen;
+        self.worst = self.worst.max(o.worst);
+        self.worst_ratio = self.worst_ratio.max(o.worst_ratio);
+        self.lagging += o.lagging;
+    }
+
     fn add(&mut self, busy: Duration, pen: Duration, samples: usize) {
         self.n += 1;
         self.samples += samples as u64;
@@ -96,6 +112,8 @@ struct Session {
     /// Slowest strokes compared with the pen: (ratio, ms, brush, radius).
     slowest: Vec<(f64, f64, String, f32)>,
     colors: Vec<[u8; 3]>,
+    /// The page's size compared with an A4 page at 300 dpi.
+    k:      f32,
 }
 
 impl Session {
@@ -114,9 +132,14 @@ impl Session {
         (w * (0.5 + self.r.range(-0.45, 0.45) * self.r.f()), h * (0.5 + self.r.range(-0.45, 0.45) * self.r.f()))
     }
 
+    /// A hand-drawn path at the page's scale.
+    fn path(&mut self, start: P, len: f32, speed: f32) -> Vec<P> {
+        pen_path(&mut self.r, start, len * self.k, speed * self.k)
+    }
+
     fn stroke(&mut self, work: Work, preset: usize, radius: f32, path: &[P], base: f32, erase: bool) {
         let mut brush: Brush = self.lib.presets[preset].settings.clone();
-        brush.radius = radius;
+        brush.radius = (radius * self.k).max(0.5);
         brush.erase = erase;
         brush.color = self.colors[self.r.below(self.colors.len() as u64) as usize];
         brush.opacity = if self.r.chance(0.3) { self.r.range(0.3, 1.0) } else { 1.0 };
@@ -170,8 +193,14 @@ fn painter_session() {
     println!("brushes: {} pencils, {} paint, {} smudge/blend, {} ink, {} erasers",
         pencils.len(), paints.len(), blends.len(), inks.len(), erasers.len());
 
-    // An A4 page at 300 dpi, like a real illustration.
-    let size = (2480u32, 3508u32);
+    // An A4 page at 300 dpi, like a real illustration (or PAINT_SIZE).
+    let size = std::env::var("PAINT_SIZE").ok()
+        .and_then(|s| { let (w, h) = s.split_once('x')?; Some((w.parse().ok()?, h.parse().ok()?)) })
+        .unwrap_or((2480u32, 3508u32));
+    let max_ops: u64 = std::env::var("PAINT_OPS").ok().and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
+    let k = size.0.min(size.1) as f32 / 2480.0;
+    let mut undo_checks = 0u64;
+    let mut totals: BTreeMap<Work, Stat> = BTreeMap::new();
     let doc: SharedDoc = Arc::new(Mutex::new(Document::new(DocId(1), "session", size.0, size.1)));
     let projection = Arc::new(Mutex::new(Projection::new(size.0, size.1)));
     let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
@@ -197,6 +226,7 @@ fn painter_session() {
         r: Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1),
         lib, doc, pt, size, t: 0.0, stats: BTreeMap::new(), slowest: Vec::new(),
         colors: vec![[20, 20, 24], [180, 60, 50], [230, 200, 160], [60, 90, 150], [240, 240, 235], [90, 140, 80]],
+        k,
     };
     let (t0, mut next_report, mut next_save) = (Instant::now(), 60u64, 90u64);
     let mut peak_mb = 0u64;
@@ -207,7 +237,7 @@ fn painter_session() {
         s.doc.lock().unwrap().layers.add_layer(name);
     }
 
-    while t0.elapsed().as_secs() < secs && !PANICKED.load(Ordering::SeqCst) {
+    while t0.elapsed().as_secs() < secs && ops < max_ops && !PANICKED.load(Ordering::SeqCst) {
         ops += 1;
         // Work on a random layer, as a painter switches between them.
         if s.r.chance(0.08) {
@@ -224,8 +254,8 @@ fn painter_session() {
                 for _ in 0..s.r.below(6) + 1 {
                     let len = s.r.range(40.0, 500.0);
                     let speed = s.r.range(800.0, 3000.0);
-                    let at = (start.0 + s.r.range(-60.0, 60.0), start.1 + s.r.range(-60.0, 60.0));
-                    let path = pen_path(&mut s.r, at, len, speed);
+                    let at = (start.0 + s.r.range(-60.0, 60.0) * s.k, start.1 + s.r.range(-60.0, 60.0) * s.k);
+                    let path = s.path(at, len, speed);
                     let radius = s.r.range(1.0, 6.0);
                     let base = s.r.range(0.25, 0.7);
                     s.stroke(Work::Sketch, preset, radius, &path, base, false);
@@ -236,7 +266,7 @@ fn painter_session() {
                 let preset = paints[s.r.below(paints.len() as u64) as usize];
                 let radius = if s.r.chance(0.2) { s.r.range(250.0, 500.0) } else { s.r.range(30.0, 250.0) };
                 let (len, speed) = (s.r.range(200.0, 2500.0), s.r.range(500.0, 2000.0));
-                let path = pen_path(&mut s.r, start, len, speed);
+                let path = s.path(start, len, speed);
                 let base = s.r.range(0.5, 1.0);
                 s.stroke(Work::Paint, preset, radius, &path, base, false);
             }
@@ -245,7 +275,7 @@ fn painter_session() {
                 let preset = blends[s.r.below(blends.len() as u64) as usize];
                 let radius = s.r.range(20.0, 300.0);
                 let (len, speed) = (s.r.range(100.0, 1200.0), s.r.range(300.0, 1200.0));
-                let path = pen_path(&mut s.r, start, len, speed);
+                let path = s.path(start, len, speed);
                 let base = s.r.range(0.4, 1.0);
                 s.stroke(Work::Blend, preset, radius, &path, base, false);
             }
@@ -253,7 +283,7 @@ fn painter_session() {
             57..=68 => {
                 let preset = if s.r.chance(0.5) { inks[s.r.below(inks.len() as u64) as usize] } else { round[0] };
                 let (len, speed) = (s.r.range(100.0, 1500.0), s.r.range(300.0, 1200.0));
-                let path = pen_path(&mut s.r, start, len, speed);
+                let path = s.path(start, len, speed);
                 let radius = s.r.range(0.5, 4.0);
                 let base = s.r.range(0.6, 1.0);
                 s.stroke(Work::Ink, preset, radius, &path, base, false);
@@ -262,7 +292,7 @@ fn painter_session() {
             69..=72 => {
                 let preset = if !erasers.is_empty() && s.r.chance(0.5) { erasers[s.r.below(erasers.len() as u64) as usize] } else { round[0] };
                 let (len, speed) = (s.r.range(50.0, 800.0), s.r.range(500.0, 2000.0));
-                let path = pen_path(&mut s.r, start, len, speed);
+                let path = s.path(start, len, speed);
                 let radius = s.r.range(3.0, 80.0);
                 s.stroke(Work::Erase, preset, radius, &path, 1.0, true);
             }
@@ -274,13 +304,14 @@ fn painter_session() {
                 let mut a = first;
                 let n = s.r.below(5) + 2;
                 for i in 0..n {
-                    let b = if i + 1 == n { first } else { (a.0 + s.r.range(-300.0, 300.0), a.1 + s.r.range(-300.0, 300.0)) };
-                    let c = (a.0 + s.r.range(-250.0, 250.0), a.1 + s.r.range(-250.0, 250.0));
+                    let k = s.k;
+                    let b = if i + 1 == n { first } else { (a.0 + s.r.range(-300.0, 300.0) * k, a.1 + s.r.range(-300.0, 300.0) * k) };
+                    let c = (a.0 + s.r.range(-250.0, 250.0) * k, a.1 + s.r.range(-250.0, 250.0) * k);
                     let arc = crate::shapes::arc(a, b, c);
                     path.extend(arc.into_iter().skip(usize::from(i > 0)));
                     a = b;
                 }
-                if s.r.chance(0.4) { path = crate::shapes::ellipse(start, (start.0 + s.r.range(20.0, 900.0), start.1 + s.r.range(20.0, 900.0))); }
+                if s.r.chance(0.4) { path = crate::shapes::ellipse(start, (start.0 + s.r.range(20.0, 900.0) * s.k, start.1 + s.r.range(20.0, 900.0) * s.k)); }
                 let radius = s.r.range(0.5, 3.0);
                 s.stroke(Work::Shape, preset, radius, &path, 1.0, false);
             }
@@ -296,13 +327,13 @@ fn painter_session() {
             82..=85 => {
                 let pts: Vec<P> = (0..s.r.below(80) + 8).map(|i| {
                     let a = i as f32 * 0.4;
-                    let rr = s.r.range(150.0, 600.0);
+                    let rr = s.r.range(150.0, 600.0) * s.k;
                     (start.0 + rr * a.cos(), start.1 + rr * a.sin())
                 }).collect();
                 let sel = Selection::polygon(size.0, size.1, &pts);
                 s.timed(Work::Lasso, |s| s.doc.lock().unwrap().selection = sel);
                 let preset = paints[s.r.below(paints.len() as u64) as usize];
-                let path = pen_path(&mut s.r, start, 900.0, 1500.0);
+                let path = s.path(start, 900.0, 1500.0);
                 let radius = s.r.range(40.0, 200.0);
                 s.stroke(Work::Paint, preset, radius, &path, 0.9, false);
                 if s.r.chance(0.6) { s.doc.lock().unwrap().selection = None; }
@@ -311,9 +342,9 @@ fn painter_session() {
             86..=88 => {
                 let pts: Vec<P> = (0..24).map(|i| {
                     let a = i as f32 * std::f32::consts::TAU / 24.0;
-                    (start.0 + 300.0 * a.cos(), start.1 + 220.0 * a.sin())
+                    (start.0 + 300.0 * s.k * a.cos(), start.1 + 220.0 * s.k * a.sin())
                 }).collect();
-                let (dx, dy) = (s.r.range(-400.0, 400.0) as i64, s.r.range(-400.0, 400.0) as i64);
+                let (dx, dy) = ((s.r.range(-400.0, 400.0) * s.k) as i64, (s.r.range(-400.0, 400.0) * s.k) as i64);
                 s.timed(Work::Paste, |s| {
                     let clip = {
                         let mut d = s.doc.lock().unwrap();
@@ -322,6 +353,13 @@ fn painter_session() {
                         d.selection = None;
                         c
                     };
+                    // (Each paste is a layer: past 30, merge one away instead.)
+                    if s.layer_count() > 24 {
+                        let mut d = s.doc.lock().unwrap();
+                        d.layers.remove_active();
+                        d.record_tree("Delete layer");
+                        return;
+                    }
                     if let Some(mut clip) = clip {
                         clip.x += dx;
                         clip.y += dy;
@@ -331,20 +369,55 @@ fn painter_session() {
             }
             // Layers: new, duplicate, move, hide, opacity, delete.
             89..=93 => {
-                let k = s.r.below(6);
-                let many = s.layer_count() > 30;
+                let k = s.r.below(14);
+                let (nodes, filters) = {
+                    let d = s.doc.lock().unwrap();
+                    fn count(n: &[Node], out: &mut (usize, usize)) {
+                        for x in n {
+                            out.0 += 1;
+                            match x { Node::Filter(_) => out.1 += 1, Node::Folder(f) => count(&f.children, out), Node::Layer(_) => {} }
+                        }
+                    }
+                    let mut c = (0, 0);
+                    count(&d.layers.root, &mut c);
+                    c
+                };
+                // (A painter keeps a few adjustment layers, not dozens.)
+                let many = nodes > 30;
                 let pick_opacity = s.r.range(0.2, 1.0);
                 let up = s.r.chance(0.5);
+                let label = s.r.below(9) as u8;
+                let adjust = {
+                    use aurastudio_filters::{Filter, Kind};
+                    let kinds = [Kind::Levels, Kind::HueSaturation, Kind::BrightnessContrast, Kind::BlackWhite, Kind::GaussianBlur, Kind::Posterize];
+                    let mut f = Filter::new(kinds[s.r.below(kinds.len() as u64) as usize]);
+                    for v in f.values.iter_mut() { *v *= s.r.range(0.5, 1.5); }
+                    f
+                };
+                let pick = s.r.f();
                 s.timed(Work::Layers, |s| {
                     let mut d = s.doc.lock().unwrap();
+                    let ids = d.layers.layer_ids();
+                    let some: Vec<u64> = ids.iter().copied().filter(|_| pick < 0.4).take(3).collect();
                     match k {
                         0 if !many => { let id = d.layers.add_layer("Layer"); d.layers.set_active(id); }
                         1 if !many => { d.layers.duplicate_active(); }
                         2 => d.layers.move_active(up),
                         3 => { let n = d.layers.active_node_mut(); *n.visible_mut() ^= true; }
                         4 => *d.layers.active_node_mut().opacity_mut() = pick_opacity,
-                        _ => if d.layers.layer_count() > 6 { d.layers.remove_active(); },
+                        // 0.10: clipping, marks, labels, folders, filter layers.
+                        5 => { let p = d.layers.active_node_mut().props_mut(); p.clip ^= true; }
+                        6 => { let (id, on) = (d.layers.active_id(), !d.layers.active_node().props().reference); d.layers.set_reference(id, on); }
+                        7 => { let p = d.layers.active_node_mut().props_mut(); p.draft ^= true; }
+                        8 => d.layers.active_node_mut().props_mut().label = label,
+                        9 if !many => { if some.len() > 1 { d.layers.group_nodes(&some, "Folder"); } else { d.layers.group_active("Folder"); } }
+                        10 => { d.layers.ungroup_active(); }
+                        11 if !many && filters < 4 => { d.layers.add_filter_layer(adjust); }
+                        12 => if let (Some(&a), Some(&t)) = (some.first(), ids.last()) { d.layers.move_nodes(&some, a, t, aurastudio_layers::Place::Below); },
+                        _ => if d.layers.layer_count() > 6 || !matches!(d.layers.active_node(), Node::Layer(_)) { d.layers.remove_active(); },
                     }
+                    // Done in the docker: one undo step (App::render_frame).
+                    d.record_tree("Layers");
                     // Changes like these merge the whole picture again.
                     merge_all_in_bands(&d.layers);
                 });
@@ -361,8 +434,25 @@ fn painter_session() {
             _ => {
                 let preset = pick(&s.lib, &["soft round", "airbrush"]).first().copied().unwrap_or(round[0]);
                 let (len, speed) = (s.r.range(500.0, 3000.0), s.r.range(800.0, 2500.0));
-                let path = pen_path(&mut s.r, start, len, speed);
+                let path = s.path(start, len, speed);
                 s.stroke(Work::Paint, preset, 500.0, &path, 1.0, false);
+            }
+        }
+
+        // The document holds together; undo n + redo n gives it back.
+        s.sync();
+        {
+            let mut d = s.doc.lock().unwrap();
+            crate::pure::check(&d);
+            if ops.is_multiple_of(200) {
+                let before = crate::pure::print(&d.layers);
+                let n = s.r.below(8) + 1;
+                let done = (0..n).filter(|_| d.undo().is_some()).count();
+                crate::pure::check(&d);
+                let back = (0..done).filter(|_| d.redo().is_some()).count();
+                assert_eq!(back, done);
+                assert!(crate::pure::print(&d.layers) == before, "undo {done} + redo {back}: another document");
+                undo_checks += 1;
             }
         }
 
@@ -391,17 +481,37 @@ fn painter_session() {
                 Some(Node::Layer(l)) => Some(l.tiles.bytes()),
                 _ => None,
             }).sum();
-            println!("{:>5} s: {ops} actions, {} layers ({} MB of tiles), {} undo steps ({} MB), RAM {} MB (peak {peak_mb})",
-                t0.elapsed().as_secs(), d.layers.layer_count(), tiles >> 20, d.history().undo_len(), d.history().bytes() >> 20, rss_mb());
+            let mut all = Vec::new();
+            fn walk(n: &[Node], out: &mut Vec<String>) {
+                for x in n {
+                    match x {
+                        Node::Filter(f) => out.push(format!("{:?}{:?}", f.filter.kind, f.filter.values)),
+                        Node::Folder(f) => { out.push(format!("F{:?}", f.blend)); walk(&f.children, out); }
+                        Node::Layer(_) => {}
+                    }
+                }
+            }
+            walk(&d.layers.root, &mut all);
+            println!("{:>5} s: {ops} actions, {} layers ({} MB of tiles), {} undo steps ({} MB), RAM {} MB (peak {peak_mb}), margin {}, general {}, other nodes {all:?}",
+                t0.elapsed().as_secs(), d.layers.layer_count(), tiles >> 20, d.history().undo_len(), d.history().bytes() >> 20, rss_mb(),
+                d.layers.merge_margin(), d.layers.needs_general_merge());
+            drop(d);
+            // This minute's work (a slowdown over time shows here).
+            for (w, st) in std::mem::take(&mut s.stats) {
+                println!("        {:<7} {:>5} x {:>7.1} ms", format!("{w:?}"), st.n, st.busy.as_secs_f64() * 1000.0 / st.n.max(1) as f64);
+                totals.entry(w).or_default().merge(&st);
+            }
         }
     }
 
     s.sync();
     stop.store(true, Ordering::Relaxed);
     let uploaded = gpu.join().expect("gpu thread");
-    println!("\n{} s, {ops} actions, {} MB merged and uploaded, peak RAM {peak_mb} MB", t0.elapsed().as_secs(), uploaded >> 20);
+    println!("\n{} s, {ops} actions on {}x{}, {} MB merged and uploaded, peak RAM {peak_mb} MB, {undo_checks} undo + redo checks",
+        t0.elapsed().as_secs(), size.0, size.1, uploaded >> 20);
     println!("{:<8} {:>6} {:>9} {:>11} {:>11} {:>10} {:>9}", "work", "count", "samples", "avg ms", "worst ms", "worst x", "lagging");
-    for (w, st) in &s.stats {
+    for (w, st) in std::mem::take(&mut s.stats) { totals.entry(w).or_default().merge(&st); }
+    for (w, st) in &totals {
         let avg = st.busy.as_secs_f64() * 1000.0 / st.n.max(1) as f64;
         println!("{:<8} {:>6} {:>9} {:>11.1} {:>11.1} {:>10.2} {:>9}", format!("{w:?}"), st.n, st.samples, avg,
             st.worst.as_secs_f64() * 1000.0, st.worst_ratio, st.lagging);

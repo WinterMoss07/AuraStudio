@@ -812,6 +812,12 @@ impl LayerStack {
     /// Move the active node one step up or down. Moving onto a folder goes
     /// inside it; moving past the top / bottom of a folder goes out of it.
     pub fn move_active(&mut self, up: bool) {
+        self.move_one_step(up);
+        // (Into or out of a folder: it may meet another reference there.)
+        self.one_reference_per_folder(self.active);
+    }
+
+    fn move_one_step(&mut self, up: bool) {
         let path = self.path(self.active).unwrap();
         let (last, parent) = path.split_last().unwrap();
         let last = *last;
@@ -1721,6 +1727,18 @@ mod layer_tree_tests {
         s.set_reference(ink, true);
         assert!(s.move_node(other, color, Place::Above));
         assert!(s.node(other).unwrap().props().reference && !s.node(ink).unwrap().props().reference);
+        // Stepped into a folder that has one (found by the pure fuzz).
+        let mut t = LayerStack::new_document(16, 16);
+        let a = t.active_id();
+        t.set_reference(a, true);
+        let f = t.add_folder("f");
+        let b = t.add_layer("b");
+        t.set_reference(b, true);
+        assert!(t.move_node(f, a, Place::Below));
+        t.set_active(a);
+        t.move_active(false);
+        assert!(t.rows().iter().filter(|r| t.node(r.id).unwrap().props().reference).count() == 1);
+        assert!(t.node(a).unwrap().props().reference, "the one moved stays one");
     }
 
     #[test]

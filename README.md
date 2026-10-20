@@ -141,6 +141,12 @@ the canvas texture).
   fills, lasso copy / paste, undo, saves) with per-stroke timings
   (`PAINT_SECS=1200 cargo test --release -p aurastudio painter_session --
   --ignored --nocapture`). `FUZZ_SECS=60` runs the fuzz test for a minute.
+- `pure.rs`: millions of random operations on the model and the paint
+  thread, no interface, with checks that must agree (undo n + redo n,
+  part of the merge = merge of the part, screen = merge, file = document):
+  `PURE_OPS=3000000 cargo test --release -p aurastudio pure_fuzz --
+  --ignored --nocapture`. `PAINT_OPS` / `PAINT_SIZE=310x438` run the
+  painter session for a number of actions on a smaller page.
 
 ---
 

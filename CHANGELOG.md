@@ -3,6 +3,31 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.10.2 — 2026-10-20
+
+**Testing**
+- `pure.rs`: a bug hunt without any interface, millions of random
+  operations straight on the model and the real paint thread (layer
+  tree, history, merges, fill, filters, selections, copy / paste, files,
+  strokes with every brush), on small canvases of any shape. After every
+  operation the document is checked (ids, active node, sizes, one
+  reference per folder, history budget); results that must agree are
+  compared: undo n + redo n gives the same document to the pixel, a part
+  of the merge equals that part of the whole merge, the screen after a
+  whole merge equals the merge, a file saved and opened is the same
+  document. 3 000 000 operations (two seeds): no failure after the fix
+  below.
+- `painter.rs`: PAINT_OPS and PAINT_SIZE (a smaller page, brushes and
+  gestures scaled to it); the 0.10 layer work (clipping, marks, labels,
+  groups, filter layers, recorded for undo), the pure fuzz's checks after
+  every action and an undo n + redo n check every 200. 1 000 000 actions
+  (four seeds, A4 at 1/8 scale): no failure.
+
+**Fixed**
+- Moving a layer one step up or down into or out of a folder (the arrows
+  of 0.10.0) could leave two reference layers in a folder. Found by the
+  pure fuzz.
+
 ## 0.10.1 — 2026-10-19
 
 **Undo for the layers**

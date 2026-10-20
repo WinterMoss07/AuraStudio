@@ -6,6 +6,8 @@ mod cursors;
 mod fuzz;
 #[cfg(test)]
 mod painter;
+#[cfg(test)]
+mod pure;
 mod paint_thread;
 mod projection;
 mod shapes;
