@@ -3,6 +3,32 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.12.0 — 2026-10-20
+
+First step of the animation work (spec agreed with Walid: one animation
+folder per element, one layer per frame with its sub-cels, a cel
+template per folder, X-sheet, camera in pixels).
+
+**Document types**
+- Illustration, Animation, Comics: the New document tab is the type
+  ("Painting" renamed "Illustration"). Kept in the file (files from
+  before it open as Illustration; a type a newer version made is
+  refused rather than half shown) and shown in the menu bar.
+- Layer menu and the Layers docker's layer types: New animation folder
+  and New camera folder, grayed out outside an Animation document (they
+  come with the X-sheet).
+
+**Interface**
+- **Window** menu: every docker with a check mark to hide or show it;
+  shown again beside its usual partner (Color / Tools, Layers / Canvas),
+  else in a new dock at the bottom. Reset docks moved there from View.
+- Canvas > Canvas size… shows the Canvas docker again if it was hidden.
+
+**Checked**
+- Tests: the type survives a save (all three), old files, unknown type;
+  dockers hidden and shown again. Pure fuzz with documents of every type
+  (file = document compares the type).
+
 ## 0.11.1 — 2026-10-20
 
 **Picker and selection**

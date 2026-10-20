@@ -44,6 +44,8 @@ pub struct Model<'a> {
     pub mediums:            &'a [aurastudio_brushes::Medium],
     pub preset:             &'a mut usize,
     pub layers:             &'a mut LayerStack,
+    /// What the document is made for (features on or off).
+    pub doc_kind:           aurastudio_document::Kind,
     /// Width / height typed in the Canvas dock, applied by "Resize".
     pub canvas_edit:        &'a mut (u32, u32),
     pub max_canvas:         u32,
@@ -331,6 +333,8 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     bars::toolbar(ctx, &mut state.notice, model, actions);
 
     if let Some(tab) = state.focus_tab.take() {
+        // (Hidden from the Window menu: shown again.)
+        dockers::set_shown(&mut state.dock, tab, true);
         if let Some(loc) = state.dock.find_tab(&tab) {
             state.dock.set_active_tab(loc);
         }

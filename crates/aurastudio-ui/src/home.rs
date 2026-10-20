@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, Ui};
 
+use aurastudio_document::Kind;
+
 use crate::{theme, Actions};
 
 /// A recently used file, as the start screen shows it.
@@ -28,6 +30,8 @@ impl RecentFile {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NewDoc {
     pub name:   String,
+    /// The tab it was made from.
+    pub kind:   Kind,
     pub width:  u32,
     pub height: u32,
     pub dpi:    f32,
@@ -67,11 +71,11 @@ const fn mm(name: &'static str, w: f32, h: f32, dpi: f32, note: &'static str) ->
 const fn inch(name: &'static str, w: f32, h: f32, dpi: f32, note: &'static str) -> Preset { Preset { name, w, h, unit: Unit::In, dpi, note } }
 const fn px(name: &'static str, w: f32, h: f32, note: &'static str) -> Preset { Preset { name, w, h, unit: Unit::Px, dpi: 72.0, note } }
 
-/// The dialog's tabs and their presets. Comics: black-and-white pages at
+/// The dialog's tabs (one per document type) and their presets. Comics: black-and-white pages at
 /// 600 dpi (manga manuscripts), color ones at 400; animation and screens
 /// in pixels (the DCI sizes: Digital Cinema Initiatives).
-pub const CATEGORIES: &[(&str, &[Preset])] = &[
-    ("Painting", &[
+pub const CATEGORIES: &[(Kind, &[Preset])] = &[
+    (Kind::Illustration, &[
         mm("A5", 148.0, 210.0, 300.0, "Sketchbook page"),
         mm("A4", 210.0, 297.0, 300.0, "Print, 300 dpi"),
         mm("A3", 297.0, 420.0, 300.0, "Print, 300 dpi"),
@@ -85,7 +89,7 @@ pub const CATEGORIES: &[(&str, &[Preset])] = &[
         px("Instagram portrait", 1080.0, 1350.0, "4:5 post"),
         px("Instagram square", 1080.0, 1080.0, "1:1 post"),
     ]),
-    ("Animation", &[
+    (Kind::Animation, &[
         px("HD 720p", 1280.0, 720.0, "16:9, light: animatics and tests"),
         px("Full HD 1080p", 1920.0, 1080.0, "16:9, TV and web standard"),
         px("4K UHD", 3840.0, 2160.0, "16:9, UHD TV and streaming"),
@@ -101,7 +105,7 @@ pub const CATEGORIES: &[(&str, &[Preset])] = &[
         px("Vertical 9:16", 1080.0, 1920.0, "Shorts, Reels, TikTok"),
         px("Square 1:1", 1080.0, 1080.0, "Social posts"),
     ]),
-    ("Comics", &[
+    (Kind::Comics, &[
         mm("Manga B4 manuscript", 257.0, 364.0, 600.0, "Japanese manuscript paper; inner frame 180 × 270 mm, printed at B5"),
         mm("Manga A4 manuscript", 210.0, 297.0, 600.0, "Doujinshi manuscript, printed at B5 or A5"),
         mm("Manga B5", 182.0, 257.0, 600.0, "Magazine / B5 doujinshi page"),
@@ -181,9 +185,9 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
             // Tabs, underlined when chosen.
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 20.0;
-                for (c, (name, _)) in CATEGORIES.iter().enumerate() {
+                for (c, (kind, _)) in CATEGORIES.iter().enumerate() {
                     let on = form.category == c;
-                    let r = ui.add(egui::Label::new(RichText::new(*name).size(14.0).color(if on { theme::TEXT } else { theme::TEXT_WEAK }))
+                    let r = ui.add(egui::Label::new(RichText::new(kind.name()).size(14.0).color(if on { theme::TEXT } else { theme::TEXT_WEAK }))
                         .selectable(false).sense(Sense::click()));
                     if on {
                         ui.painter().line_segment([r.rect.left_bottom() + vec2(0.0, 3.0), r.rect.right_bottom() + vec2(0.0, 3.0)], Stroke::new(2.0_f32, theme::ACCENT));
@@ -271,6 +275,11 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                     if let Some((c, i)) = form.preset {
                         ui.label(RichText::new(CATEGORIES[c].1[i].note).small().color(theme::TEXT_WEAK));
                     }
+                    ui.label(RichText::new(match CATEGORIES[form.category].0 {
+                        Kind::Illustration => "Illustration document",
+                        Kind::Animation => "Animation document: animation and camera folders",
+                        Kind::Comics => "Comics document",
+                    }).small().color(theme::TEXT_WEAK));
                     let mb = pw as f64 * ph as f64 * 4.0 / (1024.0 * 1024.0);
                     ui.label(RichText::new(format!("≈ {mb:.0} MB; layers only take memory where painted."))
                         .small().color(theme::TEXT_WEAK));
@@ -296,7 +305,7 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
         let (pw, ph) = form.pixels();
         if pw <= max_side && ph <= max_side {
             let name = form.name.trim();
-            a.new_doc = Some(NewDoc { name: if name.is_empty() { "Untitled".into() } else { name.into() }, width: pw, height: ph, dpi: form.dpi });
+            a.new_doc = Some(NewDoc { name: if name.is_empty() { "Untitled".into() } else { name.into() }, kind: CATEGORIES[form.category].0, width: pw, height: ph, dpi: form.dpi });
             open = false;
         }
     }
@@ -450,12 +459,12 @@ mod tests {
     #[test]
     fn presets_give_the_expected_pixels() {
         let px = |c: &str, name: &str| {
-            let ci = CATEGORIES.iter().position(|x| x.0 == c).unwrap();
+            let ci = CATEGORIES.iter().position(|x| x.0.name() == c).unwrap();
             let mut f = NewForm::new(ci);
             f.pick(ci, CATEGORIES[ci].1.iter().position(|p| p.name == name).unwrap());
             f.pixels()
         };
-        assert_eq!(px("Painting", "A4"), (2480, 3508));
+        assert_eq!(px("Illustration", "A4"), (2480, 3508));
         assert_eq!(px("Comics", "Manga B4 manuscript"), (6071, 8598));
         assert_eq!(px("Comics", "US comic, bleed"), (4125, 6263));
         assert_eq!(px("Animation", "DCI 4K Scope"), (4096, 1716));

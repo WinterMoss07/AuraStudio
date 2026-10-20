@@ -134,6 +134,13 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     }
                     ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate · Ctrl+Space+drag: zoom")
                         .small().color(theme::TEXT_WEAK));
+                });
+                ui.menu_button("Window", |ui| {
+                    // Each docker, checked when shown.
+                    for tab in Tab::ALL {
+                        let mut on = dockers::is_shown(&state.dock, tab);
+                        if ui.checkbox(&mut on, tab.title()).changed() { dockers::set_shown(&mut state.dock, tab, on); }
+                    }
                     ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();
@@ -147,8 +154,8 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     // Angle shown only when the canvas is turned.
                     let angle = if m.view_angle.abs() >= 0.05 { format!("  ·  {:.0}°", m.view_angle) } else { String::new() };
                     ui.label(RichText::new(format!(
-                        "{} × {} px  ·  {} layer{}  ·  {:.0} %{}",
-                        m.layers.width, m.layers.height, n, if n > 1 { "s" } else { "" },
+                        "{}  ·  {} × {} px  ·  {} layer{}  ·  {:.0} %{}",
+                        m.doc_kind.name(), m.layers.width, m.layers.height, n, if n > 1 { "s" } else { "" },
                         m.view_zoom * 100.0, angle,
                     )).small().color(theme::TEXT_WEAK));
                 });

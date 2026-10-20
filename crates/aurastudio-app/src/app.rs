@@ -1656,6 +1656,7 @@ impl App {
                 presets,
                 mediums,
                 preset: &mut preset,
+                doc_kind: d.kind,
                 layers: &mut d.layers,
                 tool,
                 tools: tool_memory,
@@ -1902,7 +1903,8 @@ impl App {
                 let id = self.workspace.reserve_id();
                 let mut doc = Document::new(id, &spec.name, spec.width, spec.height);
                 doc.dpi = spec.dpi;
-                log::info!("new document: {} × {} px, {} dpi", spec.width, spec.height, spec.dpi);
+                doc.kind = spec.kind;
+                log::info!("new document: {}, {} × {} px, {} dpi", spec.kind.name(), spec.width, spec.height, spec.dpi);
                 self.install(doc);
                 self.home = false;
             }

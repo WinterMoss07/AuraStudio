@@ -250,6 +250,7 @@ fn fuzz() {
                         presets: &lib.presets,
                         mediums: &lib.mediums,
                         preset: &mut p,
+                        doc_kind: d.kind,
                         layers: &mut d.layers,
                         can_undo,
                         can_redo,

@@ -7,7 +7,7 @@ use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use aurastudio_canvas::{BlendMode, TILE};
-use aurastudio_document::{DocId, Document, History, SavedStep, DEFAULT_BUDGET};
+use aurastudio_document::{DocId, Document, History, Kind, SavedStep, DEFAULT_BUDGET};
 use aurastudio_filters::Filter;
 use aurastudio_layers::{FilterLayer, Folder, FolderBlend, Layer, LayerStack, Node, Props, Tiles, LABELS, TILE_BYTES};
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,9 @@ struct DocJson {
     width:   u32,
     height:  u32,
     dpi:     f32,
+    /// Illustration, Animation or Comics (files before it: Illustration).
+    #[serde(default = "illustration")]
+    kind:    String,
     active:  u64,
     /// Bottom to top.
     layers:  Vec<NodeJson>,
@@ -92,6 +95,8 @@ struct PropsJson {
 }
 
 fn is_false(b: &bool) -> bool { !*b }
+
+fn illustration() -> String { Kind::Illustration.name().into() }
 
 impl PropsJson {
     fn is_default(&self) -> bool { *self == PropsJson::default() }
@@ -191,6 +196,7 @@ pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
             width: w,
             height: h,
             dpi: doc.dpi,
+            kind: doc.kind.name().into(),
             active: doc.layers.active_id(),
             layers: tree,
             undo: undo.iter().map(step).collect(),
@@ -277,6 +283,8 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
     if json.version > FORMAT_VERSION {
         return Err("made by a newer version of AuraStudio".into());
     }
+    // (A kind this version doesn't know may hold what it can't show.)
+    let kind = Kind::from_name(&json.kind).ok_or("made by a newer version of AuraStudio (unknown document type)")?;
     let (w, h) = (json.width, json.height);
     if w == 0 || h == 0 || w > max_side || h > max_side {
         return Err(format!("canvas {w} × {h} px is bigger than this GPU allows ({max_side} px)"));
@@ -341,6 +349,7 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
     let redo = steps("redo", json.redo);
     let mut doc = Document::from_parts(id, name, layers, History::import(DEFAULT_BUDGET, undo, redo));
     if json.dpi.is_finite() && (1.0..=10_000.0).contains(&json.dpi) { doc.dpi = json.dpi; }
+    doc.kind = kind;
     Ok(Opened { doc, origin: json.origin })
 }
 
@@ -716,6 +725,7 @@ mod tests {
         let mut doc = Document::new(DocId(1), "t", w, h);
         doc.layers = LayerStack::from_parts(w, h, root, sketch_id).unwrap();
         doc.dpi = 350.0;
+        doc.kind = Kind::Animation;
 
         let before = { let mut v = Vec::new(); describe(&doc.layers.root, &mut v); v };
         let back = roundtrip(&doc).doc;
@@ -724,6 +734,7 @@ mod tests {
         assert_eq!(before.len(), after.len());
         assert_eq!(rows(&back.layers), rows(&doc.layers));
         assert_eq!((back.layers.active_id(), back.dpi, back.layers.width, back.layers.height), (sketch_id, 350.0, w, h));
+        assert_eq!(back.kind, Kind::Animation);
         assert_eq!(back.layers.composite_rect((0, 0, w, h)), doc.layers.composite_rect((0, 0, w, h)));
     }
 
@@ -774,6 +785,27 @@ mod tests {
         write(&snapshot(&doc, None), &mut buf).unwrap();
         buf.set_position(0);
         assert!(read(buf, DocId(1), "x", 64).is_err());
+    }
+
+    /// The document type comes back; files from before it open as
+    /// Illustration; a type this version doesn't know is refused.
+    #[test]
+    fn the_document_type_comes_back() {
+        let (mut doc, ..) = sample_doc();
+        for kind in Kind::ALL {
+            doc.kind = kind;
+            assert_eq!(roundtrip(&doc).doc.kind, kind);
+        }
+        let mut snap = snapshot(&doc, None);
+        let mut json = serde_json::to_value(&snap.json).unwrap();
+        json.as_object_mut().unwrap().remove("kind");
+        snap.json = serde_json::from_value(json).unwrap();
+        assert_eq!(snap.json.kind, "Illustration");
+        snap.json.kind = "Storyboard".into();
+        let mut buf = io::Cursor::new(Vec::new());
+        write(&snap, &mut buf).unwrap();
+        buf.set_position(0);
+        assert!(read(buf, DocId(1), "x", 16384).err().is_some_and(|e| e.contains("newer version")));
     }
 
     /// Damaged files (bytes changed or cut) give an error or a valid

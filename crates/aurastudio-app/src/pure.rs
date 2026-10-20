@@ -252,6 +252,7 @@ impl Run {
         let (w, h) = canvas_size(&mut self.r);
         let mut d = Document::new(DocId(1), "pure", w, h);
         if self.r.chance(0.3) { d.layers = LayerStack::new(w, h); d = Document::from_parts(DocId(1), "pure", d.layers, aurastudio_document::History::new(aurastudio_document::DEFAULT_BUDGET)); }
+        d.kind = aurastudio_document::Kind::ALL[self.r.below(3) as usize];
         self.doc = Arc::new(Mutex::new(d));
         *self.proj.lock().unwrap() = Projection::new(w, h);
     }
@@ -500,6 +501,7 @@ impl Run {
             let back = aurastudio_file::read(buf, DocId(1), "back", 1 << 15).expect("a saved file must open").doc;
             assert_eq!(print(&back.layers), print(&d.layers), "the file gives another document");
             assert_eq!(back.layers.active_id(), d.layers.active_id());
+            assert_eq!(back.kind, d.kind, "the file gives another document type");
             let rows = |l: &LayerStack| l.rows().iter().map(|r| (r.id, r.depth, r.collapsed, r.clipped, r.locked_by_parent, r.reference_by_parent, r.draft_by_parent, r.below)).collect::<Vec<_>>();
             assert_eq!(rows(&back.layers), rows(&d.layers), "the file folds, clips or marks other rows");
             assert_eq!(back.history().redo_len(), d.history().export(usize::MAX).1.len());

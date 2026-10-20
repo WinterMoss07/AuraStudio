@@ -14,6 +14,29 @@ pub use history::{History, SavedStep, DEFAULT_BUDGET};
 pub use select::{SelectOp, Shape, Wand};
 pub use transform::{Lift, LiftLayer};
 
+/// What a document is made for: it turns features on or off (an animation
+/// folder only in an Animation document...), the interface stays the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Kind {
+    #[default]
+    Illustration,
+    Animation,
+    Comics,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 3] = [Kind::Illustration, Kind::Animation, Kind::Comics];
+
+    pub fn name(self) -> &'static str {
+        match self { Kind::Illustration => "Illustration", Kind::Animation => "Animation", Kind::Comics => "Comics" }
+    }
+
+    /// From `name` (ignoring case); None: unknown.
+    pub fn from_name(name: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|k| k.name().eq_ignore_ascii_case(name))
+    }
+}
+
 /// Stable id of an open document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DocId(pub u64);
@@ -35,6 +58,7 @@ pub struct Change {
 pub struct Document {
     id:         DocId,
     pub name:   String,
+    pub kind:   Kind,
     pub layers: LayerStack,
     history:    History,
     /// Print resolution (dots per inch), kept in the file.
@@ -83,7 +107,7 @@ impl Document {
     /// saved.
     pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
         let tree = layers.tree_state();
-        Self { id, name: name.to_owned(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None, transform: None, filter: None, tree }
+        Self { id, name: name.to_owned(), kind: Kind::default(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None, transform: None, filter: None, tree }
     }
 
     /// Something changed (the layer panel edits the stack directly and

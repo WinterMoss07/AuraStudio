@@ -94,10 +94,18 @@ Geometry, Selection, Transform.
 - `.aurs` documents (layers, folders, 50 undo steps, preview), atomic saves,
   autosave + crash recovery, unsaved-changes prompts.
 - Start screen with recent files. New document dialog (laid out like
-  PhotoCraft's): Painting, Animation and Comics tabs of preset cards
+  PhotoCraft's): Illustration, Animation and Comics tabs of preset cards
   (paper sizes; HD to 8K and the DCI 2K / 4K cinema sizes, flat and
   scope; manga B4 / A4 / B5 / B6 manuscripts at 600 dpi, US comic with
   bleed, BD album, webtoon), units px / mm / cm / in, orientation.
+- **Document types**: the tab a document is made from is its type
+  (Illustration, Animation, Comics), kept in the file and shown in the
+  menu bar. It turns features on or off, the interface stays the same:
+  animation and camera folders only in an Animation document (grayed out
+  elsewhere). Files from before it open as Illustration.
+- **Window** menu: every docker with a check mark, to hide it or show it
+  again (beside its usual partner, else in a new dock at the bottom);
+  Reset docks.
 - Open PNG / JPG / WebP / BMP / TIFF / GIF: the picture is the bottom layer
   and an empty layer above it is active (no painting on the picture by
   mistake). Export to PNG / JPG.

@@ -257,9 +257,19 @@ fn set_label(st: &LayersState, l: u8, m: &mut Model, a: &mut Actions) {
     a.layer_edit = Some("Color label");
 }
 
+/// Animation and camera folders: only in an Animation document (grayed
+/// out elsewhere, saying why).
+pub fn animation_entries(ui: &mut Ui, m: &Model) {
+    let why = if m.doc_kind == aurastudio_document::Kind::Animation { "Coming with the X-sheet" } else { "Animation documents only" };
+    for label in ["New animation folder", "New camera folder"] {
+        ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(why);
+    }
+}
+
 /// The Layer menu's entries for the marks and folders.
 pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     ui.menu_button("New filter layer", |ui| filter_layer_menu(ui, st, m, a));
+    animation_entries(ui, m);
     ui.separator();
     for cmd in [LayerCmd::Group, LayerCmd::Ungroup] {
         if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(cmd.name()).shortcut_text(cmd.shortcut())).clicked() {
@@ -373,6 +383,8 @@ fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Action
         ui.set_min_width(150.0);
         if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
         ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
+        ui.separator();
+        animation_entries(ui, m);
     }).response.on_hover_text("Layer types");
     if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
     if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
