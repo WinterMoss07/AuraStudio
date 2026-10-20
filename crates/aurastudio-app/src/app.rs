@@ -326,6 +326,12 @@ pub struct App {
     /// The transform as last shown (GPU or paint thread); the paint
     /// thread's preview with this number is the one to wait for.
     xf_seq:     u64,
+    /// Animation playback: when it started and from which frame; the next
+    /// frame's time; its speed and looping.
+    play:       Option<(Instant, u32)>,
+    play_next:  Option<Instant>,
+    fps:        u32,
+    looping:    bool,
     /// The layers asked for when the transform was started.
     pending_targets: Vec<u64>,
     /// The graphics API in use.
@@ -449,6 +455,10 @@ impl App {
             xf:         None,
             xf_pending: false,
             xf_seq:     0,
+            play:       None,
+            play_next:  None,
+            fps:        24,
+            looping:    true,
             pending_targets: Vec::new(),
             renderer:   String::new(),
 
@@ -1419,7 +1429,7 @@ impl App {
 
     /// Sleep until the next OS event, or until egui's delayed repaint.
     fn schedule(&self, event_loop: &ActiveEventLoop) {
-        let wake = [self.repaint_at, self.deferred_frame, self.autosave_at, self.debounce.deadline()].into_iter().flatten().min();
+        let wake = [self.repaint_at, self.deferred_frame, self.autosave_at, self.debounce.deadline(), self.play_next].into_iter().flatten().min();
         event_loop.set_control_flow(match wake {
             Some(t) => ControlFlow::WaitUntil(t),
             None    => ControlFlow::Wait,
@@ -1428,7 +1438,62 @@ impl App {
 
     /// Start a stroke on the active layer. Refused (with a notice in the
     /// options bar) when it is locked or a folder is selected.
+    /// Play the animation from the current frame (from the first if at
+    /// the end), at `fps`.
+    fn start_playback(&mut self) {
+        if self.is_drawing || self.xf.is_some() || self.xf_pending { return; }
+        let Ok(mut doc) = self.doc.try_lock() else { return };
+        if doc.kind != aurastudio_document::Kind::Animation { return; }
+        let last = doc.layers.last_frame();
+        if doc.layers.time() >= last {
+            doc.layers.set_time(1);
+            drop(doc);
+            self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc)));
+        } else {
+            drop(doc);
+        }
+        let from = self.doc.lock().unwrap().layers.time();
+        self.play = Some((Instant::now(), from));
+        self.play_next = Some(Instant::now());
+        self.request_redraw();
+    }
+
+    fn stop_playback(&mut self) {
+        if self.play.take().is_some() { self.request_redraw(); }
+        self.play_next = None;
+    }
+
+    /// Playing: show the frame of now (frames are skipped if the merge
+    /// can't keep up, the time stays right); loop or stop at the last
+    /// frame drawn.
+    fn tick_playback(&mut self) {
+        let Some((start, from)) = self.play else { return };
+        let now = Instant::now();
+        if self.play_next.is_some_and(|t| now < t) { return; }
+        let fps = self.fps.clamp(1, 120) as f64;
+        let step = (now.duration_since(start).as_secs_f64() * fps) as u64;
+        let Ok(mut doc) = self.doc.try_lock() else {
+            self.play_next = Some(now + Duration::from_millis(2));
+            return;
+        };
+        let last = doc.layers.last_frame() as u64;
+        let mut t = from as u64 + step;
+        let mut stop = false;
+        if t > last {
+            if self.looping && last > 1 { t = 1 + (t - 1) % last; } else { t = last; stop = true; }
+        }
+        let changed = doc.layers.time() as u64 != t;
+        if changed { doc.layers.set_time(t as u32); }
+        drop(doc);
+        if changed { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
+        self.request_redraw();
+        if stop { self.stop_playback(); return; }
+        self.play_next = Some(start + Duration::from_secs_f64((step + 1) as f64 / fps));
+    }
+
     fn begin_stroke(&mut self) {
+        // (Drawing stops the playback, on the frame shown.)
+        self.stop_playback();
         // Instant feedback when the layer can't be painted.
         if let Some(msg) = self.paint_refusal() {
             self.ui.notify(msg);
@@ -1596,6 +1661,9 @@ impl App {
         let select = &mut self.select;
         let picker = &mut self.picker;
         let transform_opts = &mut self.transform_opts;
+        let playing = self.play.is_some();
+        let fps = &mut self.fps;
+        let looping = &mut self.looping;
         let renderer = self.renderer.as_str();
         let shape = &mut self.shape;
         let snap = gpu.view_snapshot();
@@ -1658,6 +1726,9 @@ impl App {
                 mediums,
                 preset: &mut preset,
                 doc_kind: d.kind,
+                playing,
+                fps,
+                looping,
                 layers: &mut d.layers,
                 tool,
                 tools: tool_memory,
@@ -1814,6 +1885,11 @@ impl App {
             if let Ok(mut d) = self.doc.try_lock() { d.touch(); }
         }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
+        match actions.play {
+            Some(true) => self.start_playback(),
+            Some(false) => self.stop_playback(),
+            None => {}
+        }
         if actions.undo { self.undo(); }
         if actions.redo { self.redo(); }
         if actions.clear_layer { self.clear_active_layer(); }
@@ -1851,6 +1927,7 @@ impl App {
     /// Go `d` frames back or forward (Animation documents; not during a
     /// stroke or a transform).
     fn step_frame(&mut self, d: i64) {
+        self.stop_playback();
         if self.is_drawing || self.xf.is_some() || self.xf_pending || self.ui.has_dialog() { return; }
         {
             let Ok(mut doc) = self.doc.try_lock() else { return };
@@ -1995,7 +2072,9 @@ impl App {
     /// Show `doc` in place of the current document.
     fn install(&mut self, doc: Document) {
         let (w, h) = (doc.layers.width, doc.layers.height);
-        // A transform or polygon of the document going away.
+        // A transform, polygon or playback of the document going away.
+        self.play = None;
+        self.play_next = None;
         self.xf = None;
         self.xf_pending = false;
         self.poly = None;
@@ -2321,6 +2400,7 @@ impl ApplicationHandler<AppEvent> for App {
         for e in self.debounce.poll(Instant::now()) { self.handle_event(e); }
         self.drain_stylus();
         self.check_autosave();
+        self.tick_playback();
         self.update_title();
         self.activity.wakes += 1;
         self.activity.report(self.is_drawing || self.nav.is_some());

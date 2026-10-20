@@ -142,6 +142,13 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         if ui.checkbox(&mut on, tab.title()).changed() { dockers::set_shown(&mut state.dock, tab, on); }
                     }
                     ui.separator();
+                    // The X-sheet / timeline (Animation documents).
+                    let anim = m.doc_kind == aurastudio_document::Kind::Animation;
+                    let mut on = state.anim.open;
+                    if ui.add_enabled(anim, egui::Checkbox::new(&mut on, "Animation (X-sheet / timeline)")).on_disabled_hover_text("Animation documents only").changed() {
+                        state.anim.open = on;
+                    }
+                    ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();
                         ui.close_menu();

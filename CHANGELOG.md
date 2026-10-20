@@ -3,6 +3,48 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.14.0 — 2026-10-20
+
+Step 3 of the animation work: the X-sheet / timeline and playback
+(after reading OpenToonz's X-sheet: one grid laid out on a frame axis and
+a layer axis, turned by an orientation).
+
+**Animation panel** (Animation documents; Window > Animation)
+- **Timeline** under the canvas, or **X-sheet** beside the dockers: one
+  button turns it, the same grid either way. Columns (X-sheet) left to
+  right = bottom to top of the stack, as Toonz; rows (timeline) top to
+  bottom = top to bottom, as Krita and CSP.
+- Per folder: name (double click: rename), eye, lock, its label color.
+  Cells: a drawn frame filled (its number), a hold a line until the next
+  one (OpenToonz's continue line), the chosen frame outlined, the
+  current frame lit; shades every 6 frames, a line every second.
+- Click a cell: go to that frame in that folder (drawing there makes the
+  frame). Drag the frame numbers or an empty cell: scrub. Wheel: through
+  time; Shift + wheel: across folders; the current frame kept in view.
+- **Move** a drawn frame by dragging it, **copy** it with Ctrl. Onto a
+  drawn frame: Replace it / Swap them (moves) / Cancel — Cancel is the
+  default (Enter, Escape), as it is usually a slip. Onto an empty frame:
+  no question. Frames are renamed after their new place.
+- **Insert / Remove frame** (bar buttons at the current frame, or a right
+  click on a cell): the following frames move one later / earlier, and
+  are renamed (1 to 10 drawn, insert at 2: the old 2–10 become 3–11, the
+  frame 1 holds on frame 2). Delete a drawing: the one before holds on.
+  All undoable.
+- **Playback bar**: new animation folder (camera grayed until it comes),
+  first / previous / play-pause / next / last frame, loop, fps (24 by
+  default), current / last frame. Playback starts at the current frame
+  (from the first one at the end), keeps real time (frames are skipped if
+  the merge can't keep up), loops over the frames drawn, stops when
+  drawing.
+- Not yet: clones (linked frames), the onion skin, the camera column, a
+  playback cache.
+
+**Checked**
+- Tests: moving (onto an empty frame, swap, replace), copying (a true
+  copy), insert / remove with renaming, deleting.
+- Pure fuzz with moves, copies, inserts, removes and deletes of frames;
+  UI fuzz on Animation documents with the panel shown.
+
 ## 0.13.0 — 2026-10-20
 
 Step 2 of the animation work: animation folders, frames, cel template.

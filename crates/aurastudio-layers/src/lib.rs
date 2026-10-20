@@ -13,7 +13,7 @@ mod tree;
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
 
-pub use anim::{Anim, FolderKind, SubCel, Target};
+pub use anim::{Anim, FolderKind, Onto, Shift, SubCel, Target};
 pub use compose::Pick;
 pub use tree::TreeState;
 pub use fill::{flood, flood_with, similar_with, FillParams, Refer};

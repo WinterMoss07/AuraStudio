@@ -23,6 +23,7 @@ pub enum Icon {
     Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Check, Move,
     // Animation.
     Film, Minus, ArrowUp, ArrowDown, Camera, Comics,
+    Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, XSheet, Timeline, InsertFrame, RemoveFrame,
 }
 
 impl Icon {
@@ -98,6 +99,17 @@ impl Icon {
             Icon::ArrowDown  => svg!("../icons/arrow-down.svg"),
             Icon::Camera     => svg!("../icons/video.svg"),
             Icon::Comics     => svg!("../icons/book-open.svg"),
+            Icon::Play       => svg!("../icons/play.svg"),
+            Icon::Pause      => svg!("../icons/pause.svg"),
+            Icon::SkipBack   => svg!("../icons/skip-back.svg"),
+            Icon::SkipForward => svg!("../icons/skip-forward.svg"),
+            Icon::StepBack   => svg!("../icons/chevron-left.svg"),
+            Icon::StepForward => svg!("../icons/chevron-right.svg"),
+            Icon::Repeat     => svg!("../icons/repeat.svg"),
+            Icon::XSheet     => svg!("../icons/columns-2.svg"),
+            Icon::Timeline   => svg!("../icons/rows-2.svg"),
+            Icon::InsertFrame => svg!("../icons/between-horizontal-start.svg"),
+            Icon::RemoveFrame => svg!("../icons/between-horizontal-end.svg"),
         }
     }
 }

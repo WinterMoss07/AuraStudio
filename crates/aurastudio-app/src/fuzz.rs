@@ -199,6 +199,7 @@ fn fuzz() {
 
     let ctx = egui::Context::default();
     let mut ui = UiState::new();
+    let (mut fps, mut looping) = (24u32, true);
     if animate { ui.show_docker(aurastudio_ui::Tab::CelTemplate); }
     let mut brush = lib.presets[0].settings.clone();
     let mut preset = 0usize;
@@ -255,6 +256,9 @@ fn fuzz() {
                         mediums: &lib.mediums,
                         preset: &mut p,
                         doc_kind: d.kind,
+                        playing: false,
+                        fps: &mut fps,
+                        looping: &mut looping,
                         layers: &mut d.layers,
                         can_undo,
                         can_redo,

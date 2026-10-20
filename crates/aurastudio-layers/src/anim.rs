@@ -67,6 +67,33 @@ pub enum Target {
     NewFrame { folder: u64, frame: u32 },
 }
 
+/// What a frame moved or copied onto a drawn one does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Onto { Replace, Swap, Refuse }
+
+/// Timing edits of `shift_frames`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shift { Insert, Remove }
+
+/// A frame node without the ids of its children changed (to clone it
+/// while the stack is borrowed).
+fn clone_shallow(n: &Node) -> Node {
+    match n {
+        Node::Folder(f) => Node::Folder(Folder {
+            id: f.id, name: f.name.clone(), visible: f.visible, opacity: f.opacity, blend: f.blend, locked: f.locked,
+            collapsed: f.collapsed, props: f.props, kind: f.kind.clone(),
+            children: f.children.iter().map(clone_shallow).collect(),
+        }),
+        Node::Layer(l) => Node::Layer(Layer {
+            id: l.id, name: l.name.clone(), visible: l.visible, opacity: l.opacity, blend: l.blend, locked: l.locked,
+            tiles: l.tiles.clone(), background: l.background, props: l.props,
+        }),
+        Node::Filter(f) => Node::Filter(crate::FilterLayer {
+            id: f.id, name: f.name.clone(), visible: f.visible, opacity: f.opacity, locked: f.locked, props: f.props, filter: f.filter.clone(),
+        }),
+    }
+}
+
 /// Most frames a folder may reach (a 24 fps hour).
 pub const MAX_FRAME: u32 = 86_400;
 
@@ -371,6 +398,125 @@ impl LayerStack {
         });
     }
 
+    /// The animation folders, bottom to top (the X-sheet's columns).
+    pub fn animation_folders(&self) -> Vec<u64> {
+        fn walk(nodes: &[Node], out: &mut Vec<u64>) {
+            for n in nodes {
+                if n.is_animation() { out.push(n.id()); } else if let Node::Folder(f) = n { if f.frame().is_none() { walk(&f.children, out); } }
+            }
+        }
+        let mut v = Vec::new();
+        walk(&self.root, &mut v);
+        v
+    }
+
+    /// The last frame drawn in any animation folder (1 if none): where the
+    /// scene ends.
+    pub fn last_frame(&self) -> u32 {
+        self.animation_folders().iter().filter_map(|f| self.frames(*f).last().map(|x| x.0)).max().unwrap_or(1)
+    }
+
+    /// Renumber frame `id` to `n` (its name follows), keeping the folder's
+    /// frames in order.
+    fn renumber(&mut self, folder: u64, moves: &[(u64, u32)]) {
+        let Some(Node::Folder(f)) = self.node_mut(folder) else { return };
+        for c in &mut f.children {
+            let Node::Folder(fr) = c else { continue };
+            if let Some(&(_, n)) = moves.iter().find(|m| m.0 == fr.id) {
+                fr.kind = FolderKind::Frame(n);
+                fr.name = format!("Frame {n}");
+            }
+        }
+        // Last frame at the bottom, first at the top of the list.
+        f.children.sort_by_key(|c| std::cmp::Reverse(c.frame().unwrap_or(0)));
+    }
+
+    /// Move the frame drawn at `from` to `to` (the X-sheet's drag). A
+    /// frame already at `to`: `Replace` takes it away (kept for undo),
+    /// `Swap` puts it at `from`; `Refuse` changes nothing. True if moved.
+    pub fn move_frame(&mut self, folder: u64, from: u32, to: u32, onto: Onto) -> bool {
+        if from == to || !(1..=MAX_FRAME).contains(&to) { return false; }
+        let Some(src) = self.frame_at(folder, from) else { return false };
+        match (self.frame_at(folder, to), onto) {
+            (Some(_), Onto::Refuse) => return false,
+            (Some(dst), Onto::Replace) => { self.take_frame(dst); self.renumber(folder, &[(src, to)]); }
+            (Some(dst), Onto::Swap) => self.renumber(folder, &[(src, to), (dst, from)]),
+            (None, _) => self.renumber(folder, &[(src, to)]),
+        }
+        self.active = src;
+        self.settle();
+        true
+    }
+
+    /// A copy of the frame drawn at `from` (its sub-cels and pixels), at
+    /// `to` (Ctrl + drag); `onto` as for `move_frame`, Swap meaning
+    /// Replace. True if copied.
+    pub fn copy_frame(&mut self, folder: u64, from: u32, to: u32, onto: Onto) -> bool {
+        if from == to || !(1..=MAX_FRAME).contains(&to) { return false; }
+        let Some(src) = self.frame_at(folder, from) else { return false };
+        if let Some(dst) = self.frame_at(folder, to) {
+            if onto == Onto::Refuse { return false; }
+            self.take_frame(dst);
+        }
+        let Some(original) = self.node(src) else { return false };
+        let original = clone_shallow(original);
+        let copy = self.clone_node(&original);
+        let id = copy.id();
+        let Some(Node::Folder(f)) = self.node_mut(folder) else { return false };
+        f.children.push(copy);
+        self.renumber(folder, &[(id, to)]);
+        self.active = id;
+        self.settle();
+        true
+    }
+
+    /// Take frame `id` out (kept for undo); active, it gives way to its
+    /// folder.
+    fn take_frame(&mut self, id: u64) {
+        let folder = self.anim_of(id).map(|x| x.0);
+        let Some(path) = self.path(id) else { return };
+        let (last, parent) = path.split_last().unwrap();
+        let gone = crate::siblings_mut(&mut self.root, parent).remove(*last);
+        self.removed.push(gone);
+        if self.path(self.active).is_none() { if let Some(f) = folder { self.active = f; } }
+    }
+
+    /// Delete the frame drawn at `n` (the one before then holds on).
+    pub fn delete_frame(&mut self, folder: u64, n: u32) -> bool {
+        let Some(id) = self.frame_at(folder, n) else { return false };
+        if self.is_locked(id) { return false; }
+        self.take_frame(id);
+        if self.anim_of(self.active).is_none_or(|(f, _)| f == folder) { self.active = self.exposed(folder).unwrap_or(folder); }
+        self.settle();
+        true
+    }
+
+    /// Timing: `Insert` pushes the frames from `at` one later (the frame
+    /// before holds one more); `Remove` takes the frame drawn at `at` away
+    /// (if any) and brings the following ones one earlier. Frames are
+    /// renamed. False if nothing changed.
+    pub fn shift_frames(&mut self, folder: u64, at: u32, edit: Shift) -> bool {
+        let frames = self.frames(folder);
+        let moves: Vec<(u64, u32)> = match edit {
+            Shift::Insert => {
+                if frames.last().is_some_and(|f| f.0 >= MAX_FRAME) { return false; }
+                frames.iter().filter(|f| f.0 >= at).map(|f| (f.1, f.0 + 1)).collect()
+            }
+            Shift::Remove => {
+                if let Some(id) = self.frame_at(folder, at) {
+                    if self.is_locked(id) { return false; }
+                    self.take_frame(id);
+                }
+                frames.iter().filter(|f| f.0 > at).map(|f| (f.1, f.0 - 1)).collect()
+            }
+        };
+        let changed = !moves.is_empty() || edit == Shift::Remove && frames.iter().any(|f| f.0 == at);
+        self.renumber(folder, &moves);
+        if self.anim_of(self.active).is_none() || self.node(self.active).is_none() { self.active = folder; }
+        self.settle();
+        changed
+    }
+
     /// `id` is a frame or a sub-cel: it stays where it is (the X-sheet
     /// moves frames; the template decides the sub-cels).
     pub fn is_anim_part(&self, id: u64) -> bool {
@@ -554,5 +700,88 @@ mod tests {
         let t = s.tree_state();
         s.set_sub(a, 0);
         assert_eq!(s.tree_state(), t);
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    /// Folder with frames drawn at `ns`, each marked by a pixel of value n.
+    fn folder_with(ns: &[u32]) -> (LayerStack, u64) {
+        let mut s = LayerStack::new_document(8, 8);
+        let a = s.add_animation_folder("A");
+        for &n in ns {
+            let sub = s.make_frame(a, n).unwrap();
+            s.set_layer_rect(sub, (0, 0, 1, 1), &[n as u8, 0, 0, 255]);
+        }
+        (s, a)
+    }
+
+    /// The frame numbers, and the mark each frame carries.
+    fn marks(s: &LayerStack, a: u64) -> Vec<(u32, u8)> {
+        s.frames(a).into_iter().map(|(n, id)| {
+            let Some(Node::Folder(f)) = s.node(id) else { panic!() };
+            assert_eq!(f.name, format!("Frame {n}"));
+            let mark = f.children.iter().find_map(|c| match c { Node::Layer(l) => Some(l.tiles.pixel(0, 0)[0]).filter(|v| *v != 255), _ => None }).unwrap_or(0);
+            (n, mark)
+        }).collect()
+    }
+
+    #[test]
+    fn moving_a_frame() {
+        let (mut s, a) = folder_with(&[1, 3, 5]);
+        assert!(s.move_frame(a, 3, 4, Onto::Refuse), "onto an empty frame: no question");
+        assert_eq!(marks(&s, a), vec![(1, 1), (4, 3), (5, 5)]);
+        assert!(!s.move_frame(a, 4, 5, Onto::Refuse));
+        assert!(s.move_frame(a, 4, 5, Onto::Swap));
+        assert_eq!(marks(&s, a), vec![(1, 1), (4, 5), (5, 3)]);
+        assert!(s.move_frame(a, 1, 4, Onto::Replace));
+        assert_eq!(marks(&s, a), vec![(4, 1), (5, 3)]);
+        assert_eq!(s.take_removed().len(), 1, "the replaced one kept for undo");
+        s.check_animation().unwrap();
+    }
+
+    #[test]
+    fn copying_a_frame() {
+        let (mut s, a) = folder_with(&[1, 2]);
+        assert!(s.copy_frame(a, 1, 6, Onto::Refuse));
+        assert_eq!(marks(&s, a), vec![(1, 1), (2, 2), (6, 1)]);
+        assert!(!s.copy_frame(a, 2, 6, Onto::Refuse));
+        assert!(s.copy_frame(a, 2, 6, Onto::Replace));
+        assert_eq!(marks(&s, a), vec![(1, 1), (2, 2), (6, 2)]);
+        // A copy: painting it leaves the original as it was.
+        let six = s.frame_at(a, 6).unwrap();
+        let Some(Node::Folder(f)) = s.node(six) else { panic!() };
+        let sub = f.children.last().unwrap().id();
+        s.set_layer_rect(sub, (0, 0, 1, 1), &[99, 0, 0, 255]);
+        assert_eq!(marks(&s, a)[1], (2, 2));
+        s.check_animation().unwrap();
+    }
+
+    /// Frames 1 to 10 drawn, insert at 2: the new gap is 2 (the frame 1
+    /// holds there), the old 2 to 10 are 3 to 11; remove at 2 brings them
+    /// back; remove where a frame is drawn deletes it.
+    #[test]
+    fn inserting_and_removing_frames() {
+        let ns: Vec<u32> = (1..=10).collect();
+        let (mut s, a) = folder_with(&ns);
+        assert!(s.shift_frames(a, 2, Shift::Insert));
+        let m = marks(&s, a);
+        assert_eq!(m[0], (1, 1));
+        assert_eq!(m[1..], (3..=11).map(|n| (n, (n - 1) as u8)).collect::<Vec<_>>()[..]);
+        s.set_time(2);
+        assert_eq!(s.exposed(a), s.frame_at(a, 1), "the gap holds frame 1");
+        assert!(s.shift_frames(a, 2, Shift::Remove));
+        assert_eq!(marks(&s, a), (1..=10).map(|n| (n, n as u8)).collect::<Vec<_>>());
+        assert!(s.shift_frames(a, 5, Shift::Remove));
+        assert_eq!(marks(&s, a).len(), 9);
+        assert_eq!(marks(&s, a)[4], (5, 6));
+        assert!(!s.shift_frames(a, 50, Shift::Insert), "nothing after it");
+        s.check_animation().unwrap();
+        assert_eq!(s.last_frame(), 9);
+        assert!(s.delete_frame(a, 9));
+        assert_eq!(s.last_frame(), 8);
+        s.check_animation().unwrap();
     }
 }

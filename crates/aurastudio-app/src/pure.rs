@@ -293,7 +293,7 @@ impl Run {
         // The animation folder the active node is in (or is), and one of
         // its frames.
         let anim = d.layers.anim_of(d.layers.active_id()).map(|x| x.0);
-        let name = match r.below(31) {
+        let name = match r.below(35) {
             0 if !full => { let before: HashSet<u64> = ids.iter().copied().collect(); let id = d.layers.add_layer("L"); assert!(!before.contains(&id), "id reused"); "add layer" }
             1 if !full => { d.layers.add_folder("F"); "add folder" }
             2 if !full => { d.layers.add_filter_layer(random_filter(r)); "add filter layer" }
@@ -352,6 +352,22 @@ impl Run {
                     "template"
                 }
                 None => "template: no folder",
+            },
+            // The X-sheet: move / copy (onto a drawn frame: replace, swap
+            // or not), insert / remove, delete.
+            31..=33 => match anim {
+                Some(f) => {
+                    let (from, to) = (1 + r.below(12) as u32, 1 + r.below(12) as u32);
+                    let onto = [aurastudio_layers::Onto::Replace, aurastudio_layers::Onto::Swap, aurastudio_layers::Onto::Refuse][r.below(3) as usize];
+                    match r.below(5) {
+                        0 => { d.layers.move_frame(f, from, to, onto); "move frame" }
+                        1 if !full => { d.layers.copy_frame(f, from, to, onto); "copy frame" }
+                        2 => { d.layers.shift_frames(f, from, aurastudio_layers::Shift::Insert); "insert frame" }
+                        3 => { d.layers.shift_frames(f, from, aurastudio_layers::Shift::Remove); "remove frame" }
+                        _ => { d.layers.delete_frame(f, from); "delete frame" }
+                    }
+                }
+                None => "x-sheet: no folder",
             },
             28 => match d.layers.anim_of(d.layers.active_id()) {
                 Some((_, Some(frame))) => { d.layers.apply_to_folder(frame); "apply to folder" }

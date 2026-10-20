@@ -116,9 +116,25 @@ Geometry, Selection, Transform.
   move, rename (double click) a sub-cel, in every frame at once. The
   layer list shows the folder and its frames (a click on a frame goes to
   it), never the sub-cels. Nothing else goes into an animation folder;
-  frames stay in theirs. `,` / `.`: previous / next frame (the X-sheet
-  docker comes next). Camera and comics folders are listed, grayed out
-  until they come.
+  frames stay in theirs. `,` / `.`: previous / next frame. Camera and
+  comics folders are listed, grayed out until they come.
+- **Animation panel** (Animation documents; Window > Animation): the
+  **timeline** under the canvas, or turned into the **X-sheet** beside the
+  dockers (one button; the same grid, as OpenToonz's orientations). One
+  row / column per animation folder (name, eye, lock; double click to
+  rename), one cell per frame: a drawn frame is a filled cell, a hold a
+  line until the next one; the current frame lit; lines every 6 frames
+  and every second. A click goes to a frame (on a cell: that folder too),
+  a drag on the frame numbers or an empty cell scrubs. **Drag a drawn
+  frame** to move it, **Ctrl + drag** to copy it; onto a drawn frame, a
+  question: replace it, swap them (moves), or cancel (the default).
+  **Insert / remove a frame** (buttons, or a right click on a cell): the
+  next frames move one later / earlier and are renamed; delete a
+  drawing (the one before holds on). The bar: new animation folder,
+  first / previous / **play-pause** / next / last frame, loop, fps,
+  current / last frame. Playback keeps time (frames are skipped if the
+  merge can't keep up), from the current frame, looping over the frames
+  drawn.
 - **Window** menu: every docker with a check mark, to hide it or show it
   again (beside its usual partner, else in a new dock at the bottom);
   Reset docks.
@@ -219,7 +235,7 @@ the canvas texture).
 | Select all / deselect / reselect / invert | Ctrl+A / Ctrl+D / Ctrl+Shift+D / Ctrl+Shift+I |
 | Selection modes | Shift: add, Alt: subtract, Shift+Alt: intersect (held at the press) |
 | Transform | Ctrl+T; Enter apply, Escape cancel, arrows nudge; Enter again: a new one |
-| Animation | `,` previous frame, `.` next frame |
+| Animation | `,` previous frame, `.` next frame; in the timeline / X-sheet: drag a frame to move it, Ctrl + drag to copy it, wheel through time, Shift + wheel across folders |
 | Copy / paste pixels | Ctrl+C / Ctrl+V |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
 | 100 % / fit | `1` / `2` |

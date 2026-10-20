@@ -2,6 +2,7 @@
 //! what to do in `Actions`.
 
 pub mod theme;
+mod animation;
 mod bars;
 mod stroke_preview;
 mod dock_layout;
@@ -46,6 +47,10 @@ pub struct Model<'a> {
     pub layers:             &'a mut LayerStack,
     /// What the document is made for (features on or off).
     pub doc_kind:           aurastudio_document::Kind,
+    /// Animation playback: running, frames per second, looping.
+    pub playing:            bool,
+    pub fps:                &'a mut u32,
+    pub looping:            &'a mut bool,
     /// Width / height typed in the Canvas dock, applied by "Resize".
     pub canvas_edit:        &'a mut (u32, u32),
     pub max_canvas:         u32,
@@ -145,6 +150,8 @@ pub struct Actions {
     pub layer_edit:  Option<&'static str>,
     /// Show this docker (hidden from the Window menu).
     pub show_docker: Option<dockers::Tab>,
+    /// Start (true) or stop animation playback.
+    pub play:        Option<bool>,
     /// No layer edit is under way (nothing held, no name being typed, no
     /// filter layer's dialog open): one done can be recorded for undo.
     pub layers_idle: bool,
@@ -207,6 +214,8 @@ pub struct UiState {
     tool_list:     dockers::tool_list::ToolListState,
     /// Cel template docker: the sub-cel being renamed.
     cel_rename:    Option<(usize, String, bool)>,
+    /// The Animation panel (X-sheet / timeline).
+    pub anim:      animation::AnimPanel,
     /// The open filter dialog.
     filter:        Option<filters::FilterDialog>,
     /// The Preferences dialog is open, on this section.
@@ -236,6 +245,7 @@ impl UiState {
             layers:        Default::default(),
             tool_list:     Default::default(),
             cel_rename:    None,
+            anim:          Default::default(),
             filter:        None,
             prefs_open:    None,
             select_dialog: None,
@@ -269,7 +279,7 @@ impl UiState {
 
     /// A dialog is waiting for an answer (the canvas ignores the pen).
     pub fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some() || self.select_dialog.is_some()
+        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some() || self.select_dialog.is_some() || self.anim.is_asking()
     }
 
     /// The layers chosen in the Layers docker (several with Ctrl / Shift;
@@ -383,6 +393,11 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         });
 
     if let Some(tab) = actions.show_docker.take() { dockers::set_shown(&mut state.dock, tab, true); }
+    // The Animation panel (Animation documents): under the canvas or
+    // beside the dockers.
+    if state.anim.open && !model.home && model.doc_kind == aurastudio_document::Kind::Animation {
+        animation::panel(ctx, &mut state.anim, model, actions);
+    }
 
     if let Some(card) = canvas_card(ctx, model) {
         if model.home {
