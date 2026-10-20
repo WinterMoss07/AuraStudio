@@ -61,7 +61,9 @@ pub enum Cmd {
 pub enum TransformAction {
     /// Start on these layers (the selection says what moves).
     Begin(Vec<u64>),
-    Preview(aurastudio_layers::transform::Warp, aurastudio_layers::transform::Interp),
+    /// Show it (the latest waiting only); the number comes back in
+    /// TransformShown once it is on the projection.
+    Preview(aurastudio_layers::transform::Warp, aurastudio_layers::transform::Interp, u64),
     Apply(aurastudio_layers::transform::Warp, aurastudio_layers::transform::Interp),
     Cancel,
 }
@@ -72,6 +74,10 @@ pub enum Event {
     Selection,
     /// A transform began: what moves (canvas pixels), or why it can't.
     TransformStarted(Result<Rect, &'static str>),
+    /// The pieces of its live preview (the GPU draws it while dragging).
+    TransformLift(Box<aurastudio_document::Lift>),
+    /// Preview number n is on the projection.
+    TransformShown(u64),
     /// The projection has new changed areas to upload.
     Painted,
     /// A layer's pixels changed for good (stroke done, undo...): refresh
@@ -243,10 +249,17 @@ impl Worker {
                         match action {
                             TransformAction::Begin(ids) => {
                                 let r = d.transform_begin(&ids);
+                                let ok = r.is_ok();
                                 events.push(Event::TransformStarted(r));
+                                if ok {
+                                    let t = Instant::now();
+                                    if let Some(l) = d.transform_lift() { events.push(Event::TransformLift(Box::new(l))); }
+                                    log::info!("transform lift: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+                                }
                             }
-                            TransformAction::Preview(w, i) => {
+                            TransformAction::Preview(w, i, n) => {
                                 if let Some(r) = d.transform_preview(&w, i) { add_rect(&mut self.pending, r); }
+                                events.push(Event::TransformShown(n));
                             }
                             TransformAction::Apply(w, i) => {
                                 let had = d.selection.clone();

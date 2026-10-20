@@ -22,6 +22,42 @@ pub(crate) struct Session {
     touched:   Rect,
 }
 
+/// What a transform's live preview needs (the GPU puts it together while
+/// a handle is dragged): the whole canvas under the moved layers and over
+/// them, and what moves.
+pub struct Lift {
+    pub src:    Rect,
+    /// Merged image up to the top moved layer (what is left of them in),
+    /// canvas-sized RGBA.
+    pub below:  Vec<u8>,
+    /// What is over them, on transparency (straight RGBA); None: nothing.
+    pub above:  Option<Vec<u8>>,
+    /// What moves of each layer, bottom up.
+    pub layers: Vec<LiftLayer>,
+}
+
+impl std::fmt::Debug for Lift {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Lift {{ src: {:?}, layers: {}, above: {} }}", self.src, self.layers.len(), self.above.is_some())
+    }
+}
+
+pub struct LiftLayer {
+    /// The source rectangle with a transparent pixel all around:
+    /// (width + 2) × (height + 2), premultiplied RGBA.
+    pub premul:  Vec<u8>,
+    pub opacity: f32,
+}
+
+/// What moves of `before`: its pixels in `src`, through `mask` if any.
+fn lifted(before: &Tiles, src: Rect, mask: Option<&[u8]>) -> Vec<u8> {
+    let mut px = before.read_rect(src);
+    if let Some(m) = mask {
+        for (p, c) in px.chunks_exact_mut(4).zip(m) { p[3] = (p[3] as u32 * *c as u32 / 255) as u8; }
+    }
+    px
+}
+
 struct Target {
     id:     u64,
     before: Tiles,
@@ -63,10 +99,9 @@ impl Document {
         for id in ids {
             let Some(Node::Layer(l)) = self.layers.node(id) else { continue };
             let before = l.tiles.clone();
-            let mut px = before.read_rect(src);
+            let px = lifted(&before, src, mask.as_deref());
             let base = match (&self.selection, &mask) {
-                (Some(sel), Some(m)) => {
-                    for (p, c) in px.chunks_exact_mut(4).zip(m) { p[3] = (p[3] as u32 * *c as u32 / 255) as u8; }
+                (Some(sel), Some(_)) => {
                     let mut base = before.clone();
                     let r = sel.bbox();
                     let old = base.read_rect(r);
@@ -95,6 +130,43 @@ impl Document {
     }
 
     pub fn transforming(&self) -> bool { self.transform.is_some() }
+
+    /// The live preview's pieces for the transform just begun.
+    pub fn transform_lift(&mut self) -> Option<Lift> {
+        let s = self.transform.as_ref()?;
+        let src = s.src;
+        let ids: Vec<u64> = s.targets.iter().map(|t| t.id).collect();
+        // The top one in the stack order.
+        let order = self.layers.layer_ids();
+        let top = *ids.iter().max_by_key(|id| order.iter().position(|o| o == *id))?;
+        let mask = s.selection.as_ref().map(|(sel, _)| sel.mask(src));
+        let (sw, sh) = ((src.2 - src.0) as usize, (src.3 - src.1) as usize);
+        let mut layers: Vec<(usize, LiftLayer)> = s.targets.iter().map(|t| {
+            let px = lifted(&t.before, src, mask.as_deref());
+            let mut premul = vec![0u8; (sw + 2) * (sh + 2) * 4];
+            for (y, row) in px.chunks_exact(sw * 4).enumerate() {
+                let out = &mut premul[((y + 1) * (sw + 2) + 1) * 4..][..sw * 4];
+                for (o, p) in out.chunks_exact_mut(4).zip(row.chunks_exact(4)) {
+                    let a = p[3] as u32;
+                    o.copy_from_slice(&[(p[0] as u32 * a / 255) as u8, (p[1] as u32 * a / 255) as u8, (p[2] as u32 * a / 255) as u8, p[3]]);
+                }
+            }
+            let opacity = self.layers.node(t.id).map_or(0.0, |n| if n.visible() { n.opacity() } else { 0.0 });
+            (order.iter().position(|o| *o == t.id).unwrap_or(0), LiftLayer { premul, opacity })
+        }).collect();
+        layers.sort_by_key(|l| l.0);
+        // Merged with what moves taken out (swapped in, then back).
+        let mut s = self.transform.take()?;
+        let swap = |d: &mut Document, s: &mut Session| for t in &mut s.targets {
+            if let Some(Node::Layer(l)) = d.layers.node_mut(t.id) { std::mem::swap(&mut l.tiles, &mut t.base); }
+        };
+        swap(self, &mut s);
+        let split = self.layers.merge_split(top);
+        swap(self, &mut s);
+        self.transform = Some(s);
+        let (below, above) = split?;
+        Some(Lift { src, below, above, layers: layers.into_iter().map(|l| l.1).collect() })
+    }
 
     /// What the transform under way moves.
     pub fn transform_source(&self) -> Option<Rect> { self.transform.as_ref().map(|s| s.src) }
@@ -243,5 +315,45 @@ mod tests {
         // Saved: the group's steps one by one.
         let (_, redo) = d.history().export(100);
         assert_eq!(redo.iter().filter(|s| s.label == "Transform").count(), 2);
+    }
+
+    /// The live preview's pieces, put back together where nothing moved,
+    /// give the image as it was; what moves is not in the part under it.
+    #[test]
+    fn the_lift_pieces_make_the_image() {
+        let mut d = Document::new(DocId(1), "t", 100, 80);
+        let id = d.layers.add_layer("ink");
+        d.layers.set_layer_rect(id, (10, 10, 60, 50), &[0u8, 0, 255, 255].repeat(50 * 40));
+        let top = d.layers.add_layer("top");
+        d.layers.set_layer_rect(top, (0, 0, 100, 20), &[255u8, 0, 0, 120].repeat(100 * 20));
+        let whole = d.layers.composite_rect((0, 0, 100, 80));
+        d.layers.set_active(id);
+        let src = d.transform_begin(&[id]).unwrap();
+        let lift = d.transform_lift().unwrap();
+        assert_eq!(lift.src, src);
+        // Under: the ink taken out (paper white there).
+        assert_eq!(&lift.below[(30 * 100 + 30) * 4..][..3], &[255, 255, 255]);
+        let above = lift.above.as_ref().expect("the top layer shows");
+        let (sw, sh) = ((src.2 - src.0) as usize, (src.3 - src.1) as usize);
+        assert_eq!(lift.layers.len(), 1);
+        assert_eq!(lift.layers[0].premul.len(), (sw + 2) * (sh + 2) * 4);
+        for y in 0..80usize {
+            for x in 0..100usize {
+                let mut c: Vec<f32> = lift.below[(y * 100 + x) * 4..][..3].iter().map(|v| *v as f32).collect();
+                if x >= src.0 as usize && x < src.2 as usize && y >= src.1 as usize && y < src.3 as usize {
+                    let p = &lift.layers[0].premul[((y - src.1 as usize + 1) * (sw + 2) + x - src.0 as usize + 1) * 4..][..4];
+                    let a = p[3] as f32 / 255.0;
+                    for k in 0..3 { c[k] = p[k] as f32 + c[k] * (1.0 - a); }
+                }
+                let o = &above[(y * 100 + x) * 4..][..4];
+                let a = o[3] as f32 / 255.0;
+                for k in 0..3 {
+                    let v = o[k] as f32 * a + c[k] * (1.0 - a);
+                    assert!((v - whole[(y * 100 + x) * 4 + k] as f32).abs() <= 2.0, "at {x},{y}");
+                }
+            }
+        }
+        // The layer itself is untouched by it.
+        assert_eq!(px(&d, id, 30, 30), [0, 0, 255, 255]);
     }
 }

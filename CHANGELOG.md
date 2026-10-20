@@ -3,6 +3,33 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.11.1 — 2026-10-20
+
+**Picker and selection**
+- **Loupe** option (picker and selection tools): a magnified view around
+  a 1-pixel cross. The picker takes the pixel in the middle (the rim
+  shows its color); selection points land on pixel corners.
+- Own cursors: an eyedropper for the picker (tip on the pixel taken), a
+  thin cross for the selection tools with the mode held: + (Shift),
+  − (Alt), × (Shift+Alt); the loupe shows the same sign.
+
+**Transform**
+- While a handle is dragged, the GPU draws the transform at once: the
+  canvas under the moved layers, what moves, and the layers over it
+  (exact with normal blending over it). On release the paint thread's
+  exact result replaces it. The image and the warp grid stay under the
+  pen.
+- Warp: a point moves only the four cells around it; the points around
+  and what is past them stay pinned (was a Catmull-Rom spline reaching
+  two cells away).
+- On the transform tool with no transform under way, Enter (or Ctrl+T)
+  starts a new one (no need to change tools after a cancel).
+
+**Checked**
+- Pure fuzz 100 000 operations (786 cancels and 607 undos of transforms
+  checked), UI fuzz 150 s (49 500 steps), painter 30 000 actions — no
+  failure. Test that every layer setting survives a save.
+
 ## 0.11.0 — 2026-10-20
 
 **Selections**

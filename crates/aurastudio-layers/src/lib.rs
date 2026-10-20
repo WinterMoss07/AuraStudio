@@ -1117,6 +1117,52 @@ impl LayerStack {
         }
     }
 
+    /// `composite_pick` of `rect` split in bands over the cores.
+    pub fn composite_pick_par(&self, rect: Rect, pick: Pick, transparent: bool) -> Vec<u8> {
+        let r = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
+        if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }
+        let n = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 16) as u32;
+        let rows = (r.3 - r.1).div_ceil(n).max(64);
+        let bands: Vec<Rect> = (r.1..r.3).step_by(rows as usize).map(|y| (r.0, y, r.2, (y + rows).min(r.3))).collect();
+        let parts: Vec<Vec<u8>> = std::thread::scope(|s| {
+            let jobs: Vec<_> = bands.iter().map(|&b| s.spawn(move || self.composite_pick(b, pick, transparent))).collect();
+            jobs.into_iter().map(|j| j.join().unwrap()).collect()
+        });
+        parts.concat()
+    }
+
+    /// The whole canvas merged up to node `id` (it included) and, on
+    /// transparency, what is over it (None: nothing shows there). A
+    /// transform's live preview puts what moves between the two (exact
+    /// with normal blending above).
+    pub fn merge_split(&mut self, id: u64) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+        let path = self.path(id)?;
+        // Drawn before / after it: its siblings and its folders' siblings.
+        let (mut before, mut after) = (Vec::new(), Vec::new());
+        let mut nodes = &self.root;
+        for (depth, &k) in path.iter().enumerate() {
+            for (i, n) in nodes.iter().enumerate() {
+                if i < k { before.push(n.id()) } else if i > k { after.push(n.id()) }
+            }
+            if depth + 1 < path.len() {
+                let Node::Folder(f) = &nodes[k] else { return None };
+                nodes = &f.children;
+            }
+        }
+        before.push(id);
+        let full = (0, 0, self.width, self.height);
+        let hidden = |s: &mut Self, ids: &[u64], f: &dyn Fn(&Self) -> Vec<u8>| -> (Vec<u8>, bool) {
+            let was: Vec<bool> = ids.iter().map(|&i| s.node(i).is_some_and(|n| n.visible())).collect();
+            for &i in ids { if let Some(n) = s.node_mut(i) { *n.visible_mut() = false; } }
+            let out = f(s);
+            for (&i, &v) in ids.iter().zip(&was) { if let Some(n) = s.node_mut(i) { *n.visible_mut() = v; } }
+            (out, was.iter().any(|v| *v))
+        };
+        let (below, any_after) = hidden(self, &after, &|s| s.composite_pick_par(full, Pick::ALL, false));
+        let above = any_after.then(|| hidden(self, &before, &|s| s.composite_pick_par(full, Pick::ALL, true)).0);
+        Some((below, above))
+    }
+
     /// A small merged image (file previews): sampled rows, shrunk.
     pub fn composite_preview(&self, max: u32) -> (u32, u32, Vec<u8>) {
         let (w, h) = (self.width, self.height);
@@ -1757,4 +1803,41 @@ mod layer_tree_tests {
         assert_eq!(names(&s), ["g", "three", "Layer 1", "Paper", "f", "two"]);
     }
 
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    /// Under + over put back together give the whole merge (normal
+    /// blending), the node in a folder too.
+    #[test]
+    fn under_and_over_make_the_merge() {
+        let (w, h) = (90, 70);
+        let mut l = LayerStack::new_document(w, h);
+        let low = l.add_layer("low");
+        l.set_layer_rect(low, (0, 0, 60, 70), &[200u8, 40, 40, 255].repeat(60 * 70));
+        let folder = l.add_folder("f");
+        let target = l.add_layer("target");
+        l.set_layer_rect(target, (20, 10, 80, 50), &[30u8, 200, 60, 180].repeat(60 * 40));
+        l.set_active(folder);
+        let top = l.add_layer("top");
+        l.set_layer_rect(top, (40, 0, 90, 30), &[20u8, 20, 220, 100].repeat(50 * 30));
+        let rows = l.rows();
+        assert!(rows.iter().any(|r| r.id == target && r.depth == 1), "target in the folder");
+        let whole = l.composite_rect((0, 0, w, h));
+        let (below, above) = l.merge_split(target).unwrap();
+        let above = above.expect("a layer shows over it");
+        // Nothing else changed.
+        assert_eq!(l.composite_rect((0, 0, w, h)), whole);
+        for ((b, a), m) in below.chunks(4).zip(above.chunks(4)).zip(whole.chunks(4)) {
+            let al = a[3] as f32 / 255.0;
+            for c in 0..3 {
+                let v = a[c] as f32 * al + b[c] as f32 * (1.0 - al);
+                assert!((v - m[c] as f32).abs() <= 2.0, "{v} vs {}", m[c]);
+            }
+        }
+        // The top layer: nothing over it.
+        assert!(l.merge_split(top).unwrap().1.is_none());
+    }
 }

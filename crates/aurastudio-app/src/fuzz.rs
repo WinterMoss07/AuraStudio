@@ -211,6 +211,7 @@ fn fuzz() {
     let mut prefs = aurastudio_ui::Prefs::default();
     let mut stay_inside = false;
     let mut select_opts = SelectOptions::default();
+    let mut picker_opts = aurastudio_ui::PickerOptions::default();
     let mut transform_opts = TransformOptions::default();
     let (mut ui_frames, mut strokes, mut ops, mut resets, mut slow) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let progress: u64 = std::env::var("FUZZ_PROGRESS").ok().and_then(|s| s.parse().ok()).unwrap_or(5_000);
@@ -269,6 +270,7 @@ fn fuzz() {
                         has_selection: selection.is_some(),
                         selection: selection.as_ref(),
                         select: &mut select_opts,
+                        picker: &mut picker_opts,
                         transform: &mut transform_opts,
                         transform_info: TransformInfo::default(),
                         renderer: "Vulkan",
@@ -374,7 +376,7 @@ fn fuzz() {
                         pt.send(Cmd::Transform { doc: Arc::clone(&d), action: T::Begin(ids) });
                         let src = (size.0 / 4, size.1 / 4, (size.0 / 4 + 1).max(size.0 * 3 / 4).min(size.0), (size.1 / 4 + 1).max(size.1 * 3 / 4).min(size.1));
                         for _ in 0..r.below(5) {
-                            pt.send(Cmd::Transform { doc: Arc::clone(&d), action: T::Preview(crate::pure::random_warp(&mut r, src), crate::pure::random_interp(&mut r)) });
+                            pt.send(Cmd::Transform { doc: Arc::clone(&d), action: T::Preview(crate::pure::random_warp(&mut r, src), crate::pure::random_interp(&mut r), 0) });
                         }
                         let end = if r.chance(0.6) { T::Apply(crate::pure::random_warp(&mut r, src), crate::pure::random_interp(&mut r)) } else { T::Cancel };
                         pt.send(Cmd::Transform { doc: d, action: end });

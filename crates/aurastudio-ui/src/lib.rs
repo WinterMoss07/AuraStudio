@@ -27,7 +27,7 @@ pub use dockers::layers::LayerCmd;
 pub use filters::FilterAction;
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
-pub use tools::{Group, Overlay, SelectCmd, SelectOptions, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
+pub use tools::{Group, Loupe, Overlay, PickerOptions, SelectCmd, SelectOptions, LOUPE_SIDE, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
 pub use prefs::Renderer;
 pub use widgets::set_display_transform;
 
@@ -75,6 +75,7 @@ pub struct Model<'a> {
     /// Settings of the selection and transform tools, and the transform
     /// under way.
     pub select:             &'a mut SelectOptions,
+    pub picker:             &'a mut PickerOptions,
     pub transform:          &'a mut TransformOptions,
     pub transform_info:     TransformInfo,
     /// The graphics API drawing the window (Preferences).

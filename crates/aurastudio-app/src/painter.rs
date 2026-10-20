@@ -477,7 +477,7 @@ fn painter_session() {
                         Warp { quad: q, mesh: None }
                     };
                     for i in 1..=steps {
-                        s.pt.send(Cmd::Transform { doc: Arc::clone(&s.doc), action: T::Preview(warp(i as f64 / steps as f64), Interp::Bilinear) });
+                        s.pt.send(Cmd::Transform { doc: Arc::clone(&s.doc), action: T::Preview(warp(i as f64 / steps as f64), Interp::Bilinear, i) });
                         // The pointer at 120 Hz.
                         std::thread::sleep(Duration::from_millis(8));
                     }

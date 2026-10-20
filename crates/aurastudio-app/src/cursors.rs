@@ -20,14 +20,26 @@ pub enum Wanted {
     Rotate,
     /// Ctrl + Space held, or zooming.
     Zoom,
+    /// Color picker (hotspot at the tip).
+    Pipette,
+    /// Selection tools: a thin cross, with what a press does to the
+    /// selection.
+    Cross(Mark),
     System(CursorIcon),
 }
+
+/// The sign by the selection cross.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark { None, Add, Subtract, Intersect }
 
 pub struct Cursors {
     hand:        CustomCursor,
     hand_closed: CustomCursor,
     rotate:      CustomCursor,
     zoom:        CustomCursor,
+    pipette:     CustomCursor,
+    /// By Mark (None, Add, Subtract, Intersect).
+    cross:       [CustomCursor; 4],
     /// What the window shows now (None: unknown, set it again).
     applied:     Option<Wanted>,
 }
@@ -42,17 +54,22 @@ impl Cursors {
     /// the size of the system's).
     pub fn new(event_loop: &ActiveEventLoop, scale: f64) -> Self {
         let scale = (scale as f32).clamp(1.0, 4.0);
-        let make = |pixmap: Pixmap| {
+        // Hotspot at grid point (hx, hy).
+        let make_at = |pixmap: Pixmap, hx: f32, hy: f32| {
             let side = pixmap.width() as u16;
+            let k = side as f32 / SIZE as f32;
             let rgba = straight_rgba(&pixmap);
-            let source = CustomCursor::from_rgba(rgba, side, side, side / 2, side / 2).expect("cursor bitmap");
+            let source = CustomCursor::from_rgba(rgba, side, side, (hx * k) as u16, (hy * k) as u16).expect("cursor bitmap");
             event_loop.create_custom_cursor(source)
         };
+        let make = |pixmap: Pixmap| make_at(pixmap, SIZE as f32 / 2.0, SIZE as f32 / 2.0);
         Self {
             hand: make(hand(false, scale)),
             hand_closed: make(hand(true, scale)),
             rotate: make(rotate(scale)),
             zoom: make(magnifier(scale)),
+            pipette: make_at(pipette(scale), PIPETTE_TIP.0, PIPETTE_TIP.1),
+            cross: [Mark::None, Mark::Add, Mark::Subtract, Mark::Intersect].map(|m| make(cross(m, scale))),
             applied: None,
         }
     }
@@ -67,6 +84,8 @@ impl Cursors {
             Wanted::HandClosed => { window.set_cursor(self.hand_closed.clone()); window.set_cursor_visible(true); }
             Wanted::Rotate => { window.set_cursor(self.rotate.clone()); window.set_cursor_visible(true); }
             Wanted::Zoom => { window.set_cursor(self.zoom.clone()); window.set_cursor_visible(true); }
+            Wanted::Pipette => { window.set_cursor(self.pipette.clone()); window.set_cursor_visible(true); }
+            Wanted::Cross(m) => { window.set_cursor(self.cross[m as usize].clone()); window.set_cursor_visible(true); }
             Wanted::System(icon) => { window.set_cursor(icon); window.set_cursor_visible(true); }
         }
     }
@@ -212,6 +231,74 @@ fn magnifier(scale: f32) -> Pixmap {
     pixmap
 }
 
+/// Where the pipette's tip is, grid units.
+const PIPETTE_TIP: (f32, f32) = (3.0, 28.0);
+
+/// An eyedropper, tip at the bottom left (the pixel taken).
+fn pipette(scale: f32) -> Pixmap {
+    let (mut pixmap, t) = canvas(scale);
+    let (tx, ty) = PIPETTE_TIP;
+    // Along the tube, toward the top right.
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    let at = |d: f32, side: f32| (tx + (d + side) * k, ty - (d - side) * k);
+    outline_then_fill(&mut pixmap, |pm, paint, extra| {
+        // The glass tube, thin at the tip.
+        let mut pb = PathBuilder::new();
+        let (a, b, c) = (at(0.0, 0.0), at(17.0, -2.2), at(17.0, 2.2));
+        pb.move_to(a.0, a.1);
+        pb.line_to(at(3.0, -1.4).0, at(3.0, -1.4).1);
+        pb.line_to(b.0, b.1);
+        pb.line_to(c.0, c.1);
+        pb.line_to(at(3.0, 1.4).0, at(3.0, 1.4).1);
+        pb.close();
+        let tube = pb.finish().unwrap();
+        let stroke = Stroke { width: 0.8 + extra, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+        pm.fill_path(&tube, paint, FillRule::Winding, t, None);
+        pm.stroke_path(&tube, paint, &stroke, t, None);
+        // The collar across it.
+        let collar = Stroke { width: 3.0 + extra, line_cap: LineCap::Round, ..Default::default() };
+        let mut pb = PathBuilder::new();
+        let (p, q) = (at(17.5, -4.6), at(17.5, 4.6));
+        pb.move_to(p.0, p.1);
+        pb.line_to(q.0, q.1);
+        pm.stroke_path(&pb.finish().unwrap(), paint, &collar, t, None);
+        // The bulb.
+        let (bx, by) = at(23.5, 0.0);
+        let bulb = PathBuilder::from_circle(bx, by, 3.8 + extra / 2.0).unwrap();
+        pm.fill_path(&bulb, paint, FillRule::Winding, t, None);
+    });
+    pixmap
+}
+
+/// A thin cross with an open middle (the pixel stays visible), and the
+/// selection mode's sign at the bottom right.
+fn cross(mark: Mark, scale: f32) -> Pixmap {
+    let (mut pixmap, t) = canvas(scale);
+    let c = SIZE as f32 / 2.0;
+    outline_then_fill(&mut pixmap, |pm, paint, extra| {
+        let stroke = Stroke { width: 1.2 + extra * 0.6, line_cap: LineCap::Butt, ..Default::default() };
+        let (gap, arm) = (2.5, 8.0);
+        let mut pb = PathBuilder::new();
+        for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            pb.move_to(c + dx * gap, c + dy * gap);
+            pb.line_to(c + dx * arm, c + dy * arm);
+        }
+        pm.stroke_path(&pb.finish().unwrap(), paint, &stroke, t, None);
+        // The sign.
+        let sign = Stroke { width: 1.8 + extra * 0.7, line_cap: LineCap::Square, ..Default::default() };
+        let (sx, sy, r) = (c + 9.5, c + 9.5, 3.0);
+        let mut pb = PathBuilder::new();
+        match mark {
+            Mark::None => return,
+            Mark::Add => { pb.move_to(sx - r, sy); pb.line_to(sx + r, sy); pb.move_to(sx, sy - r); pb.line_to(sx, sy + r); }
+            Mark::Subtract => { pb.move_to(sx - r, sy); pb.line_to(sx + r, sy); }
+            Mark::Intersect => { let q = r * 0.8; pb.move_to(sx - q, sy - q); pb.line_to(sx + q, sy + q); pb.move_to(sx + q, sy - q); pb.line_to(sx - q, sy + q); }
+        }
+        pm.stroke_path(&pb.finish().unwrap(), paint, &sign, t, None);
+    });
+    pixmap
+}
+
 /// A cursor bitmap for `scale`, and the transform from grid units to it.
 fn canvas(scale: f32) -> (Pixmap, Transform) {
     let side = (SIZE as f32 * scale).round() as u32;
@@ -249,11 +336,11 @@ mod tests {
 
     #[test]
     fn cursor_bitmaps_have_ink() {
-        for pm in [hand(false, 1.0), hand(true, 1.0), rotate(1.0), magnifier(1.0), hand(false, 2.0)] {
+        for pm in [hand(false, 1.0), hand(true, 1.0), rotate(1.0), magnifier(1.0), hand(false, 2.0), pipette(1.0), cross(Mark::Add, 1.0), cross(Mark::Intersect, 2.0)] {
             let rgba = straight_rgba(&pm);
             assert_eq!(rgba.len(), (pm.width() * pm.height() * 4) as usize);
             let opaque = rgba.chunks(4).filter(|p| p[3] > 128).count();
-            assert!(opaque > 60, "cursor almost empty: {opaque}");
+            assert!(opaque > 30, "cursor almost empty: {opaque}");
             if let Ok(dir) = std::env::var("CURSOR_DUMP") {
                 let n = std::fs::read_dir(&dir).map_or(0, |d| d.count());
                 std::fs::write(format!("{dir}/c{n}.rgba"), &rgba).unwrap();

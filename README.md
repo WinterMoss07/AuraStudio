@@ -58,7 +58,11 @@ Geometry, Selection, Transform.
   inside the selection moves its outline. Select menu: all, deselect,
   reselect, invert, grow, shrink, feather, border (round, as Photoshop's),
   from layer (its opaque pixels). Every change is undoable. Marching ants
-  traced at the zoom's detail.
+  traced at the zoom's detail. A thin cross shows the mode (+, −, ×).
+- **Loupe** (picker and selection tools, in their options): a magnified
+  view around a 1-pixel cross, to take one exact pixel's color or to put
+  a selection's points on pixel corners; the picker's rim shows the color
+  taken, the selection's the mode (+, −, ×).
 - Painting, fill, filters, copy and Delete stay inside the selection (a
   soft edge partly).
 - **Transform** (T, Ctrl+T): the layer, the layers chosen in the Layers
@@ -68,11 +72,14 @@ Geometry, Selection, Transform.
   rotate outside the box (Shift: 15° steps), skew along an edge, Ctrl+corner
   to distort, a pivot to drag; X / Y, size, angle and skew as numbers;
   flips and quarter turns. Perspective: each corner on its own. Warp: a
-  smooth grid (1 × 1 to 8 × 8) to bend. Resampling Bicubic (Photoshop's),
-  Bilinear or Nearest (pixel art), with a pyramid for big reductions;
-  fast preview while dragging, full quality on release, on all cores.
+  grid (1 × 1 to 8 × 8) to bend; a point moves only the cells around it
+  (the points around stay pinned). Resampling Bicubic (Photoshop's),
+  Bilinear or Nearest (pixel art), with a pyramid for big reductions.
+  While dragging, the GPU draws it at once (the layers over it on top);
+  on release, the exact result at full quality, on all cores.
   Enter applies (one undo step), Escape cancels, Ctrl+Z steps back inside
-  the transform, arrows nudge (Shift: 10 px).
+  the transform, arrows nudge (Shift: 10 px). On the tool with no
+  transform under way, Enter (or Ctrl+T) starts a new one.
 - Geometry tools (U cycles them), drawn with the current brush: Line
   (Shift: 15° steps), Rectangle and Ellipse (Shift: square / circle, Alt:
   from the center), and **Arc** (like OpenToonz's): drag or click from
@@ -187,7 +194,7 @@ the canvas texture).
 | Pick a color | Alt + click (brush, eraser, fill) |
 | Select all / deselect / reselect / invert | Ctrl+A / Ctrl+D / Ctrl+Shift+D / Ctrl+Shift+I |
 | Selection modes | Shift: add, Alt: subtract, Shift+Alt: intersect (held at the press) |
-| Transform | Ctrl+T; Enter apply, Escape cancel, arrows nudge |
+| Transform | Ctrl+T; Enter apply, Escape cancel, arrows nudge; Enter again: a new one |
 | Copy / paste pixels | Ctrl+C / Ctrl+V |
 | Zoom | mouse wheel (toward the cursor), `+` / `-`, Ctrl + Space + drag left / right (or Ctrl + middle drag), around where the drag starts |
 | 100 % / fit | `1` / `2` |
@@ -284,8 +291,10 @@ See `NOTICE.md` for third-party code and assets.
       interface follows (log line `display scaling: …`).
 - [ ] Brush import dialog (files and folder) and that imports come back at
       the next launch.
-- [ ] Transform on a big page with the pen: the preview keeps up while
-      dragging (log lines `transform preview: … ms`).
+- [ ] Transform and warp on a big page with the pen: the image and the
+      grid stay under the pen (GPU preview; log line `transform lift: … ms`).
+- [ ] Loupe with the pen: picking one pixel, selection points on pixel
+      corners.
 - [ ] Renderer: DirectX 12 and OpenGL chosen in Preferences, after a
       restart (log line `graphics: …`).
 

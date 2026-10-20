@@ -125,9 +125,11 @@ fn bicubic(t: f32) -> [f32; 4] {
     [far(1.0 + t), near(t), near(1.0 - t), far(2.0 - t)]
 }
 
-/// A smooth grid bending the source before the quad (CSP's mesh, Krita's
-/// warp): `cols` × `rows` cells, control points in the source's unit
-/// square, interpolating (Catmull-Rom both ways).
+/// A grid bending the source before the quad (CSP's mesh): `cols` ×
+/// `rows` cells, control points in the source's unit square. A point
+/// moves only the four cells around it: the points around stay where they
+/// are, and so does what is under them (each point's move fades out over
+/// its cells, smoothly: 3t² - 2t³).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mesh {
     pub cols: usize,
@@ -147,39 +149,27 @@ impl Mesh {
 
     pub fn at(&self, i: usize, j: usize) -> [f64; 2] { self.pts[j * (self.cols + 1) + i] }
 
-    /// Control point (i, j), extrapolated in a straight line past the
-    /// edges.
-    fn ctl(&self, i: isize, j: isize) -> [f64; 2] {
-        let (n, m) = (self.cols as isize, self.rows as isize);
-        let ext = |k: isize, max: isize| -> (isize, isize, f64) {
-            if k < 0 { (0, 1, -k as f64) } else if k > max { (max, max - 1, (k - max) as f64) } else { (k, k, 0.0) }
-        };
-        let (i0, i1, ti) = ext(i, n);
-        let (j0, j1, tj) = ext(j, m);
-        let p = |a: isize, b: isize| self.at(a as usize, b as usize);
-        let base = p(i0, j0);
-        let di = { let q = p(i1, j0); [base[0] - q[0], base[1] - q[1]] };
-        let dj = { let q = p(i0, j1); [base[0] - q[0], base[1] - q[1]] };
-        [base[0] + di[0] * ti + dj[0] * tj, base[1] + di[1] * ti + dj[1] * tj]
+    /// How far point (i, j) moved from its place.
+    fn moved(&self, i: usize, j: usize) -> [f64; 2] {
+        let p = self.at(i, j);
+        [p[0] - i as f64 / self.cols as f64, p[1] - j as f64 / self.rows as f64]
     }
 
     /// Where unit point (u, v) of the source goes (still unit space).
+    /// Past the edges, as the nearest edge moved.
     pub fn eval(&self, u: f64, v: f64) -> [f64; 2] {
-        let cr = |p: [[f64; 2]; 4], t: f64| -> [f64; 2] {
-            let (t2, t3) = (t * t, t * t * t);
-            std::array::from_fn(|k| 0.5 * (2.0 * p[1][k] + (-p[0][k] + p[2][k]) * t
-                + (2.0 * p[0][k] - 5.0 * p[1][k] + 4.0 * p[2][k] - p[3][k]) * t2
-                + (-p[0][k] + 3.0 * p[1][k] - 3.0 * p[2][k] + p[3][k]) * t3))
-        };
         let (x, y) = (u * self.cols as f64, v * self.rows as f64);
-        let i = (x.floor() as isize).clamp(0, self.cols as isize - 1);
-        let j = (y.floor() as isize).clamp(0, self.rows as isize - 1);
-        let (tu, tv) = (x - i as f64, y - j as f64);
-        let rows: [[f64; 2]; 4] = std::array::from_fn(|r| {
-            let jj = j - 1 + r as isize;
-            cr(std::array::from_fn(|c| self.ctl(i - 1 + c as isize, jj)), tu)
-        });
-        cr(rows, tv)
+        let i = (x.floor() as isize).clamp(0, self.cols as isize - 1) as usize;
+        let j = (y.floor() as isize).clamp(0, self.rows as isize - 1) as usize;
+        let smooth = |t: f64| { let t = t.clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+        let (su, sv) = (smooth(x - i as f64), smooth(y - j as f64));
+        let mut out = [u, v];
+        for (di, dj, w) in [(0, 0, (1.0 - su) * (1.0 - sv)), (1, 0, su * (1.0 - sv)), (0, 1, (1.0 - su) * sv), (1, 1, su * sv)] {
+            let d = self.moved(i + di, j + dj);
+            out[0] += d[0] * w;
+            out[1] += d[1] * w;
+        }
+        out
     }
 }
 
@@ -215,15 +205,23 @@ impl Warp {
                 x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x); y1 = y1.max(y);
             }
         }
-        // Interior points of a bent grid can go past its border.
+        // A bent grid: each cell's points stay in the cell's box grown by
+        // its corners' moves (the quad maps a box to a convex quad).
         if let Some(m) = &self.mesh {
             let h = Homography::square_to_quad(self.quad)?;
-            for p in &m.pts {
-                let (x, y) = h.apply(p[0], p[1]);
-                x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x); y1 = y1.max(y);
+            for j in 0..m.rows {
+                for i in 0..m.cols {
+                    let ds = [m.moved(i, j), m.moved(i + 1, j), m.moved(i, j + 1), m.moved(i + 1, j + 1)];
+                    let lo = [ds.iter().map(|d| d[0]).fold(f64::MAX, f64::min), ds.iter().map(|d| d[1]).fold(f64::MAX, f64::min)];
+                    let hi = [ds.iter().map(|d| d[0]).fold(f64::MIN, f64::max), ds.iter().map(|d| d[1]).fold(f64::MIN, f64::max)];
+                    let (u0, v0) = (i as f64 / m.cols as f64 + lo[0], j as f64 / m.rows as f64 + lo[1]);
+                    let (u1, v1) = ((i + 1) as f64 / m.cols as f64 + hi[0], (j + 1) as f64 / m.rows as f64 + hi[1]);
+                    for (u, v) in [(u0, v0), (u1, v0), (u0, v1), (u1, v1)] {
+                        let (x, y) = h.apply(u, v);
+                        x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x); y1 = y1.max(y);
+                    }
+                }
             }
-            let pad = (x1 - x0).max(y1 - y0) * 0.1;
-            (x0, y0, x1, y1) = (x0 - pad, y0 - pad, x1 + pad, y1 + pad);
         }
         let ok = [x0, y0, x1, y1].iter().all(|v| v.is_finite());
         ok.then_some((x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0))
@@ -629,6 +627,36 @@ mod tests {
         assert!(out.chunks(4).all(|p| p[3] == 0 || p[0] >= 190));
     }
 
+    /// A point moves its four cells only: the points around and what is
+    /// past them stay.
+    #[test]
+    fn a_warp_point_moves_its_cells_only() {
+        let mut m = Mesh::new(5, 5);
+        let k = 2 * 6 + 2;
+        m.pts[k] = [m.pts[k][0] + 0.07, m.pts[k][1] - 0.05];
+        for j in 0..=5 {
+            for i in 0..=5 {
+                let (u, v) = (i as f64 / 5.0, j as f64 / 5.0);
+                let e = m.eval(u, v);
+                if (i, j) == (2, 2) { assert!((e[0] - u - 0.07).abs() < 1e-12 && (e[1] - v + 0.05).abs() < 1e-12); }
+                else { assert!((e[0] - u).abs() < 1e-12 && (e[1] - v).abs() < 1e-12, "point {i},{j} moved"); }
+            }
+        }
+        // Inside the cells around: moved; past them: not at all.
+        let e = m.eval(0.35, 0.45);
+        assert!((e[0] - 0.35).abs() > 1e-3);
+        for (u, v) in [(0.15, 0.4), (0.65, 0.4), (0.4, 0.1), (0.4, 0.7), (0.9, 0.9), (0.62, 0.62)] {
+            assert_eq!(m.eval(u, v), [u, v], "{u},{v} moved");
+        }
+        // The whole grid moved: the whole image moves the same.
+        let mut all = Mesh::new(3, 3);
+        for p in &mut all.pts { p[0] += 0.1; }
+        for (u, v) in [(0.0, 0.0), (0.33, 0.71), (1.0, 0.5)] {
+            let e = all.eval(u, v);
+            assert!((e[0] - u - 0.1).abs() < 1e-12 && (e[1] - v).abs() < 1e-12);
+        }
+    }
+
     #[test]
     fn a_bent_grid_moves_its_middle() {
         let px = vec![255u8; 40 * 40 * 4];
@@ -644,6 +672,7 @@ mod tests {
         let mut out = vec![0u8; 40 * 40 * 4];
         render(&src, &warp, Interp::Bilinear, (0, 0, 40, 40), &mut out);
         // Still covers its corners and middle.
+        assert_eq!(out[(38 * 40 + 38) * 4 + 3], 255);
         assert_eq!(out[(20 * 40 + 20) * 4 + 3], 255);
         assert_eq!(out[(2 * 40 + 2) * 4 + 3], 255);
     }

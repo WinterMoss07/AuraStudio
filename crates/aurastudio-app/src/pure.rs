@@ -594,7 +594,7 @@ impl Run {
                         if let Some(src) = src {
                             for _ in 0..1 + self.r.below(4) {
                                 let (w, i) = (random_warp(&mut self.r, src), random_interp(&mut self.r));
-                                self.pt.send(Cmd::Transform { doc: Arc::clone(&doc), action: T::Preview(w, i) });
+                                self.pt.send(Cmd::Transform { doc: Arc::clone(&doc), action: T::Preview(w, i, 0) });
                             }
                             // Commands refused while it shows.
                             if self.r.chance(0.3) { self.pt.send(Cmd::Undo(Arc::clone(&doc))); }

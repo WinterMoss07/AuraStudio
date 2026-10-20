@@ -12,6 +12,7 @@ use aurastudio_layers::{FillParams, LayerStack, Selection};
 
 pub use history::{History, SavedStep, DEFAULT_BUDGET};
 pub use select::{SelectOp, Shape, Wand};
+pub use transform::{Lift, LiftLayer};
 
 /// Stable id of an open document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -326,6 +326,7 @@ pub fn options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     ui.add_space(4.0);
     match *m.tool {
         Tool::Fill => fill_options(ui, m, ui.available_width()),
+        Tool::Picker => { ui.checkbox(&mut m.picker.loupe, "Loupe").on_hover_text(LOUPE_TIP); }
         t if t.selects() => selection_options(ui, m, a),
         Tool::Transform => transform_options(ui, m, a),
         _ => {}
@@ -397,11 +398,22 @@ pub struct SelectOptions {
     /// Soft edges this wide (px).
     pub feather: f32,
     pub wand:    WandOptions,
+    /// A magnified view around the cursor; points land on pixel corners.
+    pub loupe:   bool,
 }
 
 impl Default for SelectOptions {
-    fn default() -> Self { Self { mode: Default::default(), aa: true, feather: 0.0, wand: WandOptions::default() } }
+    fn default() -> Self { Self { mode: Default::default(), aa: true, feather: 0.0, wand: WandOptions::default(), loupe: false } }
 }
+
+/// The color picker's settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PickerOptions {
+    /// A magnified view around the cursor, to take one exact pixel.
+    pub loupe: bool,
+}
+
+const LOUPE_TIP: &str = "A magnified view around the cursor, to aim at one pixel";
 
 /// The selection tools' options: mode, edges, the wand's settings.
 pub fn selection_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
@@ -421,6 +433,7 @@ pub fn selection_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     });
     ui.add_space(2.0);
     if *m.tool != Tool::RectSelect { ui.checkbox(&mut m.select.aa, "Anti-aliasing"); }
+    ui.checkbox(&mut m.select.loupe, "Loupe").on_hover_text(LOUPE_TIP);
     let feather = Fill { label: "Feather", range: 0.0..=200.0, mid: Some(20.0), format: &|v| format!("{v:.0} px") };
     if let Some(v) = fill_slider(ui, "sel_feather", feather, m.select.feather, w) { m.select.feather = v; }
     if *m.tool == Tool::MagicWand {
@@ -594,6 +607,108 @@ pub struct Overlay<'a> {
     /// Dashed construction lines (the arc's start, control point, end).
     pub guide:       &'a [(f32, f32)],
     pub transform:   Option<TransformOverlay<'a>>,
+    pub loupe:       Option<Loupe<'a>>,
+}
+
+/// A magnified view of the canvas around the cursor.
+pub struct Loupe<'a> {
+    /// The cursor, canvas pixels (the middle of the view).
+    pub cursor: (f32, f32),
+    /// What a press takes: a pixel (its top-left corner), else the pixel
+    /// corner nearest the cursor.
+    pub target: (f32, f32),
+    pub pixel:  bool,
+    /// The merged image around: a `side` × `side` square of canvas pixels
+    /// from `origin` (outside the canvas: transparent).
+    pub origin: (i32, i32),
+    pub side:   u32,
+    pub rgba:   &'a [u8],
+    /// The color taken, shown around the view (picker).
+    pub ring:   Option<[u8; 3]>,
+    /// The selection mode's sign.
+    pub mark:   Option<&'static str>,
+}
+
+/// Canvas pixels the loupe sends (so the view's widest span fits).
+pub const LOUPE_SIDE: u32 = 27;
+
+/// Diameter of the loupe, points.
+const LOUPE_SIZE: f32 = 132.0;
+
+fn draw_loupe(ctx: &egui::Context, painter: &egui::Painter, l: &Loupe, pt: &dyn Fn((f32, f32)) -> Pos2) {
+    let o = pt(l.cursor);
+    let ex = pt((l.cursor.0 + 1.0, l.cursor.1)) - o;
+    let ey = pt((l.cursor.0, l.cursor.1 + 1.0)) - o;
+    let zoom = ex.length().max(1e-4);
+    // Canvas pixels across: three times the view's zoom, 7 to 21.
+    let span = (LOUPE_SIZE / (zoom * 3.0)).clamp(7.0, 21.0);
+    let k = LOUPE_SIZE / span / zoom;
+    let r = LOUPE_SIZE / 2.0;
+    // Canvas point <-> point in the loupe.
+    let det = ex.x * ey.y - ex.y * ey.x;
+    if det.abs() < 1e-9 || l.rgba.len() != (l.side * l.side * 4) as usize { return; }
+    let to_loupe = |q: (f32, f32)| o + (ex * (q.0 - l.cursor.0) + ey * (q.1 - l.cursor.1)) * k;
+    let to_canvas = |p: Pos2| {
+        let d = (p - o) / k;
+        (l.cursor.0 + (d.x * ey.y - d.y * ey.x) / det, l.cursor.1 + (ex.x * d.y - ex.y * d.x) / det)
+    };
+    // The pixels, as a texture kept between frames.
+    let image = egui::ColorImage::from_rgba_unmultiplied([l.side as usize, l.side as usize], l.rgba);
+    let id = egui::Id::new("aurastudio_loupe");
+    let tex = match ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        Some(mut t) => { t.set(image, egui::TextureOptions::NEAREST); t }
+        None => {
+            let t = ctx.load_texture("loupe", image, egui::TextureOptions::NEAREST);
+            ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+            t
+        }
+    };
+    painter.circle_filled(o, r, theme::DESK);
+    let mut mesh = egui::Mesh::with_texture(tex.id());
+    let n = 64;
+    let uv = |p: Pos2| {
+        let q = to_canvas(p);
+        pos2((q.0 - l.origin.0 as f32) / l.side as f32, (q.1 - l.origin.1 as f32) / l.side as f32)
+    };
+    mesh.vertices.push(egui::epaint::Vertex { pos: o, uv: uv(o), color: Color32::WHITE });
+    for i in 0..=n {
+        let a = i as f32 / n as f32 * std::f32::consts::TAU;
+        let p = o + vec2(a.cos(), a.sin()) * r;
+        mesh.vertices.push(egui::epaint::Vertex { pos: p, uv: uv(p), color: Color32::WHITE });
+        if i > 0 { mesh.add_triangle(0, i, i + 1); }
+    }
+    painter.add(Shape::mesh(mesh));
+    // What a press takes.
+    let dark = Stroke::new(3.0_f32, Color32::from_black_alpha(170));
+    let light = Stroke::new(1.0_f32, Color32::WHITE);
+    let (tx, ty) = l.target;
+    if l.pixel {
+        let sq = vec![to_loupe((tx, ty)), to_loupe((tx + 1.0, ty)), to_loupe((tx + 1.0, ty + 1.0)), to_loupe((tx, ty + 1.0))];
+        painter.add(Shape::closed_line(sq.clone(), dark));
+        painter.add(Shape::closed_line(sq, light));
+    } else {
+        let c = to_loupe((tx, ty));
+        let arm = (LOUPE_SIZE / span * 0.9).clamp(6.0, 14.0);
+        for d in [vec2(1.0, 0.0), vec2(0.0, 1.0)] {
+            for s in [-1.0, 1.0] {
+                let seg = [c + d * s * 2.0, c + d * s * arm];
+                painter.line_segment(seg, dark);
+                painter.line_segment(seg, light);
+            }
+        }
+    }
+    // The rim: the color taken (picker), else a plain edge.
+    if let Some([cr, cg, cb]) = l.ring {
+        painter.circle_stroke(o, r + 4.0, Stroke::new(8.0_f32, Color32::from_rgb(cr, cg, cb)));
+        painter.circle_stroke(o, r + 8.5, Stroke::new(1.0_f32, Color32::from_black_alpha(160)));
+    }
+    painter.circle_stroke(o, r, Stroke::new(2.0_f32, Color32::from_black_alpha(170)));
+    painter.circle_stroke(o, r - 1.0, Stroke::new(1.0_f32, Color32::from_white_alpha(200)));
+    if let Some(m) = l.mark {
+        let c = o + vec2(r, r) * std::f32::consts::FRAC_1_SQRT_2;
+        painter.circle(c, 9.0, theme::DESK, Stroke::new(1.5_f32, theme::ACCENT));
+        painter.text(c, egui::Align2::CENTER_CENTER, m, egui::FontId::proportional(15.0), theme::TEXT);
+    }
 }
 
 /// One dashed black and white line in `mesh`, screen points; the dashes
@@ -682,6 +797,7 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
             }
         }
     }
+    if let Some(l) = &overlay.loupe { draw_loupe(ctx, &painter, l, &pt); }
 }
 
 /// Options of the geometry tools, under the brush settings.

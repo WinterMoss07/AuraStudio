@@ -1,3 +1,4 @@
+mod lift;
 mod mip;
 mod view;
 pub use view::{wrap_angle, CanvasView};
@@ -121,7 +122,12 @@ pub struct GpuState {
     text_input_active: bool,
     /// Backdrop color around the canvas (sRGB, 0..1).
     pub clear_color: [f64; 3],
+    /// A transform's live preview (lift.rs), and its pipelines.
+    lift:            Option<lift::Lift>,
+    lift_pipes:      Option<lift::Pipes>,
 }
+
+pub use lift::GRID as LIFT_GRID;
 
 impl GpuState {
     /// `canvas_size`: initial canvas width and height in pixels. The
@@ -366,6 +372,8 @@ impl GpuState {
             dpi_scale,
             pixel_exact: false,
             ui_scale: 1.0,
+            lift: None,
+            lift_pipes: None,
         })
     }
 
@@ -379,7 +387,37 @@ impl GpuState {
 
     /// Replace the canvas texture with a new size. The caller then uploads
     /// the new composite with upload_rect.
+    /// A transform began: its live preview's pieces (see lift.rs). False
+    /// if they don't fit the canvas.
+    pub fn lift_begin(&mut self, src: aurastudio_canvas::Rect, below: &[u8], above: Option<&[u8]>, layers: &[(&[u8], f32)]) -> bool {
+        let aniso = if self.backend == Backend::OpenGl { 1 } else { 16 };
+        let pipes = self.lift_pipes.get_or_insert_with(|| lift::Pipes::new(&self.device, aniso));
+        self.lift = lift::Lift::new(&self.device, &self.queue, pipes, &self.canvas, lift::Pieces { src, below, above, layers });
+        self.lift.is_some()
+    }
+
+    /// The live preview for the transform of `src`, ready.
+    pub fn lift_ready(&self, src: aurastudio_canvas::Rect) -> bool {
+        self.lift.as_ref().is_some_and(|l| l.src == src)
+    }
+
+    /// Show the mesh `verts` (lift.rs); `live`: kept over what is
+    /// uploaded until `lift_hold(false)`.
+    pub fn lift_show(&mut self, verts: &[[f32; 4]], nearest: bool, live: bool) {
+        if let Some(l) = &mut self.lift { l.show(&self.queue, verts, nearest, live); }
+    }
+
+    /// Stop drawing the preview over uploads (the exact result is in).
+    pub fn lift_hold(&mut self, live: bool) {
+        if let Some(l) = &mut self.lift { l.live = live; }
+    }
+
+    pub fn lift_end(&mut self) {
+        self.lift = None;
+    }
+
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
+        self.lift = None;
         self.canvas = Canvas::new(&self.device, width, height);
         self.mip.attach(&self.device, &self.canvas);
         self.rebuild_bind_groups();
@@ -611,6 +649,7 @@ impl GpuState {
             Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
         );
         self.mip.mark(rect);
+        if let Some(l) = &mut self.lift { l.uploaded(); }
     }
 
     /// Draw a frame. egui runs first to know how much room the docks take;
@@ -710,6 +749,10 @@ impl GpuState {
         let mut enc = self.device.create_command_encoder(
             &CommandEncoderDescriptor { label: Some("frame") }
         );
+        // A transform's live preview, into the canvas.
+        if let (Some(l), Some(p)) = (&mut self.lift, &self.lift_pipes) {
+            if let Some(r) = l.draw(&mut enc, p) { self.mip.mark(r); }
+        }
         // Zoomed-out views sample the mipmaps: bring them up to date.
         self.mip.rebuild(&mut enc, &self.canvas);
 

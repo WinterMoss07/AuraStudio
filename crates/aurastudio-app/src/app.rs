@@ -20,7 +20,7 @@ use aurastudio_document::{Document, SelectOp, Shape, SharedDoc, Wand, Workspace}
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_layers::{FillParams, SelectMode, Segment};
 use aurastudio_layers::transform::Interp;
-use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Model, Overlay, Prefs, SelectCmd, SelectOptions, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformOptions, TransformOverlay, UiState, ViewCmd};
+use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Loupe, Model, Overlay, PickerOptions, Prefs, SelectCmd, SelectOptions, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformOptions, TransformOverlay, UiState, ViewCmd};
 
 use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
 use crate::debounce::{Debounce, Kind as DebounceKind};
@@ -165,6 +165,32 @@ pub enum AppEvent {
     Selection,
     /// A transform began on the paint thread: what moves, or why not.
     TransformStarted(Result<aurastudio_canvas::Rect, &'static str>),
+    /// Its live preview's pieces.
+    TransformLift(Box<aurastudio_document::Lift>),
+    /// Transform preview n is on the projection.
+    TransformShown(u64),
+}
+
+/// The GPU preview's mesh for `warp` (lift.rs): a grid over the source
+/// and the transparent pixel around it, canvas x, y and texture u, v.
+fn lift_mesh(warp: &aurastudio_layers::transform::Warp, src: aurastudio_canvas::Rect) -> Option<Vec<[f32; 4]>> {
+    use aurastudio_layers::transform::Homography;
+    let h = Homography::square_to_quad(warp.quad)?;
+    let n = aurastudio_gpu::LIFT_GRID;
+    let (sw, sh) = ((src.2 - src.0) as f64, (src.3 - src.1) as f64);
+    let mut out = Vec::with_capacity(((n + 1) * (n + 1)) as usize);
+    for j in 0..=n {
+        for i in 0..=n {
+            // From one pixel before the source to one after.
+            let (pu, pv) = (i as f64 / n as f64 * (sw + 2.0) - 1.0, j as f64 / n as f64 * (sh + 2.0) - 1.0);
+            let (mut u, mut v) = (pu / sw, pv / sh);
+            if let Some(m) = &warp.mesh { [u, v] = m.eval(u, v); }
+            let (x, y) = h.apply(u, v);
+            if !(x.is_finite() && y.is_finite()) { return None; }
+            out.push([x as f32, y as f32, ((pu + 1.0) / (sw + 2.0)) as f32, ((pv + 1.0) / (sh + 2.0)) as f32]);
+        }
+    }
+    Some(out)
 }
 
 /// The document locked, if it gets free within `wait`.
@@ -287,6 +313,9 @@ pub struct App {
     debounce:   Debounce<WindowEvent>,
     /// Selection tools' settings, the polygon being clicked (points, mode).
     select:     SelectOptions,
+    picker:     PickerOptions,
+    /// The loupe was in the last UI frame.
+    loupe_shown: bool,
     poly:       Option<(Vec<(f32, f32)>, SelectMode)>,
     ants:       Ants,
     /// Transform tool: its settings, the transform under way (handles),
@@ -294,6 +323,9 @@ pub struct App {
     transform_opts: TransformOptions,
     xf:         Option<Xform>,
     xf_pending: bool,
+    /// The transform as last shown (GPU or paint thread); the paint
+    /// thread's preview with this number is the one to wait for.
+    xf_seq:     u64,
     /// The layers asked for when the transform was started.
     pending_targets: Vec<u64>,
     /// The graphics API in use.
@@ -344,6 +376,8 @@ impl App {
                 paint_thread::Event::Saved { doc, path, revision, auto, result } => AppEvent::Saved { doc, path, revision, auto, result },
                 paint_thread::Event::Selection => AppEvent::Selection,
                 paint_thread::Event::TransformStarted(r) => AppEvent::TransformStarted(r),
+                paint_thread::Event::TransformLift(l) => AppEvent::TransformLift(l),
+                paint_thread::Event::TransformShown(n) => AppEvent::TransformShown(n),
             });
         });
         // Start with the round pen (the catalog starts with pencils).
@@ -407,11 +441,14 @@ impl App {
             arc:        ArcTool::default(),
             debounce:   Debounce::default(),
             select:     SelectOptions::default(),
+            picker:     PickerOptions::default(),
+            loupe_shown: false,
             poly:       None,
             ants:       Ants::default(),
             transform_opts: TransformOptions::default(),
             xf:         None,
             xf_pending: false,
+            xf_seq:     0,
             pending_targets: Vec::new(),
             renderer:   String::new(),
 
@@ -542,12 +579,17 @@ impl App {
             None if self.over_canvas && !self.home => match self.tool {
                 Tool::Transform => self.transform_cursor().unwrap_or(Wanted::System(CursorIcon::Default)),
                 _ if matches!(self.gesture, Some(Gesture::MoveSel { .. })) => Wanted::System(CursorIcon::Move),
-                _ if self.gesture.is_some() || self.picking_with_alt() => Wanted::System(CursorIcon::Crosshair),
+                // The loupe draws its own cross.
+                _ if self.loupe_on().is_some() => Wanted::Hidden,
+                _ if self.picking_with_alt() || matches!(self.gesture, Some(Gesture::Pick)) => Wanted::Pipette,
+                t if t.selects() && t != Tool::Transform && (self.gesture.is_some() || self.poly.is_some()) => Wanted::Cross(self.select_mark()),
+                _ if self.gesture.is_some() => Wanted::System(CursorIcon::Crosshair),
                 Tool::RectSelect | Tool::EllipseSelect | Tool::Lasso
                     if self.window_to_canvas(self.cursor.0, self.cursor.1).is_some_and(|p| self.on_selection(p)) => Wanted::System(CursorIcon::Move),
                 Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc if self.prefs.brush_outline => Wanted::Hidden,
-                Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc => Wanted::System(CursorIcon::Crosshair),
-                Tool::Picker | Tool::Fill | Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect | Tool::PolySelect | Tool::MagicWand => Wanted::System(CursorIcon::Crosshair),
+                Tool::Brush | Tool::Eraser | Tool::Line | Tool::Rectangle | Tool::Ellipse | Tool::Arc | Tool::Fill => Wanted::System(CursorIcon::Crosshair),
+                Tool::Picker => Wanted::Pipette,
+                Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect | Tool::PolySelect | Tool::MagicWand => Wanted::Cross(self.select_mark()),
             },
             None if self.over_canvas => Wanted::System(CursorIcon::Default),
             None => self.gpu.as_ref().map_or(Wanted::System(CursorIcon::Default),
@@ -637,6 +679,45 @@ impl App {
         self.modifiers.alt_key() && matches!(self.tool, Tool::Brush | Tool::Eraser | Tool::Fill)
     }
 
+    /// The loupe shows around the cursor (picker or selection tools with
+    /// it on): a pixel taken (picker, wand) or a pixel corner aimed at.
+    fn loupe_on(&self) -> Option<bool> {
+        if !self.over_canvas || !self.cursor_in_window || self.home || self.space_down || self.nav.is_some() || self.is_drawing { return None; }
+        if matches!(self.gesture, Some(Gesture::MoveSel { .. })) { return None; }
+        match self.tool {
+            Tool::Picker if self.picker.loupe => Some(true),
+            Tool::MagicWand if self.select.loupe => Some(true),
+            Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect | Tool::PolySelect if self.select.loupe => {
+                // Over the selection, a press moves it: no loupe.
+                if self.gesture.is_none() && self.poly.is_none() && self.window_to_canvas(self.cursor.0, self.cursor.1).is_some_and(|p| self.on_selection(p)) { return None; }
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+
+    /// The canvas point a selection tool takes: on the pixel corner
+    /// nearest the cursor with the loupe on.
+    fn select_at(&self) -> Option<(f32, f32)> {
+        let p = self.window_to_canvas(self.cursor.0, self.cursor.1)?;
+        Some(if self.select.loupe { (p.0.round(), p.1.round()) } else { p })
+    }
+
+    /// The selection mode's sign by the cursor.
+    fn select_mark(&self) -> crate::cursors::Mark {
+        use crate::cursors::Mark;
+        let mode = match &self.gesture {
+            Some(Gesture::Box { mode, .. } | Gesture::Lasso { mode, .. }) => *mode,
+            _ => match &self.poly { Some((_, m)) => *m, None => self.select_mode() },
+        };
+        match mode {
+            SelectMode::Replace => Mark::None,
+            SelectMode::Add => Mark::Add,
+            SelectMode::Subtract => Mark::Subtract,
+            SelectMode::Intersect => Mark::Intersect,
+        }
+    }
+
     /// The selection mode the keys held ask for (Shift: add, Alt:
     /// subtract, both: intersect), else the options'.
     fn select_mode(&self) -> SelectMode {
@@ -684,7 +765,7 @@ impl App {
                 });
             }
             Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect => {
-                let Some(p) = at else { return };
+                let Some(p) = self.select_at() else { return };
                 let (mode, held) = (self.select_mode(), (self.shift_held(), self.modifiers.alt_key()));
                 self.gesture = Some(if self.on_selection(p) {
                     Gesture::MoveSel { start: p, now: p }
@@ -694,7 +775,7 @@ impl App {
                     Gesture::Box { ellipse: tool == Tool::EllipseSelect, a: p, b: p, mode, held }
                 });
             }
-            Tool::PolySelect => if let Some(p) = at { self.poly_click(p) },
+            Tool::PolySelect => if let Some(p) = self.select_at() { self.poly_click(p) },
             Tool::MagicWand => {
                 let Some((x, y)) = at else { return };
                 let (w, h) = self.canvas_size();
@@ -715,8 +796,10 @@ impl App {
 
     /// Cursor moved during a tool drag.
     fn tool_drag(&mut self) {
-        let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
+        let Some(raw) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
         let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        let snapped = self.select_at().unwrap_or(raw);
+        let at = if matches!(self.gesture, Some(Gesture::Lasso { .. } | Gesture::Box { .. })) { snapped } else { raw };
         match &mut self.gesture {
             Some(Gesture::Pick) => self.pick_color(),
             Some(Gesture::Lasso { pts, .. }) => {
@@ -744,7 +827,7 @@ impl App {
             // The polygon so far, and on to the cursor.
             let (pts, _) = self.poly.as_ref()?;
             let mut v = pts.clone();
-            if let Some(c) = self.window_to_canvas(self.cursor.0, self.cursor.1) { v.push(c); }
+            if let Some(c) = self.select_at() { v.push(c); }
             return Some(v);
         }
         match self.gesture.as_ref()? {
@@ -1002,18 +1085,35 @@ impl App {
     fn end_transform(&mut self, apply: bool) {
         self.xf_pending = false;
         let Some(xf) = self.xf.take() else { return };
+        // (The canvas keeps the GPU's last picture until the result comes.)
+        if let Some(gpu) = &mut self.gpu { gpu.lift_end(); }
         let action = if apply && xf.changed() { TransformAction::Apply(xf.warp, self.transform_opts.interp) } else { TransformAction::Cancel };
         self.paint.send(Cmd::Transform { doc: Arc::clone(&self.doc), action });
         self.update_cursor();
         self.request_redraw();
     }
 
-    /// Show the transform as it is now (fast: bilinear while dragging).
+    /// Show the transform as it is now: drawn by the GPU at once; `fast`
+    /// (a handle dragged): only that, else the paint thread's exact result
+    /// follows (bilinear while dragging when the GPU can't).
     fn send_preview(&mut self, fast: bool) {
+        let on_gpu = self.lift_show();
+        self.xf_seq += 1;
+        self.request_redraw();
+        if fast && on_gpu { return; }
         let Some(xf) = &self.xf else { return };
         let interp = match self.transform_opts.interp { Interp::Nearest => Interp::Nearest, i if !fast => i, _ => Interp::Bilinear };
-        self.paint.send(Cmd::Transform { doc: Arc::clone(&self.doc), action: TransformAction::Preview(xf.warp.clone(), interp) });
-        self.request_redraw();
+        self.paint.send(Cmd::Transform { doc: Arc::clone(&self.doc), action: TransformAction::Preview(xf.warp.clone(), interp, self.xf_seq) });
+    }
+
+    /// Draw the transform on the GPU (lift.rs), drawn over the canvas
+    /// until the paint thread's matching preview is in. False: not ready.
+    fn lift_show(&mut self) -> bool {
+        let (Some(xf), Some(gpu)) = (&self.xf, &mut self.gpu) else { return false };
+        if !gpu.lift_ready(xf.src) { return false; }
+        let Some(verts) = lift_mesh(&xf.warp, xf.src) else { return false };
+        gpu.lift_show(&verts, self.transform_opts.interp == Interp::Nearest, true);
+        true
     }
 
     /// Handles' reach, canvas pixels.
@@ -1446,6 +1546,18 @@ impl App {
         let xf_data = self.transform_overlay_data();
         let transform_info = TransformInfo { active: self.xf.is_some(), numbers: self.xf.as_ref().and_then(Xform::numbers) };
         let transforming = self.xf.is_some() || self.xf_pending;
+        // The loupe: where, what it marks, its rim and sign.
+        let loupe_req = self.loupe_on().and_then(|pixel| {
+            let c = self.window_to_canvas(self.cursor.0, self.cursor.1)?;
+            let mark = match (self.tool == Tool::Picker, self.select_mark()) {
+                (true, _) | (false, crate::cursors::Mark::None) => None,
+                (false, crate::cursors::Mark::Add) => Some("+"),
+                (false, crate::cursors::Mark::Subtract) => Some("\u{2212}"),
+                (false, crate::cursors::Mark::Intersect) => Some("\u{00d7}"),
+            };
+            Some((c, pixel, self.tool == Tool::Picker, mark))
+        });
+        self.loupe_shown = loupe_req.is_some();
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
@@ -1481,6 +1593,7 @@ impl App {
         let ants_step = (1.0 / gpu.zoom().max(1e-3)).floor().max(1.0) as u32;
         let ants = &mut self.ants;
         let select = &mut self.select;
+        let picker = &mut self.picker;
         let transform_opts = &mut self.transform_opts;
         let renderer = self.renderer.as_str();
         let shape = &mut self.shape;
@@ -1516,6 +1629,28 @@ impl App {
                 Some(_) => {}
                 None => *ants = Ants::default(),
             }
+            // The pixels around the cursor, for the loupe.
+            let loupe = loupe_req.map(|(c, pixel, ring, mark)| {
+                let side = aurastudio_ui::LOUPE_SIDE as i32;
+                let (fx, fy) = (c.0.floor() as i32, c.1.floor() as i32);
+                let origin = (fx - side / 2, fy - side / 2);
+                let mut rgba = vec![0u8; (side * side * 4) as usize];
+                let (w, h) = (d.layers.width as i32, d.layers.height as i32);
+                let r = (origin.0.max(0), origin.1.max(0), (origin.0 + side).min(w), (origin.1 + side).min(h));
+                if r.0 < r.2 && r.1 < r.3 {
+                    let px = d.layers.composite_rect((r.0 as u32, r.1 as u32, r.2 as u32, r.3 as u32));
+                    let rw = (r.2 - r.0) as usize;
+                    for (y, row) in px.chunks_exact(rw * 4).enumerate() {
+                        let at = (((r.1 - origin.1) as usize + y) * side as usize + (r.0 - origin.0) as usize) * 4;
+                        rgba[at..at + rw * 4].copy_from_slice(row);
+                    }
+                }
+                let mid = ((side / 2 * side + side / 2) * 4) as usize;
+                let inside = fx >= 0 && fy >= 0 && fx < w && fy < h;
+                let ring = (ring && inside).then(|| [rgba[mid], rgba[mid + 1], rgba[mid + 2]]);
+                let target = if pixel { (fx as f32, fy as f32) } else { (c.0.round(), c.1.round()) };
+                (c, target, pixel, origin, rgba, ring, mark)
+            });
             let mut model = Model {
                 brush,
                 presets,
@@ -1529,6 +1664,7 @@ impl App {
                 has_selection: d.selection.is_some(),
                 selection: d.selection.as_ref(),
                 select,
+                picker,
                 transform: transform_opts,
                 transform_info,
                 renderer,
@@ -1541,6 +1677,9 @@ impl App {
                     handles: preview.as_ref().map_or(&[], |p| &p.1[..]),
                     guide: preview.as_ref().map_or(&[], |p| &p.2[..]),
                     transform: xf_data.as_ref().map(|(lines, handles, points, pivot)| TransformOverlay { lines, handles, points, pivot: *pivot }),
+                    loupe: loupe.as_ref().map(|(cursor, target, pixel, origin, rgba, ring, mark)| Loupe {
+                        cursor: *cursor, target: *target, pixel: *pixel, origin: *origin, side: aurastudio_ui::LOUPE_SIDE, rgba, ring: *ring, mark: *mark,
+                    }),
                 },
                 shape,
                 to_points: &to_points,
@@ -2134,6 +2273,19 @@ impl ApplicationHandler<AppEvent> for App {
                 self.update_cursor();
                 self.request_redraw();
             }
+            AppEvent::TransformLift(l) => {
+                let Some(gpu) = &mut self.gpu else { return };
+                if self.xf.as_ref().is_some_and(|x| x.src == l.src) {
+                    let layers: Vec<(&[u8], f32)> = l.layers.iter().map(|x| (&x.premul[..], x.opacity)).collect();
+                    if !gpu.lift_begin(l.src, &l.below, l.above.as_deref(), &layers) { log::warn!("transform: no live preview (sizes)"); }
+                    // Changed before it came (Warp mode's grid...): show it.
+                    if self.xf.as_ref().is_some_and(|x| x.changed()) { self.lift_show(); self.request_redraw(); }
+                }
+            }
+            AppEvent::TransformShown(n) => {
+                // The exact result is in: the canvas shows it.
+                if n == self.xf_seq { if let Some(gpu) = &mut self.gpu { gpu.lift_hold(false); } }
+            }
             AppEvent::Thumbnail { path, w, h, rgba } => {
                 self.ui.set_recent_thumbnail(&path, w, h, &rgba);
                 self.request_redraw();
@@ -2349,10 +2501,12 @@ impl App {
             WindowEvent::ModifiersChanged(m) => {
                 let alt = self.modifiers.alt_key();
                 self.modifiers = m.state();
-                // Alt switches the brush to the picker: cursor follows.
-                if alt != self.modifiers.alt_key() && self.over_canvas {
+                // Alt switches the brush to the picker, Shift / Alt change
+                // the selection mode: cursor (and loupe sign) follow.
+                if self.over_canvas {
                     self.update_cursor();
-                    self.request_canvas_frame();
+                    if self.loupe_on().is_some() { self.request_redraw(); }
+                    else if alt != self.modifiers.alt_key() { self.request_canvas_frame(); }
                 }
             }
 
@@ -2442,7 +2596,9 @@ impl App {
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.select(SelectCmd::All),
                     Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::Reselect),
                     Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("i") => self.select(SelectCmd::Invert),
-                    Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("t") => self.set_tool(Tool::Transform),
+                    Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("t") => {
+                        if self.tool == Tool::Transform { self.start_transform(); } else { self.set_tool(Tool::Transform); }
+                    }
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("c") => self.edit_cmd(EditCmd::Copy),
                     Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("v") => self.edit_cmd(EditCmd::Paste),
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::None),
@@ -2455,6 +2611,8 @@ impl App {
                     // Transform: Enter keeps it, Escape drops it; arrows nudge.
                     Key::Named(NamedKey::Enter) if self.xf.is_some() => self.end_transform(true),
                     Key::Named(NamedKey::Escape) if self.xf.is_some() => self.end_transform(false),
+                    // On the transform tool with none under way: a new one.
+                    Key::Named(NamedKey::Enter) if self.tool == Tool::Transform && !key.repeat && !self.is_drawing => self.start_transform(),
                     Key::Named(k @ (NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::ArrowUp | NamedKey::ArrowDown)) if self.xf.as_ref().is_some_and(|x| x.drag.is_none()) => {
                         let d = if shift { 10.0 } else { 1.0 };
                         let (dx, dy) = match k { NamedKey::ArrowLeft => (-d, 0.0), NamedKey::ArrowRight => (d, 0.0), NamedKey::ArrowUp => (0.0, -d), _ => (0.0, d) };
@@ -2557,6 +2715,9 @@ impl App {
                     self.update_cursor();
                     self.request_canvas_frame();
                 }
+                // The loupe is UI: a UI frame (also when it just left).
+                let loupe = self.loupe_on().is_some();
+                if loupe || self.loupe_shown { self.request_redraw(); }
                 if self.nav.is_some() {
                     self.drag_nav();
                 } else if self.xf.as_ref().is_some_and(|x| x.drag.is_some()) {
