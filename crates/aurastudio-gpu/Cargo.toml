@@ -12,7 +12,7 @@ wgpu              = { version = "30", features = ["angle"] }
 winit             = "0.30"
 bytemuck          = { version = "1", features = ["derive"] }
 log               = "0.4"
-egui = "0.36"
+egui = "0.37"
 egui-wgpu = "0.36"
 egui-winit = "0.36"
 half      = "2"
