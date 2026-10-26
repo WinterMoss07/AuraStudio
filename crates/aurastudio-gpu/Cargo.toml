@@ -14,7 +14,7 @@ bytemuck          = { version = "1", features = ["derive"] }
 log               = "0.4"
 egui = "0.36"
 egui-wgpu = "0.36"
-egui-winit = "0.36"
+egui-winit = "0.37"
 half      = "2"
 
 [dev-dependencies]
