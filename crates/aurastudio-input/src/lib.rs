@@ -234,7 +234,7 @@ mod imp {
             let state = Box::new(HookState { queue });
             let data  = (&*state as *const HookState) as usize;
             if !unsafe { SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, data) }.as_bool() {
-                return Err(windows::core::Error::from_win32());
+                return Err(windows::core::Error::from_thread());
             }
             Ok(Self { hwnd, state })
         }
