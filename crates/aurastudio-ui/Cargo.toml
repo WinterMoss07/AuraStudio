@@ -14,4 +14,4 @@ aurastudio-filters = { path = "../aurastudio-filters" }
 egui      = "0.36"
 log       = "0.4"
 egui_dock = "0.21"
-egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
