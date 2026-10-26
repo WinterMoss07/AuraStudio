@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.76"
+edition = "2024"
+rust-version = "1.95"
 name = "egui_dock"
-version = "0.15.0"
+version = "0.21.1"
 authors = [
     "lain-dono",
     "Adam Gąsior (Adanos020)",
@@ -31,12 +31,26 @@ autotests = false
 autobenches = false
 description = "Docking system for egui - an immediate-mode GUI library for Rust"
 readme = "README.md"
+keywords = [
+    "egui",
+    "gui",
+    "tile",
+    "dock",
+    "layout",
+]
 categories = [
     "gui",
     "game-development",
 ]
 license = "MIT"
-repository = "https://github.com/Adanos020/egui_dock"
+repository = "https://github.com/anhosh/egui_dock"
+
+[features]
+default = []
+serde = [
+    "dep:serde",
+    "egui/serde",
+]
 
 [lib]
 name = "egui_dock"
@@ -46,19 +60,19 @@ path = "src/lib.rs"
 version = "2.0"
 
 [dependencies.egui]
-version = "0.30"
+version = "0.36"
 default-features = false
-
-[dependencies.paste]
-version = "1.0"
 
 [dependencies.serde]
 version = "1"
 features = ["derive"]
 optional = true
 
+[dependencies.thiserror]
+version = "2.0.18"
+
 [dev-dependencies.eframe]
-version = "0.30"
+version = "0.36"
 features = [
     "default",
     "default_fonts",
@@ -66,9 +80,5 @@ features = [
 ]
 default-features = false
 
-[features]
-default = []
-serde = [
-    "dep:serde",
-    "egui/serde",
-]
+[dev-dependencies.serde_json]
+version = "1"

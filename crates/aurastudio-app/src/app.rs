@@ -1766,7 +1766,7 @@ impl App {
         // between two samples.
         let wait = if self.is_drawing { Duration::from_millis(3) } else { Duration::from_millis(15) };
         match if run_ui { lock_soon(doc, wait) } else { None } {
-            Some(mut doc) => gpu.render(|ctx| {
+            Some(mut doc) => gpu.render(|root| {
             *ui_saw_canvas = over_canvas;
             let (can_undo, can_redo) = (doc.history().undo_len() > 0, doc.history().redo_len() > 0);
             let (undo_label, redo_label) = (doc.history().undo_label(), doc.history().redo_label());
@@ -1853,7 +1853,7 @@ impl App {
                 max_canvas,
                 home,
             };
-            aurastudio_ui::show(ctx, ui_state, &mut model, &mut actions);
+            aurastudio_ui::show(root, ui_state, &mut model, &mut actions);
             // What the Layers docker did, as one undo step once over (the
             // opacity released, the name typed).
             if let Some(l) = actions.layer_edit { *layer_label = Some(l); }

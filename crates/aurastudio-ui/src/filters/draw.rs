@@ -27,7 +27,7 @@ pub fn graph(ui: &mut Ui, h: f32, sense: Sense) -> (Rect, Response, Painter) {
 }
 
 pub fn frame(p: &Painter, r: Rect) {
-    p.rect_stroke(r.expand(1.0), 2.0, Stroke::new(1.0_f32, theme::BORDER));
+    p.rect_stroke(r.expand(1.0), 2.0, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Middle);
 }
 
 /// Light grid lines at quarters (and the diagonal, for a curve).
@@ -263,7 +263,7 @@ pub fn slider(ui: &mut Ui, id: &str, spec: Spec, v: &mut f32) -> bool {
             gradient(&p, bar, &[c.gamma_multiply(0.0), c]);
         }
     }
-    p.rect_stroke(bar, 2.0, Stroke::new(1.0_f32, theme::BORDER));
+    p.rect_stroke(bar, 2.0, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Middle);
     if mark {
         // The default's mark.
         let x = to_x(default);

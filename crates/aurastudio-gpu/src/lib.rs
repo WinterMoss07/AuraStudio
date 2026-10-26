@@ -197,18 +197,13 @@ static STEPS_T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::
 static ADAPTER_INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static SHADER_COMPILER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
-/// DirectX 12's shader compiler: DXC (new, fast) when Microsoft's
-/// dxcompiler.dll and dxil.dll sit next to the program, else FXC (built
-/// into Windows, slow on loops). Other APIs: their own.
+/// DirectX 12's shader compiler: DXC built into the program (new, fast;
+/// wgpu's static-dxc on Windows), FXC where it is missing. Other APIs:
+/// their own.
 fn shader_compiler(b: Backend) -> (Dx12Compiler, &'static str) {
     match b {
-        Backend::DirectX12 => {
-            let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
-            match dir.filter(|d| d.join("dxcompiler.dll").is_file() && d.join("dxil.dll").is_file()) {
-                Some(d) => (Dx12Compiler::Dxc { dxil_path: Some(d.clone()), dxc_path: Some(d) }, "DXC (dxcompiler.dll next to the program)"),
-                None => (Dx12Compiler::Fxc, "FXC (put dxcompiler.dll and dxil.dll next to the program for DXC)"),
-            }
-        }
+        Backend::DirectX12 if cfg!(all(windows, not(target_arch = "aarch64"), target_env = "msvc")) => (Dx12Compiler::StaticDxc, "DXC (built in)"),
+        Backend::DirectX12 => (Dx12Compiler::Fxc, "FXC"),
         Backend::Vulkan => (Dx12Compiler::Fxc, "SPIR-V (Vulkan driver)"),
         Backend::Metal => (Dx12Compiler::Fxc, "Metal"),
         Backend::OpenGl => (Dx12Compiler::Fxc, "GLSL (OpenGL driver)"),
@@ -352,8 +347,11 @@ impl GpuState {
         let mut found = None;
         step("before graphics");
         for b in order {
-            let (dx12_shader_compiler, _) = shader_compiler(b);
-            let instance = Instance::new(InstanceDescriptor { backends: b.wgpu(), dx12_shader_compiler, ..Default::default() });
+            let (shader_compiler, _) = shader_compiler(b);
+            // (OpenGL needs the display connection, Wayland above all.)
+            let mut desc = InstanceDescriptor { backends: b.wgpu(), ..InstanceDescriptor::new_with_display_handle(Box::new(Arc::clone(&window))) };
+            desc.backend_options.dx12.shader_compiler = shader_compiler;
+            let instance = Instance::new(desc);
             step("graphics instance");
             let surface = match instance.create_surface(Arc::clone(&window)) {
                 Ok(s) => s,
@@ -363,8 +361,12 @@ impl GpuState {
                 power_preference:       PowerPreference::HighPerformance,
                 compatible_surface:     Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets:    false,
             }).await;
-            let Some(adapter) = adapter else { errors.push(format!("{}: no adapter", b.name())); continue };
+            let adapter = match adapter {
+                Ok(a) => a,
+                Err(e) => { errors.push(format!("{}: {e}", b.name())); continue }
+            };
             step("adapter");
             let info = adapter.get_info();
             let _ = ADAPTER_INFO.set(format!("{} ({:?}, driver {} {})", info.name, info.device_type, info.driver, info.driver_info));
@@ -383,8 +385,8 @@ impl GpuState {
                     required_limits:   limits,
                     // Small memory blocks (the default reserves 128 MB chunks).
                     memory_hints:      MemoryHints::MemoryUsage,
+                    ..Default::default()
                 },
-                None,
             ).await;
             match device {
                 Ok((device, queue)) => {
@@ -421,6 +423,8 @@ impl GpuState {
             // At most 1 frame in flight: a new stroke sample is never stuck
             // behind an older frame waiting to be shown.
             desired_maximum_frame_latency: 1,
+            // sRGB, as before (no wide gamut / HDR).
+            color_space:                   SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
         step("swapchain");
@@ -460,6 +464,10 @@ impl GpuState {
 
         let dpi_scale = window.scale_factor() as f32;
         let egui_ctx = egui::Context::default();
+        // One pass per frame: the app's UI closure runs once (a second pass
+        // egui asks for, to settle a size, would draw an empty UI); what a
+        // discarded pass changes shows on the next frame.
+        egui_ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::MIN);
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -469,7 +477,7 @@ impl GpuState {
             None,
         );
         step("canvas, mipmaps, display table");
-        let egui_renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+        let egui_renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions { msaa_samples: 1, dithering: false, ..Default::default() });
         step("interface renderer");
 
         Ok(Self {
@@ -634,8 +642,8 @@ impl GpuState {
         let canvas = Canvas::new(&self.device, w, h, quality.mipmaps());
         let mut enc = self.device.create_command_encoder(&CommandEncoderDescriptor { label: Some("quality") });
         enc.copy_texture_to_texture(
-            ImageCopyTexture { texture: &self.canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-            ImageCopyTexture { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            TexelCopyTextureInfo { texture: &self.canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            TexelCopyTextureInfo { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
             Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         self.queue.submit(std::iter::once(enc.finish()));
@@ -819,7 +827,7 @@ impl GpuState {
     /// a splitter...). It then needs a frame on every pointer move, even
     /// above the canvas, or the drag never completes.
     pub fn ui_is_dragging(&self) -> bool {
-        self.egui_ctx.is_using_pointer() || self.egui_ctx.dragged_id().is_some()
+        self.egui_ctx.egui_is_using_pointer() || self.egui_ctx.dragged_id().is_some()
     }
 
     /// A text field is being edited (not wants_keyboard_input: a clicked
@@ -896,7 +904,7 @@ impl GpuState {
 
     /// Draw a frame. egui runs first to know how much room the docks take;
     /// the canvas is then drawn in the remaining area, and the UI on top.
-    pub fn render(&mut self, ui_fn: impl FnOnce(&egui::Context)) {
+    pub fn render(&mut self, ui_fn: impl FnOnce(&mut egui::Ui)) {
         self.render_impl(Some(ui_fn));
     }
 
@@ -904,7 +912,7 @@ impl GpuState {
     /// Used mid-stroke when the document is busy being painted: the canvas
     /// still updates, and the UI thread never waits for the brush.
     pub fn render_cached_ui(&mut self) {
-        self.render_impl(None::<fn(&egui::Context)>);
+        self.render_impl(None::<fn(&mut egui::Ui)>);
     }
 
     /// A UI frame exists to reuse (see render_cached_ui).
@@ -912,7 +920,7 @@ impl GpuState {
         self.last_ui.is_some()
     }
 
-    fn render_impl(&mut self, ui_fn: Option<impl FnOnce(&egui::Context)>) {
+    fn render_impl(&mut self, ui_fn: Option<impl FnOnce(&mut egui::Ui)>) {
         // Minimized: nothing to show (frames are drawn on demand, not only
         // on the window system's request).
         if self.window.is_minimized() == Some(true) { return; }
@@ -923,12 +931,12 @@ impl GpuState {
                 let raw_input = self.egui_state.take_egui_input(&self.window);
                 let mut ui_fn = Some(f);
                 let mut free_rect = None;
-                let full_output = self.egui_ctx.run(raw_input, |ctx| {
-                    if let Some(f) = ui_fn.take() { f(ctx); }
+                let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
+                    if let Some(f) = ui_fn.take() { f(ui); }
                     // The canvas card the UI laid out, or what's left of
                     // the window.
-                    free_rect = Some(ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("aurastudio_canvas_rect")))
-                        .unwrap_or_else(|| ctx.available_rect()));
+                    free_rect = Some(ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("aurastudio_canvas_rect")))
+                        .unwrap_or_else(|| ui.available_rect_before_wrap()));
                 });
                 // When egui wants its next frame (the app schedules it).
                 self.repaint_delay = full_output.viewport_output.get(&egui::ViewportId::ROOT)
@@ -937,7 +945,7 @@ impl GpuState {
                 // egui asks for IME (text input) only while a text field is focused.
                 self.text_input_active = full_output.platform_output.ime.is_some();
                 // The app picks the cursor: egui's wish is kept for it.
-                let mut platform_output = full_output.platform_output;
+                let mut platform_output = std::mem::take(&mut full_output.platform_output);
                 self.egui_cursor = std::mem::replace(&mut platform_output.cursor_icon, egui::CursorIcon::Default);
                 self.egui_state.handle_platform_output(&self.window, platform_output);
 
@@ -953,8 +961,10 @@ impl GpuState {
                     self.viewport = [x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)];
                 }
 
-                let tris = self.egui_ctx.tessellate(full_output.shapes, ppp);
-                for (id, delta) in &full_output.textures_delta.set {
+                let tris = self.egui_ctx.tessellate(std::mem::take(&mut full_output.shapes), ppp);
+                let set = std::mem::take(&mut full_output.textures_delta.set);
+                let freed = std::mem::take(&mut full_output.textures_delta.free);
+                for (id, delta) in set.iter().flat_map(|(id, ds)| ds.iter().map(move |d| (id, d))) {
                     // A texture sent whole: what it costs the process (the
                     // driver may take its share later, at the submit).
                     let probe = MEMORY_PROBE.get().filter(|_| delta.pos.is_none() && self.texture_costs.len() < 40);
@@ -972,7 +982,7 @@ impl GpuState {
                 }
                 // Free what the previous frame dropped (this frame no longer
                 // draws it); keep what this one dropped for later.
-                textures_free = std::mem::replace(&mut self.textures_to_free, full_output.textures_delta.free);
+                textures_free = std::mem::replace(&mut self.textures_to_free, freed.into_iter().collect());
                 (tris, ppp)
             }
             None => match self.last_ui.take() {
@@ -983,13 +993,15 @@ impl GpuState {
 
         self.write_view_uniform();
 
-        let output = match self.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(e) => {
-                if matches!(e, SurfaceError::Lost | SurfaceError::Outdated) {
-                    self.configure_surface();
-                } else {
-                    log::error!("Surface error: {e:?}");
+        let (output, suboptimal) = match self.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(t) => (t, false),
+            CurrentSurfaceTexture::Suboptimal(t) => (t, true),
+            e => {
+                match e {
+                    CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Outdated => self.configure_surface(),
+                    CurrentSurfaceTexture::Validation => log::error!("surface: validation error"),
+                    // (Timeout, hidden window: the next frame tries again.)
+                    _ => {}
                 }
                 // No frame this time: what the previous frame dropped can go
                 // all the same (this one's waits).
@@ -1019,6 +1031,7 @@ impl GpuState {
                 label: Some("canvas_pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view:           &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
                         // Backdrop around the canvas (set by the UI theme).
@@ -1031,6 +1044,7 @@ impl GpuState {
                 depth_stencil_attachment: None,
                 timestamp_writes:         None,
                 occlusion_query_set:      None,
+                multiview_mask: None,
             });
 
             let [vx, vy, vw, vh] = self.viewport;
@@ -1086,8 +1100,7 @@ impl GpuState {
         // (After the submit: wgpu refuses a submit using a texture already
         // destroyed.)
         self.free_textures(&textures_free);
-        let suboptimal = output.suboptimal;
-        output.present();
+        self.queue.present(output);
 
         // Suboptimal swapchain (resize, DPI change): rebuilt once per episode
         // (the taskbar thumbnail keeps it suboptimal).
@@ -1109,12 +1122,14 @@ fn over_pass<'e>(enc: &'e mut CommandEncoder, view: &TextureView, label: &str) -
         label: Some(label),
         color_attachments: &[Some(RenderPassColorAttachment {
             view,
+            depth_slice: None,
             resolve_target: None,
             ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
         })],
         depth_stencil_attachment: None,
         timestamp_writes:         None,
         occlusion_query_set:      None,
+        multiview_mask: None,
     })
 }
 
@@ -1146,7 +1161,7 @@ fn cursor_pipeline(device: &Device, format: TextureFormat) -> (RenderPipeline, B
         source: ShaderSource::Wgsl(include_str!("shaders/cursor.wgsl").into()),
     });
     let pl = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("cursor_pl"), bind_group_layouts: &[&layout], push_constant_ranges: &[],
+        label: Some("cursor_pl"), bind_group_layouts: &[Some(&layout)], immediate_size: 0,
     });
     let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
         label:  Some("cursor_pipeline"),
@@ -1167,7 +1182,7 @@ fn cursor_pipeline(device: &Device, format: TextureFormat) -> (RenderPipeline, B
         primitive: PrimitiveState::default(),
         depth_stencil: None,
         multisample: MultisampleState::default(),
-        multiview: None,
+        multiview_mask: None,
         cache: None,
     });
     (pipeline, buffer, bind)
@@ -1201,9 +1216,9 @@ impl DisplayLut {
         });
         let halfs: Vec<u16> = data.iter().flatten().map(|v| half::f16::from_f32(*v).to_bits()).collect();
         queue.write_texture(
-            ImageCopyTexture { texture: &texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
             bytemuck::cast_slice(&halfs),
-            ImageDataLayout { offset: 0, bytes_per_row: Some(size * 8), rows_per_image: Some(size) },
+            TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size * 8), rows_per_image: Some(size) },
             Extent3d { width: size, height: size, depth_or_array_layers: size },
         );
         let view = texture.create_view(&TextureViewDescriptor::default());

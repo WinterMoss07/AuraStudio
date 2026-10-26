@@ -50,7 +50,9 @@ impl View {
         // Zoom: the wheel (around the pointer), a double-click (100 % /
         // fit).
         let pointer = resp.hover_pos();
-        let wheel = if resp.hovered() { ui.input(|i| i.raw_scroll_delta.y) } else { 0.0 };
+        let wheel = if resp.hovered() {
+            ui.input(|i| i.events.iter().map(|e| if let egui::Event::MouseWheel { delta, .. } = e { delta.y } else { 0.0 }).sum::<f32>())
+        } else { 0.0 };
         let mut zoom_to = None;
         if wheel != 0.0 { zoom_to = Some(step(s, wheel > 0.0)); }
         if resp.double_clicked() { zoom_to = Some(if (s - 1.0).abs() < 1e-3 { fit } else { 1.0 }); }
@@ -208,7 +210,7 @@ impl View {
         } else {
             p.text(r.center(), Align2::CENTER_CENTER, "Nothing painted here", egui::FontId::proportional(12.0), theme::TEXT_WEAK);
         }
-        p.rect_stroke(r, 2.0, Stroke::new(1.0_f32, theme::BORDER));
+        p.rect_stroke(r, 2.0, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Middle);
         // The hand opens over the picture and closes on it while it is
         // dragged (even out of the view); the line gets the resize arrows.
         let holding = resp.dragged() || resp.is_pointer_button_down_on();

@@ -360,7 +360,7 @@ mod tests {
                 events: vec![egui::Event::PointerMoved(egui::pos2(600.0 + frame as f32, 400.0))],
                 ..Default::default()
             };
-            let _ = ctx.run(input, |ctx| { dialog(ctx, &mut section, &mut p, None, "Vulkan", &mut reset); });
+            crate::test_pass(&ctx, input, |root| { dialog(root.ctx(), &mut section, &mut p, None, "Vulkan", &mut reset); });
             heights.push(ctx.memory(|m| m.area_rect(egui::Id::new("preferences"))).map_or(0.0, |r| r.height()));
         }
         assert!(heights[39] > 100.0 && heights[39] < 600.0, "{heights:?}");

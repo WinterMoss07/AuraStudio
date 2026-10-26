@@ -3,7 +3,7 @@
 //! selected tab, layer and brush). Menu bar, tool options bar and docks are
 //! one seamless surface; only the canvas is a rounded card set into it.
 
-use egui::{Color32, FontFamily, FontId, Margin, Rounding, Stroke, TextStyle, Visuals};
+use egui::{Color32, FontFamily, FontId, Margin, CornerRadius, Stroke, TextStyle, Visuals};
 
 /// The UI surface: menu bar, tool options bar, docks, and the thin frame
 /// around the canvas.
@@ -47,7 +47,9 @@ pub fn apply(ctx: &egui::Context) {
     egui_extras::install_image_loaders(ctx);
     // Ctrl + / - / 0 belong to the canvas, not to egui's own UI zoom.
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    let mut style = (*ctx.style()).clone();
+    // Always the dark theme (egui follows the system's otherwise).
+    ctx.set_theme(egui::Theme::Dark);
+    let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     // Tooltips after a delay, from a timer (a hovering pen is never still:
     // egui asked for hundreds of frames a second).
     style.interaction.show_tooltips_only_when_still = false;
@@ -67,8 +69,8 @@ pub fn apply(ctx: &egui::Context) {
     s.button_padding  = egui::vec2(6.0, 2.0);
     s.interact_size.y = 19.0;
     s.slider_width    = 140.0;
-    s.window_margin   = Margin::same(8.0);
-    s.menu_margin     = Margin::same(6.0);
+    s.window_margin   = Margin::same(8);
+    s.menu_margin     = Margin::same(6);
 
     let mut v = Visuals::dark();
     v.panel_fill        = PANEL;
@@ -76,8 +78,8 @@ pub fn apply(ctx: &egui::Context) {
     v.extreme_bg_color  = SURFACE;
     v.faint_bg_color    = WIDGET;
     v.window_stroke     = Stroke::new(1.0_f32, BORDER);
-    v.window_rounding   = Rounding::same(4.0);
-    v.menu_rounding     = Rounding::same(3.0);
+    v.window_corner_radius  = CornerRadius::same(4);
+    v.menu_corner_radius  = CornerRadius::same(3);
     v.window_shadow.color = Color32::from_black_alpha(90);
     v.popup_shadow.color  = Color32::from_black_alpha(90);
     v.selection.bg_fill   = ACCENT;
@@ -86,32 +88,32 @@ pub fn apply(ctx: &egui::Context) {
     v.override_text_color = Some(TEXT);
     v.slider_trailing_fill = true;
 
-    let r = Rounding::same(2.5);
+    let r = CornerRadius::same(2);
     let w = &mut v.widgets;
     w.noninteractive.bg_fill   = PANEL;
     w.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER);
     w.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_WEAK);
-    w.noninteractive.rounding  = r;
+    w.noninteractive.corner_radius  = r;
     w.inactive.bg_fill      = WIDGET;
     w.inactive.weak_bg_fill = WIDGET;
     w.inactive.bg_stroke    = Stroke::NONE;
     w.inactive.fg_stroke    = Stroke::new(1.0_f32, TEXT);
-    w.inactive.rounding     = r;
+    w.inactive.corner_radius     = r;
     w.hovered.bg_fill       = WIDGET_HOVER;
     w.hovered.weak_bg_fill  = WIDGET_HOVER;
     w.hovered.bg_stroke     = Stroke::NONE;
     w.hovered.fg_stroke     = Stroke::new(1.5_f32, TEXT);
-    w.hovered.rounding      = r;
+    w.hovered.corner_radius      = r;
     w.active.bg_fill        = ACCENT;
     w.active.weak_bg_fill   = ACCENT;
     w.active.bg_stroke      = Stroke::NONE;
     w.active.fg_stroke      = Stroke::new(2.0_f32, TEXT);
-    w.active.rounding       = r;
+    w.active.corner_radius       = r;
     w.open.bg_fill          = WIDGET_HOVER;
-    w.open.rounding         = r;
+    w.open.corner_radius         = r;
 
     style.visuals = v;
-    ctx.set_style(style);
+    ctx.set_style_of(egui::Theme::Dark, style);
 }
 
 /// egui_dock look matching the theme: docks are seamless (tab bar, body
@@ -123,7 +125,7 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     d.tab_bar.bg_fill = PANEL;
     d.tab_bar.height  = 25.0;
     d.tab_bar.hline_color = PANEL;
-    d.tab_bar.rounding = Rounding::ZERO;
+    d.tab_bar.corner_radius = CornerRadius::ZERO;
     d.separator.width = 2.0;
     // egui_dock's own limit (175 pt per side) is replaced by each
     // dock's minimum height, see dock_layout.
@@ -133,10 +135,10 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
     d.separator.color_dragged = ACCENT;
     d.tab.tab_body.bg_fill = PANEL;
     d.tab.tab_body.stroke  = Stroke::NONE;
-    d.tab.tab_body.rounding = Rounding::ZERO;
-    d.tab.tab_body.inner_margin = Margin::same(6.0);
+    d.tab.tab_body.corner_radius = CornerRadius::ZERO;
+    d.tab.tab_body.inner_margin = Margin::same(6);
     d.tab.hline_below_active_tab_name = false;
-    let pill = Rounding::same(2.5);
+    let pill = CornerRadius::same(2);
     for (t, bg, text) in [
         (&mut d.tab.active, WIDGET_HOVER, TEXT),
         (&mut d.tab.focused, WIDGET_HOVER, TEXT),
@@ -149,7 +151,7 @@ pub fn dock_style(style: &egui::Style) -> egui_dock::Style {
         t.bg_fill = bg;
         t.text_color = text;
         t.outline_color = bg;
-        t.rounding = pill;
+        t.corner_radius = pill;
     }
     // Dragging a dock (patched egui_dock): a red bar where it would go
     // between docks, the red tab bar of the dock it would join (CSP).

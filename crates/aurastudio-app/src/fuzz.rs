@@ -76,6 +76,8 @@ fn key(k: Key, mods: Modifiers) -> [Event; 2] {
 fn ui_events(r: &mut Rng, pointer: &mut Pos2, held: &mut Option<PointerButton>) -> Vec<Event> {
     let mut ev = Vec::new();
     let mods = if r.chance(0.1) { Modifiers::CTRL } else if r.chance(0.05) { Modifiers::SHIFT } else { Modifiers::NONE };
+    // (egui ≥ 0.36 takes the held modifiers from this event.)
+    ev.push(Event::ModifiersChanged(mods));
     match r.below(20) {
         // Press somewhere (left mostly, right opens the slider fields).
         0..=4 if held.is_none() => {
@@ -109,6 +111,7 @@ fn ui_events(r: &mut Rng, pointer: &mut Pos2, held: &mut Option<PointerButton>) 
         15 => ev.push(Event::MouseWheel {
             unit: egui::MouseWheelUnit::Line,
             delta: vec2(0.0, r.range(-5.0, 5.0)),
+            phase: egui::TouchPhase::Move,
             modifiers: mods,
         }),
         // Typing: digits, text, Enter, Escape, Delete, Tab...
@@ -249,7 +252,8 @@ fn fuzz() {
                 let mut actions = Actions::default();
                 let mut p = preset;
                 let open_filter = (r.below(40) == 0).then(|| r.below(64) as usize);
-                let _ = ctx.run(input, |ctx| {
+                let mut out = ctx.run_ui(input, |root| {
+                    let ctx = &root.ctx().clone();
                     let mut model = Model {
                         brush: &mut brush,
                         presets: &lib.presets,
@@ -287,8 +291,9 @@ fn fuzz() {
                         to_points: &to_points,
                     };
                     if let Some(n) = open_filter { ui.open_filter_dialog(ctx, n, &model); }
-                    aurastudio_ui::show(ctx, &mut ui, &mut model, &mut actions);
+                    aurastudio_ui::show(root, &mut ui, &mut model, &mut actions);
                 });
+                out.textures_delta.clear();
                 ui_frames += 1;
                 // As App::render_frame: the docker's edits become undo steps.
                 if actions.layers_idle { d.record_tree(actions.layer_edit.unwrap_or("Layers")); }

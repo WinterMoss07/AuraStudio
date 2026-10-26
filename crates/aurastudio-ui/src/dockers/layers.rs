@@ -224,7 +224,7 @@ pub fn special_folder_entries(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     use aurastudio_document::Kind;
     let anim = m.doc_kind == Kind::Animation;
     let b = ui.add_enabled(anim, egui::Button::new("Animation folder")).on_disabled_hover_text("Animation documents only");
-    if b.clicked() { new_animation_folder(m, a, None); ui.close_menu(); }
+    if b.clicked() { new_animation_folder(m, a, None); ui.close(); }
     ui.add_enabled(false, egui::Button::new("Camera folder"))
         .on_disabled_hover_text(if anim { "Coming with the camera" } else { "Animation documents only" });
     ui.add_enabled(false, egui::Button::new("Comics folder"))
@@ -420,14 +420,14 @@ fn set_label(st: &LayersState, l: u8, m: &mut Model, a: &mut Actions) {
 
 /// The Layer menu's entries for the marks and folders.
 pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
-    ui.menu_button("New filter layer", |ui| filter_layer_menu(ui, st, m, a));
-    ui.menu_button("New special folder", |ui| special_folder_entries(ui, m, a));
+    crate::widgets::menu(ui, "New filter layer", |ui| filter_layer_menu(ui, st, m, a));
+    crate::widgets::menu(ui, "New special folder", |ui| special_folder_entries(ui, m, a));
     ui.separator();
     let sel = st.selection(m.layers);
     for (cmd, label) in [(LayerCmd::Group, group_label(m.layers, &sel)), (LayerCmd::Ungroup, ungroup_label(m.layers.active_node()))] {
         if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() {
             apply(cmd, st, m, a);
-            ui.close_menu();
+            ui.close();
         }
     }
     ui.separator();
@@ -437,13 +437,13 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
             .on_disabled_hover_text(cmd.disabled_why());
         if on.clicked() {
             apply(cmd, st, m, a);
-            ui.close_menu();
+            ui.close();
         }
     }
-    ui.menu_button("Color label", |ui| {
+    crate::widgets::menu(ui, "Color label", |ui| {
         if let Some(l) = label_list(ui, m.layers.active_node().props().label) {
             set_label(st, l, m, a);
-            ui.close_menu();
+            ui.close();
         }
     });
 }
@@ -456,7 +456,7 @@ fn filter_layer_menu(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut A
         for &kind in *kinds {
             if ui.button(kind.name()).clicked() {
                 new_filter_layer(st, kind, m, a);
-                ui.close_menu();
+                ui.close();
             }
         }
     }
@@ -528,28 +528,28 @@ fn chain(p: &egui::Painter, c: egui::Pos2) {
     for dy in [-4.5, 4.5] {
         let link = Rect::from_center_size(c + vec2(0.0, dy), vec2(6.5, 10.5));
         p.rect_filled(link, 2.0, CHAIN.gamma_multiply(0.16));
-        p.rect_stroke(link, 2.0, s);
-        p.rect_stroke(link.shrink(1.3), 1.0, core);
+        p.rect_stroke(link, 2.0, s, egui::StrokeKind::Middle);
+        p.rect_stroke(link.shrink(1.3), 1.0, core, egui::StrokeKind::Middle);
     }
 }
 
 /// The little arrow after a button: a menu of `contents`.
 fn arrow_menu(ui: &mut Ui, tip: &str, contents: impl FnOnce(&mut Ui)) {
     let arrow = egui::Button::new("").frame(false).min_size(vec2(14.0, 24.0));
-    let r = egui::menu::menu_custom_button(ui, arrow, |ui| {
+    let r = crate::widgets::menu_from_button(ui, arrow, |ui| {
         ui.set_min_width(150.0);
         contents(ui);
     });
-    crate::icons::paint(ui, Icon::Expanded, r.response.rect, 12.0, Color32::from_gray(0xc8));
-    r.response.on_hover_text(tip);
+    crate::icons::paint(ui, Icon::Expanded, r.rect, 12.0, Color32::from_gray(0xc8));
+    r.on_hover_text(tip);
 }
 
 /// New layer (its kinds under the arrow), new folder, duplicate.
 fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     if icon_button(ui, Icon::NewLayer, "New layer", true) { new_layer(m, a); }
     arrow_menu(ui, "Layer types", |ui| {
-        if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
-        ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
+        if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close(); }
+        crate::widgets::menu(ui, "Filter layer", |ui| filter_layer_menu(ui, st, m, a));
     });
     if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
     arrow_menu(ui, "Special folders", |ui| special_folder_entries(ui, m, a));
@@ -575,13 +575,11 @@ fn delete_button(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut
 /// Show only the layers of some color labels.
 fn label_filter_button(ui: &mut Ui, st: &mut LayersState, m: &mut Model) {
     let fr = icon_toggle(ui, Icon::FilterBy, "Filter by color", true, st.label_filter != 0);
-    let fid = egui::Id::new("layer_filter_popup");
-    egui::popup::popup_below_widget(ui, fid, &fr, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+    crate::widgets::popup_below(&fr, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_min_width(LABELS.len() as f32 * 25.0 + 8.0);
         label_filter_swatches(ui, &mut st.label_filter, m.layers);
         if ui.add_enabled(st.label_filter != 0, egui::Button::new("Show all")).clicked() { st.label_filter = 0; }
     });
-    if fr.clicked() { ui.memory_mut(|mem| mem.toggle_popup(fid)); }
 }
 
 // --- Docker ---------------------------------------------------------------
@@ -605,11 +603,9 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         if let Some(c) = label_color(label) {
             ui.painter().circle_filled(lr.rect.right_bottom() + vec2(-6.0, -6.0), 3.5, c);
         }
-        let lid = egui::Id::new("layer_label_popup");
-        egui::popup::popup_below_widget(ui, lid, &lr, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+        crate::widgets::popup_below(&lr, egui::PopupCloseBehavior::CloseOnClick, |ui| {
             if let Some(l) = label_list(ui, label) { set_label(st, l, m, a); }
         });
-        if lr.clicked() { ui.memory_mut(|mem| mem.toggle_popup(lid)); }
         if let Node::Filter(f) = m.layers.active_node() {
             let id = f.id;
             let b = egui::Button::new(format!("{}…", f.filter.kind.name())).min_size(vec2(96.0, 24.0));
@@ -678,7 +674,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     let mut dropped = None;
     let mut menu_cmd = None;
     let mut shown_ids = Vec::new();
-    Frame::none().fill(theme::DESK).rounding(3.0).show(ui, |ui| {
+    Frame::NONE.fill(theme::DESK).corner_radius(3.0).show(ui, |ui| {
         ui.set_min_height(list_h);
         egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
@@ -692,7 +688,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 let (e, resp) = layer_row(ui, st, m, &row);
                 if let Some(e) = e { event = Some((row.id, e)); }
                 if let Some(d) = drop_target(ui, &resp, &row, &st.selected, m.layers) { dropped = Some(d); }
-                resp.context_menu(|ui| {
+                crate::widgets::context_menu(&resp, |ui| {
                     // The right-clicked row's own selection, else it alone.
                     let mut sel = st.selection(m.layers);
                     if !sel.contains(&row.id) { sel = vec![row.id]; }
@@ -911,7 +907,7 @@ fn row_menu(ui: &mut Ui, m: &Model, id: u64, sel: &[u64]) -> Option<RowMenu> {
         if ui.add(egui::Button::new(group_label(m.layers, sel)).shortcut_text(LayerCmd::Group.shortcut())).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
         if ungroups(node) && ui.add(egui::Button::new(ungroup_label(node)).shortcut_text(LayerCmd::Ungroup.shortcut())).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
     }
-    if out.is_some() { ui.close_menu(); }
+    if out.is_some() { ui.close(); }
     out
 }
 
@@ -935,7 +931,7 @@ fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row, selected: &[u64], laye
     let p = ui.painter();
     let stroke = Stroke::new(2.0_f32, theme::DROP);
     match place {
-        Place::Inside => { p.rect_stroke(r.shrink(1.0), 2.5, stroke); }
+        Place::Inside => { p.rect_stroke(r.shrink(1.0), 2.5, stroke, egui::StrokeKind::Middle); }
         Place::Above => { p.hline(r.x_range(), r.top(), stroke); }
         Place::Below => { p.hline(r.x_range(), r.bottom(), stroke); }
     }
@@ -994,7 +990,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     };
     painter.rect_filled(body, 2.5, bg);
     if row.is_folder && !active {
-        painter.rect_stroke(body, 2.5, Stroke::new(1.0_f32, theme::BORDER));
+        painter.rect_stroke(body, 2.5, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Middle);
     }
     // The label: a strip on the left edge.
     if let Some(c) = label {
@@ -1050,14 +1046,14 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
         let card = Rect::from_center_size(b.center(), vec2(THUMB - 4.0, THUMB - 10.0));
         painter.rect_filled(card, 2.0, if active { Color32::from_black_alpha(70) } else if visible { theme::WIDGET_HOVER } else { theme::WIDGET });
-        painter.rect_stroke(card, 2.0, Stroke::new(1.0_f32, if visible || active { theme::TEXT } else { theme::BORDER }));
+        painter.rect_stroke(card, 2.0, Stroke::new(1.0_f32, if visible || active { theme::TEXT } else { theme::BORDER }), egui::StrokeKind::Middle);
         painter.text(card.center(), egui::Align2::CENTER_CENTER, n.to_string(), egui::FontId::proportional(if n < 1000 { 13.0 } else { 10.0 }), theme::TEXT);
         b
     } else if is_filter {
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
         let tile = Rect::from_center_size(b.center(), vec2(THUMB - 6.0, THUMB - 6.0));
         painter.rect_filled(tile, 2.0, if active { Color32::from_black_alpha(70) } else { theme::WIDGET });
-        painter.rect_stroke(tile, 2.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }));
+        painter.rect_stroke(tile, 2.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }), egui::StrokeKind::Middle);
         crate::icons::paint(ui, Icon::FilterLayer, tile, 18.0, theme::TEXT);
         b
     } else {
@@ -1069,7 +1065,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
             let r = Rect::from_center_size(b.center(), s * k);
             checker(&painter, r, 4.0);
             painter.image(id, r, uv, Color32::WHITE);
-            painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }));
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }), egui::StrokeKind::Middle);
         }
         b
     };
@@ -1216,7 +1212,7 @@ mod thumbnail_tests {
         assert_eq!(st.dirty[&id].1, None, "anywhere stays anywhere");
         // Another screen scale: all rebuilt at the new size.
         ctx.set_pixels_per_point(2.0);
-        let _ = ctx.run(Default::default(), |_| {});
+        crate::test_pass(&ctx, Default::default(), |_| {});
         let n = stack.layer_ids().len();
         for _ in 0..n + 2 { st.refresh_thumbnails(&ctx, &stack); }
         let (w2, h2, _) = st.cpu[&id].clone();

@@ -134,7 +134,7 @@ impl StripPool {
         let n = (wanted - have).min(max_slots(w, h));
         let tex = ctx.load_texture(
             format!("stroke-strips {w}x{h}"),
-            ColorImage::new([w, n * (h + 1)], Color32::TRANSPARENT),
+            ColorImage::filled([w, n * (h + 1)], Color32::TRANSPARENT),
             TextureOptions::NEAREST,
         );
         self.created += 1;
@@ -243,7 +243,7 @@ impl StripPool {
 mod tests {
     use super::*;
 
-    fn img(w: usize, h: usize, v: u8) -> ColorImage { ColorImage::new([w, h], Color32::from_gray(v)) }
+    fn img(w: usize, h: usize, v: u8) -> ColorImage { ColorImage::filled([w, h], Color32::from_gray(v)) }
 
     /// A page stays in its 1 MiB block, padding included, and never has
     /// fewer than one slot.

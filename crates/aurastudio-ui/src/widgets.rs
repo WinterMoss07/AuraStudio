@@ -159,7 +159,7 @@ pub fn channel_row(
 
     let painter = ui.painter_at(rect.expand(2.0));
     paint_gradient(&painter, bar, color_at);
-    painter.rect_stroke(bar, 2.0, Stroke::new(1.0_f32, theme::BORDER));
+    painter.rect_stroke(bar, 2.0, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Middle);
 
     // Marker: a thin line on the bar plus a small triangle under it.
     let x = bar.left() + *value * bar.width();
@@ -294,9 +294,9 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
     let editing: Option<(String, bool)> = ui.data(|d| d.get_temp(editing_id));
 
     if let Some((mut text, focused)) = editing {
-        ui.painter().rect(rect, 2.5, theme::WIDGET, Stroke::new(1.0_f32, theme::ACCENT));
+        ui.painter().rect(rect, 2.5, theme::WIDGET, Stroke::new(1.0_f32, theme::ACCENT), egui::StrokeKind::Middle);
         let edit = ui.put(rect, egui::TextEdit::singleline(&mut text)
-            .frame(false)
+            .frame(egui::Frame::NONE)
             .hint_text(format(value))
             .horizontal_align(egui::Align::Center)
             .vertical_align(egui::Align::Center));
@@ -346,7 +346,7 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
         // square while the bar isn't full.
         let fill = Rect::from_min_max(rect.min, pos2(rect.left() + (rect.width() * t).max(2.0 * r), rect.bottom()));
         let right = if t >= 0.999 { r } else { 0.0 };
-        painter.rect_filled(fill, egui::Rounding { nw: r, sw: r, ne: right, se: right }, theme::ACCENT);
+        painter.rect_filled(fill, egui::epaint::CornerRadiusF32 { nw: r, sw: r, ne: right, se: right }, theme::ACCENT);
     }
     let font = egui::FontId::proportional(11.5);
     let value = painter.layout_no_wrap(format(shown), font.clone(), theme::TEXT);
@@ -426,6 +426,41 @@ pub fn blend_combo(ui: &mut Ui, id: &str, mode: &mut crate::BlendMode, width: f3
     changed
 }
 
+// --- Menus -----------------------------------------------------------------
+//
+// egui closes a menu on any click inside it by default (since 0.32): ours
+// stay open until a click outside or an explicit `ui.close()`, as before
+// (a checkbox, a slider or a submenu in a menu keeps it open).
+
+fn stay_open() -> egui::containers::menu::MenuConfig {
+    egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+}
+
+/// A menu button (a submenu inside a menu); `f` fills the menu.
+pub fn menu<R>(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<Option<R>> {
+    if egui::containers::menu::is_in_menu(ui) { return ui.menu_button(label, f); }
+    let (response, inner) = egui::containers::menu::MenuButton::new(label).config(stay_open()).ui(ui, f);
+    egui::InnerResponse::new(inner.map(|i| i.inner), response)
+}
+
+/// A menu under `button` (drawn by it).
+pub fn menu_from_button<R>(ui: &mut Ui, button: egui::Button<'_>, f: impl FnOnce(&mut Ui) -> R) -> egui::Response {
+    egui::containers::menu::MenuButton::from_button(button).config(stay_open()).ui(ui, f).0
+}
+
+/// The right-click menu of `resp`.
+pub fn context_menu(resp: &egui::Response, f: impl FnOnce(&mut Ui)) {
+    let _ = egui::Popup::context_menu(resp)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .info(egui::UiStackInfo::new(egui::UiKind::Menu).with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, stay_open()))
+        .show(f);
+}
+
+/// A popup under `button`, opened and closed by clicking it.
+pub fn popup_below(button: &egui::Response, close: egui::PopupCloseBehavior, f: impl FnOnce(&mut Ui)) {
+    let _ = egui::Popup::from_toggle_button_response(button).close_behavior(close).show(f);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,3 +501,4 @@ mod tests {
         assert!((rgb_to_hsv([0.5, 0.5, 0.5])[2] - 0.5).abs() < 1e-6);
     }
 }
+

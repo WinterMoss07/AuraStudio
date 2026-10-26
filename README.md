@@ -282,7 +282,6 @@ Environment variables (for testing and comparisons):
 | `RUST_LOG=info` (default) | log: GPU, pen backend, monitor profile, per-stroke timings |
 | `AURASTUDIO_BACKEND=dx12\|vulkan\|metal\|gl` | force a GPU backend |
 | `AURASTUDIO_PRESENT=mailbox\|immediate\|fifo` | force a present mode (default: immediate, fifo with V-Sync) |
-| `dxcompiler.dll` + `dxil.dll` next to the program | DirectX 12 compiles shaders with DXC (faster start) instead of FXC |
 | `AURASTUDIO_DISPLAY_ICC=<file.icc>` | use this monitor profile instead of the system's |
 | `AURASTUDIO_BRUSH_DIR=<folder>` | where imported brushes are kept |
 | `AURASTUDIO_DPI=<dpi>` | pretend the window's monitor has this DPI (96 = 100 %) |

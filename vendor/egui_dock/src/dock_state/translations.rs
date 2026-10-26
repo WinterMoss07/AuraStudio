@@ -1,6 +1,10 @@
 /// Groups together labels from different elements of the [`DockArea`](crate::DockArea).
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct Translations {
     /// Text overrides for buttons in tab context menus.
     pub tab_context_menu: TabContextMenuTranslations,
@@ -10,17 +14,29 @@ pub struct Translations {
 
 /// Specifies text in buttons displayed in the context menu displayed upon right-clicking on a tab.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct TabContextMenuTranslations {
     /// Button that closes the tab.
     pub close_button: String,
     /// Button that undocks the tab into a new window.
     pub eject_button: String,
+    /// Button that hides the tab bar.
+    pub hide_tab_bar_button: String,
+    /// Button that shows the tab bar.
+    pub show_tab_bar_button: String,
 }
 
 /// Specifies text displayed in the primary buttons on a tab bar.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct LeafTranslations {
     /// Message in the tooltip shown while hovering over a grayed out X button of a leaf
     /// containing non-closable tabs.
@@ -62,13 +78,27 @@ impl Translations {
     }
 }
 
+impl Default for Translations {
+    fn default() -> Self {
+        Self::english()
+    }
+}
+
 impl TabContextMenuTranslations {
     /// Default English translations.
     pub fn english() -> Self {
         Self {
             close_button: String::from("Close"),
             eject_button: String::from("Eject"),
+            hide_tab_bar_button: String::from("Hide tab bar"),
+            show_tab_bar_button: String::from("Show tab bar"),
         }
+    }
+}
+
+impl Default for TabContextMenuTranslations {
+    fn default() -> Self {
+        Self::english()
     }
 }
 
@@ -97,5 +127,11 @@ impl LeafTranslations {
                 "Press modifier keys (Shift by default) or right click to minimize this window.",
             ),
         }
+    }
+}
+
+impl Default for LeafTranslations {
+    fn default() -> Self {
+        Self::english()
     }
 }

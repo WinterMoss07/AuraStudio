@@ -33,9 +33,9 @@ impl Uploads {
             let start = (y as u64 * row) as usize;
             let end = start + (rows as u64 * row) as usize;
             queue.write_texture(
-                ImageCopyTexture { texture, mip_level: 0, origin: Origin3d { x: origin.0, y: origin.1 + y, z: 0 }, aspect: TextureAspect::All },
+                TexelCopyTextureInfo { texture, mip_level: 0, origin: Origin3d { x: origin.0, y: origin.1 + y, z: 0 }, aspect: TextureAspect::All },
                 &rgba[start..end],
-                ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(rows) },
+                TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(rows) },
                 Extent3d { width: w, height: rows, depth_or_array_layers: 1 },
             );
             self.queued += rows as u64 * row;
@@ -49,7 +49,7 @@ impl Uploads {
     pub fn flush(&mut self, device: &Device, queue: &Queue) {
         if self.queued == 0 { return; }
         queue.submit(std::iter::empty());
-        device.poll(Maintain::Wait);
+        let _ = device.poll(PollType::Wait { submission_index: None, timeout: None });
         self.queued = 0;
         self.flushes += 1;
     }
@@ -66,12 +66,12 @@ mod tests {
     /// whole (read back from the texture).
     #[test]
     fn a_big_upload_goes_in_bands_and_arrives_whole() {
-        let instance = Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..Default::default() });
-        let Some(adapter) = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
+        let instance = Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..InstanceDescriptor::new_without_display_handle() });
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
-        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default(), None)).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default())).unwrap();
         let (w, h) = (1024u32, 1500u32);
         let px: Vec<u8> = (0..w * h * 4).map(|i| (i * 7 % 251) as u8).collect();
         let tex = device.create_texture(&TextureDescriptor {
@@ -85,13 +85,13 @@ mod tests {
         let read = device.create_buffer(&BufferDescriptor { label: None, size: (w * h * 4) as u64, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut enc = device.create_command_encoder(&CommandEncoderDescriptor::default());
         enc.copy_texture_to_buffer(
-            ImageCopyTexture { texture: &tex, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-            ImageCopyBuffer { buffer: &read, layout: ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) } },
+            TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            TexelCopyBufferInfo { buffer: &read, layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) } },
             Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         queue.submit([enc.finish()]);
         read.slice(..).map_async(MapMode::Read, |_| {});
-        device.poll(Maintain::Wait);
-        assert!(*read.slice(..).get_mapped_range() == px[..]);
+        let _ = device.poll(PollType::Wait { submission_index: None, timeout: None });
+        assert!(*read.slice(..).get_mapped_range().unwrap() == px[..]);
     }
 }

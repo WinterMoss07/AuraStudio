@@ -94,7 +94,7 @@ impl Atlas {
         // later page, is a full one.
         let first = self.pages.iter().flatten().count() == 0;
         let side = if first && w + 2 * RING <= FIRST_PAGE && h + 2 * RING <= FIRST_PAGE { FIRST_PAGE } else { PAGE };
-        let tex = ctx.load_texture(self.name, ColorImage::new([side, side], Color32::TRANSPARENT), self.options);
+        let tex = ctx.load_texture(self.name, ColorImage::filled([side, side], Color32::TRANSPARENT), self.options);
         let page = Page { side, tex, shelves: Vec::new(), free: Vec::new(), live: 0, empty_since: None };
         let i = match self.pages.iter().position(Option::is_none) {
             Some(i) => { self.pages[i] = Some(page); i }
@@ -167,7 +167,7 @@ impl Atlas {
 /// `image` with a ring of `RING` pixels around it that repeats its edge.
 fn with_ring(image: &ColorImage) -> ColorImage {
     let (w, h) = (image.size[0], image.size[1]);
-    let mut ringed = ColorImage::new([w + 2 * RING, h + 2 * RING], Color32::TRANSPARENT);
+    let mut ringed = ColorImage::filled([w + 2 * RING, h + 2 * RING], Color32::TRANSPARENT);
     for y in 0..h + 2 * RING {
         let sy = y.saturating_sub(RING).min(h - 1);
         for x in 0..w + 2 * RING {
@@ -349,7 +349,7 @@ mod tests {
     /// In a smoothed atlas, the ring repeats the picture's edge pixels.
     #[test]
     fn the_ring_repeats_the_edge_pixels() {
-        let image = ColorImage { size: [2, 2], pixels: vec![Color32::RED, Color32::GREEN, Color32::BLUE, Color32::WHITE] };
+        let image = ColorImage::new([2, 2], vec![Color32::RED, Color32::GREEN, Color32::BLUE, Color32::WHITE]);
         let r = with_ring(&image);
         assert_eq!(r.size, [4, 4]);
         let at = |x: usize, y: usize| r.pixels[y * 4 + x];
@@ -366,6 +366,6 @@ mod tests {
         let mut at = Atlas::new("test", TextureOptions::LINEAR, 1);
         let r = at.alloc(&ctx, 10, 10).unwrap();
         assert!(r.x >= 1 && r.y >= 1);
-        at.write(r, ColorImage::new([10, 10], Color32::WHITE));
+        at.write(r, ColorImage::filled([10, 10], Color32::WHITE));
     }
 }

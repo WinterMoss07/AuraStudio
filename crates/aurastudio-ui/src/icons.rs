@@ -179,7 +179,7 @@ fn draw(ui: &Ui, icon: Icon, rect: Rect, size: f32, tint: Color32, core: bool) {
         if i.tidied != pass { i.tidied = pass; i.atlas.tidy(); }
         if let Some(r) = i.regions.get(&key) { return Some(i.atlas.image(*r)); }
         if i.failed.get(&key).is_some_and(|retry| pass < *retry) { return None; }
-        let image = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, core), Some(egui::load::SizeHint::Size(px, px)));
+        let image = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, core), egui::load::SizeHint::Size { width: px, height: px, maintain_aspect_ratio: false }, &Default::default());
         let Ok(image) = image else {
             log::warn!("icon {icon:?} at {px} px does not rasterize");
             i.failed.insert(key, u64::MAX);
@@ -257,9 +257,9 @@ mod tests {
     fn every_icon_draws_something_at_each_size() {
         for px in [14u32, 17, 22] {
             for icon in all() {
-                let image = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, false), Some(egui::load::SizeHint::Size(px, px))).unwrap_or_else(|e| panic!("{icon:?}: {e}"));
+                let image = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, false), egui::load::SizeHint::Size { width: px, height: px, maintain_aspect_ratio: false }, &Default::default()).unwrap_or_else(|e| panic!("{icon:?}: {e}"));
                 assert!(image.pixels.iter().any(|p| p.a() > 0), "{icon:?} at {px}");
-                let core = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, true), Some(egui::load::SizeHint::Size(px, px))).unwrap();
+                let core = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, true), egui::load::SizeHint::Size { width: px, height: px, maintain_aspect_ratio: false }, &Default::default()).unwrap();
                 assert!(core.pixels.iter().any(|p| p.a() > 0));
             }
         }
@@ -271,8 +271,8 @@ mod tests {
     fn an_icon_is_made_once_per_size_in_a_shared_atlas() {
         let ctx = egui::Context::default();
         let mut seen = (0, 0);
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        crate::test_pass(&ctx, Default::default(), |root| {
+            egui::CentralPanel::default().show(root, |ui| {
                 let r = Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(20.0, 20.0));
                 paint(ui, Icon::Eye, r, 14.0, Color32::WHITE);
                 let a = used_regions();
@@ -307,8 +307,8 @@ mod more_tests {
 
     fn frame(ctx: &egui::Context, f: impl FnOnce(&Ui)) {
         let mut f = Some(f);
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| { if let Some(f) = f.take() { f(ui); } });
+        crate::test_pass(ctx, Default::default(), |root| {
+            egui::CentralPanel::default().show(root, |ui| { if let Some(f) = f.take() { f(ui); } });
         });
     }
 

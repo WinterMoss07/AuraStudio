@@ -1,12 +1,12 @@
 use egui::{
-    vec2, Align, Color32, CursorIcon, Frame, Layout, Rect, Response, RichText, Rounding, Sense,
-    Shape, Stroke, Ui, UiBuilder, Vec2, WidgetText,
+    Align, Color32, CornerRadius, CursorIcon, Frame, Layout, Rect, Response, RichText, Sense,
+    Shape, Stroke, Ui, UiBuilder, Vec2, WidgetText, vec2,
 };
 
 use crate::{
+    DockArea, NodeIndex, Style, SurfaceIndex, TabViewer,
     dock_area::{state::State, tab_removal::TabRemoval},
     utils::{fade_visuals, rect_set_size_centered},
-    DockArea, Node, NodeIndex, Style, SurfaceIndex, TabViewer,
 };
 
 impl<Tab> DockArea<'_, Tab> {
@@ -52,11 +52,9 @@ impl<Tab> DockArea<'_, Tab> {
                     }
                     unreachable!("a window surface should never be empty")
                 });
-            let Node::Leaf { tabs, active, .. } = &mut self.dock_state[surf_index][node_id] else {
-                unreachable!()
-            };
+            let leaf = self.dock_state[surf_index][node_id].get_leaf_mut().unwrap();
             tab_viewer
-                .title(&mut tabs[active.0])
+                .title(&mut leaf.tabs[leaf.active.0])
                 .color(ui.visuals().widgets.noninteractive.fg_stroke.color)
         };
 
@@ -137,7 +135,7 @@ impl<Tab> DockArea<'_, Tab> {
             );
             ui.painter().rect_filled(
                 tabbar_outer_rect,
-                style.tab_bar.rounding,
+                style.tab_bar.corner_radius,
                 style.tab_bar.bg_fill,
             );
             self.window_expand(ui, surface_index, tabbar_outer_rect, fade_style);
@@ -175,8 +173,11 @@ impl<Tab> DockArea<'_, Tab> {
 
         let style = fade_style.unwrap_or_else(|| self.style.as_ref().unwrap());
         let color = if response.hovered() || response.has_focus() {
-            ui.painter()
-                .rect_filled(rect, Rounding::ZERO, style.buttons.minimize_window_bg_fill);
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::ZERO,
+                style.buttons.minimize_window_bg_fill,
+            );
             style.buttons.minimize_window_active_color
         } else {
             style.buttons.minimize_window_color

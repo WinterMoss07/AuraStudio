@@ -8,14 +8,19 @@ aurastudio-canvas = { path = "../aurastudio-canvas" }
 aurastudio-layers = { path = "../aurastudio-layers" }
 # OpenGL too ("angle" turns the GL backend on where it is off by
 # default: WGL on Windows), the fallback when Vulkan is missing.
-wgpu              = { version = "23", features = ["angle"] }
+wgpu              = { version = "30", features = ["angle"] }
 winit             = "0.30"
 bytemuck          = { version = "1", features = ["derive"] }
 log               = "0.4"
-egui = "0.30"
-egui-wgpu = "0.30"
-egui-winit = "0.30"
+egui = "0.36"
+egui-wgpu = "0.36"
+egui-winit = "0.36"
 half      = "2"
 
 [dev-dependencies]
 pollster = "0.3"
+
+# DXC (DirectX 12's modern shader compiler) built into the program: no
+# dxcompiler.dll to ship, no fallback to the old FXC.
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "30", features = ["static-dxc"] }

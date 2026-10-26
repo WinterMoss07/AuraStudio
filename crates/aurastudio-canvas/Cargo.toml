@@ -4,4 +4,4 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-wgpu = "23"
+wgpu = "30"

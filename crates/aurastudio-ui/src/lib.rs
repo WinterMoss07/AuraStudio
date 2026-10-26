@@ -379,7 +379,8 @@ impl UiState {
 }
 
 /// Build the whole UI for this frame.
-pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions: &mut Actions) {
+pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions: &mut Actions) {
+    let ctx = &root.ctx().clone();
     if !state.theme_applied {
         theme::apply(ctx);
         state.theme_applied = true;
@@ -391,25 +392,25 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     state.layers.rect = None;
     state.anim.rect = None;
 
-    bars::menu_bar(ctx, state, model, actions);
-    bars::toolbar(ctx, &mut state.notice, model, actions);
+    bars::menu_bar(root, state, model, actions);
+    bars::toolbar(root, &mut state.notice, model, actions);
 
     if let Some(tab) = state.focus_tab.take() {
         // (Hidden from the Window menu: shown again.)
         dockers::set_shown(&mut state.dock, tab, true);
         if let Some(loc) = state.dock.find_tab(&tab) {
-            state.dock.set_active_tab(loc);
+            let _ = state.dock.set_active_tab(loc);
         }
     }
 
-    egui::SidePanel::right("dock")
+    egui::Panel::right("dock")
         .resizable(true)
         .show_separator_line(false)
-        .default_width(300.0)
-        .width_range(240.0..=600.0)
+        .default_size(300.0)
+        .size_range(240.0..=600.0)
         // A little room on the left: the tabs no longer touch the canvas.
-        .frame(Frame::none().fill(theme::PANEL).inner_margin(egui::Margin { left: 6.0, ..Default::default() }))
-        .show(ctx, |ui| {
+        .frame(Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin { left: 6, ..Default::default() }))
+        .show(root, |ui| {
             // No document open: grayed out, like the toolbox.
             if model.home { ui.disable(); }
             let style = theme::dock_style(ui.style());
@@ -429,7 +430,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
                 .show_close_buttons(false)
                 .show_leaf_close_all_buttons(false)
                 .show_leaf_collapse_buttons(false)
-                .window_bounds(ctx.screen_rect())
+                .window_bounds(ctx.content_rect())
                 .show_inside(ui, &mut viewer);
             // Docks keep their content visible: a separator pushes the
             // next docks instead of squashing one.
@@ -440,12 +441,12 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     // The Animation panel (Animation documents): under the canvas or
     // beside the dockers.
     if state.anim.open && !model.home && model.doc_kind == aurastudio_document::Kind::Animation {
-        animation::panel(ctx, &mut state.anim, &mut state.layers, &mut state.notice, model, actions);
+        animation::panel(root, &mut state.anim, &mut state.layers, &mut state.notice, model, actions);
     }
 
     memory::window(ctx, &mut state.memory_open, state.memory.as_ref());
 
-    if let Some(card) = canvas_card(ctx, model) {
+    if let Some(card) = canvas_card(ctx, root.available_rect_before_wrap(), model) {
         if model.home {
             home::start_screen(ctx, card, &mut state.recent, actions);
         } else {
@@ -477,13 +478,13 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     // An opacity being dragged, a name typed, a filter layer being tuned:
     // one undo step once done.
     let filter_layer = state.filter.as_ref().is_some_and(|d| !d.targets_layer());
-    actions.layers_idle = !ctx.input(|i| i.pointer.any_down()) && !ctx.wants_keyboard_input() && !filter_layer;
+    actions.layers_idle = !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() && !filter_layer;
 }
 
 /// A modal dialog in the app's frame.
 fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
     egui::Modal::new(egui::Id::new(id))
-        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+        .frame(egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(18)).corner_radius(theme::CANVAS_ROUNDING))
 }
 
 /// The open dialog, if any: modal, the rest of the UI is dimmed.
@@ -596,9 +597,8 @@ pub const CANVAS_RECT_ID: &str = "aurastudio_canvas_rect";
 
 /// The canvas card: what is left of the window, rounded (the UI surface is
 /// painted over its corners; the GPU draws the canvas under the UI).
-fn canvas_card(ctx: &egui::Context, model: &mut Model) -> Option<egui::Rect> {
+fn canvas_card(ctx: &egui::Context, free: egui::Rect, model: &mut Model) -> Option<egui::Rect> {
     use egui::{pos2, Rect, Shape};
-    let free = ctx.available_rect();
     let g = theme::CANVAS_FRAME;
     // From the window's left edge (the toolbox sits on it).
     let card = Rect::from_min_max(free.min, pos2(free.right(), free.bottom() - g));
@@ -632,4 +632,12 @@ fn canvas_card(ctx: &egui::Context, model: &mut Model) -> Option<egui::Rect> {
         painter.add(Shape::mesh(mesh));
     }
     Some(card)
+}
+
+/// Tests: one egui pass of `f` on `ctx` (egui ≥ 0.34 runs a root Ui; its
+/// texture changes are dropped).
+#[cfg(test)]
+pub(crate) fn test_pass(ctx: &egui::Context, input: egui::RawInput, mut f: impl FnMut(&mut egui::Ui)) {
+    let mut out = ctx.run_ui(input, |ui| f(ui));
+    out.textures_delta.clear();
 }

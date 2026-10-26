@@ -168,7 +168,7 @@ fn size_line(p: &Preset) -> String {
 fn page_icon(ui: &Ui, r: Rect, w: f32, h: f32, color: Color32) {
     let s = r.width().min(r.height()) / w.max(h);
     let page = Rect::from_center_size(r.center(), vec2(w * s, h * s));
-    ui.painter().rect_stroke(page, 2.0, Stroke::new(1.3_f32, color));
+    ui.painter().rect_stroke(page, 2.0, Stroke::new(1.3_f32, color), egui::StrokeKind::Middle);
 }
 
 /// The New document dialog (laid out like PhotoCraft's: tabs, preset
@@ -217,7 +217,7 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                                     let resp = resp.on_hover_text(p.note);
                                     let bg = if on { theme::ACCENT_DIM } else if resp.hovered() { theme::WIDGET_HOVER } else { theme::WIDGET };
                                     ui.painter().rect_filled(r, 3.0, bg);
-                                    if on { ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5_f32, theme::ACCENT)); }
+                                    if on { ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5_f32, theme::ACCENT), egui::StrokeKind::Middle); }
                                     page_icon(ui, Rect::from_center_size(pos2(r.center().x, r.top() + 30.0), vec2(38.0, 38.0)), p.w, p.h, theme::TEXT_WEAK);
                                     ui.painter().text(pos2(r.center().x, r.top() + 64.0), Align2::CENTER_CENTER, p.name, FontId::proportional(12.5), theme::TEXT);
                                     ui.painter().text(pos2(r.center().x, r.top() + 84.0), Align2::CENTER_CENTER, size_line(p), FontId::proportional(10.5), theme::TEXT_WEAK);
@@ -344,7 +344,7 @@ pub fn start_screen(ctx: &egui::Context, area: Rect, recent: &mut [RecentFile], 
             ui.painter().rect_filled(area, theme::CANVAS_ROUNDING, theme::DESK);
             let col_w = (area.width() - 64.0).clamp(200.0, 760.0);
             let col = Rect::from_min_size(pos2(area.center().x - col_w / 2.0, area.top() + (area.height() * 0.14).min(120.0)), vec2(col_w, area.height()));
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(col), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add(egui::Image::new(egui::include_image!("../../../assets/logo/aurastudio-logo.svg"))
                         .fit_to_exact_size(vec2(84.0, 84.0)));
@@ -379,7 +379,7 @@ fn big_button(ui: &Ui, rect: Rect, text: &str, key: &str, primary: bool) -> bool
     if primary {
         p.rect_filled(rect, 4.0, if hover { theme::ACCENT.gamma_multiply(1.15) } else { theme::ACCENT });
     } else {
-        p.rect(rect, 17.0, if hover { theme::WIDGET } else { Color32::TRANSPARENT }, Stroke::new(1.0_f32, theme::TEXT_WEAK));
+        p.rect(rect, 17.0, if hover { theme::WIDGET } else { Color32::TRANSPARENT }, Stroke::new(1.0_f32, theme::TEXT_WEAK), egui::StrokeKind::Middle);
     }
     p.text(rect.center() - vec2(22.0, 0.0), Align2::CENTER_CENTER, text, FontId::proportional(15.0), theme::TEXT);
     p.text(rect.right_center() - vec2(18.0, 0.0), Align2::RIGHT_CENTER, key, FontId::proportional(12.0),
@@ -436,10 +436,10 @@ fn recent_card(ui: &mut Ui, r: &RecentFile, card: f32, a: &mut Actions) {
     crate::widgets::elided_text(&p, pos2(rect.left() + 8.0, img.bottom() + 28.0), &r.detail,
         FontId::proportional(11.0), theme::TEXT_WEAK, card - 16.0);
     if resp.clicked() { a.open_path = Some(r.path.clone()); }
-    resp.context_menu(|ui| {
+    crate::widgets::context_menu(&resp, |ui| {
         if ui.button("Remove from list").clicked() {
             a.forget_recent = Some(r.path.clone());
-            ui.close_menu();
+            ui.close();
         }
     });
 }

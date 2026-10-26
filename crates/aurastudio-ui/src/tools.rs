@@ -276,10 +276,10 @@ pub fn toolbox(ctx: &egui::Context, at: Pos2, m: &mut Model) -> Rect {
         .fixed_pos(at)
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(theme::PANEL)
-                .rounding(egui::Rounding { ne: r, se: r, ..Default::default() })
-                .inner_margin(egui::Margin::symmetric(4.0, 6.0))
+                .corner_radius(egui::epaint::CornerRadiusF32 { ne: r, se: r, ..Default::default() })
+                .inner_margin(egui::Margin::symmetric(4, 6))
                 .show(ui, |ui| {
                     ui.set_width(TOOLBOX_WIDTH - 8.0);
                     ui.spacing_mut().item_spacing.y = 2.0;
@@ -775,7 +775,7 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
         }
         for &h in t.handles {
             let r = Rect::from_center_size(pt(h), vec2(8.0, 8.0));
-            painter.rect(r, 1.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));
+            painter.rect(r, 1.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT), egui::StrokeKind::Middle);
         }
         for &h in t.points {
             painter.circle(pt(h), 4.0, Color32::WHITE, Stroke::new(1.5_f32, theme::ACCENT));

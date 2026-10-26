@@ -82,7 +82,7 @@ pub fn menu(ui: &mut Ui, open: &mut Option<FilterDialog>, m: &Model) {
         for &kind in *kinds {
             if ui.add_enabled(why.is_none(), egui::Button::new(format!("{}…", kind.name()))).clicked() {
                 *open = new_dialog(ui.ctx(), kind, m);
-                ui.close_menu();
+                ui.close();
             }
         }
     }
@@ -154,8 +154,8 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
         .resizable(false)
         // (Placed by its left top corner: with a right top pivot, egui
         // moved the window at the first click in it.)
-        .default_pos(ctx.screen_rect().right_top() + egui::vec2(-24.0 - draw::WIDTH - 30.0, 64.0))
-        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(14.0)).rounding(theme::CANVAS_ROUNDING))
+        .default_pos(ctx.content_rect().right_top() + egui::vec2(-24.0 - draw::WIDTH - 30.0, 64.0))
+        .frame(egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(14)).corner_radius(theme::CANVAS_ROUNDING))
         .show(ctx, |ui| {
             ui.set_width(draw::WIDTH);
             ui.spacing_mut().item_spacing.y = 5.0;
@@ -164,7 +164,7 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
             let src = Arc::clone(&d.source);
             // On a short screen (a laptop at 200 %) the preview shrinks and
             // the controls scroll.
-            let screen = ctx.screen_rect().height();
+            let screen = ctx.content_rect().height();
             let view_h = (screen - 680.0).clamp(130.0, 230.0);
             d.view.show(ui, &src, &d.filter, view_h);
             ui.separator();
@@ -299,7 +299,7 @@ mod tests {
                 for frame in 0..4 {
                     let mut a = Actions::default();
                     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 860.0 - frame as f32 * 100.0))), ..Default::default() };
-                    let _ = ctx.run(input, |ctx| { assert!(dialog(ctx, &mut d, &mut a), "{kind:?}"); });
+                    crate::test_pass(&ctx, input, |root| { assert!(dialog(root.ctx(), &mut d, &mut a), "{kind:?}"); });
                     sent.extend(a.filter);
                 }
                 assert_eq!(sent, vec![FilterAction::Preview(Some(Filter::new(kind)))], "{kind:?}: one preview, then nothing until a change");

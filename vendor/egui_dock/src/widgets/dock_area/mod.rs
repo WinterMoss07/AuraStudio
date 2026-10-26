@@ -9,11 +9,11 @@ mod drag_and_drop;
 mod state;
 mod tab_removal;
 
-use crate::{dock_state::DockState, NodeIndex, Style, SurfaceIndex, TabIndex};
 pub use allowed_splits::AllowedSplits;
+use egui::{Id, Modifiers, emath::*};
 use tab_removal::TabRemoval;
 
-use egui::{emath::*, Id, Modifiers};
+use crate::{NodePath, Style, TabIndex, TabPath, dock_state::DockState};
 
 /// Displays a [`DockState`] in `egui`.
 pub struct DockArea<'tree, Tab> {
@@ -25,6 +25,7 @@ pub struct DockArea<'tree, Tab> {
     show_close_buttons: bool,
     tab_context_menus: bool,
     draggable_tabs: bool,
+    hidable_tab_bars: bool,
     show_tab_name_on_hover: bool,
     show_window_close_buttons: bool,
     show_window_collapse_buttons: bool,
@@ -38,8 +39,8 @@ pub struct DockArea<'tree, Tab> {
     window_bounds: Option<Rect>,
 
     to_remove: Vec<TabRemoval>,
-    to_detach: Vec<(SurfaceIndex, NodeIndex, TabIndex)>,
-    new_focused: Option<(SurfaceIndex, NodeIndex)>,
+    to_detach: Vec<TabPath>,
+    new_focused: Option<NodePath>,
     tab_hover_rect: Option<(Rect, TabIndex)>,
 }
 
@@ -57,6 +58,7 @@ impl<'tree, Tab> DockArea<'tree, Tab> {
             show_close_buttons: true,
             tab_context_menus: true,
             draggable_tabs: true,
+            hidable_tab_bars: false,
             show_tab_name_on_hover: false,
             allowed_splits: AllowedSplits::default(),
             to_remove: Vec::new(),
@@ -124,6 +126,13 @@ impl<'tree, Tab> DockArea<'tree, Tab> {
         self
     }
 
+    /// Whether tab bars can be hidden with the context menu.
+    /// By default it's `false`.
+    pub fn hidable_tab_bars(mut self, hidable_tab_bars: bool) -> Self {
+        self.hidable_tab_bars = hidable_tab_bars;
+        self
+    }
+
     /// Whether tabs show their name when hovered over them.
     /// By default it's `false`.
     pub fn show_tab_name_on_hover(mut self, show_tab_name_on_hover: bool) -> Self {
@@ -167,7 +176,7 @@ impl<'tree, Tab> DockArea<'tree, Tab> {
     }
 
     /// The bounds for any windows inside the [`DockArea`]. Defaults to the screen rect.
-    /// By default it's set to [`egui::Context::screen_rect`].
+    /// By default it's set to [`egui::Context::content_rect`].
     #[inline(always)]
     pub fn window_bounds(mut self, bounds: Rect) -> Self {
         self.window_bounds = Some(bounds);

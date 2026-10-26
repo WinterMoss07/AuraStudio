@@ -6,17 +6,17 @@ use egui::{Align, Frame, Layout, Margin, RichText};
 use crate::dockers::{self, layers, Tab};
 use crate::{theme, Actions, FileCmd, Model, Notice, UiState, ViewCmd};
 
-pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut Actions) {
-    egui::TopBottomPanel::top("menu_bar")
-        .exact_height(28.0)
+pub fn menu_bar(root: &mut egui::Ui, state: &mut UiState, m: &mut Model, a: &mut Actions) {
+    egui::Panel::top("menu_bar")
+        .exact_size(28.0)
         .show_separator_line(false)
-        .frame(Frame::none().fill(theme::BACKDROP).inner_margin(Margin::symmetric(8.0, 0.0)))
-        .show(ctx, |ui| {
+        .frame(Frame::NONE.fill(theme::BACKDROP).inner_margin(Margin::symmetric(8, 0)))
+        .show(root, |ui| {
             // Flat menu titles: only hovered / open ones get a background.
             ui.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
             ui.horizontal_centered(|ui| {
 
-                ui.menu_button("File", |ui| {
+                crate::widgets::menu(ui, "File", |ui| {
                     for (label, key, cmd) in [
                         ("New…", "Ctrl+N", FileCmd::New),
                         ("Open…", "Ctrl+O", FileCmd::Open),
@@ -29,59 +29,59 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                         let enabled = !m.home || matches!(cmd, FileCmd::New | FileCmd::Open);
                         if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(key)).clicked() {
                             a.file = Some(cmd);
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
-                ui.menu_button("Edit", |ui| {
+                crate::widgets::menu(ui, "Edit", |ui| {
                     let undo = m.undo_label.map_or("Undo".to_owned(), |l| format!("Undo {l}"));
                     let redo = m.redo_label.map_or("Redo".to_owned(), |l| format!("Redo {l}"));
                     if ui.add_enabled(m.can_undo, egui::Button::new(undo).shortcut_text("Ctrl+Z")).clicked() {
                         a.undo = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.add_enabled(m.can_redo, egui::Button::new(redo).shortcut_text("Ctrl+Y")).clicked() {
                         a.redo = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     for (label, key, cmd) in [("Copy", "Ctrl+C", crate::EditCmd::Copy), ("Paste", "Ctrl+V", crate::EditCmd::Paste)] {
                         if ui.add_enabled(!m.home, egui::Button::new(label).shortcut_text(key)).clicked() {
                             a.edit = Some(cmd);
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     ui.separator();
                     if ui.add_enabled(!m.home, egui::Button::new("Transform").shortcut_text("Ctrl+T")).clicked() {
                         *m.tool = crate::Tool::Transform;
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if ui.add(egui::Button::new("Preferences…").shortcut_text("Ctrl+K")).clicked() {
                         state.open_prefs();
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
-                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Layer", |ui| {
-                    if ui.button("New layer").clicked() { layers::new_layer(m, a); ui.close_menu(); }
-                    if ui.button("New folder").clicked() { layers::new_folder(m, a); ui.close_menu(); }
+                ui.add_enabled_ui(!m.home, |ui| crate::widgets::menu(ui, "Layer", |ui| {
+                    if ui.button("New layer").clicked() { layers::new_layer(m, a); ui.close(); }
+                    if ui.button("New folder").clicked() { layers::new_folder(m, a); ui.close(); }
                     if ui.button("Duplicate").clicked() {
                         layers::duplicate(&mut state.layers, m, a);
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.add(egui::Button::new("Clear").shortcut_text("Del")).clicked() {
                         // Done by the app (undoable, after any stroke in progress).
                         a.clear_layer = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Delete").clicked() {
                         layers::delete_layer(&mut state.layers, &mut state.notice, m, a);
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     layers::menu_entries(ui, &mut state.layers, m, a);
                 }));
-                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Select", |ui| {
+                ui.add_enabled_ui(!m.home, |ui| crate::widgets::menu(ui, "Select", |ui| {
                     use crate::SelectCmd as C;
                     let sel = m.has_selection;
                     for (label, key, cmd, on) in [
@@ -92,32 +92,32 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     ] {
                         if ui.add_enabled(on, egui::Button::new(label).shortcut_text(key)).clicked() {
                             a.select = Some(cmd);
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     ui.separator();
                     for (label, kind) in [("Grow…", crate::SelectKind::Grow), ("Shrink…", crate::SelectKind::Shrink), ("Feather…", crate::SelectKind::Feather), ("Border…", crate::SelectKind::Border)] {
                         if ui.add_enabled(sel, egui::Button::new(label)).clicked() {
                             state.ask_select(kind);
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     ui.separator();
                     if ui.button("From layer").on_hover_text("Its opaque pixels").clicked() {
                         a.select = Some(C::FromLayer);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }));
-                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Canvas", |ui| {
+                ui.add_enabled_ui(!m.home, |ui| crate::widgets::menu(ui, "Canvas", |ui| {
                     if ui.button("Canvas size…").clicked() {
                         state.focus_tab = Some(Tab::Canvas);
-                        ui.close_menu();
+                        ui.close();
                     }
                 }));
-                ui.add_enabled_ui(!m.home, |ui| ui.menu_button("Filter", |ui| {
+                ui.add_enabled_ui(!m.home, |ui| crate::widgets::menu(ui, "Filter", |ui| {
                     crate::filters::menu(ui, &mut state.filter, m);
                 }));
-                ui.menu_button("View", |ui| {
+                crate::widgets::menu(ui, "View", |ui| {
                     for (label, key, cmd) in [
                         ("Zoom in", "+", ViewCmd::ZoomIn),
                         ("Zoom out", "-", ViewCmd::ZoomOut),
@@ -129,13 +129,13 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     ] {
                         if ui.add(egui::Button::new(label).shortcut_text(key)).clicked() {
                             a.view = Some(cmd);
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate · Ctrl+Space+drag: zoom")
                         .small().color(theme::TEXT_WEAK));
                 });
-                ui.menu_button("Window", |ui| {
+                crate::widgets::menu(ui, "Window", |ui| {
                     // Each docker, checked when shown.
                     for tab in Tab::ALL.into_iter().filter(|t| *t != Tab::CelTemplate) {
                         let mut on = dockers::is_shown(&state.dock, tab);
@@ -157,7 +157,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
 
@@ -179,14 +179,14 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
 }
 
 /// Toolbar under the menu: fixed actions, and the notices on the right.
-pub fn toolbar(ctx: &egui::Context, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
+pub fn toolbar(root: &mut egui::Ui, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
     use crate::icons::Icon;
     use crate::widgets::icon_button;
-    egui::TopBottomPanel::top("options_bar")
-        .exact_height(36.0)
+    egui::Panel::top("options_bar")
+        .exact_size(36.0)
         .show_separator_line(false)
-        .frame(Frame::none().fill(theme::PANEL).inner_margin(Margin::symmetric(8.0, 0.0)))
-        .show(ctx, |ui| {
+        .frame(Frame::NONE.fill(theme::PANEL).inner_margin(Margin::symmetric(8, 0)))
+        .show(root, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let doc = !m.home;

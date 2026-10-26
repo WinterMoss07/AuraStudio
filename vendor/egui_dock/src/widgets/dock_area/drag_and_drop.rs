@@ -1,11 +1,14 @@
 use std::ops::BitOrAssign;
 
-use crate::{
-    AllowedSplits, NodeIndex, Split, Style, SurfaceIndex, TabDestination, TabIndex, TabInsert,
-};
 use egui::{
-    emath::inverse_lerp, vec2, Context, Id, LayerId, NumExt, Order, Painter, Pos2, Rect, Stroke,
-    Ui, Vec2,
+    Context, Id, LayerId, NumExt, Order, Painter, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2,
+    emath::{GuiRounding, inverse_lerp},
+    vec2,
+};
+
+use crate::{
+    AllowedSplits, NodeIndex, NodePath, Split, Style, SurfaceIndex, TabDestination, TabInsert,
+    TabPath,
 };
 
 #[derive(Debug, Clone)]
@@ -30,19 +33,17 @@ pub(super) struct DragData {
 #[derive(Debug, Clone)]
 pub(super) enum TreeComponent {
     Surface(SurfaceIndex),
-    Node(SurfaceIndex, NodeIndex),
-    Tab(SurfaceIndex, NodeIndex, TabIndex),
+    Node(NodePath),
+    Tab(TabPath),
 }
 
 impl TreeComponent {
     pub(super) fn as_tab_destination(&self) -> TabDestination {
         match *self {
             TreeComponent::Surface(surface) => TabDestination::EmptySurface(surface),
-            TreeComponent::Node(dst_surf, dst_node) => {
-                TabDestination::Node(dst_surf, dst_node, TabInsert::Append)
-            }
-            TreeComponent::Tab(dst_surf, dst_node, tab_index) => {
-                TabDestination::Node(dst_surf, dst_node, TabInsert::Insert(tab_index))
+            TreeComponent::Node(dst) => TabDestination::Node(dst, TabInsert::Append),
+            TreeComponent::Tab(dst) => {
+                TabDestination::Node(dst.node_path(), TabInsert::Insert(dst.tab))
             }
         }
     }
@@ -50,16 +51,16 @@ impl TreeComponent {
     pub(super) fn node_address(&self) -> (SurfaceIndex, Option<NodeIndex>) {
         match *self {
             TreeComponent::Surface(surface) => (surface, None),
-            TreeComponent::Node(dst_surf, dst_node) => (dst_surf, Some(dst_node)),
-            TreeComponent::Tab(dst_surf, dst_node, _) => (dst_surf, Some(dst_node)),
+            TreeComponent::Node(dst) => (dst.surface, Some(dst.node)),
+            TreeComponent::Tab(dst) => (dst.surface, Some(dst.node)),
         }
     }
 
     pub(super) fn surface_address(&self) -> SurfaceIndex {
         match *self {
             TreeComponent::Surface(surface)
-            | TreeComponent::Node(surface, _)
-            | TreeComponent::Tab(surface, _, _) => surface,
+            | TreeComponent::Node(NodePath { surface, .. })
+            | TreeComponent::Tab(TabPath { surface, .. }) => surface,
         }
     }
 
@@ -78,9 +79,10 @@ fn draw_highlight_rect(rect: Rect, ui: &Ui, style: &Style) {
     let painter = make_overlay_painter(ui);
     painter.rect(
         rect.expand(style.overlay.hovered_leaf_highlight.expansion),
-        style.overlay.hovered_leaf_highlight.rounding,
+        style.overlay.hovered_leaf_highlight.corner_radius,
         style.overlay.hovered_leaf_highlight.color,
         style.overlay.hovered_leaf_highlight.stroke,
+        StrokeKind::Inside,
     );
 }
 
@@ -96,11 +98,17 @@ fn button_ui(
     let visuals = &style.overlay;
     let button_stroke = Stroke::new(1.0_f32, visuals.button_color);
     let painter = make_overlay_painter(ui);
-    painter.rect_stroke(rect, 0.0, visuals.button_border_stroke);
+    painter.rect_stroke(rect, 0.0, visuals.button_border_stroke, StrokeKind::Inside);
     let rect = rect.shrink(rect.width() * 0.1);
-    painter.rect_stroke(rect, 0.0, button_stroke);
+    painter.rect_stroke(rect, 0.0, button_stroke, StrokeKind::Inside);
     let rim = { Rect::from_two_pos(rect.min, rect.lerp_inside(vec2(1.0, 0.1))) };
-    painter.rect(rim, 0.0, visuals.button_color, Stroke::NONE);
+    painter.rect(
+        rim,
+        0.0,
+        visuals.button_color,
+        Stroke::NONE,
+        StrokeKind::Inside,
+    );
 
     if let Some(split) = split {
         for line in DASHED_LINE_ALPHAS.chunks(2) {
@@ -146,7 +154,7 @@ enum LockState {
     /// Lock remains locked, but can be unlocked.
     SoftLock,
 
-    /// Lock is locked forever.  
+    /// Lock is locked forever.
     HardLock,
 }
 
@@ -192,8 +200,8 @@ impl DragDropState {
 
         if button_ui(rect, ui, &mut hovering_buttons, pointer, style, None) {
             match self.hover.dst {
-                TreeComponent::Node(surface, node) => {
-                    destination = Some(TabDestination::Node(surface, node, TabInsert::Append))
+                TreeComponent::Node(path) => {
+                    destination = Some(TabDestination::Node(path, TabInsert::Append))
                 }
                 TreeComponent::Surface(surface) => {
                     destination = Some(TabDestination::EmptySurface(surface))
@@ -222,11 +230,9 @@ impl DragDropState {
                         pointer,
                         style,
                         Some(split),
-                    ) {
-                        if let TreeComponent::Node(surface, node) = self.hover.dst {
-                            destination =
-                                Some(TabDestination::Node(surface, node, TabInsert::Split(split)))
-                        }
+                    ) && let TreeComponent::Node(path) = self.hover.dst
+                    {
+                        destination = Some(TabDestination::Node(path, TabInsert::Split(split)))
                     }
                 }
             }
@@ -344,7 +350,7 @@ impl DragDropState {
             .then(|| TabDestination::Window(Rect::from_min_size(pointer, self.drag.rect.size())));
         let final_result = tab_insertion.map_or(default_value, |tab| match self.hover.dst {
             TreeComponent::Surface(surface) => Some(TabDestination::EmptySurface(surface)),
-            TreeComponent::Node(surface, node) => Some(TabDestination::Node(surface, node, tab)),
+            TreeComponent::Node(path) => Some(TabDestination::Node(path, tab)),
             _ => None,
         });
 
@@ -359,7 +365,7 @@ impl DragDropState {
             }
             // AuraStudio patch: a split shows as a bar on the edge where
             // the new dock goes; joining as a tab lights up the tab bar.
-            Some(TabDestination::Node(_, _, TabInsert::Split(split))) => {
+            Some(TabDestination::Node(_, TabInsert::Split(split))) => {
                 draw_split_bar(hover_rect, split, ui, style);
             }
             Some(_) if overlay_rect == Rect::EVERYTHING => {
@@ -441,7 +447,7 @@ fn draw_tab_bar(leaf: Rect, hovered: Rect, ui: &Ui, style: &Style) {
     let bar = Rect::from_x_y_ranges(leaf.x_range(), hovered.top()..=hovered.top() + style.tab_bar.height);
     let painter = make_overlay_painter(ui);
     painter.rect_filled(bar, 4.0, style.overlay.selection_color.gamma_multiply(0.35));
-    painter.rect_stroke(bar.shrink(1.0), 4.0, Stroke::new(style.overlay.selection_stroke_width, style.overlay.selection_color));
+    painter.rect_stroke(bar.shrink(1.0), 4.0, Stroke::new(style.overlay.selection_stroke_width, style.overlay.selection_color), StrokeKind::Inside);
 }
 
 // AuraStudio patch: a bar along the edge of `rect` where a split puts the
@@ -469,6 +475,7 @@ fn draw_window_rect(rect: Rect, ui: &Ui, style: &Style) {
             style.overlay.selection_stroke_width,
             style.overlay.selection_color,
         ),
+        StrokeKind::Inside,
     );
 }
 
@@ -476,12 +483,12 @@ fn draw_window_rect(rect: Rect, ui: &Ui, style: &Style) {
 fn constrain_rect_to_area(ui: &Ui, rect: Rect, mut bounds: Rect) -> Rect {
     if rect.width() > bounds.width() {
         // Allow overlapping side bars.
-        let screen_rect = ui.ctx().screen_rect();
+        let screen_rect = ui.ctx().content_rect();
         (bounds.min.x, bounds.max.x) = (screen_rect.min.x, screen_rect.max.x);
     }
     if rect.height() > bounds.height() {
         // Allow overlapping top/bottom bars:
-        let screen_rect = ui.ctx().screen_rect();
+        let screen_rect = ui.ctx().content_rect();
         (bounds.min.y, bounds.max.y) = (screen_rect.min.y, screen_rect.max.y);
     }
 
@@ -496,7 +503,7 @@ fn constrain_rect_to_area(ui: &Ui, rect: Rect, mut bounds: Rect) -> Rect {
     pos.y = pos.y.at_most(bounds.bottom() + margin_y - rect.height()); // move right if needed
     pos.y = pos.y.at_least(bounds.top() - margin_y); // move down if needed
 
-    pos = ui.painter().round_pos_to_pixels(pos);
+    pos = pos.round_to_pixels(ui.painter().pixels_per_point());
 
     Rect::from_min_size(pos, rect.size())
 }

@@ -91,8 +91,8 @@ impl Pipes {
                 },
             ],
         });
-        let pipe = |bgl: &BindGroupLayout, vs: &str, fs: &str, blend: Option<BlendState>, buffers: &[VertexBufferLayout]| {
-            let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("lift"), bind_group_layouts: &[bgl], push_constant_ranges: &[] });
+        let pipe = |bgl: &BindGroupLayout, vs: &str, fs: &str, blend: Option<BlendState>, buffers: &[Option<VertexBufferLayout>]| {
+            let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("lift"), bind_group_layouts: &[Some(bgl)], immediate_size: 0 });
             device.create_render_pipeline(&RenderPipelineDescriptor {
                 label: Some("lift"),
                 layout: Some(&layout),
@@ -104,7 +104,7 @@ impl Pipes {
                 primitive: PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             })
         };
@@ -118,12 +118,13 @@ impl Pipes {
         };
         let copy = pipe(&full_bgl, "vs_full", "fs_copy", None, &[]);
         let over = pipe(&full_bgl, "vs_full", "fs_over", Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING), &[]);
-        let mesh = pipe(&mesh_bgl, "vs_mesh", "fs_mesh", Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING), &[vertex]);
+        let mesh = pipe(&mesh_bgl, "vs_mesh", "fs_mesh", Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING), &[Some(vertex)]);
         let sampler = |f: FilterMode, aniso: u16| device.create_sampler(&SamplerDescriptor {
             label: Some("lift"),
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
-            mag_filter: f, min_filter: f, mipmap_filter: f,
+            mag_filter: f, min_filter: f,
+            mipmap_filter: if f == FilterMode::Linear { MipmapFilterMode::Linear } else { MipmapFilterMode::Nearest },
             anisotropy_clamp: aniso,
             ..Default::default()
         });
@@ -294,12 +295,13 @@ impl Lift {
         let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
             label: Some("lift"),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &self.target, resolve_target: None,
+                view: &self.target, depth_slice: None, resolve_target: None,
                 ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_viewport(0.0, 0.0, self.size.0 as f32, self.size.1 as f32, 0.0, 1.0);
         pass.set_scissor_rect(r.0, r.1, r.2 - r.0, r.3 - r.1);

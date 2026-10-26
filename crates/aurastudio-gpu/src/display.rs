@@ -106,7 +106,7 @@ pub(crate) fn canvas_program(device: &Device, bgl: &BindGroupLayout) -> (ShaderM
         source: ShaderSource::Wgsl(include_str!("shaders/canvas.wgsl").into()),
     });
     let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("canvas_pipeline_layout"), bind_group_layouts: &[bgl], push_constant_ranges: &[],
+        label: Some("canvas_pipeline_layout"), bind_group_layouts: &[Some(bgl)], immediate_size: 0,
     });
     (shader, layout)
 }
@@ -126,7 +126,7 @@ pub(crate) fn canvas_pipeline(device: &Device, shader: &ShaderModule, layout: &P
         primitive:     PrimitiveState::default(),
         depth_stencil: None,
         multisample:   MultisampleState::default(),
-        multiview:     None,
+        multiview_mask:     None,
         cache:         None,
     })
 }
@@ -299,11 +299,11 @@ mod tests {
     struct Gpu { device: Device, queue: Queue }
 
     fn gpu() -> Option<Gpu> {
-        let instance = Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..Default::default() });
-        let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default()))?;
+        let instance = Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..InstanceDescriptor::new_without_display_handle() });
+        let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default())).ok()?;
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: None, required_features: Features::empty(), required_limits: adapter.limits(), memory_hints: MemoryHints::MemoryUsage,
-        }, None)).ok()?;
+            label: None, required_features: Features::empty(), required_limits: adapter.limits(), memory_hints: MemoryHints::MemoryUsage, ..Default::default()
+        })).ok()?;
         Some(Gpu { device, queue })
     }
 
@@ -312,9 +312,9 @@ mod tests {
         let (device, queue) = (&g.device, &g.queue);
         let canvas = aurastudio_canvas::Canvas::new(device, w, h, !high);
         queue.write_texture(
-            ImageCopyTexture { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            TexelCopyTextureInfo { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
             img,
-            ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
             Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         let format = TextureFormat::Rgba8Unorm;
@@ -338,22 +338,22 @@ mod tests {
         {
             let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
                 label: None,
-                color_attachments: &[Some(RenderPassColorAttachment { view: &tv, resolve_target: None, ops: Operations { load: LoadOp::Clear(Color::TRANSPARENT), store: StoreOp::Store } })],
-                depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                color_attachments: &[Some(RenderPassColorAttachment { view: &tv, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Clear(Color::TRANSPARENT), store: StoreOp::Store } })],
+                depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
             });
             pass.set_pipeline(if high { &exact } else { &standard });
             pass.set_bind_group(0, &bind, &[]);
             pass.draw(0..6, 0..1);
         }
         enc.copy_texture_to_buffer(
-            ImageCopyTexture { texture: &target, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-            ImageCopyBuffer { buffer: &read, layout: ImageDataLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(sh) } },
+            TexelCopyTextureInfo { texture: &target, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            TexelCopyBufferInfo { buffer: &read, layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(sh) } },
             Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
         );
         queue.submit([enc.finish()]);
         read.slice(..).map_async(MapMode::Read, |_| {});
-        device.poll(Maintain::Wait);
-        let data = read.slice(..).get_mapped_range();
+        let _ = device.poll(PollType::Wait { submission_index: None, timeout: None });
+        let data = read.slice(..).get_mapped_range().unwrap();
         (0..sh).flat_map(|y| data[(y * row) as usize..(y * row + sw * 4) as usize].to_vec()).collect()
     }
 

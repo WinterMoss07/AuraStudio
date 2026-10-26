@@ -63,7 +63,7 @@ pub fn set_shown(dock: &mut DockState<Tab>, tab: Tab, on: bool) {
             } else {
                 tree.split_below(NodeIndex::root(), 0.72, vec![tab]);
             }
-            if let Some(at) = dock.find_tab(&tab) { dock.set_active_tab(at); }
+            if let Some(at) = dock.find_tab(&tab) { let _ = dock.set_active_tab(at); }
         }
         _ => {}
     }
@@ -96,6 +96,8 @@ impl TabViewer for Viewer<'_, '_> {
     type Tab = Tab;
 
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText { tab.title().into() }
+
+    fn id(&mut self, tab: &mut Tab) -> egui::Id { egui::Id::new(("dock_tab", tab.title())) }
 
     // Docks stay in the dock column (no floating windows).
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool { false }
@@ -133,7 +135,7 @@ impl TabViewer for Viewer<'_, '_> {
 mod tests {
     use super::*;
 
-    fn leaf_of(dock: &DockState<Tab>, tab: Tab) -> NodeIndex { dock.find_tab(&tab).unwrap().1 }
+    fn leaf_of(dock: &DockState<Tab>, tab: Tab) -> NodeIndex { dock.find_tab(&tab).unwrap().node }
 
     /// Hidden and shown again from the Window menu: every docker comes
     /// back, beside its partner when that one is there; all of them can

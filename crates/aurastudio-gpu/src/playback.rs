@@ -113,13 +113,13 @@ impl Playback {
                 },
             ],
         });
-        let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("playback"), bind_group_layouts: &[&bgl], push_constant_ranges: &[] });
+        let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("playback"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("playback"),
             layout: Some(&layout),
             vertex: VertexState {
                 module: &module, entry_point: Some("vs"), compilation_options: Default::default(),
-                buffers: &[VertexBufferLayout {
+                buffers: &[Some(VertexBufferLayout {
                     array_stride: std::mem::size_of::<Inst>() as u64,
                     step_mode: VertexStepMode::Instance,
                     attributes: &[
@@ -127,7 +127,7 @@ impl Playback {
                         VertexAttribute { format: VertexFormat::Uint32, offset: 4, shader_location: 1 },
                         VertexAttribute { format: VertexFormat::Unorm8x4, offset: 8, shader_location: 2 },
                     ],
-                }],
+                })],
             },
             fragment: Some(FragmentState {
                 module: &module, entry_point: Some("fs"), compilation_options: Default::default(),
@@ -136,7 +136,7 @@ impl Playback {
             primitive: PrimitiveState::default(),
             depth_stencil: None,
             multisample: MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let uniform = device.create_buffer(&BufferDescriptor { label: Some("playback"), size: 16, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -199,9 +199,9 @@ impl Playback {
                 }
                 let pages = if alpha { &mut self.alpha } else { &mut self.rgba };
                 queue.write_texture(
-                    ImageCopyTexture { texture: &pages[page]._texture, mip_level: 0, origin: Origin3d { x: 0, y: row0 * PLAY_TILE, z: 0 }, aspect: TextureAspect::All },
+                    TexelCopyTextureInfo { texture: &pages[page]._texture, mip_level: 0, origin: Origin3d { x: 0, y: row0 * PLAY_TILE, z: 0 }, aspect: TextureAspect::All },
                     &band,
-                    ImageDataLayout { offset: 0, bytes_per_row: Some(PAGE * bpp), rows_per_image: None },
+                    TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(PAGE * bpp), rows_per_image: None },
                     Extent3d { width: PAGE, height: rows * PLAY_TILE, depth_or_array_layers: 1 },
                 );
                 // The next part starts on a fresh row (its band never
@@ -274,12 +274,13 @@ impl Playback {
         let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
             label: Some("playback"),
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &target, resolve_target: None,
+                view: &target, depth_slice: None, resolve_target: None,
                 ops: Operations { load: LoadOp::Clear(Color::WHITE), store: StoreOp::Store },
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
         for key in keys {
@@ -305,12 +306,12 @@ mod tests {
     /// at every frame of a small scene.
     #[test]
     fn a_frame_drawn_from_the_tiles_is_the_merge() {
-        let instance = Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..Default::default() });
-        let Some(adapter) = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
+        let instance = Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..InstanceDescriptor::new_without_display_handle() });
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
-        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default(), None)).unwrap();
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default())).unwrap();
         let (w, h) = (90u32, 70u32);
         let mut s = LayerStack::new(w, h);
         let folder = s.add_animation_folder("A");
@@ -336,14 +337,14 @@ mod tests {
             let row = (w * 4).div_ceil(256) * 256;
             let read = device.create_buffer(&BufferDescriptor { label: None, size: (row * h) as u64, usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false });
             enc.copy_texture_to_buffer(
-                ImageCopyTexture { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-                ImageCopyBuffer { buffer: &read, layout: ImageDataLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+                TexelCopyTextureInfo { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+                TexelCopyBufferInfo { buffer: &read, layout: TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
                 Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             );
             queue.submit([enc.finish()]);
             read.slice(..).map_async(MapMode::Read, |_| {});
-            device.poll(Maintain::Wait);
-            let got = read.slice(..).get_mapped_range();
+            let _ = device.poll(PollType::Wait { submission_index: None, timeout: None });
+            let got = read.slice(..).get_mapped_range().unwrap();
             let mut worst = 0;
             for y in 0..h as usize {
                 for x in 0..w as usize {

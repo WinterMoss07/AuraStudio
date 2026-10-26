@@ -96,7 +96,7 @@ impl DockLayout {
     /// Smallest height of a column item (a dock, or docks side by side).
     fn min_height(&self, tree: &Tree<Tab>, i: NodeIndex, bar: f32, sep: f32) -> f32 {
         match node(tree, i) {
-            Some(Node::Leaf { tabs, .. }) => bar + tabs.iter().map(|&t| self.tab_min(t)).fold(0.0, f32::max),
+            Some(Node::Leaf(egui_dock::LeafNode { tabs, .. })) => bar + tabs.iter().map(|&t| self.tab_min(t)).fold(0.0, f32::max),
             Some(Node::Horizontal { .. }) => {
                 self.min_height(tree, i.left(), bar, sep).max(self.min_height(tree, i.right(), bar, sep))
             }
@@ -114,7 +114,7 @@ fn node(tree: &Tree<Tab>, i: NodeIndex) -> Option<&Node<Tab>> {
 
 fn node_fraction(tree: &Tree<Tab>, i: NodeIndex) -> Option<f32> {
     match node(tree, i)? {
-        Node::Vertical { fraction, .. } => Some(*fraction),
+        Node::Vertical(egui_dock::SplitNode { fraction, .. }) => Some(*fraction),
         _ => None,
     }
 }
@@ -145,7 +145,7 @@ fn column_items(tree: &Tree<Tab>, i: NodeIndex, out: &mut Vec<NodeIndex>) {
 /// Item heights as the current fractions lay them out.
 fn heights_from_fractions(tree: &Tree<Tab>, i: NodeIndex, h: f32, sep: f32) -> Vec<f32> {
     match node(tree, i) {
-        Some(Node::Vertical { fraction, .. }) => {
+        Some(Node::Vertical(egui_dock::SplitNode { fraction, .. })) => {
             let mut v = heights_from_fractions(tree, i.left(), h * fraction - sep * 0.5, sep);
             v.extend(heights_from_fractions(tree, i.right(), h * (1.0 - fraction) - sep * 0.5, sep));
             v
@@ -198,7 +198,7 @@ fn set_fractions(tree: &mut Tree<Tab>, i: NodeIndex, items: &[NodeIndex], h: &[f
     let upper = set_fractions(tree, i.left(), items, h, sep, out);
     let lower = set_fractions(tree, i.right(), items, h, sep, out);
     let whole = upper + lower + sep;
-    if let Node::Vertical { fraction, .. } = &mut tree[i] {
+    if let Node::Vertical(egui_dock::SplitNode { fraction, .. }) = &mut tree[i] {
         if whole > 0.0 {
             *fraction = ((upper + sep * 0.5) / whole).clamp(0.0, 1.0);
         }

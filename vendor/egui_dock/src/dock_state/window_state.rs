@@ -4,7 +4,11 @@ use egui::{Id, Pos2, Rect, Vec2};
 ///
 /// Doubles as a handle for the surface, allowing the user to set its size and position.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct WindowState {
     /// The [`Rect`] that this window was last taking up.
     screen_rect: Option<Rect>,
@@ -128,10 +132,8 @@ impl WindowState {
             window_constructor = window_constructor.fixed_size(size);
         }
         // Reset the height of the window if it is now expanded
-        if new {
-            if let Some(height) = self.expanded_height() {
-                window_constructor = window_constructor.max_height(height).min_height(height);
-            }
+        if new && let Some(height) = self.expanded_height() {
+            window_constructor = window_constructor.max_height(height).min_height(height);
         }
         self.new = false;
         window_constructor

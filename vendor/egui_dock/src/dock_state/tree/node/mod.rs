@@ -1,5 +1,11 @@
-use crate::{Split, TabIndex};
 use egui::Rect;
+
+use crate::{Split, TabIndex};
+
+mod leaf;
+mod split;
+pub use leaf::LeafNode;
+pub use split::SplitNode;
 
 /// Represents an abstract node of a [`Tree`](crate::Tree).
 #[derive(Clone, Debug)]
@@ -9,92 +15,53 @@ pub enum Node<Tab> {
     Empty,
 
     /// Contains the actual tabs.
-    Leaf {
-        /// The full rectangle - tab bar plus tab body.
-        rect: Rect,
-
-        /// The tab body rectangle.
-        viewport: Rect,
-
-        /// All the tabs in this node.
-        tabs: Vec<Tab>,
-
-        /// The opened tab.
-        active: TabIndex,
-
-        /// Scroll amount of the tab bar.
-        scroll: f32,
-
-        /// Whether the leaf is collapsed.
-        collapsed: bool,
-    },
+    Leaf(LeafNode<Tab>),
 
     /// Parent node in the vertical orientation.
-    Vertical {
-        /// The rectangle in which all children of this node are drawn.
-        rect: Rect,
-
-        /// The fraction taken by the top child of this node.
-        fraction: f32,
-
-        /// Whether all subnodes are collapsed.
-        fully_collapsed: bool,
-
-        /// The number of collapsed leaf subnodes.
-        collapsed_leaf_count: i32,
-    },
+    Vertical(SplitNode),
 
     /// Parent node in the horizontal orientation.
-    Horizontal {
-        /// The rectangle in which all children of this node are drawn.
-        rect: Rect,
-
-        /// The fraction taken by the left child of this node.
-        fraction: f32,
-
-        /// Whether all subnodes are collapsed.
-        fully_collapsed: bool,
-
-        /// The number of collapsed leaf subnodes.
-        collapsed_leaf_count: i32,
-    },
+    Horizontal(SplitNode),
 }
 
 impl<Tab> Node<Tab> {
     /// Constructs a leaf node with a given `tab`.
     #[inline(always)]
     pub fn leaf(tab: Tab) -> Self {
-        Self::Leaf {
-            rect: Rect::NOTHING,
-            viewport: Rect::NOTHING,
-            tabs: vec![tab],
-            active: TabIndex(0),
-            scroll: 0.0,
-            collapsed: false,
+        Self::Leaf(LeafNode::new(vec![tab]))
+    }
+
+    /// Get immutable access to the leaf data of this node, if it contains any (i.e is a leaf)
+    pub fn get_leaf(&self) -> Option<&LeafNode<Tab>> {
+        match self {
+            Node::Leaf(leaf_node) => Some(leaf_node),
+            _ => None,
+        }
+    }
+
+    /// Get mutable access to the leaf data of this node, if it contains any (i.e is a leaf)
+    pub fn get_leaf_mut(&mut self) -> Option<&mut LeafNode<Tab>> {
+        match self {
+            Node::Leaf(leaf_node) => Some(leaf_node),
+            _ => None,
         }
     }
 
     /// Constructs a leaf node with a given list of `tabs`.
     #[inline(always)]
     pub const fn leaf_with(tabs: Vec<Tab>) -> Self {
-        Self::Leaf {
-            rect: Rect::NOTHING,
-            viewport: Rect::NOTHING,
-            tabs,
-            active: TabIndex(0),
-            scroll: 0.0,
-            collapsed: false,
-        }
+        Self::Leaf(LeafNode::new(tabs))
     }
 
     /// Sets the area occupied by the node.
+    ///
+    /// If the node is a ``Node::Empty``, this will do nothing.
     #[inline]
     pub fn set_rect(&mut self, new_rect: Rect) {
         match self {
             Self::Empty => (),
-            Self::Leaf { rect, .. }
-            | Self::Vertical { rect, .. }
-            | Self::Horizontal { rect, .. } => *rect = new_rect,
+            Self::Leaf(leaf) => leaf.set_rect(new_rect),
+            Self::Vertical(split) | Self::Horizontal(split) => split.set_rect(new_rect),
         }
     }
 
@@ -104,10 +71,9 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn rect(&self) -> Option<Rect> {
         match self {
-            Node::Empty => None,
-            Node::Leaf { rect, .. }
-            | Node::Vertical { rect, .. }
-            | Node::Horizontal { rect, .. } => Some(*rect),
+            Self::Empty => None,
+            Self::Leaf(leaf) => Some(leaf.rect()),
+            Self::Vertical(split) | Self::Horizontal(split) => Some(split.rect()),
         }
     }
 
@@ -146,13 +112,8 @@ impl<Tab> Node<Tab> {
     #[inline(always)]
     pub fn is_collapsed(&self) -> bool {
         match self {
-            Node::Leaf { collapsed, .. } => *collapsed,
-            Node::Vertical {
-                fully_collapsed, ..
-            } => *fully_collapsed,
-            Node::Horizontal {
-                fully_collapsed, ..
-            } => *fully_collapsed,
+            Node::Leaf(leaf) => leaf.collapsed,
+            Node::Horizontal(split) | Node::Vertical(split) => split.fully_collapsed,
             Node::Empty => false,
         }
     }
@@ -160,16 +121,9 @@ impl<Tab> Node<Tab> {
     /// Returns the number of layers of collapsed leaf subnodes.
     pub fn collapsed_leaf_count(&self) -> i32 {
         match self {
-            Node::Vertical {
-                collapsed_leaf_count,
-                ..
-            } => *collapsed_leaf_count,
-            Node::Horizontal {
-                collapsed_leaf_count,
-                ..
-            } => *collapsed_leaf_count,
-            Node::Leaf { collapsed, .. } => {
-                if *collapsed {
+            Node::Horizontal(split) | Node::Vertical(split) => split.collapsed_leaf_count,
+            Node::Leaf(leaf) => {
+                if leaf.collapsed {
                     1
                 } else {
                     0
@@ -190,18 +144,18 @@ impl<Tab> Node<Tab> {
         assert!((0.0..=1.0).contains(&fraction));
         let rect = Rect::NOTHING;
         let src = match split {
-            Split::Left | Split::Right => Node::Horizontal {
-                fraction,
+            Split::Left | Split::Right => Node::Horizontal(SplitNode::new(
                 rect,
-                fully_collapsed: self.is_collapsed(),
-                collapsed_leaf_count: self.collapsed_leaf_count(),
-            },
-            Split::Above | Split::Below => Node::Vertical {
                 fraction,
+                self.is_collapsed(),
+                self.collapsed_leaf_count(),
+            )),
+            Split::Above | Split::Below => Node::Vertical(SplitNode::new(
                 rect,
-                fully_collapsed: self.is_collapsed(),
-                collapsed_leaf_count: self.collapsed_leaf_count(),
-            },
+                fraction,
+                self.is_collapsed(),
+                self.collapsed_leaf_count(),
+            )),
         };
         std::mem::replace(self, src)
     }
@@ -220,7 +174,7 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn tabs(&self) -> Option<&[Tab]> {
         match self {
-            Node::Leaf { tabs, .. } => Some(tabs),
+            Node::Leaf(leaf) => Some(leaf.tabs()),
             _ => None,
         }
     }
@@ -250,7 +204,7 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn tabs_mut(&mut self) -> Option<&mut [Tab]> {
         match self {
-            Node::Leaf { tabs, .. } => Some(tabs),
+            Node::Leaf(leaf) => Some(leaf.tabs_mut()),
             _ => None,
         }
     }
@@ -266,6 +220,13 @@ impl<Tab> Node<Tab> {
         }
     }
 
+    /// Returns an [`Iterator`] of tabs in this node with their corresponding [`TabIndex`].
+    pub fn iter_tabs_indexed(&self) -> impl Iterator<Item = (TabIndex, &Tab)> {
+        self.iter_tabs()
+            .enumerate()
+            .map(|(index, tab)| (TabIndex(index), tab))
+    }
+
     /// Returns a mutable [`Iterator`] of tabs in this node.
     ///
     /// If this node is not a [`Leaf`](Self::Leaf), then the returned [`Iterator`] will be empty.
@@ -275,6 +236,13 @@ impl<Tab> Node<Tab> {
             Some(tabs) => tabs.iter_mut(),
             None => core::slice::IterMut::default(),
         }
+    }
+
+    /// Returns a mutable [`Iterator`] of tabs in this node with their corresponding [`TabIndex`].
+    pub fn iter_tabs_mut_indexed(&mut self) -> impl Iterator<Item = (TabIndex, &mut Tab)> {
+        self.iter_tabs_mut()
+            .enumerate()
+            .map(|(index, tab)| (TabIndex(index), tab))
     }
 
     /// Adds `tab` to the node and sets it as the active tab.
@@ -299,10 +267,7 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn append_tab(&mut self, tab: Tab) {
         match self {
-            Node::Leaf { tabs, active, .. } => {
-                *active = TabIndex(tabs.len());
-                tabs.push(tab);
-            }
+            Node::Leaf(leaf) => leaf.append_tab(tab),
             _ => panic!("node was not a leaf"),
         }
     }
@@ -315,14 +280,31 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn set_collapsed(&mut self, collapsed: bool) {
         match self {
-            Node::Leaf { collapsed: c, .. } => *c = collapsed,
-            Node::Vertical {
-                fully_collapsed, ..
-            } => *fully_collapsed = collapsed,
-            Node::Horizontal {
-                fully_collapsed, ..
-            } => *fully_collapsed = collapsed,
+            Node::Leaf(leaf) => leaf.collapsed = collapsed,
+            Node::Vertical(split) | Node::Horizontal(split) => split.fully_collapsed = collapsed,
             Node::Empty => panic!("node was empty"),
+        }
+    }
+
+    /// Returns `true` if the node is a leaf with a hidden tab bar, otherwise `false`.
+    #[inline(always)]
+    pub fn is_tab_bar_hidden(&self) -> bool {
+        match self {
+            Node::Leaf(leaf) => leaf.tab_bar_hidden,
+            _ => false,
+        }
+    }
+
+    /// Sets the tab bar hidden state of the node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self` is not a [`Leaf`](Node::Leaf) node.
+    #[inline]
+    pub fn set_tab_bar_hidden(&mut self, tab_bar_hidden: bool) {
+        match self {
+            Node::Leaf(leaf) => leaf.tab_bar_hidden = tab_bar_hidden,
+            _ => panic!("node was not a leaf"),
         }
     }
 
@@ -334,14 +316,7 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn set_collapsed_leaf_count(&mut self, count: i32) {
         match self {
-            Node::Vertical {
-                collapsed_leaf_count,
-                ..
-            } => *collapsed_leaf_count = count,
-            Node::Horizontal {
-                collapsed_leaf_count,
-                ..
-            } => *collapsed_leaf_count = count,
+            Node::Horizontal(split) | Node::Vertical(split) => split.collapsed_leaf_count = count,
             _ => panic!("node was neither vertical nor horizontal"),
         }
     }
@@ -355,11 +330,8 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn insert_tab(&mut self, index: TabIndex, tab: Tab) {
         match self {
-            Node::Leaf { tabs, active, .. } => {
-                tabs.insert(index.0, tab);
-                *active = index;
-            }
-            _ => unreachable!(),
+            Node::Leaf(leaf) => leaf.insert_tab(index, tab),
+            _ => panic!("node was not a leaf!"),
         }
     }
 
@@ -372,13 +344,7 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn remove_tab(&mut self, tab_index: TabIndex) -> Option<Tab> {
         match self {
-            Node::Leaf { tabs, active, .. } => {
-                if tab_index <= *active {
-                    active.0 = active.0.saturating_sub(1);
-                }
-
-                Some(tabs.remove(tab_index.0))
-            }
+            Node::Leaf(leaf) => leaf.remove_tab(tab_index),
             _ => None,
         }
     }
@@ -387,7 +353,7 @@ impl<Tab> Node<Tab> {
     #[inline]
     pub fn tabs_count(&self) -> usize {
         match self {
-            Node::Leaf { tabs, .. } => tabs.len(),
+            Node::Leaf(leaf) => leaf.tabs.len(),
             _ => Default::default(),
         }
     }
@@ -399,51 +365,34 @@ impl<Tab> Node<Tab> {
         F: FnMut(&Tab) -> Option<NewTab>,
     {
         match self {
-            Node::Leaf {
-                rect,
-                viewport,
-                tabs,
-                active,
-                scroll,
-                collapsed,
-            } => {
+            Node::Leaf(leaf) => {
+                let LeafNode {
+                    rect,
+                    viewport,
+                    tabs,
+                    active,
+                    scroll,
+                    collapsed,
+                    tab_bar_hidden,
+                } = leaf;
                 let tabs: Vec<_> = tabs.iter().filter_map(function).collect();
                 if tabs.is_empty() {
                     Node::Empty
                 } else {
-                    Node::Leaf {
+                    Node::Leaf(LeafNode {
                         rect: *rect,
                         viewport: *viewport,
                         tabs,
                         active: *active,
                         scroll: *scroll,
                         collapsed: *collapsed,
-                    }
+                        tab_bar_hidden: *tab_bar_hidden,
+                    })
                 }
             }
             Node::Empty => Node::Empty,
-            Node::Vertical {
-                rect,
-                fraction,
-                fully_collapsed,
-                collapsed_leaf_count,
-            } => Node::Vertical {
-                rect: *rect,
-                fraction: *fraction,
-                fully_collapsed: *fully_collapsed,
-                collapsed_leaf_count: *collapsed_leaf_count,
-            },
-            Node::Horizontal {
-                rect,
-                fraction,
-                fully_collapsed,
-                collapsed_leaf_count,
-            } => Node::Horizontal {
-                rect: *rect,
-                fraction: *fraction,
-                fully_collapsed: *fully_collapsed,
-                collapsed_leaf_count: *collapsed_leaf_count,
-            },
+            Node::Vertical(split) => Node::Vertical(split.clone()),
+            Node::Horizontal(split) => Node::Horizontal(split.clone()),
         }
     }
 
@@ -471,9 +420,9 @@ impl<Tab> Node<Tab> {
     where
         F: FnMut(&mut Tab) -> bool,
     {
-        if let Node::Leaf { tabs, .. } = self {
-            tabs.retain_mut(predicate);
-            if tabs.is_empty() {
+        if let Node::Leaf(leaf) = self {
+            leaf.retain_tabs(predicate);
+            if leaf.tabs.is_empty() {
                 *self = Node::Empty;
             }
         }

@@ -106,7 +106,7 @@ impl Canvas {
             address_mode_v: AddressMode::ClampToEdge,
             mag_filter:     FilterMode::Linear,
             min_filter:     FilterMode::Linear,
-            mipmap_filter:  FilterMode::Linear,
+            mipmap_filter:  wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 

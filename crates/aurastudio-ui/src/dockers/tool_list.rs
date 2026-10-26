@@ -92,14 +92,14 @@ fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: 
         ui.spacing_mut().item_spacing.x = 4.0;
         let search_w = (ui.available_width() - 76.0).max(60.0);
         ui.add_sized(vec2(search_w, 22.0), egui::TextEdit::singleline(&mut st.filter).hint_text("Search brushes"));
-        ui.menu_button("Import…", |ui| {
+        crate::widgets::menu(ui, "Import…", |ui| {
             if ui.button("Brush files (.myb)…").clicked() {
                 a.import_brushes = Some(ImportBrushes::Files);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Brush folder…").clicked() {
                 a.import_brushes = Some(ImportBrushes::Folder);
-                ui.close_menu();
+                ui.close();
             }
         });
     });
@@ -161,7 +161,7 @@ fn medium_icons(ui: &mut Ui, st: &mut ToolListState, group: Group, mediums: &[&s
             crate::icons::paint(ui, medium_icon(md), rect, 17.0, if on { theme::TEXT } else { theme::TEXT_WEAK });
             // A brush dropped here moves to this medium, at the end.
             if resp.dnd_hover_payload::<BrushDrag>().is_some() {
-                ui.painter().rect_stroke(rect.shrink(1.0), 2.5, Stroke::new(2.0_f32, theme::DROP));
+                ui.painter().rect_stroke(rect.shrink(1.0), 2.5, Stroke::new(2.0_f32, theme::DROP), egui::StrokeKind::Middle);
             }
             if let Some(d) = resp.dnd_release_payload::<BrushDrag>() {
                 a.move_brush = Some((d.0, md.to_string(), None));
@@ -182,15 +182,15 @@ fn medium_icons(ui: &mut Ui, st: &mut ToolListState, group: Group, mediums: &[&s
             }
             let custom = m.mediums.iter().any(|x| x.name == md && x.custom);
             if custom {
-                resp.context_menu(|ui| {
+                crate::widgets::context_menu(&resp, |ui| {
                     if ui.button("Rename…").clicked() {
                         st.rename(md);
-                        ui.close_menu();
+                        ui.close();
                     }
                     let empty = !m.presets.iter().any(|p| p.medium == md);
                     if ui.add_enabled(empty, egui::Button::new("Remove")).on_disabled_hover_text("Not empty").clicked() {
                         a.remove_medium = Some(md.to_string());
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -266,7 +266,7 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
             ui.painter().text(rect.left_center() + vec2(ROW + 4.0, 0.0), egui::Align2::LEFT_CENTER, t.name(),
                 egui::FontId::proportional(13.0), theme::TEXT);
         }
-        if selected { ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.5_f32, theme::ACCENT)); }
+        if selected { ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.5_f32, theme::ACCENT), egui::StrokeKind::Middle); }
         if resp.clicked() { *m.tool = t; }
     }
 }
@@ -289,7 +289,7 @@ fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, sele
         ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, &p.name, egui::FontId::proportional(13.0), theme::TEXT);
     }
     if selected {
-        ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.5_f32, theme::ACCENT));
+        ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.5_f32, theme::ACCENT), egui::StrokeKind::Middle);
     }
     resp
 }

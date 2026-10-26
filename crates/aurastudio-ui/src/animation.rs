@@ -217,16 +217,17 @@ fn picked_folders(ls: &LayersState, layers: &LayerStack) -> Vec<u64> {
 }
 
 /// The panel: under the canvas (timeline) or beside the dockers (X-sheet).
-pub fn panel(ctx: &egui::Context, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
-    let frame = egui::Frame::none().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(6.0, 4.0));
+pub fn panel(root: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
+    let frame = egui::Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin::symmetric(6, 4));
     if st.vertical {
-        egui::SidePanel::right("anim_xsheet").resizable(true).show_separator_line(false).default_width(340.0)
-            .width_range(220.0..=1200.0).frame(frame).show(ctx, |ui| contents(ui, st, ls, notice, m, a));
+        egui::Panel::right("anim_xsheet").resizable(true).show_separator_line(false).default_size(340.0)
+            .size_range(220.0..=1200.0).frame(frame).show(root, |ui| contents(ui, st, ls, notice, m, a));
     } else {
-        egui::TopBottomPanel::bottom("anim_timeline").resizable(true).show_separator_line(false).default_height(220.0)
-            .height_range(120.0..=700.0).frame(frame).show(ctx, |ui| contents(ui, st, ls, notice, m, a));
+        egui::Panel::bottom("anim_timeline").resizable(true).show_separator_line(false).default_size(220.0)
+            .size_range(120.0..=700.0).frame(frame).show(root, |ui| contents(ui, st, ls, notice, m, a));
     }
-    ask_dialog(ctx, st, m, a);
+    let ctx = root.ctx().clone();
+    ask_dialog(&ctx, st, m, a);
 }
 
 fn contents(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
@@ -257,7 +258,7 @@ fn switch_button(ui: &mut Ui, st: &mut AnimPanel) {
     let bg = if st.vertical { theme::ACCENT_DIM } else if resp.hovered() { theme::WIDGET_HOVER } else { theme::WIDGET };
     let p = ui.painter();
     p.rect_filled(rect, 4.0, bg);
-    p.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, if st.vertical { theme::ACCENT } else { theme::BORDER }));
+    p.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, if st.vertical { theme::ACCENT } else { theme::BORDER }), egui::StrokeKind::Middle);
     crate::icons::paint(ui, Icon::SwitchView, Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(22.0, 22.0)), 17.0, theme::TEXT);
     p.text(pos2(rect.left() + 34.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), theme::TEXT);
     let tip = if st.vertical { "X-sheet shown (beside the dockers). Click for the timeline (under the canvas)" }
@@ -429,8 +430,8 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                 let on = id.is_some() && id == Some(active);
                 let lit = st.picked_in == col_folder(col) && st.picked.contains(&f);
                 cp.rect_filled(r.shrink(1.5), 2.0, color.gamma_multiply(if on || lit { 1.0 } else { 0.75 } * dim));
-                if on { cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.5_f32, Color32::WHITE)); }
-                if lit { cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.5_f32, theme::ACCENT)); cp.rect_filled(r.shrink(1.5), 2.0, Color32::from_white_alpha(40)); }
+                if on { cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.5_f32, Color32::WHITE), egui::StrokeKind::Middle); }
+                if lit { cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(1.5_f32, theme::ACCENT), egui::StrokeKind::Middle); cp.rect_filled(r.shrink(1.5), 2.0, Color32::from_white_alpha(40)); }
                 cp.text(r.center(), Align2::CENTER_CENTER, f.to_string(), FontId::proportional(if g.vertical { 11.5 } else { 10.0 }), Color32::WHITE);
             } else if held {
                 // A hold: a line through the cell (a continue line).
@@ -441,7 +442,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         // The folder chosen: its column / row outlined.
         if Some(col.id()) == active_folder {
             let (r0, r1) = (g.cell(c, f0), g.cell(c, f1));
-            cp.rect_stroke(r0.union(r1), 0.0, Stroke::new(1.0_f32, theme::ACCENT));
+            cp.rect_stroke(r0.union(r1), 0.0, Stroke::new(1.0_f32, theme::ACCENT), egui::StrokeKind::Middle);
         }
     }
     // Second (fps) and half-second lines across the cells.
@@ -465,7 +466,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             for &n in &d.frames {
                 let to = (n as i64 + delta).max(1) as u32;
                 let r = g.cell(c, to);
-                cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0_f32, if copy { theme::TEXT } else { theme::ACCENT }));
+                cp.rect_stroke(r.shrink(1.0), 2.0, Stroke::new(2.0_f32, if copy { theme::TEXT } else { theme::ACCENT }), egui::StrokeKind::Middle);
             }
             if delta != 0 {
                 let r = g.cell(c, d.to);
@@ -477,7 +478,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     if let (Some(o), Some(q)) = (st.boxsel, resp.interact_pointer_pos()) {
         let r = Rect::from_two_pos(o, q).intersect(cells);
         cp.rect_filled(r, 0.0, theme::ACCENT.gamma_multiply(0.2));
-        cp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme::ACCENT));
+        cp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme::ACCENT), egui::StrokeKind::Middle);
     }
 
     // Frame header: the numbers (every one; on the timeline every 5th),
@@ -552,7 +553,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             if let Some(h) = heads.iter().find(|h| h.col.id() == target) {
                 let stroke = Stroke::new(2.5_f32, theme::DROP);
                 match place {
-                    Place::Inside => { lp.rect_stroke(h.rect, 2.0, stroke); }
+                    Place::Inside => { lp.rect_stroke(h.rect, 2.0, stroke, egui::StrokeKind::Middle); }
                     _ => {
                         let before = place_for(g.vertical, true, false) == place;
                         let line = match (g.vertical, before) {
@@ -566,7 +567,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                 }
             }
         }
-        if cd.exit { if let Some(r) = st.exit_rect { ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0_f32, theme::DROP)); } }
+        if cd.exit { if let Some(r) = st.exit_rect { ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0_f32, theme::DROP), egui::StrokeKind::Middle); } }
         let name = m.layers.node(cd.id).map_or(String::new(), |n| n.name().to_owned());
         crate::widgets::drag_ghost(ui.ctx(), &name);
     }
@@ -774,13 +775,13 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     }
     open_menu(&mut st.menu, resp.secondary_clicked(), hit);
     let menu = st.menu;
-    resp.context_menu(|ui| {
+    crate::widgets::context_menu(&resp, |ui| {
         ui.set_min_width(MENU_W);
         match menu {
             Some(Menu::Cell(col, f)) => cell_menu(ui, st, m, a, col, f),
             Some(Menu::Head(col)) => head_menu(ui, st, ls, notice, m, a, col),
             Some(Menu::Onion(mark)) => onion_menu(ui, m, a, mark),
-            None => ui.close_menu(),
+            None => ui.close(),
         }
     });
     if pointer.is_some_and(in_cells) && resp.hovered() && !resp.dragged() {
@@ -850,7 +851,7 @@ fn onion_menu(ui: &mut Ui, m: &mut Model, a: &mut Actions, mark: OnionMark) {
         OnionMark::Mobile(off) => o.mobile.get_mut(&off),
         OnionMark::Fixed(f) => o.fixed.get_mut(&f),
     };
-    let Some(slot) = slot else { ui.close_menu(); return };
+    let Some(slot) = slot else { ui.close(); return };
     ui.label(RichText::new(match mark {
         OnionMark::Mobile(off) if off < 0 => format!("Drawing {} before", -off),
         OnionMark::Mobile(off) => format!("Drawing {off} after"),
@@ -872,7 +873,7 @@ fn onion_menu(ui: &mut Ui, m: &mut Model, a: &mut Actions, mark: OnionMark) {
             OnionMark::Mobile(off) => { o.mobile.remove(&off); }
             OnionMark::Fixed(f) => { o.fixed.remove(&f); }
         }
-        ui.close_menu();
+        ui.close();
     }
     onion_set(m, a, o);
 }
@@ -998,17 +999,17 @@ fn col_folder(col: Column) -> Option<u64> {
 /// The menu on a cell: timing edits there, the frames picked.
 fn cell_menu(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions, col: Column, f: u32) {
     let Column::Folder(folder) = col else {
-        if ui.button("Open group").clicked() { st.group = Some(col.id()); st.scroll = Vec2::ZERO; ui.close_menu(); }
+        if ui.button("Open group").clicked() { st.group = Some(col.id()); st.scroll = Vec2::ZERO; ui.close(); }
         return;
     };
     let drawn = m.layers.frame_at(folder, f).is_some();
     if ui.button(format!("Insert a frame at {f}")).clicked() {
         if m.layers.shift_frames(folder, f, Shift::Insert) { done(a, "Insert frame"); }
-        ui.close_menu();
+        ui.close();
     }
     if ui.button(format!("Remove frame {f}")).on_hover_text("The next frames move one earlier").clicked() {
         if m.layers.shift_frames(folder, f, Shift::Remove) { done(a, "Remove frame"); }
-        ui.close_menu();
+        ui.close();
     }
     let n = if st.picked_in == Some(folder) { st.picked.len() } else { 0 };
     let label = if n > 1 { format!("Delete the {n} frames picked") } else { format!("Delete the drawing of frame {f}") };
@@ -1019,7 +1020,7 @@ fn cell_menu(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions, co
         if any { done(a, if n > 1 { "Delete frames" } else { "Delete frame" }); }
         st.picked.clear();
         st.picked_in = None;
-        ui.close_menu();
+        ui.close();
     }
 }
 
@@ -1029,13 +1030,13 @@ fn head_menu(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut
     let sel: Vec<u64> = picked_folders(ls, m.layers);
     let groupable: Vec<u64> = sel.iter().copied().filter(|x| m.layers.node(*x).is_some_and(Node::is_animation)).collect();
     if let Column::Group(_) = col {
-        if ui.button("Open group").clicked() { st.group = Some(id); st.scroll = Vec2::ZERO; ls.selected.clear(); ui.close_menu(); }
+        if ui.button("Open group").clicked() { st.group = Some(id); st.scroll = Vec2::ZERO; ls.selected.clear(); ui.close(); }
         if ui.button("Ungroup animation folders").clicked() {
             m.layers.set_active(id);
             if m.layers.ungroup_active() { a.layer_edit = Some("Ungroup animation folders"); a.recomposite = true; }
             ls.selected.clear();
             if st.group == Some(id) { st.group = None; }
-            ui.close_menu();
+            ui.close();
         }
     } else {
         if ui.add_enabled(!groupable.is_empty(), egui::Button::new("Group animation folders")).clicked() {
@@ -1044,23 +1045,23 @@ fn head_menu(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut
                 a.recomposite = true;
             }
             ls.selected.clear();
-            ui.close_menu();
+            ui.close();
         }
         if ui.add_enabled(m.layers.group_of(id).is_some(), egui::Button::new("Take out of its group")).clicked() {
             if let Some(gr) = m.layers.group_of(id) {
                 if m.layers.move_node(id, gr, Place::Above) { a.layer_edit = Some("Move folder"); a.recomposite = true; }
             }
-            ui.close_menu();
+            ui.close();
         }
     }
     ui.separator();
     if ui.button("Rename").clicked() {
         st.rename = m.layers.node(id).map(|n| (id, n.name().to_owned(), true));
-        ui.close_menu();
+        ui.close();
     }
     if ui.button(if sel.len() > 1 { "Delete the folders picked" } else { "Delete" }).clicked() {
         delete_layer(ls, notice, m, a);
-        ui.close_menu();
+        ui.close();
     }
 }
 
@@ -1128,8 +1129,8 @@ mod tests {
         let mut width = 0.0;
         for k in 0..3 {
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), time: Some(k as f64 * 0.1), ..Default::default() };
-            let _ = ctx.run(input, |ctx| {
-                let r = egui::Area::new(egui::Id::new("menu_test")).fixed_pos(pos2(100.0, 100.0)).show(ctx, |ui| {
+            crate::test_pass(&ctx, input, |root| {
+                let r = egui::Area::new(egui::Id::new("menu_test")).fixed_pos(pos2(100.0, 100.0)).show(root.ctx(), |ui| {
                     ui.set_min_width(MENU_W);
                     let _ = ui.button("I");
                 });

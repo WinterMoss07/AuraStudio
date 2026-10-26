@@ -61,25 +61,16 @@ The MIT license of hokusai:
 > TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 > SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-## vendor/egui — egui 0.30.0, patched
+## vendor/egui_dock — egui_dock 0.21.1, patched
 
-Copy of `egui` 0.30.0 (https://github.com/emilk/egui), © Emil Ernerfeldt
-and the egui contributors, licensed under MIT OR Apache-2.0. Two changes:
-`Areas::compare_order` takes the upstream fix from egui 0.31 (the 0.30
-version is not a total order and made the standard sort panic, found by our
-fuzz test), and float literals the compiler would infer as `f32` are written
-`_f32` (a warning that becomes an error in future Rust). Used through
-`[patch.crates-io]` in the workspace `Cargo.toml`; to drop once egui is
-upgraded.
-
-## vendor/egui_dock — egui_dock 0.15.0, patched
-
-Copy of `egui_dock` 0.15.0 (https://github.com/Adanos020/egui_dock), ©
+Copy of `egui_dock` 0.21.1 (https://github.com/Adanos020/egui_dock), ©
 Adam Gąsior and the egui_dock contributors, licensed under MIT (its
 LICENSE file is kept). Changes, marked "AuraStudio patch": a dock being
 dragged shows a bar on the edge where it would be inserted, and the tab
-bar of the dock it would join lights up (`drag_and_drop.rs`); float
-literals written `_f32`, as in egui. Used through `[patch.crates-io]`.
+bar of the dock it would join lights up (`drag_and_drop.rs`); the pointer
+stays an arrow over a tab, the hand only while dragging (`leaf.rs`); the
+`paste` macro (an unmaintained crate) replaced by plain names in
+`show/mod.rs`. Used through `[patch.crates-io]`.
 
 ## Lucide icons
 

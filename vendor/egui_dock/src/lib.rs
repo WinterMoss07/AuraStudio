@@ -15,7 +15,7 @@
 //!
 //! ```rust
 //! use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
-//! use egui::{Ui, WidgetText};
+//! use egui::{Id, Ui, WidgetText};
 //!
 //! // First, let's pick a type that we'll use to attach some data to each tab.
 //! // It can be any type.
@@ -29,6 +29,11 @@
 //! impl TabViewer for MyTabViewer {
 //!     // This associated type is used to attach some data to each tab.
 //!     type Tab = Tab;
+//!
+//!     // Returns the unique ID for the `tab`.
+//!     fn id(&mut self, tab: &mut Self::Tab) -> Id {
+//!         Id::new(tab)
+//!     }
 //!
 //!     // Returns the current `tab`'s title.
 //!     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
@@ -67,8 +72,9 @@
 //! }
 //!
 //! # let mut my_tabs = MyTabs::new();
-//! # egui::__run_test_ctx(|ctx| {
-//! #     egui::CentralPanel::default().show(ctx, |ui| my_tabs.ui(ui));
+//! # egui::__run_test_ui(|ui| {
+//! #     #[allow(deprecated)]
+//! #     egui::CentralPanel::default().show(ui, |ui| my_tabs.ui(ui));
 //! # });
 //! ```
 //!
@@ -85,15 +91,17 @@
 //!
 //! ```rust
 //! # use egui_dock::{DockArea, DockState, OverlayType, Style, TabAddAlign, TabViewer};
-//! # use egui::{Ui, WidgetText};
+//! # use egui::{Id, Ui, WidgetText};
 //! # struct MyTabViewer;
 //! # impl TabViewer for MyTabViewer {
 //! #     type Tab = ();
+//! #     fn id(&mut self, tab: &mut Self::Tab) -> Id { Id::new(tab) }
 //! #     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText { WidgetText::default() }
 //! #     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {}
 //! # }
-//! # egui::__run_test_ctx(|ctx| {
-//! # egui::CentralPanel::default().show(ctx, |ui| {
+//! # egui::__run_test_ui(|ui| {
+//! # #[allow(deprecated)]
+//! # egui::CentralPanel::default().show(ui, |ui| {
 //! # let mut dock_state = DockState::new(vec![]);
 //! // Inherit the look and feel from egui.
 //! let mut style = Style::from_egui(ui.style());
@@ -117,8 +125,7 @@
 //! non-empty surfaces: `Main` and `Window`.
 //!
 //! There can only be one `Main` surface. It's the one surface that is rendered inside the
-//! [`Ui`](egui::Ui) you've passed to [`DockArea::show_inside`], or inside the
-//! [`egui::CentralPanel`] created by [`DockArea::show`].
+//! [`Ui`](egui::Ui) you've passed to [`DockArea::show_inside`].
 //!
 //! On the other hand, there can be multiple `Window` surfaces. Those represent surfaces that were
 //! created by undocking tabs from the `Main` surface, and each of them is rendered inside
@@ -198,6 +205,8 @@
 //!     tab_context_menu: TabContextMenuTranslations {
 //!         close_button: "Zamknij zakładkę".to_string(),
 //!         eject_button: "Przenieś zakładkę do nowego okna".to_string(),
+//!         hide_tab_bar_button: "Schowaj pasek zakładek".to_string(),
+//!         show_tab_bar_button: "Pokaż pasek zakładek".to_string(),
 //!     },
 //!     leaf: LeafTranslations {
 //!         close_button_disabled_tooltip: "Ten węzeł zawiera niezamykalne zakładki.".to_string(),
@@ -218,6 +227,8 @@
 //! let mut dock_state = DockState::<Tab>::new(vec![]);
 //! dock_state.translations.tab_context_menu.close_button = "タブを閉じる".to_string();
 //! dock_state.translations.tab_context_menu.eject_button = "タブを新しいウィンドウへ移動".to_string();
+//! dock_state.translations.tab_context_menu.hide_tab_bar_button = "タブバーを非表示".to_string();
+//! dock_state.translations.tab_context_menu.show_tab_bar_button = "タブバーを表示".to_string();
 //! dock_state.translations.leaf.close_button_disabled_tooltip = "このノードは閉じられないタブがある".to_string();
 //! dock_state.translations.leaf.close_all_button = "ウィンドウを閉じる".to_string();
 //! dock_state.translations.leaf.close_all_button_menu_hint = "右クリックでこのウィンドウを閉じる".to_string();

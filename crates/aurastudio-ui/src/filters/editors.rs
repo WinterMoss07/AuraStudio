@@ -287,7 +287,7 @@ fn handles(ui: &mut Ui, st: &mut State, id: usize, xs: &[f32], fills: &[Color32]
     if !resp.is_pointer_button_down_on() && !resp.dragged() && st.drag.is_some_and(|k| (id..id + xs.len()).contains(&k)) { st.drag = None; }
     let p = ui.painter_at(r.expand(6.0));
     draw::gradient(&p, b, bar);
-    p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, theme::BORDER));
+    p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Middle);
     for (k, v) in xs.iter().enumerate() {
         draw::handle(&p, xof(*v), b.bottom() + 1.0, fills[k], st.drag == Some(id + k));
     }
@@ -367,8 +367,8 @@ fn palette(ui: &mut Ui, f: &Filter, src: &Source, st: &mut State) {
         let x0 = r.left() + i as f32 * cw;
         let a = Rect::from_min_max(pos2(x0 + 1.0, r.top()), pos2(x0 + cw - 1.0, r.center().y - 1.0));
         let b = Rect::from_min_max(pos2(x0 + 1.0, r.center().y + 1.0), pos2(x0 + cw - 1.0, r.bottom()));
-        p.rect_filled(a, egui::Rounding { nw: 3.0, ne: 3.0, sw: 0.0, se: 0.0 }, Color32::from_rgb(px[i * 4], px[i * 4 + 1], px[i * 4 + 2]));
-        p.rect_filled(b, egui::Rounding { nw: 0.0, ne: 0.0, sw: 3.0, se: 3.0 }, Color32::from_rgb(out[i * 4], out[i * 4 + 1], out[i * 4 + 2]));
+        p.rect_filled(a, egui::CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::from_rgb(px[i * 4], px[i * 4 + 1], px[i * 4 + 2]));
+        p.rect_filled(b, egui::CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 }, Color32::from_rgb(out[i * 4], out[i * 4 + 1], out[i * 4 + 2]));
     }
 }
 
@@ -448,7 +448,7 @@ fn hue_saturation(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, inf
             let fill = if k == 1 || k == 2 { theme::TEXT } else { draw::gray(70) };
             let hr = Rect::from_center_size(pos2(x, mid), vec2(6.0, 14.0));
             p.rect_filled(hr, 1.0, fill);
-            p.rect_stroke(hr, 1.0, Stroke::new(1.0_f32, if st.drag == Some(k) { theme::ACCENT } else { draw::gray(160) }));
+            p.rect_stroke(hr, 1.0, Stroke::new(1.0_f32, if st.drag == Some(k) { theme::ACCENT } else { draw::gray(160) }), egui::StrokeKind::Middle);
         }
         let n = |v: f32| v.rem_euclid(360.0).round();
         info.push(format!("{}: fully from {:.0}° to {:.0}°, fading out to {:.0}° and {:.0}° (drag the handles)", RANGE_NAMES[range - 1], n(b[1]), n(b[2]), n(b[0]), n(b[3])));

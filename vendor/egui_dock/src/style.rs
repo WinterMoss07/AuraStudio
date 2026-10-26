@@ -1,4 +1,4 @@
-use egui::{ecolor::*, Margin, Rounding, Stroke};
+use egui::{CornerRadius, Margin, Stroke, ecolor::*};
 
 /// Left or right alignment for tab add button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -20,15 +20,17 @@ pub enum TabAddAlign {
 ///
 /// ```rust
 /// # use egui_dock::{DockArea, DockState, OverlayType, Style, TabAddAlign, TabViewer};
-/// # use egui::{Ui, WidgetText};
+/// # use egui::{Id, Ui, WidgetText};
 /// # struct MyTabViewer;
 /// # impl TabViewer for MyTabViewer {
 /// #     type Tab = ();
+/// #     fn id(&mut self, tab: &mut Self::Tab) -> Id { Id::new(tab) }
 /// #     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText { WidgetText::default() }
 /// #     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {}
 /// # }
-/// # egui::__run_test_ctx(|ctx| {
-/// # egui::CentralPanel::default().show(ctx, |ui| {
+/// # egui::__run_test_ui(|ui| {
+/// # #[allow(deprecated)]
+/// # egui::CentralPanel::default().show(ui, |ui| {
 /// # let mut dock_state = DockState::new(vec![]);
 /// // Inherit the look and feel from egui.
 /// let mut style = Style::from_egui(ui.style());
@@ -46,14 +48,18 @@ pub enum TabAddAlign {
 /// #
 /// ```
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 #[allow(missing_docs)]
 pub struct Style {
     /// Sets padding to indent from the edges of the window. By `Default` it's `None`.
     pub dock_area_padding: Option<Margin>,
 
     pub main_surface_border_stroke: Stroke,
-    pub main_surface_border_rounding: Rounding,
+    pub main_surface_border_rounding: CornerRadius,
 
     pub buttons: ButtonsStyle,
     pub separator: SeparatorStyle,
@@ -64,7 +70,11 @@ pub struct Style {
 
 /// Specifies the look and feel of buttons.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct ButtonsStyle {
     /// Color of the close tab button.
     pub close_tab_color: Color32,
@@ -128,11 +138,27 @@ pub struct ButtonsStyle {
 
     /// Color of the minimize window button's left border.
     pub minimize_window_border_color: Color32,
+
+    /// Color of the show tab bar triangle button.
+    pub show_tab_bar_color: Color32,
+
+    /// Color of the show tab bar triangle button when hovered.
+    pub show_tab_bar_active_color: Color32,
+
+    /// Size of the show tab bar triangle button.
+    pub show_tab_bar_size: f32,
+
+    /// How much the show tab bar button grows when hovered.
+    pub show_tab_bar_hover_expand: f32,
 }
 
 /// Specifies the look and feel of node separators.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct SeparatorStyle {
     /// Width of the rectangle separator between nodes. By `Default` it's `1.0`.
     pub width: f32,
@@ -157,7 +183,11 @@ pub struct SeparatorStyle {
 
 /// Specifies the look and feel of tab bars.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct TabBarStyle {
     /// Background color of tab bar. By `Default` it's [`Color32::WHITE`].
     pub bg_fill: Color32,
@@ -165,11 +195,14 @@ pub struct TabBarStyle {
     /// Height of the tab bar. By `Default` it's `24.0`.
     pub height: f32,
 
+    /// Inner margin of tab bar. By `Default` it's `Margin::ZERO`.
+    pub inner_margin: Margin,
+
     /// Show a scroll bar when tab bar overflows. By `Default` it's `true`.
     pub show_scroll_bar_on_overflow: bool,
 
-    /// Tab rounding. By `Default` it's [`Rounding::default`].
-    pub rounding: Rounding,
+    /// Tab corner_radius. By `Default` it's [`CornerRadius::default`].
+    pub corner_radius: CornerRadius,
 
     /// Color of the line separating the tab name area from the tab content area.
     /// By `Default` it's [`Color32::BLACK`].
@@ -182,7 +215,11 @@ pub struct TabBarStyle {
 
 /// Specifies the look and feel of an individual tab.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct TabStyle {
     /// Style of the tab when it is active.
     pub active: TabInteractionStyle,
@@ -213,6 +250,9 @@ pub struct TabStyle {
     /// By `Default` it's `false`.
     pub hline_below_active_tab_name: bool,
 
+    /// Spacing between tabs.
+    pub spacing: f32,
+
     /// The minimum width of the tab.
     ///
     /// The tab title or [`TabBarStyle::fill_tab_bar`] may make the tab
@@ -222,13 +262,17 @@ pub struct TabStyle {
 
 /// Specifies the look and feel of individual tabs while they are being interacted with.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct TabInteractionStyle {
     /// Color of the outline around tabs. By `Default` it's [`Color32::BLACK`].
     pub outline_color: Color32,
 
-    /// Tab rounding. By `Default` it's [`Rounding::default`].
-    pub rounding: Rounding,
+    /// Tab corner radius. By `Default` it's [`CornerRadius::default`].
+    pub corner_radius: CornerRadius,
 
     /// Colour of the tab's background. By `Default` it's [`Color32::WHITE`].
     pub bg_fill: Color32,
@@ -239,7 +283,11 @@ pub struct TabInteractionStyle {
 
 /// Specifies the look and feel of the tab body.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct TabBodyStyle {
     /// Inner margin of tab body. By `Default` it's `Margin::same(4.0)`.
     pub inner_margin: Margin,
@@ -247,16 +295,28 @@ pub struct TabBodyStyle {
     /// The stroke of the tabs border. By `Default` it's ['Stroke::default'].
     pub stroke: Stroke,
 
-    /// Tab rounding. By `Default` it's [`Rounding::default`].
-    pub rounding: Rounding,
+    /// Tab corner radius. By `Default` it's [`CornerRadius::default`].
+    pub corner_radius: CornerRadius,
 
     /// Colour of the tab's background. By `Default` it's [`Color32::WHITE`].
     pub bg_fill: Color32,
+
+    /// Optional height override for the draggable area when the tab bar is hidden.
+    ///
+    /// When `None` (default), the drag area height equals [`TabBodyStyle::inner_margin`]`.top`.
+    /// When `Some(height)`, the drag area uses this height instead, overlapping the tab body
+    /// content without shifting it down.
+    /// Setting this to `Some(0.0)` disables dragging from the hidden tab bar entirely.
+    pub hidden_tab_bar_drag_height: Option<f32>,
 }
 
 /// Specifies the look and feel of the tab drop overlay.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct OverlayStyle {
     /// Sets selection color for the placing area of the tab where this tab targeted on it.
     /// By `Default` it's `(0, 191, 255)` (light blue) with `0.5` capacity.
@@ -292,9 +352,13 @@ pub struct OverlayStyle {
     pub feel: OverlayFeel,
 }
 
-/// Specifies the feel of the tab drop overlay, i.e anything non visual about the overlay.
+/// Specifies the feel of the tab drop overlay, i.e. anything non-visual about the overlay.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct OverlayFeel {
     /// range is `0.0..=1.0`.
     pub window_drop_coverage: f32,
@@ -329,13 +393,17 @@ pub enum OverlayType {
 
 /// Highlighting on the currently hovered leaf.
 #[derive(Clone, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize, serde::Serialize),
+    serde(default)
+)]
 pub struct LeafHighlighting {
     /// Fill color.
     pub color: Color32,
 
     /// Rounding of the resulting rectangle.
-    pub rounding: Rounding,
+    pub corner_radius: CornerRadius,
 
     /// Stroke.
     pub stroke: Stroke,
@@ -349,7 +417,7 @@ impl Default for Style {
         Self {
             dock_area_padding: None,
             main_surface_border_stroke: Stroke::new(f32::default(), Color32::BLACK),
-            main_surface_border_rounding: Rounding::default(),
+            main_surface_border_rounding: CornerRadius::default(),
             buttons: ButtonsStyle::default(),
             separator: SeparatorStyle::default(),
             tab_bar: TabBarStyle::default(),
@@ -387,6 +455,11 @@ impl Default for ButtonsStyle {
             minimize_window_active_color: Color32::WHITE,
             minimize_window_bg_fill: Color32::GRAY,
             minimize_window_border_color: Color32::BLACK,
+
+            show_tab_bar_color: Color32::GRAY,
+            show_tab_bar_active_color: Color32::WHITE,
+            show_tab_bar_size: 10.0,
+            show_tab_bar_hover_expand: 1.0,
         }
     }
 }
@@ -409,8 +482,9 @@ impl Default for TabBarStyle {
         Self {
             bg_fill: Color32::WHITE,
             height: 24.0,
+            inner_margin: Margin::ZERO,
             show_scroll_bar_on_overflow: true,
-            rounding: Rounding::default(),
+            corner_radius: CornerRadius::default(),
             hline_color: Color32::BLACK,
             fill_tab_bar: false,
         }
@@ -442,6 +516,7 @@ impl Default for TabStyle {
                 text_color: Color32::BLACK,
                 ..Default::default()
             },
+            spacing: 0.0,
             tab_body: TabBodyStyle::default(),
             hline_below_active_tab_name: false,
             minimum_width: None,
@@ -454,7 +529,7 @@ impl Default for TabInteractionStyle {
         Self {
             bg_fill: Color32::WHITE,
             outline_color: Color32::BLACK,
-            rounding: Rounding::default(),
+            corner_radius: CornerRadius::default(),
             text_color: Color32::DARK_GRAY,
         }
     }
@@ -463,10 +538,11 @@ impl Default for TabInteractionStyle {
 impl Default for TabBodyStyle {
     fn default() -> Self {
         Self {
-            inner_margin: Margin::same(4.0),
+            inner_margin: Margin::same(4),
             stroke: Stroke::default(),
-            rounding: Rounding::default(),
+            corner_radius: CornerRadius::default(),
             bg_fill: Color32::WHITE,
+            hidden_tab_bar_drag_height: None,
         }
     }
 }
@@ -506,7 +582,7 @@ impl Default for LeafHighlighting {
     fn default() -> Self {
         Self {
             color: Color32::TRANSPARENT,
-            rounding: Rounding::same(0.0),
+            corner_radius: CornerRadius::same(0),
             stroke: Stroke::NONE,
             expansion: 0.0,
         }
@@ -537,7 +613,7 @@ impl Style {
     pub fn from_egui(style: &egui::Style) -> Self {
         Self {
             main_surface_border_stroke: Stroke::NONE,
-            main_surface_border_rounding: Rounding::ZERO,
+            main_surface_border_rounding: CornerRadius::ZERO,
             buttons: ButtonsStyle::from_egui(style),
             separator: SeparatorStyle::from_egui(style),
             tab_bar: TabBarStyle::from_egui(style),
@@ -589,6 +665,8 @@ impl ButtonsStyle {
             minimize_window_color: style.visuals.text_color(),
             minimize_window_active_color: style.visuals.strong_text_color(),
             minimize_window_border_color: style.visuals.widgets.noninteractive.bg_fill,
+            show_tab_bar_color: style.visuals.text_color(),
+            show_tab_bar_active_color: style.visuals.strong_text_color(),
             ..ButtonsStyle::default()
         }
     }
@@ -617,16 +695,15 @@ impl TabBarStyle {
     ///
     /// Fields overwritten by [`egui::Style`] are:
     /// - [`TabBarStyle::bg_fill`]
-    /// - [`TabBarStyle::rounding`]
     /// - [`TabBarStyle::hline_color`]
     pub fn from_egui(style: &egui::Style) -> Self {
         Self {
             bg_fill: style.visuals.extreme_bg_color,
-            rounding: Rounding {
-                nw: style.visuals.widgets.inactive.rounding.nw + 2.0,
-                ne: style.visuals.widgets.inactive.rounding.ne + 2.0,
-                sw: 0.0,
-                se: 0.0,
+            corner_radius: CornerRadius {
+                nw: style.visuals.widgets.inactive.corner_radius.nw + 2,
+                ne: style.visuals.widgets.inactive.corner_radius.ne + 2,
+                sw: 0,
+                se: 0,
             },
             hline_color: style.visuals.widgets.noninteractive.bg_stroke.color,
             ..TabBarStyle::default()
@@ -661,16 +738,15 @@ impl TabInteractionStyle {
     /// - [`TabInteractionStyle::outline_color`]
     /// - [`TabInteractionStyle::bg_fill`]
     /// - [`TabInteractionStyle::text_color`]
-    /// - [`TabInteractionStyle::rounding`]
     pub fn from_egui_active(style: &egui::Style) -> Self {
         Self {
             outline_color: style.visuals.widgets.noninteractive.bg_stroke.color,
             bg_fill: style.visuals.window_fill(),
             text_color: style.visuals.text_color(),
-            rounding: Rounding {
-                sw: 0.0,
-                se: 0.0,
-                ..style.visuals.widgets.active.rounding
+            corner_radius: CornerRadius {
+                sw: 0,
+                se: 0,
+                ..style.visuals.widgets.active.corner_radius
             },
         }
     }
@@ -681,15 +757,11 @@ impl TabInteractionStyle {
     /// - [`TabInteractionStyle::outline_color`]
     /// - [`TabInteractionStyle::bg_fill`]
     /// - [`TabInteractionStyle::text_color`]
-    /// - [`TabInteractionStyle::rounding`]
     pub fn from_egui_inactive(style: &egui::Style) -> Self {
         Self {
             text_color: style.visuals.text_color(),
-            bg_fill: egui::ecolor::tint_color_towards(
-                style.visuals.window_fill,
-                style.visuals.extreme_bg_color,
-            ),
-            outline_color: egui::ecolor::tint_color_towards(
+            bg_fill: tint_color_towards(style.visuals.window_fill, style.visuals.extreme_bg_color),
+            outline_color: tint_color_towards(
                 style.visuals.widgets.noninteractive.bg_stroke.color,
                 style.visuals.extreme_bg_color,
             ),
@@ -703,7 +775,6 @@ impl TabInteractionStyle {
     /// - [`TabInteractionStyle::outline_color`]
     /// - [`TabInteractionStyle::bg_fill`]
     /// - [`TabInteractionStyle::text_color`]
-    /// - [`TabInteractionStyle::rounding`]
     pub fn from_egui_focused(style: &egui::Style) -> Self {
         Self {
             text_color: style.visuals.strong_text_color(),
@@ -717,7 +788,6 @@ impl TabInteractionStyle {
     /// - [`TabInteractionStyle::outline_color`]
     /// - [`TabInteractionStyle::bg_fill`]
     /// - [`TabInteractionStyle::text_color`]
-    /// - [`TabInteractionStyle::rounding`]
     pub fn from_egui_hovered(style: &egui::Style) -> Self {
         Self {
             text_color: style.visuals.strong_text_color(),
@@ -732,7 +802,6 @@ impl TabInteractionStyle {
     /// - [`TabInteractionStyle::outline_color`]
     /// - [`TabInteractionStyle::bg_fill`]
     /// - [`TabInteractionStyle::text_color`]
-    /// - [`TabInteractionStyle::rounding`]
     pub fn from_egui_active_with_kb_focus(style: &egui::Style) -> Self {
         Self {
             text_color: style.visuals.strong_text_color(),
@@ -747,7 +816,6 @@ impl TabInteractionStyle {
     /// - [`TabInteractionStyle::outline_color`]
     /// - [`TabInteractionStyle::bg_fill`]
     /// - [`TabInteractionStyle::text_color`]
-    /// - [`TabInteractionStyle::rounding`]
     pub fn from_egui_inactive_with_kb_focus(style: &egui::Style) -> Self {
         Self {
             text_color: style.visuals.strong_text_color(),
@@ -762,7 +830,6 @@ impl TabInteractionStyle {
     /// - [`TabInteractionStyle::outline_color`]
     /// - [`TabInteractionStyle::bg_fill`]
     /// - [`TabInteractionStyle::text_color`]
-    /// - [`TabInteractionStyle::rounding`]
     pub fn from_egui_focused_with_kb_focus(style: &egui::Style) -> Self {
         Self {
             text_color: style.visuals.strong_text_color(),
@@ -778,14 +845,14 @@ impl TabBodyStyle {
     /// Fields overwritten by [`egui::Style`] are:
     /// - [`TabBodyStyle::inner_margin`]
     /// - [`TabBodyStyle::stroke]
-    /// - [`TabBodyStyle::rounding`]
     /// - [`TabBodyStyle::bg_fill`]
     pub fn from_egui(style: &egui::Style) -> Self {
         Self {
             inner_margin: style.spacing.window_margin,
             stroke: style.visuals.widgets.noninteractive.bg_stroke,
-            rounding: style.visuals.widgets.active.rounding,
+            corner_radius: style.visuals.widgets.active.corner_radius,
             bg_fill: style.visuals.window_fill(),
+            hidden_tab_bar_drag_height: None,
         }
     }
 }

@@ -52,7 +52,7 @@ impl MipGen {
                 BindGroupLayoutEntry { binding: 1, visibility: ShaderStages::FRAGMENT, ty: BindingType::Sampler(SamplerBindingType::Filtering), count: None },
             ],
         });
-        let pl = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("mip"), bind_group_layouts: &[&layout], push_constant_ranges: &[] });
+        let pl = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("mip"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label:  Some("mip"),
             layout: Some(&pl),
@@ -64,7 +64,7 @@ impl MipGen {
             primitive: PrimitiveState::default(),
             depth_stencil: None,
             multisample: MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let sampler = device.create_sampler(&SamplerDescriptor {
@@ -120,12 +120,13 @@ impl MipGen {
             let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
                 label: Some("mip"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: target, resolve_target: None,
+                    view: target, depth_slice: None, resolve_target: None,
                     ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bind, &[]);

@@ -15,11 +15,8 @@ members = [
     "crates/aurastudio-app",
 ]
 
-# egui 0.30 with one upstream crash fix (vendor/egui/src/memory/mod.rs,
-# compare_order). Drop this once egui is upgraded to 0.31 or later.
 [patch.crates-io]
-egui = { path = "vendor/egui" }
-# egui_dock 0.15 with AuraStudio's drop indicators (red bar between docks,
+# egui_dock 0.21 with AuraStudio's drop indicators (red bar between docks,
 # red tab bar to join one), see NOTICE.md.
 egui_dock = { path = "vendor/egui_dock" }
 
@@ -37,4 +34,4 @@ codegen-units = 16
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.17.0"
+version = "0.18.0"

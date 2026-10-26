@@ -3,6 +3,40 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.18.0 — 2026-10-26
+
+The interface and graphics libraries brought up to date: egui 0.30 → 0.36,
+egui_dock 0.15 → 0.21, wgpu 23 → 30 (they were two years behind).
+
+**What it changes for you**
+- DirectX 12 (Windows): shaders are compiled by DXC, built into the
+  program. Before, without Microsoft's two DLLs next to the .exe (the
+  builds never had them), the old FXC compiler was used: slower to start,
+  and no longer maintained.
+- Sharper interface text (new font renderer with hinting, better kerning)
+  and crisper lines and rectangles.
+- Fewer libraries no longer maintained: `paste` is gone (replaced in our
+  egui_dock copy), egui no longer uses `ttf-parser` (only winit's Wayland
+  window decorations still do, on Linux, until winit 0.31), and the Windows
+  clipboard library is on a release that was not withdrawn.
+- egui's crash fix we carried in our own copy of egui is now upstream: the
+  copy is gone (one less patched library to keep up).
+
+**Kept as before**
+- Menus stay open until a click outside or a command (egui now closes them
+  on any click by default): a checkbox, a slider or a submenu in a menu
+  still keeps it open.
+- The dock drop indicators (red bar between docks, red tab bar to join one)
+  are ported to egui_dock 0.21.
+- The interface runs one egui pass per frame (a second pass egui may ask
+  for, to settle a size, would have drawn an empty interface).
+
+**Maintenance**
+- Dependabot opens a pull request when a dependency has a new version
+  (weekly), checked by the build.
+- A security audit (RustSec advisories) runs on every dependency change
+  and every Monday.
+
 ## 0.17.0 — 2026-10-26
 
 Big brushes without the lag, playback from tiles kept on the GPU, and the
