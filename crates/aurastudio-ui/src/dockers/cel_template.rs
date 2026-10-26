@@ -142,7 +142,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
             match pt {
                 Some(pt) if eye.contains(pt) => match layer {
                     Some(id) => { if let Some(n) = m.layers.node_mut(id) { *n.visible_mut() ^= true; } changed_states = true; }
-                    None => { set_template_state(m.layers, folder, r, Some(!visible), None); }
+                    None => { set_template_state(m.layers, folder, r, Some(!visible), None); changed_states = true; }
                 },
                 Some(pt) if lock.contains(pt) => match layer {
                     Some(id) => { if let Some(n) = m.layers.node_mut(id) { *n.locked_mut() ^= true; } lock_edit = true; }
@@ -219,7 +219,7 @@ fn ask_dialog(ctx: &egui::Context, st: &mut CelState, m: &mut Model, a: &mut Act
         ui.set_width(340.0);
         ui.label(RichText::new(format!("Delete cel {name}?")).strong());
         ui.add_space(4.0);
-        ui.label(format!("{frames} frame{}, {drawn} contain{} a drawing on it.", if frames == 1 { "" } else { "s" }, if drawn == 1 { "s" } else { "" }));
+        ui.label(format!("{frames} frame{}, {drawn} contain{} a drawing on it.", super::layers::plural(frames), if drawn == 1 { "s" } else { "" }));
         ui.label(RichText::new("It goes from every frame of this folder, not just this one.").color(theme::TEXT_WEAK));
         ui.add_space(10.0);
         ui.horizontal(|ui| {

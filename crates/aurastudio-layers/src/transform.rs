@@ -385,7 +385,7 @@ fn over(d: &mut [u8], s: [f32; 4]) {
 
 /// Threads to use (the brushes stay on one; a transform is one big job).
 fn threads() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16)
+    std::thread::available_parallelism().map_or(4, std::num::NonZero::get).clamp(1, 16)
 }
 
 /// Bands of `rows` rows of `dst`, `w` pixels wide, `run` on each (y0,
@@ -403,7 +403,8 @@ fn bands(dst: &mut [u8], w: usize, rows: usize, run: &(dyn Fn(usize, &mut [u8]) 
             sc.spawn(|| loop {
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 if i >= n { break; }
-                if let Some((y0, band)) = slots[i].lock().unwrap_or_else(|e| e.into_inner()).take() { run(y0, band); }
+                let job = slots[i].lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                if let Some((y0, band)) = job { run(y0, band); }
             });
         }
     });

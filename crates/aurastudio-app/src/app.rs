@@ -153,8 +153,8 @@ pub enum AppEvent {
     Wake,
     /// The paint thread changed some canvas area.
     Painted,
-    /// A layer's pixels changed for good (stroke done, undo, clear).
-    /// A layer changed, where (None: anywhere).
+    /// A layer's pixels changed for good (stroke done, undo, clear), where
+    /// (None: anywhere).
     LayerChanged(u64, Option<aurastudio_canvas::Rect>),
     /// A message for the options bar.
     Notice(String),
@@ -476,7 +476,7 @@ impl App {
             // Upload the first composite.
             layers_dirty: true,
             last_frame:   None,
-            frame_interval: Duration::from_micros(16_667),
+            frame_interval: UI_FRAME,
             deferred_frame: None,
             ui_blocked_since: None,
             redraw_wanted: false,
@@ -780,12 +780,10 @@ impl App {
                 self.pick_color();
             }
             Tool::Fill => {
-                let Some((x, y)) = at else { return };
-                let (w, h) = self.canvas_size();
-                if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 { return; }
+                let Some((x, y)) = at.and_then(|p| pixel_in(p, self.canvas_size())) else { return };
                 let [r, g, b] = self.brush.color;
                 self.paint.send(Cmd::Fill {
-                    doc: Arc::clone(&self.doc), x: x as u32, y: y as u32, color: [r, g, b, 255], params: self.fill,
+                    doc: Arc::clone(&self.doc), x, y, color: [r, g, b, 255], params: self.fill,
                 });
             }
             Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect => {
@@ -801,15 +799,13 @@ impl App {
             }
             Tool::PolySelect => if let Some(p) = self.select_at() { self.poly_click(p) },
             Tool::MagicWand => {
-                let Some((x, y)) = at else { return };
-                let (w, h) = self.canvas_size();
-                if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 { return; }
+                let Some((x, y)) = at.and_then(|p| pixel_in(p, self.canvas_size())) else { return };
                 let o = self.select.wand;
                 let wand = Wand {
                     fill: FillParams { tolerance: o.tolerance, refer: o.refer, skip_drafts: o.skip_drafts, expand: o.grow },
                     contiguous: o.contiguous,
                 };
-                let op = SelectOp::Wand { x: x as u32, y: y as u32, wand, mode: self.select_mode(), aa: self.select.aa, feather: self.select.feather };
+                let op = SelectOp::Wand { x, y, wand, mode: self.select_mode(), aa: self.select.aa, feather: self.select.feather };
                 self.send_select(op);
             }
             Tool::Transform => if let Some(p) = at { self.xform_press(p) },
@@ -821,7 +817,7 @@ impl App {
     /// Cursor moved during a tool drag.
     fn tool_drag(&mut self) {
         let Some(raw) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
-        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        let zoom = self.zoom();
         let snapped = self.select_at().unwrap_or(raw);
         let at = if matches!(self.gesture, Some(Gesture::Lasso { .. } | Gesture::Box { .. })) { snapped } else { raw };
         match &mut self.gesture {
@@ -831,7 +827,7 @@ impl App {
                 let last = pts.last().copied().unwrap_or(at);
                 if (at.0 - last.0).abs().max((at.1 - last.1).abs()) * zoom >= 1.5 { pts.push(at); }
             }
-            Some(Gesture::Box { b: end, .. }) | Some(Gesture::Shape { end, .. }) | Some(Gesture::MoveSel { now: end, .. }) => *end = at,
+            Some(Gesture::Box { b: end, .. } | Gesture::Shape { end, .. } | Gesture::MoveSel { now: end, .. }) => *end = at,
             None => return,
         }
         self.request_redraw();
@@ -868,7 +864,7 @@ impl App {
     /// without dragging deselects (Krita, Photoshop).
     fn tool_release(&mut self) {
         let Some(g) = self.gesture.take() else { return };
-        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        let zoom = self.zoom();
         let far = |a: (f32, f32), b: (f32, f32), min: f32| (a.0 - b.0).abs().max((a.1 - b.1).abs()) * zoom >= min;
         let (aa, feather) = (self.select.aa, self.select.feather);
         let op = match g {
@@ -917,7 +913,7 @@ impl App {
     /// Polygon selection: a click adds a point; on the first point (or a
     /// double click) it closes.
     fn poly_click(&mut self, p: (f32, f32)) {
-        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        let zoom = self.zoom();
         match &mut self.poly {
             None => {
                 let mode = self.select_mode();
@@ -970,7 +966,7 @@ impl App {
     }
 
     fn arc_ctx(&self) -> ArcCtx {
-        let zoom = self.gpu.as_ref().map_or(1.0, |g| g.zoom());
+        let zoom = self.zoom();
         ArcCtx { zoom, shift: self.shift_held(), multipoint: self.shape.multipoint }
     }
 
@@ -1020,9 +1016,7 @@ impl App {
             self.request_redraw();
             return;
         }
-        let mut brush = self.brush.clone();
-        brush.erase = false;
-        self.paint.send(Cmd::Begin { doc: Arc::clone(&self.doc), brush, forge: self.library.presets[self.preset].brush.clone(), limit: self.stroke_limit() });
+        self.send_begin(false);
         let mut time = self.start.elapsed().as_secs_f64();
         let mut last = path[0];
         for (x, y) in path {
@@ -1069,22 +1063,9 @@ impl App {
     /// docker, the paint layers of a chosen folder.
     fn transform_targets(&self) -> Vec<u64> {
         let Ok(d) = self.doc.try_lock() else { return Vec::new() };
-        fn layers_in(nodes: &[aurastudio_layers::Node], out: &mut Vec<u64>) {
-            for n in nodes {
-                match n {
-                    aurastudio_layers::Node::Layer(l) => out.push(l.id),
-                    aurastudio_layers::Node::Folder(f) => layers_in(&f.children, out),
-                    aurastudio_layers::Node::Filter(_) => {}
-                }
-            }
-        }
         let mut out = Vec::new();
         for id in self.ui.chosen_layers(&d.layers) {
-            match d.layers.node(id) {
-                Some(aurastudio_layers::Node::Layer(_)) => out.push(id),
-                Some(aurastudio_layers::Node::Folder(f)) => layers_in(&f.children, &mut out),
-                _ => {}
-            }
+            if let Some(n) = d.layers.node(id) { n.push_layer_ids(&mut out); }
         }
         out.sort_unstable();
         out.dedup();
@@ -1143,7 +1124,7 @@ impl App {
 
     /// Handles' reach, canvas pixels.
     fn handle_tolerance(&self) -> f64 {
-        9.0 / self.gpu.as_ref().map_or(1.0, |g| g.zoom()).max(1e-3) as f64
+        9.0 / self.zoom().max(1e-3) as f64
     }
 
     fn xform_press(&mut self, p: (f32, f32)) {
@@ -1270,12 +1251,10 @@ impl App {
     /// Color picker: the merged image's color under the cursor becomes the
     /// brush color.
     fn pick_color(&mut self) {
-        let Some((x, y)) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
+        let Some(p) = self.window_to_canvas(self.cursor.0, self.cursor.1) else { return };
         // Never wait for a stroke being painted: skip this sample.
         let Ok(d) = self.doc.try_lock() else { return };
-        let (w, h) = (d.layers.width, d.layers.height);
-        if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 { return; }
-        let (x, y) = (x as u32, y as u32);
+        let Some((x, y)) = pixel_in(p, (d.layers.width, d.layers.height)) else { return };
         let px = d.layers.composite_rect((x, y, x + 1, y + 1));
         drop(d);
         if px.len() == 4 && self.brush.color != [px[0], px[1], px[2]] {
@@ -1450,25 +1429,20 @@ impl App {
         });
     }
 
-    /// Start a stroke on the active layer. Refused (with a notice in the
-    /// options bar) when it is locked or a folder is selected.
     /// Play the animation from the current frame (from the first if at
     /// the end), at `fps`.
     fn start_playback(&mut self) {
         if self.is_drawing || self.xf.is_some() || self.xf_pending { return; }
         let Ok(mut doc) = self.doc.try_lock() else { return };
         if doc.kind != aurastudio_document::Kind::Animation { return; }
-        let last = doc.layers.last_frame();
-        if doc.layers.time() >= last {
-            doc.layers.set_time(1);
-            drop(doc);
-            self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc)));
-        } else {
-            drop(doc);
-        }
-        let from = self.doc.lock().unwrap().layers.time();
-        self.play = Some((Instant::now(), from));
-        self.play_next = Some(Instant::now());
+        let rewind = doc.layers.time() >= doc.layers.last_frame();
+        if rewind { doc.layers.set_time(1); }
+        let from = doc.layers.time();
+        drop(doc);
+        if rewind { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
+        let now = Instant::now();
+        self.play = Some((now, from));
+        self.play_next = Some(now);
         self.request_redraw();
         crate::memory::event("play start");
     }
@@ -1509,6 +1483,8 @@ impl App {
         self.play_next = Some(start + Duration::from_secs_f64((step + 1) as f64 / fps));
     }
 
+    /// Start a stroke on the active layer. Refused (with a notice in the
+    /// options bar) when it is locked or a folder is selected.
     fn begin_stroke(&mut self) {
         // (Drawing stops the playback, on the frame shown.)
         self.stop_playback();
@@ -1524,13 +1500,16 @@ impl App {
         self.samples_sent = 0;
         self.press_point = Some(self.cursor);
         self.frame_stats = Timing::default();
-        let mut brush = self.brush.clone();
-        brush.erase = self.tool == Tool::Eraser;
+        self.send_begin(self.tool == Tool::Eraser);
+    }
+
+    /// Open a stroke on the paint thread with the current brush.
+    fn send_begin(&self, erase: bool) {
         self.paint.send(Cmd::Begin {
-            doc:       Arc::clone(&self.doc),
-            brush,
-            forge:     self.library.presets[self.preset].brush.clone(),
-            limit:     self.stroke_limit(),
+            doc:   Arc::clone(&self.doc),
+            brush: Brush { erase, ..self.brush.clone() },
+            forge: self.library.presets[self.preset].brush.clone(),
+            limit: self.stroke_limit(),
         });
     }
 
@@ -1988,8 +1967,13 @@ impl App {
 
     /// Biggest canvas side the GPU takes (before the window exists: a
     /// common limit).
+    /// View zoom (1.0 before the window exists).
+    fn zoom(&self) -> f32 {
+        self.gpu.as_ref().map_or(1.0, GpuState::zoom)
+    }
+
     fn max_canvas(&self) -> u32 {
-        self.gpu.as_ref().map_or(16384, |g| g.max_canvas_size())
+        self.gpu.as_ref().map_or(16384, GpuState::max_canvas_size)
     }
 
     fn file_cmd(&mut self, cmd: FileCmd) {
@@ -2010,7 +1994,6 @@ impl App {
         self.request_redraw();
     }
 
-    /// Do `action`, first asking to save unsaved changes.
     /// Close the filter dialog, putting the layer back as it was.
     fn cancel_filter(&mut self) {
         if self.ui.close_filter() {
@@ -2018,6 +2001,7 @@ impl App {
         }
     }
 
+    /// Do `action`, first asking to save unsaved changes.
     fn request(&mut self, action: Pending) {
         self.cancel_filter();
         self.end_transform(true);
@@ -2170,23 +2154,22 @@ impl App {
     }
 
     fn on_saved(&mut self, doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String>) {
-        let current = Arc::clone(&self.doc);
-        let mut d = current.lock().unwrap();
-        // A save of a document closed since: nothing left to update.
-        if d.id() != doc { return; }
-        match (auto, result) {
-            (true, Ok(())) => drop(d),
-            (true, Err(e)) => {
-                drop(d);
-                log::warn!("autosave failed: {e}");
-            }
-            (false, Ok(())) => {
+        {
+            let mut d = self.doc.lock().unwrap();
+            // A save of a document closed since: nothing left to update.
+            if d.id() != doc { return; }
+            if !auto && result.is_ok() {
                 if d.path.as_deref() != Some(&path) {
                     d.name = aurastudio_file::doc_name(&path);
                     d.path = Some(path.clone());
                 }
                 d.mark_saved(revision);
-                drop(d);
+            }
+        }
+        match (auto, result) {
+            (true, Ok(())) => {}
+            (true, Err(e)) => log::warn!("autosave failed: {e}"),
+            (false, Ok(())) => {
                 // The work is safe in its own file now.
                 if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); }
                 self.autosaved_revision = revision;
@@ -2195,7 +2178,6 @@ impl App {
                 if let Some(action) = self.after_save.take() { self.perform(action); }
             }
             (false, Err(e)) => {
-                drop(d);
                 self.after_save = None;
                 self.ui.notify(&format!("Save failed: {e}"));
             }
@@ -2424,7 +2406,7 @@ impl ApplicationHandler<AppEvent> for App {
                     let layers: Vec<(&[u8], f32)> = l.layers.iter().map(|x| (&x.premul[..], x.opacity)).collect();
                     if !gpu.lift_begin(l.src, &l.below, l.above.as_deref(), &layers) { log::warn!("transform: no live preview (sizes)"); }
                     // Changed before it came (Warp mode's grid...): show it.
-                    if self.xf.as_ref().is_some_and(|x| x.changed()) { self.lift_show(); self.request_redraw(); }
+                    if self.xf.as_ref().is_some_and(Xform::changed) { self.lift_show(); self.request_redraw(); }
                 }
             }
             AppEvent::TransformShown(n) => {
@@ -2468,7 +2450,7 @@ impl ApplicationHandler<AppEvent> for App {
         if std::mem::take(&mut self.redraw_wanted) {
             // One frame per display refresh; UI-only hover frames 60 per
             // second at most (a hovering pen moves all the time).
-            let dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
+            let dragging = self.gpu.as_ref().is_some_and(GpuState::ui_is_dragging);
             let interval = if self.is_drawing {
                 PAINT_FRAME
             } else if self.ui_dirty && !dragging && self.nav.is_none() {
@@ -2479,7 +2461,8 @@ impl ApplicationHandler<AppEvent> for App {
             let due = self.last_frame.map_or(now, |t| t + interval);
             if now >= due {
                 self.render_frame();
-                crate::memory::mark("first frame drawn");
+                static FIRST: std::sync::Once = std::sync::Once::new();
+                FIRST.call_once(|| crate::memory::mark("first frame drawn"));
             } else {
                 self.deferred_frame = Some(self.deferred_frame.map_or(due, |t| t.min(due)));
             }
@@ -2622,7 +2605,7 @@ impl App {
         let over_canvas = self.gpu.as_ref()
             .map(|gpu| gpu.is_canvas_at(self.cursor))
             .unwrap_or(false);
-        let ui_dragging = self.gpu.as_ref().is_some_and(|g| g.ui_is_dragging());
+        let ui_dragging = self.gpu.as_ref().is_some_and(GpuState::ui_is_dragging);
         let is_redraw = matches!(event, WindowEvent::RedrawRequested);
         // Moving over the canvas changes no hover: only the outline moves.
         let canvas_move = matches!(event, WindowEvent::CursorMoved { .. })
@@ -2701,7 +2684,7 @@ impl App {
                 }
                 // Typing in a docker field (e.g. canvas width) must not
                 // erase the layer, undo or move the view.
-                let ui_typing = self.gpu.as_ref().is_some_and(|g| g.ui_wants_keyboard());
+                let ui_typing = self.gpu.as_ref().is_some_and(GpuState::ui_wants_keyboard);
                 if key.state != ElementState::Pressed || ui_typing { return; }
                 let ctrl  = self.modifiers.control_key() || self.modifiers.super_key();
                 let shift = self.modifiers.shift_key();
@@ -2741,10 +2724,9 @@ impl App {
                     }
                     // Layers: Ctrl+G group, Ctrl+Shift+G ungroup, Ctrl+Alt+G
                     // clip to the layer below (Photoshop's keys).
-                    Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("g") && !self.home => {
+                    Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("g") => {
                         let cmd = if alt { LayerCmd::Clip } else if shift { LayerCmd::Ungroup } else { LayerCmd::Group };
                         self.ui.layer_shortcut(cmd);
-                        self.ui_dirty = true;
                         self.request_redraw();
                     }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => self.select(SelectCmd::All),
@@ -2955,6 +2937,11 @@ fn gpu_quality(q: aurastudio_ui::CanvasQuality) -> aurastudio_gpu::CanvasQuality
 
 /// Send the whole merged image to the GPU, in bands of rows: the full
 /// image never exists in RAM (a B4 page at 600 dpi is 200 MB).
+/// The canvas pixel under `p`, if inside a `size` canvas.
+fn pixel_in((x, y): (f32, f32), (w, h): (u32, u32)) -> Option<(u32, u32)> {
+    (x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32).then_some((x as u32, y as u32))
+}
+
 fn upload_all(layers: &aurastudio_layers::LayerStack, gpu: &mut GpuState) {
     let (w, h) = (layers.width, layers.height);
     let mut band = Vec::new();

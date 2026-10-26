@@ -102,7 +102,7 @@ impl MipGen {
     pub fn mark(&mut self, rect: Rect) {
         // A few rectangles are enough; past that, one box around them.
         if self.dirty.len() >= 16 {
-            let all = self.dirty.iter().fold(rect, |a, r| (a.0.min(r.0), a.1.min(r.1), a.2.max(r.2), a.3.max(r.3)));
+            let all = self.dirty.iter().fold(rect, |a, r| aurastudio_canvas::union(a, *r));
             self.dirty.clear();
             self.dirty.push(all);
         } else {

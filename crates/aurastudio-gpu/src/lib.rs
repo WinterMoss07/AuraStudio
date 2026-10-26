@@ -23,13 +23,14 @@ const NEAREST_FROM_ZOOM: f32 = 2.0;
 /// driver may keep a third image for it.
 fn present_mode(caps: &SurfaceCapabilities, vsync: bool) -> PresentMode {
     let wanted = match std::env::var("AURASTUDIO_PRESENT").ok().as_deref() {
-        Some("mailbox")   => vec![PresentMode::Mailbox],
-        Some("immediate") => vec![PresentMode::Immediate],
-        Some("fifo")      => vec![PresentMode::Fifo],
-        _ if vsync => vec![PresentMode::Fifo],
-        _ => vec![PresentMode::Immediate],
+        Some("mailbox")   => PresentMode::Mailbox,
+        Some("immediate") => PresentMode::Immediate,
+        Some("fifo")      => PresentMode::Fifo,
+        _ if vsync => PresentMode::Fifo,
+        _ => PresentMode::Immediate,
     };
-    wanted.into_iter().find(|m| caps.present_modes.contains(m)).unwrap_or(PresentMode::Fifo)
+    // (Fifo is always there.)
+    if caps.present_modes.contains(&wanted) { wanted } else { PresentMode::Fifo }
 }
 
 /// Images of the swapchain, about: one frame in flight plus the one shown,
@@ -196,7 +197,7 @@ static SHADER_COMPILER: std::sync::OnceLock<&'static str> = std::sync::OnceLock:
 fn shader_compiler(b: Backend) -> (Dx12Compiler, &'static str) {
     match b {
         Backend::DirectX12 => {
-            let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf()));
+            let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
             match dir.filter(|d| d.join("dxcompiler.dll").is_file() && d.join("dxil.dll").is_file()) {
                 Some(d) => (Dx12Compiler::Dxc { dxil_path: Some(d.clone()), dxc_path: Some(d) }, "DXC (dxcompiler.dll next to the program)"),
                 None => (Dx12Compiler::Fxc, "FXC (put dxcompiler.dll and dxil.dll next to the program for DXC)"),
@@ -365,7 +366,6 @@ impl GpuState {
                 &DeviceDescriptor {
                     label:             None,
                     required_features: Features::empty(),
-                    // The biggest texture the GPU takes (it caps the canvas size).
                     // What this GPU has (an older one, or OpenGL, has less
                     // than wgpu's defaults); its biggest texture caps the
                     // canvas size.
@@ -519,12 +519,16 @@ impl GpuState {
         t.peak_bytes = t.peak_bytes.max(t.live_bytes);
     }
 
-    fn note_freed(&mut self, id: egui::TextureId) {
-        if let Some(b) = self.egui_bytes.remove(&id) {
-            let t = &mut self.traffic;
-            t.freed += 1;
-            t.freed_bytes += b;
-            t.live_bytes = t.live_bytes.saturating_sub(b);
+    /// Interface textures egui dropped, freed (and counted).
+    fn free_textures(&mut self, ids: &[egui::TextureId]) {
+        for id in ids {
+            self.egui_renderer.free_texture(id);
+            if let Some(b) = self.egui_bytes.remove(id) {
+                let t = &mut self.traffic;
+                t.freed += 1;
+                t.freed_bytes += b;
+                t.live_bytes = t.live_bytes.saturating_sub(b);
+            }
         }
     }
 
@@ -533,8 +537,6 @@ impl GpuState {
         self.device.limits().max_texture_dimension_2d
     }
 
-    /// Replace the canvas texture with a new size. The caller then uploads
-    /// the new composite with upload_rect.
     /// A transform began: its live preview's pieces (see lift.rs). False
     /// if they don't fit the canvas.
     pub fn lift_begin(&mut self, src: aurastudio_canvas::Rect, below: &[u8], above: Option<&[u8]>, layers: &[(&[u8], f32)]) -> bool {
@@ -604,6 +606,8 @@ impl GpuState {
         }
     }
 
+    /// Replace the canvas texture with a new size. The caller then uploads
+    /// the new composite with upload_rect.
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
         self.lift = None;
         if let Some(q) = self.quality_later.take() { self.quality = q; }
@@ -934,10 +938,7 @@ impl GpuState {
                 }
                 // No frame this time: what the previous frame dropped can go
                 // all the same (this one's waits).
-                for id in &textures_free {
-                    self.egui_renderer.free_texture(id);
-                    self.note_freed(*id);
-                }
+                self.free_textures(&textures_free);
                 self.last_ui = Some((tris, ppp));
                 return;
             }
@@ -998,17 +999,7 @@ impl GpuState {
         self.egui_renderer.update_buffers(&self.device, &self.queue, &mut enc, &tris, &screen_descriptor);
 
         {
-            let pass = enc.begin_render_pass(&RenderPassDescriptor {
-                label: Some("egui_pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view:           &view,
-                    resolve_target: None,
-                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes:         None,
-                occlusion_query_set:      None,
-            });
+            let pass = over_pass(&mut enc, &view, "egui_pass");
             self.egui_renderer.render(&mut pass.forget_lifetime(), &tris, &screen_descriptor);
         }
 
@@ -1023,17 +1014,7 @@ impl GpuState {
                 _pad: [0.0; 2],
             };
             self.queue.write_buffer(&self.cursor_buffer, 0, bytemuck::cast_slice(&[u]));
-            let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
-                label: Some("cursor_pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view:           &view,
-                    resolve_target: None,
-                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes:         None,
-                occlusion_query_set:      None,
-            });
+            let mut pass = over_pass(&mut enc, &view, "cursor_pass");
             pass.set_pipeline(&self.cursor_pipeline);
             pass.set_bind_group(0, &self.cursor_bind, &[]);
             pass.draw(0..6, 0..1);
@@ -1045,10 +1026,7 @@ impl GpuState {
         self.uploads.submitted();
         // (After the submit: wgpu refuses a submit using a texture already
         // destroyed.)
-        for id in &textures_free {
-            self.egui_renderer.free_texture(id);
-            self.note_freed(*id);
-        }
+        self.free_textures(&textures_free);
         let suboptimal = output.suboptimal;
         output.present();
 
@@ -1064,6 +1042,21 @@ impl GpuState {
         }
         self.swapchain_rebuilt = suboptimal;
     }
+}
+
+/// A render pass drawing over what `view` already shows.
+fn over_pass<'e>(enc: &'e mut CommandEncoder, view: &TextureView, label: &str) -> RenderPass<'e> {
+    enc.begin_render_pass(&RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(RenderPassColorAttachment {
+            view,
+            resolve_target: None,
+            ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes:         None,
+        occlusion_query_set:      None,
+    })
 }
 
 /// Pipeline drawing the brush outline (shaders/cursor.wgsl), premultiplied

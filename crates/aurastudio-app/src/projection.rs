@@ -62,9 +62,7 @@ pub fn add_rect(list: &mut Vec<Rect>, r: Rect) {
     }
 }
 
-pub fn union(a: Rect, b: Rect) -> Rect {
-    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
-}
+pub use aurastudio_canvas::union;
 
 fn area(r: Rect) -> u64 {
     (r.2 - r.0) as u64 * (r.3 - r.1) as u64

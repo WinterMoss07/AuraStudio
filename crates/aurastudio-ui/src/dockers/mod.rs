@@ -58,7 +58,7 @@ pub fn set_shown(dock: &mut DockState<Tab>, tab: Tab, on: bool) {
             if let Some((node, _)) = beside {
                 tree.set_focused_node(node);
                 tree.push_to_focused_leaf(tab);
-            } else if tree.root_node().is_none_or(|n| n.is_empty()) {
+            } else if tree.root_node().is_none_or(egui_dock::Node::is_empty) {
                 tree.push_to_first_leaf(tab);
             } else {
                 tree.split_below(NodeIndex::root(), 0.72, vec![tab]);

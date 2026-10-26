@@ -6,6 +6,11 @@ pub use blend::BlendMode;
 /// x0, y0, x1, y1 in pixels (x1 / y1 exclusive).
 pub type Rect = (u32, u32, u32, u32);
 
+/// The smallest rect holding `a` and `b`.
+pub fn union(a: Rect, b: Rect) -> Rect {
+    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+}
+
 /// Side of the squares layers are stored in (see aurastudio-layers).
 pub const TILE: u32 = 64;
 

@@ -66,7 +66,7 @@ impl SelectOp {
 
 impl Document {
     /// Change the selection, undoable as `label`. False if it is the same.
-    pub fn set_selection(&mut self, sel: Option<Selection>, label: &'static str) -> bool {
+    fn set_selection(&mut self, sel: Option<Selection>, label: &'static str) -> bool {
         if sel == self.selection { return false; }
         // (A layer edit not recorded yet goes first.)
         self.record_tree("Layers");

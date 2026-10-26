@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use aurastudio_document::SharedDoc;
@@ -16,12 +16,12 @@ static RECOVERY: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// The document to save if the app crashes.
 pub fn watch(doc: &SharedDoc) {
-    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::clone(doc));
+    *CURRENT.lock().unwrap_or_else(PoisonError::into_inner) = Some(std::sync::Arc::clone(doc));
 }
 
 /// Install the panic hook; `recovery` is the file the next start offers.
 pub fn install(recovery: Option<PathBuf>) {
-    *RECOVERY.lock().unwrap_or_else(|e| e.into_inner()) = recovery;
+    *RECOVERY.lock().unwrap_or_else(PoisonError::into_inner) = recovery;
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         default(info);
@@ -41,9 +41,9 @@ pub fn after_unwind() {
 
 /// Some(saved?) once done, None if the document stayed locked.
 fn try_save(wait: Duration) -> Option<bool> {
-    let doc = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let doc = CURRENT.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let Some(doc) = doc else { return Some(false) };
-    let path = RECOVERY.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let path = RECOVERY.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let t = Instant::now();
     let guard = loop {
         match doc.try_lock() {

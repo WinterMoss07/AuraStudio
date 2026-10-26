@@ -139,7 +139,7 @@ impl StripPool {
         );
         self.created += 1;
         let page = Page { tex, w, used: vec![false; n], empty_since: None };
-        let pi = match g.pages.iter().position(|p| p.is_none()) {
+        let pi = match g.pages.iter().position(Option::is_none) {
             Some(i) => { g.pages[i] = Some(page); i }
             None => { g.pages.push(Some(page)); g.pages.len() - 1 }
         };
@@ -185,7 +185,7 @@ impl StripPool {
                 }));
                 if release { *slot = None; }
             }
-            while g.pages.last().is_some_and(|p| p.is_none()) { g.pages.pop(); }
+            while g.pages.last().is_some_and(Option::is_none) { g.pages.pop(); }
             g.drawn.retain(|_, p| *p + UNUSED_PASSES >= pass);
         }
         self.heights.retain(|_, g| !(g.pages.is_empty() && pass > g.last_drawn() + UNUSED_PASSES));

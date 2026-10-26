@@ -88,15 +88,21 @@ pub fn menu(ui: &mut Ui, open: &mut Option<FilterDialog>, m: &Model) {
     }
 }
 
+/// A new filter of `kind`, colored with the brush's color (Black & white
+/// keeps its own tint).
+pub(crate) fn fresh(kind: Kind, brush_color: [u8; 3]) -> Filter {
+    let f = Filter::new(kind);
+    if kind == Kind::BlackWhite { f } else { Filter { color: brush_color, ..f } }
+}
+
 /// A dialog for `kind` on the active layer (None: nothing to filter
 /// there).
 pub fn new_dialog(ctx: &egui::Context, kind: Kind, m: &Model) -> Option<FilterDialog> {
     let source = Source::capture(m.layers, m.selection)?;
-    let color = match kind { Kind::BlackWhite => Filter::new(kind).color, _ => m.brush.color };
     Some(FilterDialog {
         target: Target::Layer,
         edit: None,
-        filter: Filter { color, ..Filter::new(kind) },
+        filter: fresh(kind, m.brush.color),
         preview: true,
         shown: None,
         source: Arc::new(source),
@@ -205,7 +211,7 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
         }
         // "Preview on canvas" off: the layer shows its filter as it was.
         let wanted = if d.preview { d.filter.clone() } else { before.clone() };
-        if d.shown.as_ref() != Some(&Some(wanted.clone())) {
+        if d.shown.as_ref().and_then(Option::as_ref) != Some(&wanted) {
             d.shown = Some(Some(wanted.clone()));
             d.edit = Some((id, LayerEdit::Set(wanted)));
         }

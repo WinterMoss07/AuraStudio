@@ -15,7 +15,7 @@ pub enum BundledBrush { Round, Soft, MyPaint(&'static str) }
 
 include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
-/// The mediums, in the Tools docker's order.
+/// The bundled mediums, in the catalog's order.
 pub const MEDIUMS: &[&str] = &["Pencil", "Ink", "Charcoal & pastel", "Paint", "Watercolor", "Airbrush", "Blend & smudge", "Eraser", "Texture & FX", "Misc"];
 
 /// Which toolbox group a medium's brushes belong to.
@@ -121,7 +121,7 @@ pub struct Preset {
 impl Preset {
     /// With `definition_hash` computed from `brush`.
     fn hashed(mut self) -> Self {
-        self.definition_hash = hash::of_debug(&*self.brush);
+        self.rehash();
         self
     }
 

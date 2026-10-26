@@ -339,7 +339,7 @@ impl LayerStack {
             for n in nodes {
                 let Node::Folder(f) = n else { continue };
                 if f.anim().is_some() {
-                    let shown = f.children.iter().filter_map(|c| c.frame()).filter(|k| *k <= time).max();
+                    let shown = f.children.iter().filter_map(Node::frame).filter(|k| *k <= time).max();
                     for c in &mut f.children {
                         if let Some(k) = c.frame() { *c.visible_mut() = Some(k) == shown; }
                     }
@@ -762,7 +762,7 @@ impl LayerStack {
                         let Node::Folder(fr) = c else { return Err(format!("folder {}: a layer among frames", f.id)) };
                         let k = fr.frame().ok_or("a folder among frames")?;
                         if !seen.insert(k) { return Err(format!("folder {}: frame {k} twice", f.id)); }
-                        let names: Vec<&str> = fr.children.iter().rev().map(|c| c.name()).collect();
+                        let names: Vec<&str> = fr.children.iter().rev().map(Node::name).collect();
                         let want: Vec<&str> = a.template.iter().map(|t| t.name.as_str()).collect();
                         if names != want || !fr.children.iter().all(|c| matches!(c, Node::Layer(_))) {
                             return Err(format!("frame {k}: cels {names:?}, template {want:?}"));

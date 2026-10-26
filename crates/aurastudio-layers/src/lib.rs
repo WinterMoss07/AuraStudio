@@ -135,6 +135,16 @@ macro_rules! each {
 }
 
 impl Node {
+    /// Ids of the paint layers in this node (itself, or all in a folder),
+    /// bottom to top, appended to `out`.
+    pub fn push_layer_ids(&self, out: &mut Vec<u64>) {
+        match self {
+            Node::Layer(l) => out.push(l.id),
+            Node::Folder(f) => for c in &f.children { c.push_layer_ids(out) },
+            Node::Filter(_) => {}
+        }
+    }
+
     pub fn id(&self) -> u64 { each!(self, n => n.id) }
     pub fn name(&self) -> &str { each!(self, n => &n.name) }
     pub fn name_mut(&mut self) -> &mut String { each!(self, n => &mut n.name) }
@@ -471,7 +481,7 @@ impl LayerStack {
         self.node_mut(id).expect("active node exists")
     }
 
-    /// True if the active node or one of its parent folders is locked.
+    /// True if node `id` or one of its parent folders is locked.
     pub fn is_locked(&self, id: u64) -> bool {
         let Some(path) = self.path(id) else { return false };
         let mut nodes = &self.root;
@@ -634,7 +644,7 @@ impl LayerStack {
         // (An animation folder's frames only live in it.)
         if !matches!(&siblings[*last], Node::Folder(f) if matches!(f.kind, FolderKind::Plain | FolderKind::Group)) { return false; }
         let Node::Folder(f) = siblings.remove(*last) else { unreachable!() };
-        let top = f.children.last().map(|n| n.id());
+        let top = f.children.last().map(Node::id);
         for (k, child) in f.children.into_iter().enumerate() { siblings.insert(last + k, child); }
         self.active = top.or_else(|| first_layer_id(&self.root)).unwrap_or(0);
         // (Its reference may meet another one there.)
@@ -707,7 +717,7 @@ impl LayerStack {
             if let Node::Folder(f) = &levels.last().unwrap()[i] { levels.push(&f.children); }
         }
         levels.iter().rev().find_map(|nodes| {
-            nodes.iter().find(|n| n.props().reference && n.visible() && n.id() != id).map(|n| n.id())
+            nodes.iter().find(|n| n.props().reference && n.visible() && n.id() != id).map(Node::id)
         })
     }
 
@@ -1133,17 +1143,8 @@ impl LayerStack {
 
     /// Ids of every paint layer (thumbnails).
     pub fn layer_ids(&self) -> Vec<u64> {
-        fn walk(nodes: &[Node], out: &mut Vec<u64>) {
-            for n in nodes {
-                match n {
-                    Node::Layer(l) => out.push(l.id),
-                    Node::Folder(f) => walk(&f.children, out),
-                    Node::Filter(_) => {}
-                }
-            }
-        }
         let mut v = Vec::new();
-        walk(&self.root, &mut v);
+        for n in &self.root { n.push_layer_ids(&mut v); }
         v
     }
 
@@ -1231,7 +1232,7 @@ impl LayerStack {
     pub fn composite_pick_par(&self, rect: Rect, pick: Pick, transparent: bool) -> Vec<u8> {
         let r = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
         if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }
-        let n = std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(1, 16) as u32;
+        let n = std::thread::available_parallelism().map_or(2, std::num::NonZero::get).clamp(1, 16) as u32;
         let rows = (r.3 - r.1).div_ceil(n).max(64);
         let bands: Vec<Rect> = (r.1..r.3).step_by(rows as usize).map(|y| (r.0, y, r.2, (y + rows).min(r.3))).collect();
         let parts: Vec<Vec<u8>> = std::thread::scope(|s| {
@@ -1262,7 +1263,7 @@ impl LayerStack {
         before.push(id);
         let full = (0, 0, self.width, self.height);
         let hidden = |s: &mut Self, ids: &[u64], f: &dyn Fn(&Self) -> Vec<u8>| -> (Vec<u8>, bool) {
-            let was: Vec<bool> = ids.iter().map(|&i| s.node(i).is_some_and(|n| n.visible())).collect();
+            let was: Vec<bool> = ids.iter().map(|&i| s.node(i).is_some_and(Node::visible)).collect();
             for &i in ids { if let Some(n) = s.node_mut(i) { *n.visible_mut() = false; } }
             let out = f(s);
             for (&i, &v) in ids.iter().zip(&was) { if let Some(n) = s.node_mut(i) { *n.visible_mut() = v; } }

@@ -340,10 +340,7 @@ impl<S: PaintSurface> TiledSurface for WashTarget<'_, S> {
 
     fn draw_dab(&mut self, dab: &Dab) -> bool {
         let Some(r) = self.wash.dab(self.surface, dab, self.opacity, self.blend) else { return false };
-        self.dirty = Some(match self.dirty {
-            None => r,
-            Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
-        });
+        merge(&mut self.dirty, Some(r));
         true
     }
 }
@@ -377,10 +374,7 @@ fn lerp(a: &PenSample, b: &PenSample, t: f32) -> PenSample {
 
 fn merge(acc: &mut Option<Rect>, r: Option<Rect>) {
     let Some(r) = r else { return };
-    *acc = Some(match *acc {
-        None => r,
-        Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
-    });
+    *acc = Some(acc.map_or(r, |d| aurastudio_canvas::union(d, r)));
 }
 
 /// Straight 8-bit RGBA -> premultiplied fix15.
@@ -429,11 +423,7 @@ fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dir
                 p.copy_from_slice(&from_fix15(v));
             }
         }
-        let r = (x0 as u32, y0 as u32, x1 as u32, y1 as u32);
-        out = Some(match out {
-            None => r,
-            Some(d) => (d.0.min(r.0), d.1.min(r.1), d.2.max(r.2), d.3.max(r.3)),
-        });
+        merge(&mut out, Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32)));
     }
     out
 }

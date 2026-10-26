@@ -76,23 +76,24 @@ impl Tiles {
     /// Bounds of the stored tiles (where something was painted), clipped
     /// to the layer; None when it is all fill color.
     pub fn content_bounds(&self) -> Option<Rect> {
-        let mut b: Option<Rect> = None;
-        for (tx, ty, _) in self.iter() {
-            let r = (tx * TILE, ty * TILE, ((tx + 1) * TILE).min(self.width), ((ty + 1) * TILE).min(self.height));
-            b = Some(b.map_or(r, |b| (b.0.min(r.0), b.1.min(r.1), b.2.max(r.2), b.3.max(r.3))));
-        }
-        b
+        self.tile_bounds(|_, _| true)
     }
 
     /// Bounds of the stored tiles with a visible pixel (alpha > 0) on the
     /// canvas: a tile erased to transparency, or left after an undo,
     /// counts as empty (`content_bounds` counts it). None: nothing shows.
     pub fn visible_bounds(&self) -> Option<Rect> {
+        self.tile_bounds(|t, r| Self::shows(t, (0, 0, r.2 - r.0, r.3 - r.1)))
+    }
+
+    /// Union of the canvas rects of the stored tiles that `keep` takes
+    /// (given the tile and its rect).
+    fn tile_bounds(&self, keep: impl Fn(&Tile, Rect) -> bool) -> Option<Rect> {
         let mut b: Option<Rect> = None;
         for (tx, ty, t) in self.iter() {
             let r = (tx * TILE, ty * TILE, ((tx + 1) * TILE).min(self.width), ((ty + 1) * TILE).min(self.height));
-            if !Self::shows(t, (0, 0, r.2 - r.0, r.3 - r.1)) { continue; }
-            b = Some(b.map_or(r, |b| (b.0.min(r.0), b.1.min(r.1), b.2.max(r.2), b.3.max(r.3))));
+            if !keep(t, r) { continue; }
+            b = Some(b.map_or(r, |b| aurastudio_canvas::union(b, r)));
         }
         b
     }

@@ -96,7 +96,7 @@ impl Atlas {
         let side = if first && w + 2 * RING <= FIRST_PAGE && h + 2 * RING <= FIRST_PAGE { FIRST_PAGE } else { PAGE };
         let tex = ctx.load_texture(self.name, ColorImage::new([side, side], Color32::TRANSPARENT), self.options);
         let page = Page { side, tex, shelves: Vec::new(), free: Vec::new(), live: 0, empty_since: None };
-        let i = match self.pages.iter().position(|p| p.is_none()) {
+        let i = match self.pages.iter().position(Option::is_none) {
             Some(i) => { self.pages[i] = Some(page); i }
             None => { self.pages.push(Some(page)); self.pages.len() - 1 }
         };
@@ -150,11 +150,8 @@ impl Atlas {
                 *slot = None;
             }
         }
-        while self.pages.last().is_some_and(|p| p.is_none()) { self.pages.pop(); }
+        while self.pages.last().is_some_and(Option::is_none) { self.pages.pop(); }
     }
-
-    /// Pages it may hold at once.
-    pub fn max_pages(&self) -> usize { self.max_pages }
 
     /// Pages held.
     #[cfg(test)]

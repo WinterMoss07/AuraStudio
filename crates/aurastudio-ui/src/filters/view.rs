@@ -232,7 +232,7 @@ fn step(z: f32, up: bool) -> f32 {
 
 fn key_of(f: &Filter, crop: &Crop) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (f.kind, f.color, crop).hash(&mut h);
-    for v in &f.values { v.to_bits().hash(&mut h); }
+    super::editors::hash_filter(f, &mut h);
+    crop.hash(&mut h);
     h.finish()
 }

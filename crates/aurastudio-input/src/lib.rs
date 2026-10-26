@@ -319,10 +319,6 @@ mod imp {
             packet_mask: u32,
             pressure_range: AxisRange,
             pressure_seen_max: std::cell::Cell<i32>,
-            /// Tilt / rotation axes, read at install (tilt is read in fixed
-            /// units, the ranges serve the twist later).
-            #[allow(dead_code)]
-            orientation: [AxisRange; 3],
         }
 
         fn field_offset(mask: u32, target: u32) -> Option<usize> {
@@ -428,6 +424,7 @@ mod imp {
                     let pressure_supported = wt_info(
                         device_category, DVC_NPRESSURE, (&mut pressure_axis as *mut Axis).cast(),
                     ) != 0;
+                    // Tilt is read in fixed units: only whether it exists.
                     let mut orientation_axes = [Axis::default(); 3];
                     let orientation_supported = wt_info(
                         device_category, DVC_ORIENTATION, orientation_axes.as_mut_ptr().cast(),
@@ -461,7 +458,6 @@ mod imp {
                             AxisRange { min: 0, max: 1023 }
                         },
                         pressure_seen_max: std::cell::Cell::new(0),
-                        orientation: orientation_axes.map(|a| AxisRange { min: a.min, max: a.max }),
                     });
                     let data = (&*state as *const HookState) as usize;
                     if !SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, data).as_bool() {

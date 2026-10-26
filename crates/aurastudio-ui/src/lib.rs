@@ -292,7 +292,6 @@ impl UiState {
         self.dialog = Some(dialog);
     }
 
-    /// A dialog is waiting for an answer (the canvas ignores the pen).
     /// The Delete key: over the Layers docker or the Animation panel it
     /// deletes what is picked there (nodes, frames) at the next frame, and
     /// this says true. False: the canvas's (clear the layer).
@@ -315,6 +314,7 @@ impl UiState {
     /// The latest measure, for the window.
     pub fn set_memory(&mut self, r: MemoryReport) { self.memory = Some(r); }
 
+    /// A dialog is waiting for an answer (the canvas ignores the pen).
     pub fn has_dialog(&self) -> bool {
         self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some() || self.select_dialog.is_some() || self.anim.is_asking() || self.cel.is_asking()
     }
@@ -334,10 +334,10 @@ impl UiState {
         self.layers.invalidate(layer_id, rect);
     }
 
-    /// Every layer changed (canvas resize...).
     /// Show a docker (as the Window menu does).
     pub fn show_docker(&mut self, tab: dockers::Tab) { dockers::set_shown(&mut self.dock, tab, true); }
 
+    /// Every layer changed (canvas resize...).
     pub fn invalidate_all_thumbnails(&mut self) {
         self.layers.invalidate_all();
     }
@@ -478,6 +478,12 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     actions.layers_idle = !ctx.input(|i| i.pointer.any_down()) && !ctx.wants_keyboard_input() && !filter_layer;
 }
 
+/// A modal dialog in the app's frame.
+fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+    egui::Modal::new(egui::Id::new(id))
+        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+}
+
 /// The open dialog, if any: modal, the rest of the UI is dimmed.
 fn dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
     use egui::RichText;
@@ -487,8 +493,7 @@ fn dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
         let b = egui::Button::new(RichText::new(text).color(theme::TEXT)).min_size(egui::vec2(96.0, 28.0));
         ui.add(if primary { b.fill(theme::ACCENT) } else { b })
     };
-    let modal = egui::Modal::new(egui::Id::new("app_dialog"))
-        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+    let modal = modal(ctx, "app_dialog")
         .show(ctx, |ui| {
             ui.set_width(380.0);
             match &d {
@@ -546,8 +551,7 @@ fn select_dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
     use egui::RichText;
     let Some((kind, mut v)) = state.select_dialog else { return };
     let mut done = None;
-    let modal = egui::Modal::new(egui::Id::new("select_dialog"))
-        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+    let modal = modal(ctx, "select_dialog")
         .show(ctx, |ui| {
             ui.set_width(260.0);
             ui.label(RichText::new(kind.name()).heading());

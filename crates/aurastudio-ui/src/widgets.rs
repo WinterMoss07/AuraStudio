@@ -369,6 +369,11 @@ pub fn percent(label: &str) -> Fill<'_> {
     Fill { label, range: 0.0..=100.0, mid: None, format: &|v| format!("{v:.0} %") }
 }
 
+/// A slider of whole pixels.
+pub fn pixels(label: &str, range: std::ops::RangeInclusive<f32>, mid: Option<f32>) -> Fill<'_> {
+    Fill { label, range, mid, format: &|v| format!("{v:.0} px") }
+}
+
 /// Slider position -> value for a slider with `mid` at its middle:
 /// `lo × (hi / lo)^(t^k)`, k chosen so t = 0.5 gives `mid`. Exponential
 /// (each step a ratio, precise for small brushes), smooth all along.
@@ -388,7 +393,7 @@ mod size_curve {
 pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
     let max = crate::MAX_BRUSH_SIZE as f32;
     let d = (brush.radius * 2.0).round().clamp(1.0, max);
-    if let Some(v) = fill_slider(ui, id, Fill { label: "Size", range: 1.0..=max, mid: Some(100.0), format: &|v| format!("{v:.0} px") }, d, width) {
+    if let Some(v) = fill_slider(ui, id, pixels("Size", 1.0..=max, Some(100.0)), d, width) {
         // Whole diameters, odd ones included (1, 3, 5 px...).
         brush.radius = v.round().max(1.0) / 2.0;
     }

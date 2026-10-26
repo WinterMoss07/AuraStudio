@@ -42,7 +42,7 @@ pub fn show(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State) -> Vec<St
             palette(ui, f, src, st);
         }
         Kind::Posterize => posterize(ui, f, src, st, &mut info),
-        Kind::Threshold => threshold(ui, f, src, st, &mut info),
+        Kind::Threshold => threshold(ui, f, src, &mut info),
         Kind::Sepia => {
             amount(ui, f, "Amount", Track::Colors(&[draw::gray(150), Color32::from_rgb(196, 160, 110)]));
             palette(ui, f, src, st);
@@ -110,6 +110,11 @@ fn clipped(hists: &[&[u32; 256]], tables: &[&[u8; 256]]) -> (f64, f64) {
     (lo as f64 * 100.0 / n, hi as f64 * 100.0 / n)
 }
 
+/// `clipped` over R, G and B with tables `t`.
+fn rgb_clipping(src: &Source, t: &[[u8; 256]; 3]) -> (f64, f64) {
+    clipped(&[&src.hist.chan[0], &src.hist.chan[1], &src.hist.chan[2]], &[&t[0], &t[1], &t[2]])
+}
+
 fn clip_line(info: &mut Vec<String>, (lo, hi): (f64, f64)) {
     if lo >= 0.05 || hi >= 0.05 {
         info.push(format!("Clipped: {lo:.1} % to black, {hi:.1} % to white (detail lost there)"));
@@ -139,7 +144,7 @@ fn tone_view(ui: &mut Ui, f: &Filter, src: &Source, info: &mut Vec<String>) {
     let (r, _, p) = tone_graph(ui, &src.hist.rgb, &after, &[], 120.0);
     draw::corner(&p, r, Align2::LEFT_TOP, "Histogram: before (gray), after (line)");
     gray_bar(ui);
-    clip_line(info, clipped(&[&src.hist.chan[0], &src.hist.chan[1], &src.hist.chan[2]], &[&t[0], &t[1], &t[2]]));
+    clip_line(info, rgb_clipping(src, &t));
 }
 
 /// A black to white bar under a tone graph (the input levels).
@@ -163,6 +168,9 @@ fn brightness_contrast(ui: &mut Ui, f: &mut Filter, src: &Source, info: &mut Vec
     }
 }
 
+/// Levels' channels.
+const CHANNELS: [&str; 4] = ["RGB", "Red", "Green", "Blue"];
+
 fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut Vec<String>) {
     let colors = [Color32::WHITE, draw::RED, draw::GREEN, draw::BLUE];
     let hist_colors = [draw::BEFORE, draw::RED.gamma_multiply(0.55), draw::GREEN.gamma_multiply(0.55), draw::BLUE.gamma_multiply(0.55)];
@@ -170,7 +178,7 @@ fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut 
     ui.horizontal(|ui| {
         ui.set_width(WIDTH);
         ui.label(RichText::new("Channel").color(theme::TEXT_WEAK));
-        draw::choice(ui, &mut st.channel, &["RGB", "Red", "Green", "Blue"]);
+        draw::choice(ui, &mut st.channel, &CHANNELS);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             auto = ui.button("Auto").clicked();
         });
@@ -241,12 +249,12 @@ fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut 
     f.values[base..base + 5].copy_from_slice(&lv);
     ui.horizontal(|ui| {
         if ui.small_button("Reset channel").clicked() { f.values[base..base + 5].copy_from_slice(&[0.0, 1.0, 255.0, 0.0, 255.0]); }
-        let changed: Vec<&str> = (0..4).filter(|&c| c != ch && f.levels(c) != LevelsChannel::IDENTITY).map(|c| ["RGB", "Red", "Green", "Blue"][c]).collect();
+        let changed: Vec<&str> = (0..4).filter(|&c| c != ch && f.levels(c) != LevelsChannel::IDENTITY).map(|c| CHANNELS[c]).collect();
         if !changed.is_empty() { ui.label(RichText::new(format!("Also changed: {}", changed.join(", "))).small().color(theme::TEXT_WEAK)); }
     });
     let t = f.tone_tables().unwrap();
-    info.push(format!("{}: input {:.0}–{:.0}, midtones {:.2}, output {:.0}–{:.0}", ["RGB", "Red", "Green", "Blue"][ch], lv[0], lv[2], lv[1], lv[3], lv[4]));
-    clip_line(info, clipped(&[&src.hist.chan[0], &src.hist.chan[1], &src.hist.chan[2]], &[&t[0], &t[1], &t[2]]));
+    info.push(format!("{}: input {:.0}–{:.0}, midtones {:.2}, output {:.0}–{:.0}", CHANNELS[ch], lv[0], lv[2], lv[1], lv[3], lv[4]));
+    clip_line(info, rgb_clipping(src, &t));
 }
 
 /// A gradient bar (`bar` colors) and triangle handles at the levels
@@ -294,7 +302,7 @@ fn posterize(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &m
     palette(ui, f, src, st);
 }
 
-fn threshold(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut Vec<String>) {
+fn threshold(ui: &mut Ui, f: &mut Filter, src: &Source, info: &mut Vec<String>) {
     let lvl = f.v(0);
     let (r, resp, p) = draw::graph(ui, 110.0, Sense::click_and_drag());
     let top = draw::hist_top(&src.hist.lum);
@@ -316,7 +324,6 @@ fn threshold(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &m
     let black: u64 = (0..256).filter(|&i| !tone::threshold_white([i as u8; 3], v)).map(|i| src.hist.lum[i] as u64).sum();
     let pb = black as f64 * 100.0 / src.hist.count.max(1) as f64;
     info.push(format!("{pb:.0} % of the pixels turn black, {:.0} % white", 100.0 - pb));
-    let _ = st;
 }
 
 // --- Colors ---------------------------------------------------------------
@@ -432,7 +439,7 @@ fn hue_saturation(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, inf
                 let deg = ((pos.x - bars.left()) / WIDTH * 360.0).clamp(0.0, 360.0);
                 b = HueRange::move_handle(b, k, deg);
                 let r0 = idx::range(range - 1) + 3;
-                f.values[r0..r0 + 4].copy_from_slice(&b.map(|x| x.round()));
+                f.values[r0..r0 + 4].copy_from_slice(&b.map(f32::round));
             }
         }
         if !resp.is_pointer_button_down_on() && !resp.dragged() { st.drag = None; }
@@ -540,6 +547,16 @@ fn shapes(w: usize, h: usize, x: f32, y: f32) -> f32 {
     cover(disc).max(cover(rounded)).max(cover(ring))
 }
 
+/// The sample shapes as RGBA, `color` giving each pixel from its
+/// coverage.
+fn sample_pixels(w: usize, h: usize, color: impl Fn(f32) -> [u8; 4]) -> Vec<u8> {
+    let mut px = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w { px.extend_from_slice(&color(shapes(w, h, x as f32 + 0.5, y as f32 + 0.5))); }
+    }
+    px
+}
+
 fn sample_texture(ui: &mut Ui, st: &mut State, key: u64, w: usize, h: usize, make: impl FnOnce() -> Vec<u8>) -> TextureHandle {
     if st.sample.as_ref().map(|s| s.0) != Some(key) {
         let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &make());
@@ -551,10 +568,15 @@ fn sample_texture(ui: &mut Ui, st: &mut State, key: u64, w: usize, h: usize, mak
     st.sample.as_ref().unwrap().1.clone()
 }
 
+/// Feed what makes `f`'s result (kind, color, values) to `h`.
+pub(super) fn hash_filter(f: &Filter, h: &mut impl Hasher) {
+    (f.kind, f.color).hash(h);
+    for v in &f.values { v.to_bits().hash(h); }
+}
+
 fn key_of(f: &Filter) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    (f.kind, f.color).hash(&mut h);
-    for v in &f.values { v.to_bits().hash(&mut h); }
+    hash_filter(f, &mut h);
     h.finish()
 }
 
@@ -565,15 +587,10 @@ fn emboss(ui: &mut Ui, f: &mut Filter, st: &mut State, info: &mut Vec<String>) {
     if draw::slider(ui, "height", Spec::new("Height", 1.0, 20.0, 3.0, "px"), &mut h) { f.values[1] = h; }
     if draw::slider(ui, "amount", Spec::new("Amount", 1.0, 500.0, 100.0, "%").pow(1.5), &mut m) { f.values[2] = m; }
     let (w, hh) = ((WIDTH * 1.5) as usize, 120usize);
-    let g = f.clone();
+    let f: &Filter = f;
     let tex = sample_texture(ui, st, key_of(f), w, hh, || {
-        let mut px = Vec::with_capacity(w * hh * 4);
-        for y in 0..hh { for x in 0..w {
-            let c = shapes(w, hh, x as f32 + 0.5, y as f32 + 0.5);
-            let v = (235.0 - c * 170.0) as u8;
-            px.extend_from_slice(&[v, v, v, 255]);
-        } }
-        g.apply(&px, w, hh)
+        let px = sample_pixels(w, hh, |c| { let v = (235.0 - c * 170.0) as u8; [v, v, v, 255] });
+        f.apply(&px, w, hh)
     });
     let (r, _, p) = draw::graph(ui, 80.0, Sense::hover());
     p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
@@ -599,14 +616,10 @@ fn drop_shadow(ui: &mut Ui, f: &mut Filter, st: &mut State, info: &mut Vec<Strin
     let (w, h) = ((WIDTH * 1.5) as usize, 120usize);
     let reach = f.reach() as f32;
     let scale = (36.0 / reach.max(1.0)).min(1.0);
-    let g = f.scaled(scale);
+    let f: &Filter = f;
     let tex = sample_texture(ui, st, key_of(f), w, h, || {
-        let mut px = Vec::with_capacity(w * h * 4);
-        for y in 0..h { for x in 0..w {
-            let c = shapes(w, h, x as f32 + 0.5, y as f32 + 0.5);
-            px.extend_from_slice(&[245, 240, 230, (c * 255.0) as u8]);
-        } }
-        g.apply(&px, w, h)
+        let px = sample_pixels(w, h, |c| [245, 240, 230, (c * 255.0) as u8]);
+        f.scaled(scale).apply(&px, w, h)
     });
     let (r, _, p) = draw::graph(ui, 80.0, Sense::hover());
     p.rect_filled(r, 0.0, Color32::from_rgb(150, 156, 166));

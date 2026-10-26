@@ -48,7 +48,7 @@ pub fn each_plane<T: Send>(planes: &mut [Vec<T>; 4], f: impl Fn(usize, &mut Vec<
 pub fn par_rows(out: &mut [u8], w: usize, f: impl Fn(usize, &mut [u8]) + Sync) {
     let h = out.len() / (w * 4).max(1);
     if h == 0 { return; }
-    let n = std::thread::available_parallelism().map_or(1, |n| n.get()).min(h);
+    let n = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(h);
     let per = h.div_ceil(n);
     std::thread::scope(|s| {
         for (k, chunk) in out.chunks_mut(per * w * 4).enumerate() {

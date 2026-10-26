@@ -170,7 +170,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     let frame = if m.doc_kind == aurastudio_document::Kind::Animation { format!("Frame {}  ·  ", m.layers.time()) } else { String::new() };
                     ui.label(RichText::new(format!(
                         "{frame}{}  ·  {} × {} px  ·  {} layer{}  ·  {:.0} %{}",
-                        m.doc_kind.name(), m.layers.width, m.layers.height, n, if n > 1 { "s" } else { "" },
+                        m.doc_kind.name(), m.layers.width, m.layers.height, n, layers::plural(n),
                         m.view_zoom * 100.0, angle,
                     )).small().color(theme::TEXT_WEAK));
                 });

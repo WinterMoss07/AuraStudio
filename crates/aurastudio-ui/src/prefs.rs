@@ -158,8 +158,7 @@ impl Section {
 /// closed. `profile`: the monitor profile's name, if one was found.
 pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile: Option<&str>, in_use: &str, reset_docks: &mut bool) -> bool {
     let mut open = true;
-    let modal = egui::Modal::new(egui::Id::new("preferences"))
-        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+    let modal = crate::modal(ctx, "preferences")
         .show(ctx, |ui| {
             ui.set_width(560.0);
             ui.label(RichText::new("Preferences").heading());

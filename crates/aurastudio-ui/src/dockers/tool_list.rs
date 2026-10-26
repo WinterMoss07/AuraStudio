@@ -172,7 +172,7 @@ fn medium_icons(ui: &mut Ui, st: &mut ToolListState, group: Group, mediums: &[&s
                 let x = if after { rect.right() + 1.0 } else { rect.left() - 1.0 };
                 ui.painter().vline(x, rect.y_range(), Stroke::new(2.0_f32, theme::DROP));
                 if resp.dnd_release_payload::<MediumDrag>().is_some() {
-                    let before = if after { mediums.get(k + 1).map(|s| s.to_string()) } else { Some(md.to_string()) };
+                    let before = if after { mediums.get(k + 1).map(ToString::to_string) } else { Some(md.to_string()) };
                     if before.as_deref() != Some(d.0.as_str()) { a.move_medium = Some((d.0.clone(), before)); }
                 }
             }
@@ -275,8 +275,8 @@ fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, sele
     let height = if strokes { ROW } else { 26.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click_and_drag());
     if resp.drag_started() { resp.dnd_set_drag_payload(BrushDrag(index)); }
-    let resp = resp.on_hover_text(format!("{}\n{}  ·  {}", p.name, p.author, p.origin.label()));
     if !ui.is_rect_visible(rect) { return resp; }
+    let resp = resp.on_hover_text(format!("{}\n{}  ·  {}", p.name, p.author, p.origin.label()));
     let bg = if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE };
     ui.painter().rect_filled(rect, 2.0, bg);
     // The selected brush is shown with its current settings.

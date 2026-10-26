@@ -176,8 +176,7 @@ fn page_icon(ui: &Ui, r: Rect, w: f32, h: f32, color: Color32) {
 pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mut Actions) -> bool {
     let mut open = true;
     let mut create = false;
-    let _ = egui::Modal::new(egui::Id::new("new_document"))
-        .frame(egui::Frame::popup(&ctx.style()).inner_margin(egui::Margin::same(18.0)).rounding(theme::CANVAS_ROUNDING))
+    let _ = crate::modal(ctx, "new_document")
         .show(ctx, |ui| {
             ui.set_width(820.0);
             ui.label(RichText::new("New document").heading());
@@ -296,7 +295,6 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                             if ui.add_enabled(!too_big, b).clicked() { create = true; }
                         });
                     });
-                    if create && too_big { create = false; }
                 });
             });
         });
@@ -374,7 +372,7 @@ pub fn start_screen(ctx: &egui::Context, area: Rect, recent: &mut [RecentFile], 
         });
 }
 
-fn big_button(ui: &mut Ui, rect: Rect, text: &str, key: &str, primary: bool) -> bool {
+fn big_button(ui: &Ui, rect: Rect, text: &str, key: &str, primary: bool) -> bool {
     let resp = ui.interact(rect, ui.id().with(text), Sense::click());
     let p = ui.painter();
     let hover = resp.hovered();
@@ -389,7 +387,7 @@ fn big_button(ui: &mut Ui, rect: Rect, text: &str, key: &str, primary: bool) -> 
     resp.clicked()
 }
 
-fn recent_grid(ui: &mut Ui, recent: &mut [RecentFile], a: &mut Actions) {
+fn recent_grid(ui: &mut Ui, recent: &[RecentFile], a: &mut Actions) {
     const CARD: f32 = 148.0;
     const GAP: f32 = 12.0;
     let cols = ((ui.available_width() + GAP) / (CARD + GAP)).floor().max(1.0) as usize;

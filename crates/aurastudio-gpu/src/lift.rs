@@ -270,7 +270,7 @@ impl Lift {
         let c = |v: f32, max: u32| (v.max(0.0) as u32).min(max);
         let a = (c(b[0].floor() - 2.0, self.size.0), c(b[1].floor() - 2.0, self.size.1), c(b[2].ceil() + 2.0, self.size.0), c(b[3].ceil() + 2.0, self.size.1));
         if a.0 < a.2 && a.1 < a.3 {
-            self.total = Some(self.total.map_or(a, |t| (t.0.min(a.0), t.1.min(a.1), t.2.max(a.2), t.3.max(a.3))));
+            self.total = Some(self.total.map_or(a, |t| aurastudio_canvas::union(t, a)));
             self.shown = Some((a, nearest));
             self.dirty = true;
         }

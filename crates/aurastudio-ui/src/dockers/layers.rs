@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use aurastudio_canvas::Rect as PxRect;
-use aurastudio_filters::{Filter, GROUPS};
+use aurastudio_filters::GROUPS;
 use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
 
@@ -77,7 +77,7 @@ impl LayersState {
         let merged = match self.dirty.get(&id) {
             // Two changes: the union, and anywhere if either was anywhere.
             Some((_, old)) => match (old, rect) {
-                (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))),
+                (Some(a), Some(b)) => Some(aurastudio_canvas::union(*a, b)),
                 _ => None,
             },
             None => rect,
@@ -126,11 +126,10 @@ impl LayersState {
         self.no_room.retain(|id, _| alive.contains(id));
         self.atlas.tidy();
 
+        // (Partial updates share a small budget per frame, from `now`.)
         let now = Instant::now();
         let mut waiting = None::<std::time::Duration>;
         let mut wait = |left: std::time::Duration| waiting = Some(waiting.map_or(left, |w| w.min(left)));
-        // Partial updates share a small budget per frame.
-        let started = Instant::now();
         for id in ids {
             let change = self.dirty.get(&id).copied();
             let shown = self.thumbs.contains_key(&id);
@@ -153,7 +152,7 @@ impl LayersState {
                 if (buf.0, buf.1) == (tw, th) {
                     crate::thumbnail::area_average_into(&layer.tiles, tw, th, Some(rect), &mut buf.2);
                     self.atlas.write(region, egui::ColorImage::from_rgba_unmultiplied([tw, th], &buf.2));
-                    if started.elapsed() > std::time::Duration::from_millis(2) { ctx.request_repaint(); return; }
+                    if now.elapsed() > std::time::Duration::from_millis(2) { ctx.request_repaint(); return; }
                     continue;
                 }
             }
@@ -235,8 +234,7 @@ pub fn special_folder_entries(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
 /// A new filter layer above the active node, its dialog opened (Cancel
 /// there removes it again).
 pub fn new_filter_layer(st: &mut LayersState, kind: aurastudio_filters::Kind, m: &mut Model, a: &mut Actions) {
-    let color = match kind { aurastudio_filters::Kind::BlackWhite => Filter::new(kind).color, _ => m.brush.color };
-    let id = m.layers.add_filter_layer(Filter { color, ..Filter::new(kind) });
+    let id = m.layers.add_filter_layer(crate::filters::fresh(kind, m.brush.color));
     st.selected.clear();
     st.edit_filter = Some((id, true));
     a.recomposite = true;
@@ -328,7 +326,7 @@ impl LayerCmd {
     }
     pub fn enabled(self, layers: &LayerStack) -> bool {
         match self {
-            LayerCmd::Ungroup => matches!(layers.active_node(), Node::Folder(f) if matches!(f.kind, FolderKind::Plain | FolderKind::Group)),
+            LayerCmd::Ungroup => ungroups(layers.active_node()),
             // (In an animation folder the Cel template decides.)
             LayerCmd::Reference => !holds_animation(layers, layers.active_id()),
             _ => true,
@@ -360,9 +358,14 @@ fn group_label(layers: &LayerStack, sel: &[u64]) -> &'static str {
     if groups_animation(layers, sel) { "Group animation folders" } else { "Group layers into folder" }
 }
 
+/// `node` can be ungrouped: a plain folder or a group.
+fn ungroups(node: &Node) -> bool {
+    matches!(node, Node::Folder(f) if matches!(f.kind, FolderKind::Plain | FolderKind::Group))
+}
+
 /// What "Ungroup" frees, as a menu entry says it.
-fn ungroup_label(layers: &LayerStack) -> &'static str {
-    match layers.active_node() {
+fn ungroup_label(node: &Node) -> &'static str {
+    match node {
         Node::Folder(f) if f.kind == FolderKind::Group => "Ungroup animation folders",
         _ => "Ungroup folder",
     }
@@ -388,13 +391,12 @@ pub fn apply(cmd: LayerCmd, st: &mut LayersState, m: &mut Model, a: &mut Actions
             st.selected.clear();
         }
         // (The selected nodes follow the active one.)
-        LayerCmd::Clip => {
-            let on = !m.layers.active_node().props().clip;
-            for id in &sel { if let Some(n) = m.layers.node_mut(*id) { n.props_mut().clip = on; } }
-        }
-        LayerCmd::Draft => {
-            let on = !m.layers.active_node().props().draft;
-            for id in &sel { if let Some(n) = m.layers.node_mut(*id) { n.props_mut().draft = on; } }
+        LayerCmd::Clip | LayerCmd::Draft => {
+            let on = !cmd.is_on(m.layers);
+            for id in &sel {
+                let Some(p) = m.layers.node_mut(*id).map(Node::props_mut) else { continue };
+                if cmd == LayerCmd::Clip { p.clip = on } else { p.draft = on }
+            }
         }
         // One per folder: the active node only.
         LayerCmd::Reference => {
@@ -422,7 +424,7 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     ui.menu_button("New special folder", |ui| special_folder_entries(ui, m, a));
     ui.separator();
     let sel = st.selection(m.layers);
-    for (cmd, label) in [(LayerCmd::Group, group_label(m.layers, &sel)), (LayerCmd::Ungroup, ungroup_label(m.layers))] {
+    for (cmd, label) in [(LayerCmd::Group, group_label(m.layers, &sel)), (LayerCmd::Ungroup, ungroup_label(m.layers.active_node()))] {
         if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() {
             apply(cmd, st, m, a);
             ui.close_menu();
@@ -531,30 +533,26 @@ fn chain(p: &egui::Painter, c: egui::Pos2) {
     }
 }
 
-/// The little arrow of a menu button, drawn from the icon atlas.
-fn arrow_icon(ui: &Ui, r: &egui::Response) {
-    crate::icons::paint(ui, Icon::Expanded, r.rect, 12.0, Color32::from_gray(0xc8));
+/// The little arrow after a button: a menu of `contents`.
+fn arrow_menu(ui: &mut Ui, tip: &str, contents: impl FnOnce(&mut Ui)) {
+    let arrow = egui::Button::new("").frame(false).min_size(vec2(14.0, 24.0));
+    let r = egui::menu::menu_custom_button(ui, arrow, |ui| {
+        ui.set_min_width(150.0);
+        contents(ui);
+    });
+    crate::icons::paint(ui, Icon::Expanded, r.response.rect, 12.0, Color32::from_gray(0xc8));
+    r.response.on_hover_text(tip);
 }
 
 /// New layer (its kinds under the arrow), new folder, duplicate.
 fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     if icon_button(ui, Icon::NewLayer, "New layer", true) { new_layer(m, a); }
-    let arrow = egui::Button::new("").frame(false).min_size(vec2(14.0, 24.0));
-    let arrow_r = egui::menu::menu_custom_button(ui, arrow, |ui| {
-        ui.set_min_width(150.0);
+    arrow_menu(ui, "Layer types", |ui| {
         if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
         ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
     });
-    arrow_icon(ui, &arrow_r.response);
-    arrow_r.response.on_hover_text("Layer types");
     if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
-    let arrow = egui::Button::new("").frame(false).min_size(vec2(14.0, 24.0));
-    let arrow_r = egui::menu::menu_custom_button(ui, arrow, |ui| {
-        ui.set_min_width(150.0);
-        special_folder_entries(ui, m, a);
-    });
-    arrow_icon(ui, &arrow_r.response);
-    arrow_r.response.on_hover_text("Special folders");
+    arrow_menu(ui, "Special folders", |ui| special_folder_entries(ui, m, a));
     if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
 }
 
@@ -910,10 +908,8 @@ fn row_menu(ui: &mut Ui, m: &Model, id: u64, sel: &[u64]) -> Option<RowMenu> {
     ui.separator();
     // Frames and cels stay in their animation folder.
     if !inside {
-        if ui.add(egui::Button::new(group_label(m.layers, sel)).shortcut_text("Ctrl+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
-        let ungroups = matches!(node, Node::Folder(f) if matches!(f.kind, FolderKind::Plain | FolderKind::Group));
-        let label = match node { Node::Folder(f) if f.kind == FolderKind::Group => "Ungroup animation folders", _ => "Ungroup folder" };
-        if ungroups && ui.add(egui::Button::new(label).shortcut_text("Ctrl+Shift+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
+        if ui.add(egui::Button::new(group_label(m.layers, sel)).shortcut_text(LayerCmd::Group.shortcut())).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
+        if ungroups(node) && ui.add(egui::Button::new(ungroup_label(node)).shortcut_text(LayerCmd::Ungroup.shortcut())).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
     }
     if out.is_some() { ui.close_menu(); }
     out
@@ -952,6 +948,16 @@ fn layer_row(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row) -> (Op
     if resp.drag_started() { resp.dnd_set_drag_payload(LayerDrag(row.id)); }
     let event = row_content(ui, st, m, row, rect, &resp);
     (event, resp)
+}
+
+/// "s" after a count other than 1.
+pub(crate) fn plural(n: usize) -> &'static str { if n == 1 { "" } else { "s" } }
+
+/// "12 frames - 4 cels" for animation folder `id`.
+pub(crate) fn anim_info(layers: &LayerStack, id: u64) -> String {
+    let frames = layers.frames(id).len();
+    let cels = layers.anim(id).map_or(0, |a| a.template.len());
+    format!("{frames} frame{} - {cels} cel{}", plural(frames), plural(cels))
 }
 
 /// Layers in a folder (for its info line).
@@ -1076,14 +1082,14 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     // "100 % Normal" above the name, like CSP.
     let text_x = icon_box.right() + 8.0;
     let name_rect = Rect::from_min_max(pos2(text_x, rect.center().y - 4.0), pos2(marks_left - 4.0, rect.center().y + 14.0));
-    let frames = if row.animation { m.layers.frames(row.id).len() } else { 0 };
-    let template_cels = m.layers.anim(row.id).map_or(0, |t| t.template.len());
-    let members = if row.group { m.layers.group_members(row.id).len() } else { 0 };
     let info = match folder_size {
-        _ if row.animation => format!("{frames} frame{} - {template_cels} cel{}", if frames == 1 { "" } else { "s" }, if template_cels == 1 { "" } else { "s" }),
-        _ if row.group => format!("{members} animation folder{}", if members == 1 { "" } else { "s" }),
+        _ if row.animation => anim_info(m.layers, row.id),
+        _ if row.group => {
+            let members = m.layers.group_members(row.id).len();
+            format!("{members} animation folder{}", plural(members))
+        }
         _ if row.frame.is_some() => if visible { "shown".to_owned() } else { String::new() },
-        Some(n) => format!("{:.0} %  {}  ·  {n} layer{}", opacity * 100.0, blend, if n == 1 { "" } else { "s" }),
+        Some(n) => format!("{:.0} %  {}  ·  {n} layer{}", opacity * 100.0, blend, plural(n)),
         None if is_filter => format!("{:.0} %  Filter: {}", opacity * 100.0, blend),
         None => format!("{:.0} %  {}", opacity * 100.0, blend),
     };

@@ -51,7 +51,7 @@ impl DockLayout {
     }
 
     fn enforce_column(&mut self, tree: &mut Tree<Tab>, root: NodeIndex, bar: f32, sep: f32) {
-        let Some(rect) = node(tree, root).and_then(|n| n.rect()) else { return };
+        let Some(rect) = node(tree, root).and_then(Node::rect) else { return };
         if !rect.is_finite() || rect.height() <= 0.0 { return };
         let mut items = Vec::new();
         column_items(tree, root, &mut items);

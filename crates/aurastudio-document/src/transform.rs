@@ -66,10 +66,11 @@ struct Target {
     source: Source,
 }
 
+/// The union of `a` and `b`, an empty one counting for nothing.
 fn union(a: Rect, b: Rect) -> Rect {
     if a.2 <= a.0 || a.3 <= a.1 { return b; }
     if b.2 <= b.0 || b.3 <= b.1 { return a; }
-    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+    aurastudio_canvas::union(a, b)
 }
 
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {
@@ -170,11 +171,6 @@ impl Document {
 
     /// What the transform under way moves.
     pub fn transform_source(&self) -> Option<Rect> { self.transform.as_ref().map(|s| s.src) }
-
-    /// The layers being transformed.
-    pub fn transform_targets(&self) -> Vec<u64> {
-        self.transform.as_ref().map_or_else(Vec::new, |s| s.targets.iter().map(|t| t.id).collect())
-    }
 
     /// Show the layers transformed by `warp`. Returns the area to redraw.
     pub fn transform_preview(&mut self, warp: &Warp, interp: Interp) -> Option<Rect> {

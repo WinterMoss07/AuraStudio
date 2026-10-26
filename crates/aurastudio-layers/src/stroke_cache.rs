@@ -79,8 +79,9 @@ impl LayerStack {
                 let (x0, y0) = (tx * TILE, ty * TILE);
                 let (tw, th) = ((w - x0).min(TILE) as usize, (h - y0).min(TILE));
                 let mut below = crate::new_tile([255, 255, 255, 255]);
-                let mut above = crate::new_tile([0, 0, 0, 0]);
-                let mut prow = vec![[0.0f32; 4]; tw];
+                // (Nothing over the painted layer: no tile to make.)
+                let mut above = (!above_items.is_empty()).then(|| crate::new_tile([0, 0, 0, 0]));
+                let mut prow = vec![[0.0f32; 4]; if above.is_some() { tw } else { 0 }];
                 let mut covered = false;
                 for y in 0..th {
                     let o = (y * TILE * 4) as usize;
@@ -88,6 +89,7 @@ impl LayerStack {
                     for (n, s) in below_items {
                         composite_row_opaque(std::slice::from_ref(*n), y0 + y, x0, dst, *s, &mut group);
                     }
+                    let Some(above) = above.as_mut() else { continue };
                     prow.iter_mut().for_each(|p| *p = [0.0; 4]);
                     for (n, s) in above_items {
                         composite_row(std::slice::from_ref(*n), y0 + y, x0, &mut prow, *s);
@@ -98,7 +100,7 @@ impl LayerStack {
                     }
                 }
                 cache.below[i] = Some(below);
-                cache.above[i] = covered.then_some(above);
+                cache.above[i] = above.filter(|_| covered);
             }
         }
 

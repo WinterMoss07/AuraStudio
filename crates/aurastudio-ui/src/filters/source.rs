@@ -101,11 +101,12 @@ impl Source {
 /// `full` reduced 2, 4, 8… times, down to about SMALLEST_SIDE.
 fn pyramid(full: &Level) -> Vec<Level> {
     let mut reduced: Vec<Level> = Vec::new();
-    while reduced.last().unwrap_or(full).w.max(reduced.last().unwrap_or(full).h) > SMALLEST_SIDE * 2 {
-        let next = reduce(reduced.last().unwrap_or(full), 2);
+    loop {
+        let last = reduced.last().unwrap_or(full);
+        if last.w.max(last.h) <= SMALLEST_SIDE * 2 { return reduced; }
+        let next = reduce(last, 2);
         reduced.push(next);
     }
-    reduced
 }
 
 /// `l` reduced `k` times: each pixel the average of k × k, colors weighted

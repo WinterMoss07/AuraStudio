@@ -98,8 +98,7 @@ pub enum Event {
     /// The projection has new changed areas to upload.
     Painted,
     /// A layer's pixels changed for good (stroke done, undo...): refresh
-    /// its thumbnail.
-    /// A layer's pixels changed; `rect`: where (None: anywhere, or unknown).
+    /// its thumbnail. `rect`: where (None: anywhere, or unknown).
     LayerChanged { layer_id: u64, rect: Option<Rect> },
     /// Short message for the options bar ("Nothing to undo"...).
     Notice(&'static str),
@@ -201,6 +200,26 @@ struct Worker {
     stats:    Stats,
 }
 
+/// A document edit refused while a filter's preview (or a transform) is
+/// shown on the layer: nothing else touches the document until it is
+/// applied or not. One lock of the document.
+fn refused(cmd: &Cmd) -> Option<(&'static str, SharedDoc)> {
+    let (doc, filter) = match cmd {
+        Cmd::Begin { doc, .. } | Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) | Cmd::Fill { doc, .. } | Cmd::Paste { doc, .. } | Cmd::Select { doc, .. } => (doc, false),
+        Cmd::Filter { doc, .. } => (doc, true),
+        _ => return None,
+    };
+    let d = doc.lock().unwrap();
+    let msg = if !filter && d.filtering() {
+        "Apply or cancel the filter first"
+    } else if d.transforming() {
+        "Apply or cancel the transform first"
+    } else {
+        return None;
+    };
+    Some((msg, Arc::clone(doc)))
+}
+
 impl Worker {
     fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         Self {
@@ -235,22 +254,12 @@ impl Worker {
             let mut flush = false;
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
+                if let Some((msg, doc)) = refused(&cmd) {
+                    events.push(Event::Notice(msg));
+                    self.doc = Some(doc);
+                    continue;
+                }
                 match cmd {
-                    Cmd::Begin { doc, .. } | Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) | Cmd::Fill { doc, .. } | Cmd::Paste { doc, .. } | Cmd::Select { doc, .. }
-                        if doc.lock().unwrap().filtering() =>
-                    {
-                        // The layer shows a filter's preview: nothing else
-                        // touches the document until it is applied or not.
-                        events.push(Event::Notice("Apply or cancel the filter first"));
-                        self.doc = Some(doc);
-                    }
-                    Cmd::Begin { doc, .. } | Cmd::Undo(doc) | Cmd::Redo(doc) | Cmd::Clear(doc) | Cmd::Fill { doc, .. } | Cmd::Paste { doc, .. } | Cmd::Select { doc, .. } | Cmd::Filter { doc, .. }
-                        if doc.lock().unwrap().transforming() =>
-                    {
-                        // The same with a transform shown.
-                        events.push(Event::Notice("Apply or cancel the transform first"));
-                        self.doc = Some(doc);
-                    }
                     Cmd::Filter { action: aurastudio_ui::FilterAction::Preview(_), .. }
                         if queue.iter().any(|c| matches!(c, Cmd::Filter { .. })) => {}
                     // Never under a stroke (its snapshot would no longer
@@ -444,14 +453,14 @@ impl Worker {
     /// runs between two), each shown as it comes.
     fn recomposite(&mut self, doc: SharedDoc) {
         let t = Instant::now();
-        let (w, h) = {
+        let (w, h, bands) = {
             let mut d = doc.lock().unwrap();
             d.layers.drop_stroke_cache();
-            (d.layers.width, d.layers.height)
+            let (w, h) = (d.layers.width, d.layers.height);
+            (w, h, d.layers.merge_bands((0, 0, w, h), 128))
         };
         // (What was waiting to be shown is part of it.)
         self.pending.clear();
-        let bands = doc.lock().unwrap().layers.merge_bands((0, 0, w, h), 128);
         for r in bands {
             let rgba = {
                 let d = doc.lock().unwrap();
@@ -497,7 +506,7 @@ impl Worker {
 
     /// End the open stroke (recorded for undo) and report its layer.
     fn finish_stroke(&mut self, events: &mut Vec<Event>) {
-        if let Some((rect, whole, id)) = self.with_doc(|w, d| w.end(d)).flatten() {
+        if let Some((rect, whole, id)) = self.with_doc(Worker::end).flatten() {
             if let Some(r) = rect { add_rect(&mut self.pending, r); }
             events.push(Event::LayerChanged { layer_id: id, rect: whole });
         }

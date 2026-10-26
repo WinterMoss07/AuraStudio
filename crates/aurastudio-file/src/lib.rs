@@ -285,10 +285,11 @@ pub fn write<W: Write + Seek>(snap: &Snapshot, out: W) -> io::Result<()> {
     zip.start_file("document.json", stored).map_err(err)?;
     zip.write_all(&serde_json::to_vec_pretty(&snap.json).map_err(io::Error::other)?)?;
     if let Some((w, h, rgba)) = &snap.preview {
+        use image::ImageEncoder;
+        if rgba.len() != *w as usize * *h as usize * 4 { return Err(io::Error::other("preview size")); }
         let mut png = Vec::new();
-        image::RgbaImage::from_raw(*w, *h, rgba.clone())
-            .ok_or_else(|| io::Error::other("preview size"))?
-            .write_to(&mut io::Cursor::new(&mut png), image::ImageFormat::Png)
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(rgba, *w, *h, image::ExtendedColorType::Rgba8)
             .map_err(io::Error::other)?;
         zip.start_file("preview.png", stored).map_err(err)?;
         zip.write_all(&png)?;
@@ -317,7 +318,7 @@ pub fn save(snap: &Snapshot, path: &Path) -> io::Result<()> {
     let result = (|| {
         let mut file = io::BufWriter::new(std::fs::File::create(&tmp)?);
         write(snap, &mut file)?;
-        let file = file.into_inner().map_err(|e| e.into_error())?;
+        let file = file.into_inner().map_err(std::io::IntoInnerError::into_error)?;
         file.sync_all()?;
         drop(file);
         std::fs::rename(&tmp, path)
@@ -564,18 +565,26 @@ pub fn import_image(path: &Path, id: DocId, max_side: u32) -> Result<Document, S
 /// Export the merged image (`merged`: canvas-sized RGBA) to PNG or JPG,
 /// chosen by the file extension.
 pub fn export_image(merged: &[u8], width: u32, height: u32, path: &Path) -> Result<(), String> {
+    use image::ImageEncoder;
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    let img = image::RgbaImage::from_raw(width, height, merged.to_vec()).ok_or("wrong image size")?;
+    let jpeg = match ext.as_str() {
+        "jpg" | "jpeg" => true,
+        "png" => false,
+        // (Checked before the file is made: no empty file left behind.)
+        _ => return Err(format!("can't export .{ext} (PNG or JPG)")),
+    };
+    if merged.len() != width as usize * height as usize * 4 { return Err("wrong image size".into()); }
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut out = io::BufWriter::new(file);
-    match ext.as_str() {
-        "jpg" | "jpeg" => {
-            let rgb = image::DynamicImage::ImageRgba8(img).into_rgb8();
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 95)
-                .encode_image(&rgb).map_err(|e| e.to_string())?;
-        }
-        "png" => img.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?,
-        _ => return Err(format!("can't export .{ext} (PNG or JPG)")),
+    if jpeg {
+        // (JPEG has no alpha: the colors as they are.)
+        let rgb: Vec<u8> = merged.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 95)
+            .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
+    } else {
+        // Straight from the merged pixels (no copy of the whole image).
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(merged, width, height, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())?;
     }
     out.flush().map_err(|e| e.to_string())
 }
@@ -1057,6 +1066,8 @@ mod tests {
         assert_eq!(import_image(&dir.join("photo.jpg"), DocId(1), 16384).unwrap().layers.width, 30);
         assert!(import_image(&png, DocId(1), 16).is_err());
         assert!(export_image(&rgba, 30, 20, &dir.join("x.gif")).is_err());
+        assert!(!dir.join("x.gif").exists(), "a refused export leaves no file");
+        assert!(export_image(&rgba[4..], 30, 20, &dir.join("short.png")).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

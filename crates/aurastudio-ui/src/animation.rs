@@ -18,7 +18,7 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Str
 
 use aurastudio_layers::{Column, FolderKind, LayerStack, Node, Onto, Place, Shift};
 
-use crate::dockers::layers::{delete_layer, LayersState};
+use crate::dockers::layers::{anim_info, delete_layer, plural, LayersState};
 use crate::icons::Icon;
 use crate::widgets::{icon_button, icon_toggle};
 use crate::{theme, Actions, Model, Notice};
@@ -40,6 +40,7 @@ struct Drag { folder: u64, frames: Vec<u32>, from: u32, to: u32 }
 struct ColDrag { id: u64, target: Option<(u64, Place)>, exit: bool }
 
 /// A move / copy onto drawn frames, waiting for the answer.
+#[derive(Clone)]
 struct Ask { folder: u64, frames: Vec<u32>, delta: i32, copy: bool }
 
 /// What a right click was on (kept while the menu is open: the pointer is
@@ -182,14 +183,10 @@ fn column_frames(layers: &LayerStack, col: Column) -> Vec<(u32, Option<u64>)> {
 /// "12 frames - 4 cels" for a folder, "3 folders" for a group.
 fn info(layers: &LayerStack, col: Column) -> String {
     match col {
-        Column::Folder(f) => {
-            let frames = layers.frames(f).len();
-            let cels = layers.anim(f).map_or(0, |a| a.template.len());
-            format!("{frames} frame{} - {cels} cel{}", if frames == 1 { "" } else { "s" }, if cels == 1 { "" } else { "s" })
-        }
+        Column::Folder(f) => anim_info(layers, f),
         Column::Group(g) => {
             let n = layers.group_members(g).len();
-            format!("{n} folder{}", if n == 1 { "" } else { "s" })
+            format!("{n} folder{}", plural(n))
         }
     }
 }
@@ -390,7 +387,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     for (c, &col) in cols.iter().enumerate() {
         let frames = column_frames(m.layers, col);
         let color = folder_color(m.layers, col.id());
-        let visible = m.layers.node(col.id()).is_some_and(|n| n.visible());
+        let visible = m.layers.node(col.id()).is_some_and(Node::visible);
         let dim = if visible { 1.0 } else { 0.45 };
         for f in f0..=f1 {
             let r = g.cell(c, f);
@@ -565,10 +562,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                 match cols.get(c) {
                     Some(&Column::Folder(folder)) if m.layers.frame_at(folder, f).is_some() => {
                         // The frames dragged: those picked, if it is one of them.
-                        if !(st.picked_in == Some(folder) && st.picked.contains(&f)) {
-                            st.picked = vec![f];
-                            st.picked_in = Some(folder);
-                        }
+                        pick_unless_picked(st, folder, f);
                         st.drag = Some(Drag { folder, frames: st.picked.clone(), from: f, to: f });
                     }
                     _ => st.boxsel = Some(q),
@@ -715,15 +709,11 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         }
     });
     if resp.secondary_clicked() {
-        // A folder (or frame) right clicked joins the picks, unless it is in them.
+        // A folder (or frame) right clicked is picked alone, unless it is
+        // among the picks.
         match hit {
             Some(Menu::Head(col)) if !ls.selection(m.layers).contains(&col.id()) => { ls.selected.clear(); choose(m, col.id(), t); }
-            Some(Menu::Cell(Column::Folder(folder), f))
-                if !(st.picked_in == Some(folder) && st.picked.contains(&f)) && m.layers.frame_at(folder, f).is_some() =>
-            {
-                st.picked = vec![f];
-                st.picked_in = Some(folder);
-            }
+            Some(Menu::Cell(Column::Folder(folder), f)) if m.layers.frame_at(folder, f).is_some() => pick_unless_picked(st, folder, f),
             _ => {}
         }
     }
@@ -754,9 +744,15 @@ fn after_move(st: &mut AnimPanel, m: &mut Model, a: &mut Actions, folder: u64, f
     st.picked = frames.iter().map(|n| (*n as i64 + delta as i64).max(1) as u32).collect();
     st.picked.sort_unstable();
     st.picked_in = Some(folder);
-    let to = st.picked.first().copied().unwrap_or(1);
-    let _ = to;
     if let Some(&last) = frames.last() { go(m, a, (last as i64 + delta as i64).max(1) as u32); }
+}
+
+/// Frame `f` of `folder` picked alone, unless it is among the picks.
+fn pick_unless_picked(st: &mut AnimPanel, folder: u64, f: u32) {
+    if !(st.picked_in == Some(folder) && st.picked.contains(&f)) {
+        st.picked = vec![f];
+        st.picked_in = Some(folder);
+    }
 }
 
 /// A click on frame `f` of `folder`: it alone, Shift to a range from the
@@ -887,14 +883,14 @@ fn choose(m: &mut Model, folder: u64, f: u32) {
 /// Frames moved or copied onto drawn ones: replace them, swap them (moves
 /// only), or not (the default: it is usually a slip).
 fn ask_dialog(ctx: &egui::Context, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
-    let Some(Ask { folder, frames, delta, copy }) = st.ask.as_ref().map(|x| Ask { folder: x.folder, frames: x.frames.clone(), delta: x.delta, copy: x.copy }) else { return };
+    let Some(Ask { folder, frames, delta, copy }) = st.ask.clone() else { return };
     let name = m.layers.node(folder).map_or(String::new(), |n| n.name().to_owned());
     let mut answer = None;
     egui::Modal::new(egui::Id::new("anim_onto")).show(ctx, |ui| {
         ui.set_width(340.0);
         ui.label(RichText::new(format!("Some frames of {name} are already drawn")).strong());
         ui.add_space(4.0);
-        ui.label(format!("{} {} frame{} onto them:", if copy { "Copy" } else { "Move" }, frames.len(), if frames.len() == 1 { "" } else { "s" }));
+        ui.label(format!("{} {} frame{} onto them:", if copy { "Copy" } else { "Move" }, frames.len(), plural(frames.len())));
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Replace them").clicked() { answer = Some(Onto::Replace); }

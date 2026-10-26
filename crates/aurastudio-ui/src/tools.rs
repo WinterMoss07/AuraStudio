@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use aurastudio_brushes::{Kind, Preset};
 use egui::{pos2, vec2, Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui};
 
-use crate::widgets::{fill_slider, Fill};
+use crate::widgets::{fill_slider, pixels, Fill};
 use crate::{theme, Actions, Model};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -335,29 +335,35 @@ pub fn options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
 
 /// Tolerance, reference and expand of the fill tool.
 pub fn fill_options(ui: &mut Ui, m: &mut Model, w: f32) {
-    let tol = m.fill.tolerance as f32 / 255.0 * 100.0;
-    if let Some(v) = fill_slider(ui, "fill_tolerance", crate::widgets::percent("Tolerance"), tol, w) {
-        m.fill.tolerance = (v / 100.0 * 255.0).round() as u8;
-    }
-    let expand = Fill { label: "Expand", range: 0.0..=8.0, mid: None, format: &|v| format!("{v:.0} px") };
-    if let Some(v) = fill_slider(ui, "fill_expand", expand, m.fill.expand as f32, w) {
+    tolerance_slider(ui, "fill_tolerance", &mut m.fill.tolerance, w);
+    if let Some(v) = fill_slider(ui, "fill_expand", pixels("Expand", 0.0..=8.0, None), m.fill.expand as f32, w) {
         m.fill.expand = v as u32;
     }
+    let none = m.fill.refer == aurastudio_layers::Refer::References && m.layers.reference_for(m.layers.active_id()).is_none();
+    refer_options(ui, &mut m.fill.refer, &mut m.fill.skip_drafts, none);
+}
+
+/// A tolerance (0..255) shown as a percentage.
+fn tolerance_slider(ui: &mut Ui, id: &str, tolerance: &mut u8, w: f32) {
+    let tol = *tolerance as f32 / 255.0 * 100.0;
+    if let Some(v) = fill_slider(ui, id, crate::widgets::percent("Tolerance"), tol, w) {
+        *tolerance = (v / 100.0 * 255.0).round() as u8;
+    }
+}
+
+/// Which layers the fill or the wand look at; `no_reference`: there is
+/// no reference layer to look at (said in red).
+fn refer_options(ui: &mut Ui, refer: &mut aurastudio_layers::Refer, skip_drafts: &mut bool, no_reference: bool) {
+    use aurastudio_layers::Refer;
     ui.add_space(2.0);
     ui.label(RichText::new("Refer to").small().color(theme::TEXT_WEAK));
     ui.horizontal_wrapped(|ui| {
-        use aurastudio_layers::Refer;
-        ui.selectable_value(&mut m.fill.refer, Refer::Layer, "This layer");
-        ui.selectable_value(&mut m.fill.refer, Refer::All, "All layers");
-        ui.selectable_value(&mut m.fill.refer, Refer::References, "References");
+        ui.selectable_value(refer, Refer::Layer, "This layer");
+        ui.selectable_value(refer, Refer::All, "All layers");
+        ui.selectable_value(refer, Refer::References, "References");
     });
-    let active = m.layers.active_id();
-    if m.fill.refer == aurastudio_layers::Refer::References && m.layers.reference_for(active).is_none() {
-        ui.label(RichText::new("No reference layer").small().color(theme::DROP));
-    }
-    ui.add_enabled_ui(m.fill.refer != aurastudio_layers::Refer::Layer, |ui| {
-        ui.checkbox(&mut m.fill.skip_drafts, "Ignore draft layers");
-    });
+    if no_reference { ui.label(RichText::new("No reference layer").small().color(theme::DROP)); }
+    ui.add_enabled_ui(*refer != Refer::Layer, |ui| { ui.checkbox(skip_drafts, "Ignore draft layers"); });
 }
 
 /// Brushes: "stay inside the lines" (CSP's anti-overflow).
@@ -434,28 +440,14 @@ pub fn selection_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     ui.add_space(2.0);
     if *m.tool != Tool::RectSelect { ui.checkbox(&mut m.select.aa, "Anti-aliasing"); }
     ui.checkbox(&mut m.select.loupe, "Loupe").on_hover_text(LOUPE_TIP);
-    let feather = Fill { label: "Feather", range: 0.0..=200.0, mid: Some(20.0), format: &|v| format!("{v:.0} px") };
-    if let Some(v) = fill_slider(ui, "sel_feather", feather, m.select.feather, w) { m.select.feather = v; }
+    if let Some(v) = fill_slider(ui, "sel_feather", pixels("Feather", 0.0..=200.0, Some(20.0)), m.select.feather, w) { m.select.feather = v; }
     if *m.tool == Tool::MagicWand {
         ui.add_space(4.0);
         let wd = &mut m.select.wand;
-        let tol = wd.tolerance as f32 / 255.0 * 100.0;
-        if let Some(v) = fill_slider(ui, "wand_tolerance", crate::widgets::percent("Tolerance"), tol, w) {
-            wd.tolerance = (v / 100.0 * 255.0).round() as u8;
-        }
-        let grow = Fill { label: "Grow", range: 0.0..=20.0, mid: None, format: &|v| format!("{v:.0} px") };
-        if let Some(v) = fill_slider(ui, "wand_grow", grow, wd.grow as f32, w) { wd.grow = v as u32; }
+        tolerance_slider(ui, "wand_tolerance", &mut wd.tolerance, w);
+        if let Some(v) = fill_slider(ui, "wand_grow", pixels("Grow", 0.0..=20.0, None), wd.grow as f32, w) { wd.grow = v as u32; }
         ui.checkbox(&mut wd.contiguous, "Contiguous");
-        ui.add_space(2.0);
-        ui.label(RichText::new("Refer to").small().color(theme::TEXT_WEAK));
-        ui.horizontal_wrapped(|ui| {
-            use aurastudio_layers::Refer;
-            ui.selectable_value(&mut wd.refer, Refer::Layer, "This layer");
-            ui.selectable_value(&mut wd.refer, Refer::All, "All layers");
-            ui.selectable_value(&mut wd.refer, Refer::References, "References");
-        });
-        let refer = wd.refer;
-        ui.add_enabled_ui(refer != aurastudio_layers::Refer::Layer, |ui| { ui.checkbox(&mut m.select.wand.skip_drafts, "Ignore draft layers"); });
+        refer_options(ui, &mut wd.refer, &mut wd.skip_drafts, false);
     }
     ui.add_space(6.0);
     ui.horizontal(|ui| {

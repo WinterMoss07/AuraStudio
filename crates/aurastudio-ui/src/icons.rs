@@ -15,7 +15,7 @@ pub enum Icon {
     // Layers docker.
     NewLayer, NewFolder, Duplicate, Delete,
     Eye, EyeClosed, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded,
-    Clip, Reference, Draft, FilterLayer, Label, FilterBy, Group, Ungroup, Close,
+    Clip, Reference, Draft, FilterLayer, Label, FilterBy, Close,
     // Toolbar.
     FileNew, FileOpen, Save, Copy, Paste,
     // Tools docker: the brush mediums.
@@ -25,10 +25,10 @@ pub enum Icon {
     // Selection and transform tools.
     EllipseSelect, PolySelect, Wand, Transform,
     SelReplace, SelAdd, SelSubtract, SelIntersect,
-    Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Check, Move,
+    Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV,
     // Animation.
-    Film, Minus, ArrowUp, ArrowDown, Camera, Comics,
-    Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, XSheet, Timeline, InsertFrame, RemoveFrame,
+    Film, Minus, Camera,
+    Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, InsertFrame, RemoveFrame,
     SwitchView, Folders,
 }
 
@@ -69,8 +69,6 @@ impl Icon {
             Icon::FilterLayer => svg!("../icons/sliders-horizontal.svg"),
             Icon::Label      => svg!("../icons/tag.svg"),
             Icon::FilterBy   => svg!("../icons/funnel.svg"),
-            Icon::Group      => svg!("../icons/folder-input.svg"),
-            Icon::Ungroup    => svg!("../icons/folder-output.svg"),
             Icon::Close      => svg!("../icons/x.svg"),
             Icon::Pencil     => svg!("../icons/pencil.svg"),
             Icon::Ink        => svg!("../icons/pen-tool.svg"),
@@ -97,14 +95,9 @@ impl Icon {
             Icon::RotateRight => svg!("../icons/rotate-cw-square.svg"),
             Icon::FlipH      => svg!("../icons/flip-horizontal.svg"),
             Icon::FlipV      => svg!("../icons/flip-vertical.svg"),
-            Icon::Check      => svg!("../icons/check.svg"),
-            Icon::Move       => svg!("../icons/move.svg"),
             Icon::Film       => svg!("../icons/film.svg"),
             Icon::Minus      => svg!("../icons/minus.svg"),
-            Icon::ArrowUp    => svg!("../icons/arrow-up.svg"),
-            Icon::ArrowDown  => svg!("../icons/arrow-down.svg"),
             Icon::Camera     => svg!("../icons/video.svg"),
-            Icon::Comics     => svg!("../icons/book-open.svg"),
             Icon::Play       => svg!("../icons/play.svg"),
             Icon::Pause      => svg!("../icons/pause.svg"),
             Icon::SkipBack   => svg!("../icons/skip-back.svg"),
@@ -112,8 +105,6 @@ impl Icon {
             Icon::StepBack   => svg!("../icons/chevron-left.svg"),
             Icon::StepForward => svg!("../icons/chevron-right.svg"),
             Icon::Repeat     => svg!("../icons/repeat.svg"),
-            Icon::XSheet     => svg!("../icons/columns-2.svg"),
-            Icon::Timeline   => svg!("../icons/rows-2.svg"),
             Icon::InsertFrame => svg!("../icons/between-horizontal-start.svg"),
             Icon::RemoveFrame => svg!("../icons/between-horizontal-end.svg"),
             Icon::SwitchView => svg!("../icons/refresh-cw.svg"),
@@ -143,24 +134,22 @@ const RETRY_AFTER: u64 = 60;
 const MAX_PAGES: usize = 4;
 
 impl Icons {
-    fn new(max_pages: usize) -> Self {
-        Self { atlas: Atlas::new("icons", egui::TextureOptions::LINEAR, max_pages), regions: HashMap::new(), failed: HashMap::new(), ppp: 0.0, tidied: 0 }
+    fn new() -> Self {
+        Self { atlas: Atlas::new("icons", egui::TextureOptions::LINEAR, MAX_PAGES), regions: HashMap::new(), failed: HashMap::new(), ppp: 0.0, tidied: 0 }
     }
 
     /// Everything made for another screen scale goes (a window moved from
     /// a 150 % screen to a 200 % one must not keep both).
     fn set_scale(&mut self, ppp: f32) {
         if (self.ppp - ppp).abs() > 1e-3 {
-            *self = Self::new(self.atlas_max());
+            *self = Self::new();
             self.ppp = ppp;
         }
     }
-
-    fn atlas_max(&self) -> usize { self.atlas.max_pages() }
 }
 
 thread_local! {
-    static ICONS: RefCell<Icons> = RefCell::new(Icons::new(MAX_PAGES));
+    static ICONS: RefCell<Icons> = RefCell::new(Icons::new());
 }
 
 /// The SVG text of `icon`: whole, or with a thin stroke (its core).
@@ -303,10 +292,10 @@ mod tests {
         use Icon::*;
         vec![Brush, Eraser, Picker, Fill, Lasso, RectSelect, Line, Rectangle, Ellipse, Arc, NewLayer, NewFolder, Duplicate, Delete,
             Eye, EyeClosed, Lock, LockOpen, Folder, FolderOpen, Collapsed, Expanded, Clip, Reference, Draft, FilterLayer, Label, FilterBy,
-            Group, Ungroup, Close, FileNew, FileOpen, Save, Copy, Paste, Pencil, Ink, Charcoal, Paint, Watercolor, Airbrush, Blend,
+            Close, FileNew, FileOpen, Save, Copy, Paste, Pencil, Ink, Charcoal, Paint, Watercolor, Airbrush, Blend,
             Effects, Misc, Plus, Shapes, EllipseSelect, PolySelect, Wand, Transform, SelReplace, SelAdd, SelSubtract, SelIntersect,
-            Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Check, Move, Film, Minus, ArrowUp, ArrowDown, Camera, Comics,
-            Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, XSheet, Timeline, InsertFrame, RemoveFrame, SwitchView, Folders]
+            Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Film, Minus, Camera,
+            Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, InsertFrame, RemoveFrame, SwitchView, Folders]
     }
 }
 
@@ -329,7 +318,7 @@ mod more_tests {
     #[test]
     fn a_full_atlas_never_hides_an_icon_for_good() {
         let ctx = egui::Context::default();
-        ICONS.with(|i| { *i.borrow_mut() = Icons::new(1); i.borrow_mut().ppp = ctx.pixels_per_point(); });
+        ICONS.with(|i| { *i.borrow_mut() = Icons { atlas: Atlas::new("icons", egui::TextureOptions::LINEAR, 1), ..Icons::new() }; i.borrow_mut().ppp = ctx.pixels_per_point(); });
         // Take the whole first page.
         let filler = ICONS.with(|i| i.borrow_mut().atlas.alloc(&ctx, 250, 250)).expect("the page");
         frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
@@ -349,7 +338,7 @@ mod more_tests {
     #[test]
     fn a_new_scale_resets_the_icon_atlas() {
         let ctx = egui::Context::default();
-        ICONS.with(|i| *i.borrow_mut() = Icons::new(MAX_PAGES));
+        ICONS.with(|i| *i.borrow_mut() = Icons::new());
         ctx.set_pixels_per_point(1.5);
         frame(&ctx, |ui| for icon in [Icon::Eye, Icon::Lock, Icon::Brush] { paint(ui, icon, r(), 14.0, Color32::WHITE); });
         assert_eq!(used_regions(), 3);

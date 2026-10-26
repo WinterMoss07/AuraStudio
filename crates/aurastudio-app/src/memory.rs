@@ -196,7 +196,6 @@ pub fn gpu_sections(g: &GpuMemory) -> Vec<MemorySection> {
     out
 }
 
-/// A report from its parts.
 /// The stroke previews in one line: what they hold on the GPU, and how the
 /// disk cache served them (pictures read from it / painted since the start).
 fn previews_line() -> String {
@@ -208,6 +207,7 @@ fn previews_line() -> String {
     )
 }
 
+/// A report from its parts.
 pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>) -> MemoryReport {
     let (working_set, private) = process_memory();
     let mut sections = Vec::new();

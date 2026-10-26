@@ -3,11 +3,52 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.16.3 — 2026-10-26
+
+A cleanup pass over the whole code: no new feature, fewer lines, fewer
+locks, a few bugs.
+
+**Fixes**
+- Export: a file name with an unsupported extension no longer leaves an
+  empty file behind (the extension is checked before the file is made).
+- Export and save: the merged image and the preview are encoded straight
+  from their pixels (PNG, JPG) instead of a full copy first (24 MB less at
+  once for a 2000 × 3000 picture).
+- Cel template: hiding or showing a cel before any frame is drawn now
+  counts as a change of the document.
+- Transform tool: a band's lock is no longer held while the band is
+  rendered.
+
+**Fewer locks of the document**
+- Starting playback, the paint thread's "a filter / transform is shown"
+  check and the full merge after a change each lock the document once
+  instead of two or three times. Saving updates the document under one
+  lock.
+
+**Less work per frame**
+- The stroke cache makes no "above" tile when nothing is over the painted
+  layer (the common case: painting the top layer).
+- Layers docker: the frames / cels / members counts are only looked up for
+  the rows that show them; the brush list builds its tooltips only for the
+  rows on screen; filter samples (Emboss, Drop shadow) no longer copy the
+  filter every frame.
+
+**Cleanup**
+- Dead code removed: an unused transform query, the WinTab orientation
+  ranges, nine icons never drawn (and their SVG files), an unused atlas
+  accessor.
+- Shared helpers instead of copies: one rectangle union (canvas crate),
+  one "paint layers of a node" walk, one modal dialog frame, one stroke
+  start, one canvas-pixel test, the fill / wand options, tolerance and
+  pixel sliders, render passes over the frame, texture freeing, filter
+  hashing, filter colors, animation folder info.
+- Doc comments that had drifted onto the wrong item put back in place.
+
 ## 0.16.2 — 2026-10-26
 
 **Pen: thin lines no longer step**
 - The pen's position was rounded to whole screen pixels by both pen APIs,
-  so fine brushes drew stair steps (Walid's comparison with Krita and CSP,
+  so fine brushes drew stair steps (compared with Krita and CSP,
   no smoothing). WinTab now reports positions 16 times finer than a pixel
   (same screen mapping as the cursor: the driver's own); Windows Ink maps the
   pen's HIMETRIC position through its device rectangle (as Chromium does),
@@ -28,7 +69,7 @@ Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 
 **Memory**
 - Back from minimized, the swapchain is kept when the window has the same
-  size: rebuilding it held old and new images at once (Walid: 122 → 147 MB,
+  size: rebuilding it held old and new images at once (122 → 147 MB,
   then 122 + 3 MB kept by the driver each time). Rebuilds are counted in the
   memory report.
 - Stroke preview pages are shared by strips of one height: a page made for
@@ -67,7 +108,7 @@ Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 **Stroke previews: resizing a docker no longer eats memory**
 - 0.15.2 painted a new preview, wrote a new file and made new textures for
   every pixel of docker width; the memory they took was not given back
-  (Walid: 148 → 360 MB while resizing the Tools docker). Now:
+  (148 → 360 MB while resizing the Tools docker). Now:
   - Previews are painted at a fixed ladder of widths (steps of 32 px, ~19 %
     apart) and drawn centered in their row: a few pixels of resize change
     nothing, and the disk cache serves them at any docker width.
@@ -364,7 +405,7 @@ menu)
 
 ## 0.12.0 — 2026-10-20
 
-First step of the animation work (spec agreed with Walid: one animation
+First step of the animation work (spec agreed: one animation
 folder per element, one layer per frame with its sub-cels, a cel
 template per folder, X-sheet, camera in pixels).
 

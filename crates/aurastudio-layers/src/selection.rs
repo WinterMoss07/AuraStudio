@@ -340,7 +340,7 @@ impl Selection {
         match (mode, old, new) {
             (Mode::Replace, _, n) => n,
             (Mode::Add, None, n) => n,
-            (Mode::Add, Some(o), None) | (Mode::Subtract, Some(o), None) => Some(o.clone()),
+            (Mode::Add | Mode::Subtract, Some(o), None) => Some(o.clone()),
             (Mode::Subtract | Mode::Intersect, None, _) | (Mode::Intersect, _, None) => None,
             (_, Some(o), Some(n)) if o.size() != n.size() => Some(n),
             (m, Some(o), Some(n)) => {
