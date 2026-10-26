@@ -196,12 +196,19 @@ fn lift_mesh(warp: &aurastudio_layers::transform::Warp, src: aurastudio_canvas::
 
 /// The document locked, if it gets free within `wait`.
 fn lock_soon(doc: &SharedDoc, wait: Duration) -> Option<std::sync::MutexGuard<'_, aurastudio_document::Document>> {
+    use std::sync::atomic::Ordering;
+    if let Ok(d) = doc.try_lock() { return Some(d); }
+    // Taken (a stroke, a merge): ask the paint thread to let us in between
+    // two of its steps.
+    crate::paint_thread::UI_WANTS_DOC.store(true, Ordering::Release);
     let t = Instant::now();
-    loop {
-        if let Ok(d) = doc.try_lock() { return Some(d); }
-        if t.elapsed() >= wait { return None; }
-        std::thread::sleep(Duration::from_micros(200));
-    }
+    let got = loop {
+        if let Ok(d) = doc.try_lock() { break Some(d); }
+        if t.elapsed() >= wait { break None; }
+        std::thread::yield_now();
+    };
+    crate::paint_thread::UI_WANTS_DOC.store(false, Ordering::Release);
+    got
 }
 
 pub struct App {
@@ -1714,7 +1721,9 @@ impl App {
         if run_ui { self.activity.ui_frames += 1 } else { self.activity.canvas_frames += 1 }
         // Outside a stroke, wait a little for it: a merge on the paint
         // thread takes it band by band and lets go between two.
-        let wait = if self.is_drawing { Duration::ZERO } else { Duration::from_millis(15) };
+        // During a stroke, a short wait: the paint thread lets the UI in
+        // between two samples.
+        let wait = if self.is_drawing { Duration::from_millis(3) } else { Duration::from_millis(15) };
         match if run_ui { lock_soon(doc, wait) } else { None } {
             Some(mut doc) => gpu.render(|ctx| {
             *ui_saw_canvas = over_canvas;

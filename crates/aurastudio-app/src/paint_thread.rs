@@ -17,6 +17,23 @@ use aurastudio_document::{Document, SharedDoc};
 
 use crate::projection::{add_rect, union, SharedProjection};
 
+/// Set by the interface while it waits for the document: between two
+/// samples the paint thread lets it in (a big brush otherwise kept the
+/// document locked nearly all the time, and the interface froze for up to
+/// 400 ms, "UI waited … for the document").
+pub static UI_WANTS_DOC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How long the paint thread holds back for the interface, at most.
+const MAX_YIELD: Duration = Duration::from_millis(4);
+
+/// Wait (briefly) while the interface asks for the document.
+fn let_ui_in() {
+    use std::sync::atomic::Ordering;
+    if !UI_WANTS_DOC.load(Ordering::Acquire) { return; }
+    let t = Instant::now();
+    while UI_WANTS_DOC.load(Ordering::Acquire) && t.elapsed() < MAX_YIELD { std::thread::yield_now(); }
+}
+
 /// Shortest time between two projection updates while painting is behind
 /// the pen (~120 fps; Krita's default limit is 100).
 const UPDATE_PERIOD: Duration = Duration::from_millis(8);
@@ -515,6 +532,7 @@ impl Worker {
     /// it between two samples).
     fn with_doc<R>(&mut self, f: impl FnOnce(&mut Self, &mut Document) -> R) -> Option<R> {
         let doc = self.doc.clone()?;
+        let_ui_in();
         let mut d = doc.lock().unwrap();
         Some(f(self, &mut d))
     }
@@ -1080,5 +1098,36 @@ mod tests {
             let a = (y as usize * width as usize + r.0 as usize) * 4;
             screen[a..a + rw].copy_from_slice(row);
         }
+    }
+}
+
+#[cfg(test)]
+mod ui_turn_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// The paint thread holds back while the interface asks, for a few
+    /// milliseconds at most, and not at all otherwise.
+    #[test]
+    fn the_paint_thread_lets_the_interface_in_briefly() {
+        let t = Instant::now();
+        let_ui_in();
+        assert!(t.elapsed() < Duration::from_millis(1), "no wait when nobody asks");
+        UI_WANTS_DOC.store(true, Ordering::Release);
+        let t = Instant::now();
+        let_ui_in();
+        let waited = t.elapsed();
+        UI_WANTS_DOC.store(false, Ordering::Release);
+        assert!(waited >= MAX_YIELD && waited < MAX_YIELD * 10, "{waited:?}");
+        // Released as soon as the interface has it.
+        UI_WANTS_DOC.store(true, Ordering::Release);
+        let release = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_micros(500));
+            UI_WANTS_DOC.store(false, Ordering::Release);
+        });
+        let t = Instant::now();
+        let_ui_in();
+        release.join().unwrap();
+        assert!(t.elapsed() < MAX_YIELD, "{:?}", t.elapsed());
     }
 }

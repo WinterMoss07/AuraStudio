@@ -18,6 +18,50 @@ pub struct StylusSample {
 }
 
 // ---------------------------------------------------------------
+// Pen positions finer than a screen pixel. Whole pixels made thin lines
+// step like stairs (Krita and CSP read the tablet's own resolution).
+// ---------------------------------------------------------------
+
+/// WinTab is asked for screen coordinates this many times finer than a
+/// pixel: the same mapping as the screen (the driver's own), with fractions.
+pub const WINTAB_SCALE: i32 = 16;
+
+/// `v` from the span [from_lo, from_lo + from_size) to [to_lo, to_lo + to_size).
+fn remap(v: f64, from_lo: f64, from_size: f64, to_lo: f64, to_size: f64) -> f64 {
+    to_lo + (v - from_lo) * to_size / from_size
+}
+
+/// A Windows Ink position in the pen device's HIMETRIC space (0.01 mm) to
+/// screen pixels, with the device's rectangle and the screen rectangle it
+/// maps to (GetPointerDeviceRects; left, top, right, bottom). None: an
+/// empty rectangle.
+pub fn himetric_to_screen(him: (i32, i32), device: [i32; 4], display: [i32; 4]) -> Option<(f64, f64)> {
+    let (dw, dh) = ((device[2] - device[0]) as f64, (device[3] - device[1]) as f64);
+    let (sw, sh) = ((display[2] - display[0]) as f64, (display[3] - display[1]) as f64);
+    if dw <= 0.0 || dh <= 0.0 || sw <= 0.0 || sh <= 0.0 { return None; }
+    Some((
+        remap(him.0 as f64, device[0] as f64, dw, display[0] as f64, sw),
+        remap(him.1 as f64, device[1] as f64, dh, display[1] as f64, sh),
+    ))
+}
+
+/// The fine position if it agrees with the whole-pixel one (within 1.5 px
+/// each way; a rotated or oddly mapped tablet would not), else the whole
+/// pixel one.
+pub fn finer_if_agrees(fine: Option<(f64, f64)>, pixel: (i32, i32)) -> (f64, f64) {
+    let p = (pixel.0 as f64, pixel.1 as f64);
+    match fine {
+        Some(f) if (f.0 - p.0).abs() <= 1.5 && (f.1 - p.1).abs() <= 1.5 => f,
+        _ => p,
+    }
+}
+
+/// A WinTab position (screen pixels × WINTAB_SCALE) to screen pixels.
+pub fn wintab_to_screen(x: i32, y: i32) -> (f64, f64) {
+    (x as f64 / WINTAB_SCALE as f64, y as f64 / WINTAB_SCALE as f64)
+}
+
+// ---------------------------------------------------------------
 // Windows: native WinTab first (feels more direct with Wacom drivers),
 // automatic fallback to Windows Ink (WM_POINTER with high-frequency
 // history) when WinTab isn't available.
@@ -46,10 +90,10 @@ mod imp {
     use std::ffi::c_void;
     use std::sync::Arc;
     use windows::Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
-        Graphics::Gdi::ScreenToClient,
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::ClientToScreen,
         UI::{
-            Input::Pointer::{GetPointerPenInfo, GetPointerPenInfoHistory, POINTER_PEN_INFO},
+            Input::Pointer::{GetPointerDeviceRects, GetPointerPenInfo, GetPointerPenInfoHistory, POINTER_PEN_INFO},
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 PEN_MASK_PRESSURE, PEN_MASK_TILT_X, PEN_MASK_TILT_Y, WM_POINTERDOWN, WM_POINTERUP,
@@ -113,13 +157,30 @@ mod imp {
     struct HookState { queue: Arc<ArrayQueue<PenPacket>> }
     const SUBCLASS_ID: usize = 0x4546554445;
 
+    /// The client area's top left corner on the screen (pixels).
+    pub(super) fn client_origin(hwnd: HWND) -> Option<(f64, f64)> {
+        let mut o = POINT { x: 0, y: 0 };
+        unsafe { ClientToScreen(hwnd, &mut o) }.as_bool().then_some((o.x as f64, o.y as f64))
+    }
+
     fn push_info(hwnd: HWND, state: &HookState, info: &POINTER_PEN_INFO) {
-        let mut point = info.pointerInfo.ptPixelLocation;
-        // Physical pixels, like winit's (efude's logical ones were off on HiDPI).
-        if unsafe { ScreenToClient(hwnd, &mut point) }.as_bool() {
+        let p = &info.pointerInfo;
+        // Finer than a pixel: the pen's HIMETRIC position mapped through its
+        // device rectangle (as Chromium does), if it agrees with the pixel one.
+        let (mut dev, mut disp) = (RECT::default(), RECT::default());
+        let fine = unsafe { GetPointerDeviceRects(p.sourceDevice, &mut dev, &mut disp) }.ok().and_then(|_| {
+            super::himetric_to_screen(
+                (p.ptHimetricLocationRaw.x, p.ptHimetricLocationRaw.y),
+                [dev.left, dev.top, dev.right, dev.bottom],
+                [disp.left, disp.top, disp.right, disp.bottom],
+            )
+        });
+        let screen = super::finer_if_agrees(fine, (p.ptPixelLocationRaw.x, p.ptPixelLocationRaw.y));
+        // Physical client pixels, like winit's.
+        if let Some(origin) = client_origin(hwnd) {
             let packet = PenPacket {
-                x: point.x as f32,
-                y: point.y as f32,
+                x: (screen.0 - origin.0) as f32,
+                y: (screen.1 - origin.1) as f32,
                 pressure: if info.penMask & PEN_MASK_PRESSURE != 0 {
                     info.pressure as f32 / 1024.
                 } else { 1. },
@@ -188,9 +249,9 @@ mod imp {
     // --- WinTab (wintab32.dll, loaded at runtime) -------------------
 
     mod wintab {
-        use super::{c_void, push_latest, Arc, ArrayQueue, DefSubclassProc, HWND, LPARAM,
-                     LRESULT, PenPacket, POINT, RemoveWindowSubclass, ScreenToClient,
-                     SetWindowSubclass, WPARAM};
+        use super::{c_void, client_origin, push_latest, Arc, ArrayQueue, DefSubclassProc, HWND, LPARAM,
+                     LRESULT, PenPacket, RemoveWindowSubclass, SetWindowSubclass, WPARAM};
+        use crate::{wintab_to_screen, WINTAB_SCALE};
         use std::ffi::c_char;
 
         const WTI_DEFSYSCTX: u32 = 4;
@@ -298,8 +359,9 @@ mod imp {
                 field_offset(state.packet_mask, PK_Y),
             ) else { return; };
             let time_ms = packet_u32(&words, time_offset);
-            let mut screen = POINT { x: packet_i32(&words, x_offset), y: packet_i32(&words, y_offset) };
-            if !unsafe { ScreenToClient(hwnd, &mut screen) }.as_bool() { return; }
+            // Screen pixels × WINTAB_SCALE (see the context below).
+            let screen = wintab_to_screen(packet_i32(&words, x_offset), packet_i32(&words, y_offset));
+            let Some(origin) = client_origin(hwnd) else { return };
             let pressure = field_offset(state.packet_mask, PK_NORMAL_PRESSURE)
                 .map(|offset| {
                     let raw = packet_u32(&words, offset) as i32;
@@ -321,7 +383,7 @@ mod imp {
                 ((lean * az.sin() / 60.0).clamp(-1.0, 1.0), (-lean * az.cos() / 60.0).clamp(-1.0, 1.0))
             });
             // Physical client pixels (see push_info in the Windows Ink section).
-            let packet = PenPacket { x: screen.x as f32, y: screen.y as f32, pressure, tilt, time_ms };
+            let packet = PenPacket { x: (screen.0 - origin.0) as f32, y: (screen.1 - origin.1) as f32, pressure, tilt, time_ms };
             push_latest(&state.queue, packet);
         }
 
@@ -374,10 +436,12 @@ mod imp {
                     let mut packet_mask = PK_TIME | PK_BUTTONS | PK_X | PK_Y | PK_NORMAL_PRESSURE;
                     if orientation_supported { packet_mask |= PK_ORIENTATION; }
                     context.options |= CXO_SYSTEM | CXO_MESSAGES;
-                    context.output_origin[0] = context.system_origin[0];
-                    context.output_origin[1] = context.system_origin[1];
-                    context.output_extent[0] = context.system_extent[0];
-                    context.output_extent[1] = -context.system_extent[1];
+                    // The screen's mapping (the driver's own, as the cursor),
+                    // WINTAB_SCALE times finer: positions between pixels.
+                    context.output_origin[0] = context.system_origin[0] * WINTAB_SCALE;
+                    context.output_origin[1] = context.system_origin[1] * WINTAB_SCALE;
+                    context.output_extent[0] = context.system_extent[0] * WINTAB_SCALE;
+                    context.output_extent[1] = -context.system_extent[1] * WINTAB_SCALE;
                     context.packet_data = packet_mask;
                     context.packet_mode = 0;
                     context.move_mask = packet_mask & (PK_X | PK_Y | PK_NORMAL_PRESSURE | PK_ORIENTATION);
@@ -491,3 +555,33 @@ pub fn disable_alt_menu(hwnd: isize) -> bool {
 
 #[cfg(not(target_os = "windows"))]
 pub fn disable_alt_menu(_hwnd: isize) -> bool { false }
+
+#[cfg(test)]
+mod subpixel_tests {
+    use super::*;
+
+    /// A tablet of 30 000 × 20 000 HIMETRIC over a 3000 × 2000 screen at
+    /// (-3000, 0) (a second monitor on the left): positions between pixels
+    /// keep their fraction.
+    #[test]
+    fn himetric_positions_keep_their_fraction() {
+        let dev = [0, 0, 30_000, 20_000];
+        let disp = [-3000, 0, 0, 2000];
+        assert_eq!(himetric_to_screen((0, 0), dev, disp), Some((-3000.0, 0.0)));
+        let (x, y) = himetric_to_screen((15_005, 10_003), dev, disp).unwrap();
+        assert!((x - -1499.5).abs() < 1e-9 && (y - 1000.3).abs() < 1e-9, "{x} {y}");
+        assert_eq!(himetric_to_screen((1, 1), [0, 0, 0, 10], disp), None);
+    }
+
+    #[test]
+    fn a_fine_position_far_from_the_pixel_one_is_not_trusted() {
+        assert_eq!(finer_if_agrees(Some((10.4, 20.7)), (10, 21)), (10.4, 20.7));
+        assert_eq!(finer_if_agrees(Some((14.0, 20.0)), (10, 20)), (10.0, 20.0));
+        assert_eq!(finer_if_agrees(None, (3, 4)), (3.0, 4.0));
+    }
+
+    #[test]
+    fn wintab_positions_are_sixteenths_of_a_pixel() {
+        assert_eq!(wintab_to_screen(16 * 100 + 8, -16 * 5 - 4), (100.5, -5.25));
+    }
+}

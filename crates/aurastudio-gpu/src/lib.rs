@@ -96,6 +96,9 @@ pub struct GpuState {
     swapchain_rebuilt: bool,
     /// Swapchains built since the start (the first one included).
     swapchain_builds: u64,
+    /// The window changed size: the swapchain is built again before the
+    /// next frame.
+    size_pending:    bool,
     /// egui's wish for the next frame, from the last render().
     repaint_delay:   Option<std::time::Duration>,
     /// Scale of the monitor the window is on (Windows display scaling:
@@ -482,6 +485,7 @@ impl GpuState {
             text_input_active: false,
             swapchain_rebuilt: false,
             swapchain_builds: 1,
+            size_pending: false,
             repaint_delay: None,
             clear_color: [0.4, 0.4, 0.4],
             dpi_scale,
@@ -795,10 +799,15 @@ impl GpuState {
         // Back from minimized at the same size: the swapchain is kept
         // (rebuilding it held old and new images at once, 2 × 23 MB, and
         // the driver kept a few MB each time).
-        if size.width == self.config.width && size.height == self.config.height { return; }
+        if size.width == self.config.width && size.height == self.config.height {
+            self.size_pending = false;
+            return;
+        }
+        // Built once, before the next frame: a monitor plugged in sends
+        // several sizes in a row (0.16.1 built six swapchains for it).
         self.config.width  = size.width;
         self.config.height = size.height;
-        self.configure_surface();
+        self.size_pending = true;
         // Recomputed from the egui layout on the next frame; until then,
         // the whole window.
         self.viewport = [0.0, 0.0, size.width as f32, size.height as f32];
@@ -848,6 +857,7 @@ impl GpuState {
         // Minimized: nothing to show (frames are drawn on demand, not only
         // on the window system's request).
         if self.window.is_minimized() == Some(true) { return; }
+        if std::mem::take(&mut self.size_pending) { self.configure_surface(); }
         let mut textures_free = Vec::new();
         let (tris, ppp) = match ui_fn {
             Some(f) => {

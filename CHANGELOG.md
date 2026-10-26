@@ -3,6 +3,27 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.16.2 — 2026-10-26
+
+**Pen: thin lines no longer step**
+- The pen's position was rounded to whole screen pixels by both pen APIs,
+  so fine brushes drew stair steps (Walid's comparison with Krita and CSP,
+  no smoothing). WinTab now reports positions 16 times finer than a pixel
+  (same screen mapping as the cursor: the driver's own); Windows Ink maps the
+  pen's HIMETRIC position through its device rectangle (as Chromium does),
+  kept only when it agrees with the pixel position within 1.5 px.
+
+**Interface during big strokes**
+- The interface waits a little for the document during a stroke, and the
+  paint thread lets it in between two samples (up to 4 ms): a big brush kept
+  the document locked nearly all the time and the interface froze for up to
+  400 ms ("UI waited … for the document").
+
+**Memory**
+- The swapchain is built once before the next frame, however many sizes the
+  window went through meanwhile (plugging a monitor built six in a row:
+  60 → 105 MB, settling at 73).
+
 ## 0.16.1 — 2026-10-26
 
 **Memory**
