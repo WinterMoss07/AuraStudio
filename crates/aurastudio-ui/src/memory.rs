@@ -40,6 +40,8 @@ pub struct MemoryReport {
     /// What the app's own allocations hold now (Rust's heap), counted by
     /// the allocator: separates its data from the driver's and the system's.
     pub heap:        Option<u64>,
+    /// Lines under the title: the graphics adapter and API.
+    pub header:      Vec<String>,
     pub sections:    Vec<Section>,
 }
 
@@ -68,6 +70,8 @@ impl MemoryReport {
     pub fn text(&self) -> String {
         let mut s = String::new();
         let line = |s: &mut String, name: &str, bytes: u64| s.push_str(&format!("  {:>12}  {name}\n", mb(bytes)));
+        for h in &self.header { s.push_str(&format!("{h}\n")); }
+        if !self.header.is_empty() { s.push('\n'); }
         s.push_str("Process (the system's figures)\n");
         if let Some(w) = self.working_set { line(&mut s, "working set (Task Manager: Memory)", w); }
         if let Some(p) = self.private { line(&mut s, "private bytes (committed)", p); }
@@ -123,7 +127,7 @@ mod tests {
         ram.add("History", 20 << 20);
         let mut vram = Section::new("GPU", false);
         vram.add("canvas", 300 << 20);
-        let r = MemoryReport { working_set: Some(500 << 20), private: Some(400 << 20), heap: None, sections: vec![ram, vram] };
+        let r = MemoryReport { working_set: Some(500 << 20), private: Some(400 << 20), heap: None, header: Vec::new(), sections: vec![ram, vram] };
         // (The GPU's own memory is not RAM: not counted.)
         assert_eq!(r.accounted(), 120 << 20);
         assert_eq!(r.not_itemised(), Some(280 << 20));

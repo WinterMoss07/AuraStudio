@@ -375,11 +375,29 @@ impl LayerStack {
     /// A picture opened (PNG, JPG...): it is the bottom layer, an empty
     /// Layer 1 above it active.
     pub fn from_image(width: u32, height: u32, name: &str, rgba: &[u8]) -> Self {
+        let row = width as usize * 4;
+        Self::from_image_bands(width, height, name, |y0, y1, out| {
+            out.extend_from_slice(&rgba[y0 as usize * row..y1 as usize * row]);
+        })
+    }
+
+    /// The same, the picture handed over a band of rows at a time (`band(y0,
+    /// y1, out)` appends rows y0..y1 as RGBA): a picture that is not RGBA
+    /// is never held twice at full size.
+    pub fn from_image_bands(width: u32, height: u32, name: &str, mut band: impl FnMut(u32, u32, &mut Vec<u8>)) -> Self {
         let mut s = Self::new(width, height);
         if let Some(Node::Layer(l)) = s.root.first_mut() {
             l.background = false;
             l.name = name.to_owned();
-            l.tiles = Tiles::from_rgba(width, height, rgba, clear_pixel(false));
+            let mut tiles = Tiles::new(width, height, clear_pixel(false));
+            let mut buf = Vec::new();
+            for y0 in (0..height).step_by(TILE as usize) {
+                let y1 = (y0 + TILE).min(height);
+                buf.clear();
+                band(y0, y1, &mut buf);
+                tiles.write_rect((0, y0, width, y1), &buf);
+            }
+            l.tiles = tiles;
         }
         let id = s.add_layer("Layer 1");
         s.set_active(id);

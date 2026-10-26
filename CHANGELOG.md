@@ -3,6 +3,31 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.15.0 — 2026-10-26
+
+**Memory: sharing instead of multiplying**
+- Icons, stroke previews, layer thumbnails and the start screen's recent files
+  are drawn from a few shared atlas pages (512 × 512, made when needed) instead
+  of one GPU texture each. An icon is rasterized once per size.
+- Stroke previews keep at most 3 MB on the GPU: the ones not on screen leave
+  (least recent first) and come back from the disk cache when scrolled to.
+- Stroke previews are kept on disk (compressed, in the cache folder, one folder
+  per program version, the oldest files removed past 600): the next start does
+  not paint them again. An edited brush has another key, so it is painted anew.
+- Layer thumbnails are averaged down on the CPU from the layer's tiles (a thin
+  line now shows as a faint line instead of vanishing), at most one layer per
+  frame, and only 200 ms after the layer stopped changing.
+- Opening an RGB or grey picture no longer holds a second full-size RGBA copy:
+  it goes into tiles a band of rows at a time.
+- DirectX 12: the shader-visible descriptor heap is capped (65,536 bindings
+  instead of 1,000,000), which is most of that backend's extra start-up memory.
+
+**Tools**
+- Memory report: the start is timed step by step (instance, adapter, device,
+  swapchain, shaders, interface), the graphics adapter and API are listed, and
+  a timeline of events (document shown / closed, play start / stop) is kept.
+  `AURASTUDIO_BACKEND=vulkan|dx12|gl` forces the graphics API.
+
 ## 0.14.4 — 2026-10-26
 
 **Fixes**

@@ -7,7 +7,13 @@ use egui::{pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, U
 
 use aurastudio_document::Kind;
 
+use crate::atlas::{Atlas, Region};
 use crate::{theme, Actions};
+
+thread_local! {
+    /// The start screen's thumbnails share a few pages.
+    static RECENT: std::cell::RefCell<Atlas> = std::cell::RefCell::new(Atlas::new("recent-files", egui::TextureOptions::LINEAR, 6));
+}
 
 /// A recently used file, as the start screen shows it.
 pub struct RecentFile {
@@ -15,7 +21,8 @@ pub struct RecentFile {
     pub name:   String,
     /// "PNG · 2 hours ago"...
     pub detail: String,
-    thumb:      Option<egui::TextureHandle>,
+    /// Its place in the thumbnails atlas, and its size.
+    thumb:      Option<Region>,
     /// Thumbnail decoded but not uploaded yet (textures need the context).
     pending:    Option<egui::ColorImage>,
 }
@@ -333,7 +340,14 @@ fn unit_combo(ui: &mut Ui, form: &mut NewForm) {
 pub fn start_screen(ctx: &egui::Context, area: Rect, recent: &mut [RecentFile], a: &mut Actions) {
     for r in recent.iter_mut() {
         if let Some(img) = r.pending.take() {
-            r.thumb = Some(ctx.load_texture(format!("recent-{}", r.path.display()), img, egui::TextureOptions::LINEAR));
+            RECENT.with(|a| {
+                let a = &mut *a.borrow_mut();
+                if let Some(old) = r.thumb.take() { a.free(old); }
+                if let Some(reg) = a.alloc(ctx, img.size[0], img.size[1]) {
+                    a.write(reg, img);
+                    r.thumb = Some(reg);
+                }
+            });
         }
     }
     egui::Area::new(egui::Id::new("start_screen"))
@@ -425,11 +439,12 @@ fn recent_card(ui: &mut Ui, r: &RecentFile, card: f32, a: &mut Actions) {
     if resp.hovered() { p.rect_filled(rect, 3.0, theme::WIDGET); }
     let img = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(card - 12.0, card - 12.0));
     p.rect_filled(img, 3.0, theme::PANEL);
-    if let Some(t) = &r.thumb {
-        let s = t.size_vec2();
+    if let Some(t) = r.thumb {
+        let s = vec2(t.w as f32, t.h as f32);
         let k = (img.width() / s.x).min(img.height() / s.y);
         let fit = Rect::from_center_size(img.center(), s * k);
-        p.image(t.id(), fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        let (id, uv) = RECENT.with(|a| a.borrow().image(t));
+        p.image(id, fit, uv, Color32::WHITE);
     }
     // Long names end with "…" inside the card.
     crate::widgets::elided_text(&p, pos2(rect.left() + 8.0, img.bottom() + 12.0), &r.name,

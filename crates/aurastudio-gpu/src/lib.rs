@@ -129,11 +129,34 @@ pub struct GpuState {
 
 pub use lift::GRID as LIFT_GRID;
 
+/// The app lends a function giving the process's private bytes, so the
+/// steps of the start can be measured here (the memory report shows them).
+pub static MEMORY_PROBE: std::sync::OnceLock<fn() -> u64> = std::sync::OnceLock::new();
+
+/// A step of the start: name, private bytes after it, milliseconds since
+/// the start of `GpuState::new`.
+static STEPS: std::sync::Mutex<Vec<(&'static str, u64, f32)>> = std::sync::Mutex::new(Vec::new());
+static STEPS_T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static ADAPTER_INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Note the memory now as step `name` of the start (once per name).
+fn step(name: &'static str) {
+    let t0 = STEPS_T0.get_or_init(std::time::Instant::now);
+    let mut v = STEPS.lock().unwrap();
+    if v.iter().any(|x| x.0 == name) { return; }
+    v.push((name, MEMORY_PROBE.get().map_or(0, |f| f()), t0.elapsed().as_secs_f32() * 1000.0));
+}
+
+/// The steps of `GpuState::new` so far: name, private bytes after it,
+/// milliseconds since it began.
+pub fn startup_steps() -> Vec<(&'static str, u64, f32)> { STEPS.lock().unwrap().clone() }
+
 /// What the graphics side holds, itemised for the memory report (bytes).
 #[derive(Clone, Debug, Default)]
 pub struct GpuMemory {
-    /// The graphics API in use.
+    /// The graphics API in use, and the adapter (name, driver).
     pub backend:     String,
+    pub adapter:     String,
     /// Resources whose size is known from what they were made as; "~" in
     /// the name: an estimate.
     pub known:       Vec<(String, u64)>,
@@ -162,7 +185,7 @@ fn mipped_bytes(w: u32, h: u32) -> u64 {
 impl GpuState {
     /// Itemise what the GPU holds (for Window > Memory report).
     pub fn memory(&self) -> GpuMemory {
-        let mut m = GpuMemory { backend: format!("{:?}", self.backend), ..Default::default() };
+        let mut m = GpuMemory { backend: format!("{:?}", self.backend), adapter: ADAPTER_INFO.get().cloned().unwrap_or_default(), ..Default::default() };
         let (w, h) = (self.canvas.width, self.canvas.height);
         m.known.push((format!("canvas texture {w}x{h} with mipmaps"), mipped_bytes(w, h)));
         let lut = self.lut.size as u64;
@@ -217,8 +240,10 @@ impl GpuState {
         }
         let mut errors = Vec::new();
         let mut found = None;
+        step("before graphics");
         for b in order {
             let instance = Instance::new(InstanceDescriptor { backends: b.wgpu(), ..Default::default() });
+            step("graphics instance");
             let surface = match instance.create_surface(Arc::clone(&window)) {
                 Ok(s) => s,
                 Err(e) => { errors.push(format!("{}: {e}", b.name())); continue; }
@@ -229,6 +254,14 @@ impl GpuState {
                 force_fallback_adapter: false,
             }).await;
             let Some(adapter) = adapter else { errors.push(format!("{}: no adapter", b.name())); continue };
+            step("adapter");
+            let info = adapter.get_info();
+            let _ = ADAPTER_INFO.set(format!("{} ({:?}, driver {} {})", info.name, info.device_type, info.driver, info.driver_info));
+            // This GPU's limits, but not the million shader bindings it
+            // offers: DirectX 12 makes a descriptor heap that size at once
+            // (tens of MB); we use a few dozen.
+            let mut limits = adapter.limits();
+            limits.max_non_sampler_bindings = limits.max_non_sampler_bindings.min(65_536);
             let device = adapter.request_device(
                 &DeviceDescriptor {
                     label:             None,
@@ -237,7 +270,7 @@ impl GpuState {
                     // What this GPU has (an older one, or OpenGL, has less
                     // than wgpu's defaults); its biggest texture caps the
                     // canvas size.
-                    required_limits:   adapter.limits(),
+                    required_limits:   limits,
                     // Small memory blocks (the default reserves 128 MB chunks).
                     memory_hints:      MemoryHints::MemoryUsage,
                 },
@@ -253,6 +286,7 @@ impl GpuState {
             }
         }
         let Some((backend, surface, adapter, device, queue)) = found else { return Err(errors.join("; ")) };
+        step("device");
 
         let caps   = surface.get_capabilities(&adapter);
         // Non-sRGB surface: the pixels are sRGB already (else encoded twice).
@@ -287,6 +321,7 @@ impl GpuState {
             desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &config);
+        step("swapchain");
 
         let canvas_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label:   Some("canvas_bgl"),
@@ -391,6 +426,7 @@ impl GpuState {
             cache:         None,
         });
 
+        step("canvas shader");
         let (cursor_pipeline, cursor_buffer, cursor_bind) = cursor_pipeline(&device, format);
         let canvas = Canvas::new(&device, canvas_size.0, canvas_size.1);
         let nearest_sampler = device.create_sampler(&SamplerDescriptor {
@@ -415,7 +451,9 @@ impl GpuState {
             None,
             None,
         );
+        step("canvas, mipmaps, display table");
         let egui_renderer = egui_wgpu::Renderer::new(&device, format, None, 1, false);
+        step("interface renderer");
 
         Ok(Self {
             backend,

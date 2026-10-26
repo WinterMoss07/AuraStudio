@@ -3,11 +3,13 @@
 //! menu, chains across clipped rows). Its edits become undo steps.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use aurastudio_filters::{Filter, GROUPS};
 use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
 
+use crate::atlas::{Atlas, Region};
 use crate::widgets::*;
 use crate::{theme, Actions, BlendMode, Model, Notice};
 
@@ -21,10 +23,18 @@ const EYE_X: f32 = 17.0;
 /// CSP's draft blue.
 const DRAFT_BLUE: Color32 = Color32::from_rgb(86, 156, 255);
 
-#[derive(Default)]
+/// A layer's thumbnail rebuilds this long after its last change (a stroke
+/// in progress changes it every frame).
+const THUMB_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
+
 pub struct LayersState {
-    thumbs:   HashMap<u64, egui::TextureHandle>,
-    stale:    HashSet<u64>,
+    /// Thumbnails live in one shared atlas.
+    atlas:    Atlas,
+    thumbs:   HashMap<u64, Region>,
+    /// Layers the atlas had no room for (not asked again every frame).
+    no_room:  HashSet<u64>,
+    /// Layers to redraw, and when they last changed.
+    stale:    HashMap<u64, Instant>,
     /// Layer being renamed: (id, text, focus not requested yet).
     renaming: Option<(u64, String, bool)>,
     /// Labels shown (bit i: label i); 0: everything.
@@ -44,13 +54,25 @@ pub struct LayersState {
     pub(crate) delete_req: bool,
 }
 
+impl Default for LayersState {
+    fn default() -> Self {
+        Self {
+            atlas: Atlas::new("layer-thumbnails", egui::TextureOptions::LINEAR, 4),
+            thumbs: HashMap::new(), no_room: HashSet::new(), stale: HashMap::new(),
+            renaming: None, label_filter: 0, pending: None, edit_filter: None,
+            selected: Vec::new(), rect: None, delete_req: false,
+        }
+    }
+}
+
 impl LayersState {
     pub fn invalidate(&mut self, id: u64) {
-        self.stale.insert(id);
+        self.stale.insert(id, Instant::now());
     }
 
     pub fn invalidate_all(&mut self) {
-        self.thumbs.clear();
+        for (_, r) in self.thumbs.drain() { self.atlas.free(r); }
+        self.no_room.clear();
     }
 
     pub fn shortcut(&mut self, cmd: LayerCmd) { self.pending = Some(cmd); }
@@ -64,38 +86,56 @@ impl LayersState {
         v
     }
 
-    /// Keep one small texture per paint layer, rebuilt when its pixels changed.
+    /// Keep one small picture per paint layer, rebuilt when its pixels
+    /// changed: one layer per frame, and not while it is still changing.
     pub fn refresh_thumbnails(&mut self, ctx: &egui::Context, layers: &LayerStack) {
         let ids = layers.layer_ids();
         let alive: HashSet<u64> = ids.iter().copied().collect();
-        self.thumbs.retain(|id, _| alive.contains(id));
-
-        for id in ids {
-            let stale = self.stale.remove(&id);
-            if self.thumbs.contains_key(&id) && !stale { continue; }
-            let Some(Node::Layer(layer)) = layers.node(id) else { continue };
-
-            let (w, h) = (layers.width as usize, layers.height as usize);
-            let k = (64.0 / w.max(h) as f32).min(1.0);
-            let tw = ((w as f32 * k).round() as usize).max(1);
-            let th = ((h as f32 * k).round() as usize).max(1);
-            let mut rgba = Vec::with_capacity(tw * th * 4);
-            for y in 0..th {
-                let sy = (y * h) / th;
-                for x in 0..tw {
-                    let sx = (x * w) / tw;
-                    rgba.extend_from_slice(&layer.tiles.pixel(sx as u32, sy as u32));
-                }
-            }
-            let image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &rgba);
-            match self.thumbs.get_mut(&id) {
-                Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
-                None => {
-                    let tex = ctx.load_texture(format!("layer-thumb-{id}"), image, egui::TextureOptions::LINEAR);
-                    self.thumbs.insert(id, tex);
-                }
-            }
+        let gone: Vec<u64> = self.thumbs.keys().filter(|id| !alive.contains(id)).copied().collect();
+        for id in gone {
+            if let Some(r) = self.thumbs.remove(&id) { self.atlas.free(r); }
         }
+        self.stale.retain(|id, _| alive.contains(id));
+        self.no_room.retain(|id| alive.contains(id));
+
+        let now = Instant::now();
+        let mut waiting = None::<std::time::Duration>;
+        for id in ids {
+            let changed = self.stale.get(&id).copied();
+            if (self.thumbs.contains_key(&id) || self.no_room.contains(&id)) && changed.is_none() { continue; }
+            if let Some(t) = changed {
+                let quiet = now.saturating_duration_since(t);
+                if quiet < THUMB_DEBOUNCE && self.thumbs.contains_key(&id) {
+                    let left = THUMB_DEBOUNCE - quiet;
+                    waiting = Some(waiting.map_or(left, |w| w.min(left)));
+                    continue;
+                }
+            }
+            let Some(Node::Layer(layer)) = layers.node(id) else { continue };
+            self.stale.remove(&id);
+            let (tw, th, rgba) = crate::thumbnail::area_average(&layer.tiles, 64);
+            let image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &rgba);
+            let same = self.thumbs.get(&id).copied().filter(|r| (r.w as usize, r.h as usize) == (tw, th));
+            let region = match same {
+                Some(r) => Some(r),
+                None => {
+                    if let Some(old) = self.thumbs.remove(&id) { self.atlas.free(old); }
+                    self.atlas.alloc(ctx, tw, th)
+                }
+            };
+            match region {
+                Some(r) => {
+                    self.atlas.write(r, image);
+                    self.thumbs.insert(id, r);
+                    self.no_room.remove(&id);
+                }
+                None => { self.no_room.insert(id); }
+            }
+            // The next one next frame.
+            ctx.request_repaint();
+            return;
+        }
+        if let Some(w) = waiting { ctx.request_repaint_after(w); }
     }
 }
 
@@ -439,25 +479,30 @@ fn chain(p: &egui::Painter, c: egui::Pos2) {
     }
 }
 
+/// The little arrow of a menu button, drawn from the icon atlas.
+fn arrow_icon(ui: &Ui, r: &egui::Response) {
+    crate::icons::paint(ui, Icon::Expanded, r.rect, 12.0, Color32::from_gray(0xc8));
+}
+
 /// New layer (its kinds under the arrow), new folder, duplicate.
 fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     if icon_button(ui, Icon::NewLayer, "New layer", true) { new_layer(m, a); }
-    let arrow = egui::Button::image(egui::Image::new(Icon::Expanded.source()).fit_to_exact_size(vec2(12.0, 12.0)).tint(Color32::from_gray(0xc8)))
-        .frame(false)
-        .min_size(vec2(14.0, 24.0));
-    egui::menu::menu_custom_button(ui, arrow, |ui| {
+    let arrow = egui::Button::new("").frame(false).min_size(vec2(14.0, 24.0));
+    let arrow_r = egui::menu::menu_custom_button(ui, arrow, |ui| {
         ui.set_min_width(150.0);
         if ui.button("Paint layer").clicked() { new_layer(m, a); ui.close_menu(); }
         ui.menu_button("Filter layer", |ui| filter_layer_menu(ui, st, m, a));
-    }).response.on_hover_text("Layer types");
+    });
+    arrow_icon(ui, &arrow_r.response);
+    arrow_r.response.on_hover_text("Layer types");
     if icon_button(ui, Icon::NewFolder, "New folder", true) { new_folder(m, a); }
-    let arrow = egui::Button::image(egui::Image::new(Icon::Expanded.source()).fit_to_exact_size(vec2(12.0, 12.0)).tint(Color32::from_gray(0xc8)))
-        .frame(false)
-        .min_size(vec2(14.0, 24.0));
-    egui::menu::menu_custom_button(ui, arrow, |ui| {
+    let arrow = egui::Button::new("").frame(false).min_size(vec2(14.0, 24.0));
+    let arrow_r = egui::menu::menu_custom_button(ui, arrow, |ui| {
         ui.set_min_width(150.0);
         special_folder_entries(ui, m, a);
-    }).response.on_hover_text("Special folders");
+    });
+    arrow_icon(ui, &arrow_r.response);
+    arrow_r.response.on_hover_text("Special folders");
     if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
 }
 
@@ -959,12 +1004,13 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         b
     } else {
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
-        if let Some(tex) = st.thumbs.get(&row.id) {
-            let s = tex.size_vec2();
+        if let Some(&region) = st.thumbs.get(&row.id) {
+            let (id, uv) = st.atlas.image(region);
+            let s = vec2(region.w as f32, region.h as f32);
             let k = (THUMB / s.x).min(THUMB / s.y);
             let r = Rect::from_center_size(b.center(), s * k);
             checker(&painter, r, 4.0);
-            painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            painter.image(id, r, uv, Color32::WHITE);
             painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, if active { theme::TEXT } else { theme::BORDER }));
         }
         b
@@ -1047,4 +1093,35 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         return Some(RowEvent::Select(ui.input(|i| i.modifiers)));
     }
     None
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    use super::*;
+
+    #[test]
+    fn thumbnails_come_one_layer_per_frame_and_wait_for_a_quiet_layer() {
+        let ctx = egui::Context::default();
+        let mut stack = LayerStack::new_document(256, 256);
+        for i in 0..4 { stack.add_layer(&format!("L{i}")); }
+        let n = stack.layer_ids().len();
+        let mut st = LayersState::default();
+        let mut frames = 0;
+        while st.thumbs.len() < n { st.refresh_thumbnails(&ctx, &stack); frames += 1; assert!(frames <= n + 1); }
+        assert_eq!(frames, n, "one per frame");
+        // All in the same page.
+        assert_eq!(st.atlas.pages(), 1);
+        // A layer that just changed waits; a quiet one is rebuilt.
+        let id = stack.layer_ids()[0];
+        st.invalidate(id);
+        st.refresh_thumbnails(&ctx, &stack);
+        assert!(st.stale.contains_key(&id), "still changing: kept for later");
+        st.stale.insert(id, Instant::now() - THUMB_DEBOUNCE * 2);
+        st.refresh_thumbnails(&ctx, &stack);
+        assert!(!st.stale.contains_key(&id));
+        // A deleted layer gives its place back.
+        let before = st.thumbs.len();
+        st.invalidate_all();
+        assert!(before > 0 && st.thumbs.is_empty());
+    }
 }

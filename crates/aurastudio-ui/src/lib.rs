@@ -3,9 +3,11 @@
 
 pub mod theme;
 mod animation;
+mod atlas;
 mod memory;
 mod bars;
 mod stroke_preview;
+mod thumbnail;
 mod dock_layout;
 mod dockers;
 mod filters;
@@ -27,6 +29,7 @@ pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
 pub use dockers::layers::LayerCmd;
 pub use filters::FilterAction;
+pub use stroke_preview::set_cache_dir as set_preview_cache_dir;
 pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};

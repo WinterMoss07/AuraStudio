@@ -21,6 +21,7 @@ static ALLOC: memory::Counting = memory::Counting;
 use winit::event_loop::{ControlFlow, DeviceEvents, EventLoop};
 
 fn main() {
+    let _ = aurastudio_gpu::MEMORY_PROBE.set(|| memory::process_memory().1.unwrap_or(0));
     memory::mark("program start");
     // Info level by default so the startup log (pen backend, GPU) shows in
     // the console without setting RUST_LOG.
@@ -36,6 +37,9 @@ fn main() {
     // (1000 per second for many mice), the queue never empties and the
     // frames waiting for it lag (sliders froze, then jumped).
     event_loop.listen_device_events(DeviceEvents::Never);
+
+    // Stroke previews kept between runs.
+    if let Some(d) = dirs::cache_dir() { aurastudio_ui::set_preview_cache_dir(&d.join("AuraStudio")); }
 
     // A crash keeps the work (rescue.rs).
     rescue::install(app::recovery_path());

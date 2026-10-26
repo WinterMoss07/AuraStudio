@@ -1459,10 +1459,14 @@ impl App {
         self.play = Some((Instant::now(), from));
         self.play_next = Some(Instant::now());
         self.request_redraw();
+        crate::memory::event("play start");
     }
 
     fn stop_playback(&mut self) {
-        if self.play.take().is_some() { self.request_redraw(); }
+        if self.play.take().is_some() {
+            self.request_redraw();
+            crate::memory::event("play stop");
+        }
         self.play_next = None;
     }
 
@@ -2036,6 +2040,7 @@ impl App {
                 self.install(Document::new(id, "", PLACEHOLDER.0, PLACEHOLDER.1));
                 self.home = true;
                 self.refresh_home();
+                crate::memory::event("document closed");
             }
             Pending::Quit => {
                 // Leaving on purpose: no work to recover next time.
@@ -2119,6 +2124,7 @@ impl App {
         self.ui.invalidate_all_thumbnails();
         self.layers_dirty = true;
         self.request_redraw();
+        crate::memory::event("document shown (new / opened)");
     }
 
     /// Ctrl+S (`save_as`: Ctrl+Shift+S, or no .aurs file yet: ask where).

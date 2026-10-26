@@ -52,6 +52,36 @@ pub fn heap_bytes() -> u64 { LIVE.load(Ordering::Relaxed) as u64 }
 /// Memory at the steps of the start: (step, private bytes, heap bytes).
 static BOOT: Mutex<Vec<(&'static str, u64, u64)>> = Mutex::new(Vec::new());
 
+/// Memory at the events of the session: (event, private bytes after it).
+static EVENTS: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
+
+/// Note the memory after an event (a document made or closed, a file
+/// opened, playback started / stopped). The last 40 are kept.
+pub fn event(name: &'static str) {
+    let mut e = EVENTS.lock().unwrap();
+    e.push((name, process_memory().1.unwrap_or(0)));
+    if e.len() > 40 { e.remove(0); }
+}
+
+/// The events as a section: what each added to the private bytes since
+/// the one before it (never below zero: a release shows as 0, and the next
+/// line starts from the lower figure).
+fn events_section() -> MemorySection {
+    let e = EVENTS.lock().unwrap();
+    let mut sec = MemorySection::timeline("Events: private bytes added since the one before");
+    let mut prev = None;
+    for (name, p) in e.iter() {
+        let line = match prev {
+            None => format!("{name} (first: {})", aurastudio_ui::mb(*p)),
+            Some(q) if *p >= q => format!("{name} (+)"),
+            Some(q) => format!("{name} (released {})", aurastudio_ui::mb(q - *p)),
+        };
+        sec.add(line, prev.map_or(0, |q: u64| p.saturating_sub(q)));
+        prev = Some(*p);
+    }
+    sec
+}
+
 /// Note the memory now as step `name` (once per name).
 pub fn mark(name: &'static str) {
     let mut b = BOOT.lock().unwrap();
@@ -73,6 +103,12 @@ fn boot_section() -> MemorySection {
         }
         prev_p = *p;
         prev_h = *h;
+    }
+    // The graphics device's own steps, with their time.
+    let mut prev = None;
+    for (name, p, ms) in aurastudio_gpu::startup_steps() {
+        sec.add(format!("  graphics: {name} ({ms:.0} ms)"), prev.map_or(0, |q: u64| p.saturating_sub(q)));
+        prev = Some(p);
     }
     sec
 }
@@ -147,7 +183,12 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>
     sections.push(buffers);
     if let Some(g) = gpu { sections.extend(gpu_sections(g)); }
     sections.push(boot_section());
-    MemoryReport { working_set, private, heap: Some(heap_bytes()), sections }
+    sections.push(events_section());
+    let mut header = Vec::new();
+    if let Some(g) = gpu {
+        header.push(format!("Graphics: {} on {}", g.backend, if g.adapter.is_empty() { "?" } else { &g.adapter }));
+    }
+    MemoryReport { working_set, private, heap: Some(heap_bytes()), header, sections }
 }
 
 /// Print `r` if AURASTUDIO_MEMLOG is set.
@@ -171,6 +212,12 @@ mod tests {
         assert_eq!(tiles.lines.len(), doc.layers.layer_count());
         assert!(tiles.lines.iter().any(|l| l.0.starts_with("Layer 1") && l.1 > 0), "{:?}", tiles.lines);
         assert!(r.text().contains("merged pieces waiting"));
+        // Events and startup steps are sections of their own.
+        event("test event one");
+        event("test event two");
+        let r2 = build(None, 0, None);
+        let ev = r2.sections.iter().find(|s| s.title.starts_with("Events")).unwrap();
+        assert!(ev.timeline && ev.lines.iter().any(|l| l.0.contains("test event two")), "{:?}", ev.lines);
         #[cfg(target_os = "linux")]
         assert!(r.working_set.unwrap() > 1 << 20, "{r:?}");
     }

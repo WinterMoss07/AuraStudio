@@ -545,10 +545,18 @@ pub fn import_image(path: &Path, id: DocId, max_side: u32) -> Result<Document, S
     let img = reader.decode().map_err(|e| match e {
         image::ImageError::Limits(_) => format!("image bigger than this GPU allows ({max_side} px)"),
         e => e.to_string(),
-    })?.into_rgba8();
-    let (w, h) = img.dimensions();
+    })?;
+    let (w, h) = (img.width(), img.height());
     let name = doc_name(path);
-    let layers = aurastudio_layers::LayerStack::from_image(w, h, &name, img.as_raw());
+    // Straight into tiles, a band of rows at a time: no second full-size
+    // RGBA copy of an RGB or grey picture.
+    let layers = match img.as_rgba8() {
+        Some(rgba) => aurastudio_layers::LayerStack::from_image(w, h, &name, rgba.as_raw()),
+        None => aurastudio_layers::LayerStack::from_image_bands(w, h, &name, |y0, y1, out| {
+            out.extend_from_slice(img.crop_imm(0, y0, w, y1 - y0).to_rgba8().as_raw());
+        }),
+    };
+    drop(img);
     let doc = Document::from_parts(id, &name, layers, aurastudio_document::History::new(aurastudio_document::DEFAULT_BUDGET));
     Ok(doc)
 }
@@ -810,6 +818,29 @@ mod tests {
         assert_eq!((back.layers.active_id(), back.dpi, back.layers.width, back.layers.height), (sketch_id, 350.0, w, h));
         assert_eq!(back.kind, Kind::Animation);
         assert_eq!(back.layers.composite_rect((0, 0, w, h)), doc.layers.composite_rect((0, 0, w, h)));
+    }
+
+    /// A picture opened band by band (RGB, grey) gives the same pixels as
+    /// the whole RGBA one; only tiles with something in them are stored.
+    #[test]
+    fn rgb_and_grey_pictures_open_into_the_same_pixels() {
+        let (w, h) = (300u32, 530u32);
+        let dir = std::env::temp_dir().join(format!("aura-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rgb = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8]));
+        let grey = image::GrayImage::from_fn(w, h, |x, y| image::Luma([((x * 3 + y) % 256) as u8]));
+        let rgba = image::RgbaImage::from_fn(w, h, |x, y| image::Rgba([(x % 200) as u8, 9, (y % 100) as u8, if x < 100 { 0 } else { 255 }]));
+        for (name, img) in [("rgb", image::DynamicImage::ImageRgb8(rgb)), ("grey", image::DynamicImage::ImageLuma8(grey)), ("rgba", image::DynamicImage::ImageRgba8(rgba))] {
+            let path = dir.join(format!("{name}.png"));
+            img.save(&path).unwrap();
+            let doc = import_image(&path, DocId(1), 16384).unwrap();
+            let want = img.to_rgba8();
+            let Some(Node::Layer(l)) = doc.layers.root.first() else { panic!("no layer") };
+            for (x, y) in [(0, 0), (299, 0), (0, 529), (299, 529), (150, 300), (255, 256), (256, 255), (17, 511)] {
+                assert_eq!(l.tiles.pixel(x, y), want.get_pixel(x, y).0, "{name} {x},{y}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Where the time goes opening a 2000×3000 JPG (OPEN_JPG=path).
