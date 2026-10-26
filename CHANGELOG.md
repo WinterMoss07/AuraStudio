@@ -32,6 +32,8 @@ egui_dock 0.15 → 0.21, wgpu 23 → 30 (they were two years behind).
   for, to settle a size, would have drawn an empty interface).
 
 **Maintenance**
+- The Windows API crate (`windows`) 0.58 → 0.62, the version wgpu uses:
+  one copy instead of two (its DirectX 12 types must match gpu-allocator's).
 - Dependabot opens a pull request when a dependency has a new version
   (weekly), checked by the build.
 - A security audit (RustSec advisories) runs on every dependency change

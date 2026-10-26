@@ -38,7 +38,7 @@ fn platform_profile_path(hwnd: Option<isize>) -> Option<String> {
     use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
     use windows::Win32::UI::ColorSystem::GetICMProfileW;
 
-    let hwnd = HWND(hwnd.unwrap_or(0) as *mut core::ffi::c_void);
+    let hwnd = Some(HWND(hwnd.unwrap_or(0) as *mut core::ffi::c_void));
     // SAFETY: plain Win32 calls; the DC is released before returning and
     // the buffer outlives the call that fills it.
     unsafe {
@@ -46,9 +46,9 @@ fn platform_profile_path(hwnd: Option<isize>) -> Option<String> {
         if hdc.is_invalid() { return None; }
         let mut len: u32 = 0;
         // First call: required buffer size (in characters).
-        let _ = GetICMProfileW(hdc, &mut len, PWSTR::null());
+        let _ = GetICMProfileW(hdc, &mut len, None);
         let mut buf = vec![0u16; len.max(1) as usize];
-        let ok = len > 0 && GetICMProfileW(hdc, &mut len, PWSTR(buf.as_mut_ptr())).as_bool();
+        let ok = len > 0 && GetICMProfileW(hdc, &mut len, Some(PWSTR(buf.as_mut_ptr()))).as_bool();
         ReleaseDC(hwnd, hdc);
         if !ok { return None; }
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
