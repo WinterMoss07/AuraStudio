@@ -3,13 +3,28 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.15.1 — 2026-10-26
+
+**Fixes**
+- Stroke previews showed nothing on a sharp screen: a strip wider than 510
+  pixels did not fit an atlas page and was dropped silently. Such strips now get
+  a texture of their own (at most 24 kept, the least recent leave).
+
+**Memory**
+- Atlas pages start small (256 × 256, 256 KB; the next ones 512 × 512) instead
+  of 1 MB each, so a few icons and two layer thumbnails no longer cost 3 MB.
+- Start screen thumbnails (280 px wide) are textures of their own again.
+- Memory report: a new section tells how many private bytes the process gained
+  while each interface texture was first sent to the GPU (the first 40), to find
+  what the first frame costs on the driver's side (+15 MB seen in 0.15.0).
+
 ## 0.15.0 — 2026-10-26
 
 **Memory: sharing instead of multiplying**
 - Icons, stroke previews, layer thumbnails and the start screen's recent files
   are drawn from a few shared atlas pages (512 × 512, made when needed) instead
   of one GPU texture each. An icon is rasterized once per size.
-- Stroke previews keep at most 3 MB on the GPU: the ones not on screen leave
+- Stroke previews keep about 2 MB on the GPU: the ones not on screen leave
   (least recent first) and come back from the disk cache when scrolled to.
 - Stroke previews are kept on disk (compressed, in the cache folder, one folder
   per program version, the oldest files removed past 600): the next start does

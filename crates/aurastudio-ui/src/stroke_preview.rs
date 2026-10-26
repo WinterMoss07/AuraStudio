@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use aurastudio_brush::{Brush, ForgeBrush};
 use aurastudio_brushes::stroke_preview::{self, Mode, Shape};
 use aurastudio_brushes::Preset;
-use egui::{vec2, Color32, FontId, Rect, Ui};
+use egui::{vec2, Color32, FontId, Rect, TextureHandle, Ui};
 
 use crate::atlas::{Atlas, Region};
 use crate::theme;
@@ -59,6 +59,14 @@ fn disk_write(key: u64, w: u32, h: u32, px: &[u8]) {
     if std::fs::write(&tmp, lz4_flex::compress_prepend_size(px)).is_ok() { let _ = std::fs::rename(&tmp, &p); }
 }
 
+/// A painted preview, in the shared atlas, or (too wide for a page) on a
+/// texture of its own.
+enum Pic { Atlas(Region), Own(TextureHandle) }
+
+/// Pictures on a texture of their own kept at most (the others leave,
+/// least recent first, like the atlas's).
+const MAX_OWN: usize = 24;
+
 /// Which strip: a row of the Tools docker (brush or geometry tool), or
 /// Tool options'.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -82,7 +90,7 @@ pub struct Stroke<'a> {
 
 pub struct StrokePreviews {
     /// Per slot: the settings key its picture shows, and its place in the atlas.
-    slots:   HashMap<Slot, (u64, Region)>,
+    slots:   HashMap<Slot, (u64, Pic)>,
     /// Per slot: the frame it was last drawn (the least recent leave when the atlas is full).
     seen:    HashMap<Slot, u64>,
     /// All the previews share a few pages instead of a texture each.
@@ -139,31 +147,60 @@ impl StrokePreviews {
         }
 
         let painter = ui.painter_at(rect);
-        if let Some((_, r)) = self.slots.get(&slot) {
-            let (id, uv) = self.atlas.image(*r);
-            painter.image(id, rect, uv, Color32::WHITE);
+        match self.slots.get(&slot) {
+            Some((_, Pic::Atlas(r))) => {
+                let (id, uv) = self.atlas.image(*r);
+                painter.image(id, rect, uv, Color32::WHITE);
+            }
+            Some((_, Pic::Own(t))) => {
+                painter.image(t.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            }
+            None => {}
         }
         if let Some(name) = name { name_label(&painter, rect, name); }
     }
 
     /// Room for a `w` × `h` picture: if the atlas is full, the previews
-    /// not drawn this frame leave, least recent first.
-    fn place(&mut self, ctx: &egui::Context, w: usize, h: usize) -> Option<Region> {
+    /// not drawn this frame leave, least recent first. A picture too wide
+    /// for a page gets a texture of its own.
+    fn place(&mut self, ctx: &egui::Context, image: egui::ColorImage) -> Option<Pic> {
+        let (w, h) = (image.size[0], image.size[1]);
+        if !Atlas::fits(w, h) {
+            self.trim_own(ctx);
+            return Some(Pic::Own(ctx.load_texture("stroke-preview", image, egui::TextureOptions::NEAREST)));
+        }
         loop {
-            if let Some(r) = self.atlas.alloc(ctx, w, h) { return Some(r); }
-            let now = ctx.cumulative_pass_nr();
-            let oldest = self.slots.keys().filter(|s| self.seen.get(*s).is_some_and(|f| *f < now))
-                .min_by_key(|s| self.seen.get(*s).copied().unwrap_or(0)).copied()?;
-            if let Some((_, r)) = self.slots.remove(&oldest) { self.atlas.free(r); }
-            // Asked again if it comes back on screen.
-            self.asked.remove(&oldest);
+            if let Some(r) = self.atlas.alloc(ctx, w, h) {
+                self.atlas.write(r, image);
+                return Some(Pic::Atlas(r));
+            }
+            self.evict_oldest(ctx, |p| matches!(p, Pic::Atlas(_)))?;
+        }
+    }
+
+    /// The least recently drawn preview (not this frame) of the kind
+    /// `of` leaves; None when there is none to let go.
+    fn evict_oldest(&mut self, ctx: &egui::Context, of: impl Fn(&Pic) -> bool) -> Option<()> {
+        let now = ctx.cumulative_pass_nr();
+        let oldest = self.slots.iter().filter(|(s, (_, p))| of(p) && self.seen.get(*s).is_some_and(|f| *f < now))
+            .min_by_key(|(s, _)| self.seen.get(*s).copied().unwrap_or(0)).map(|(s, _)| *s)?;
+        if let Some((_, Pic::Atlas(r))) = self.slots.remove(&oldest) { self.atlas.free(r); }
+        // Asked again if it comes back on screen.
+        self.asked.remove(&oldest);
+        Some(())
+    }
+
+    /// Room for one more own-texture picture.
+    fn trim_own(&mut self, ctx: &egui::Context) {
+        while self.slots.values().filter(|(_, p)| matches!(p, Pic::Own(_))).count() >= MAX_OWN {
+            if self.evict_oldest(ctx, |p| matches!(p, Pic::Own(_))).is_none() { break; }
         }
     }
 
     /// Drop the brush rows' previews (the brush list changed: an import).
     pub fn clear_brushes(&mut self) {
         let keep = |s: &Slot| !matches!(s, Slot::Brush(_));
-        for (s, (_, r)) in &self.slots { if !keep(s) { self.atlas.free(*r); } }
+        for (s, (_, p)) in &self.slots { if let (false, Pic::Atlas(r)) = (keep(s), p) { self.atlas.free(*r); } }
         self.slots.retain(|s, _| keep(s));
         self.seen.retain(|s, _| keep(s));
         self.asked.retain(|s, _| keep(s));
@@ -201,19 +238,16 @@ impl StrokePreviews {
             // Superseded meanwhile (a newer one is coming): still shown,
             // closer than the old one.
             let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
-            // Same size: written over its place; else a new place.
-            let same = self.slots.get(&slot).map(|(_, r)| *r).filter(|r| (r.w as u32, r.h as u32) == (w, h));
-            let region = match same {
-                Some(r) => Some(r),
-                None => {
-                    if let Some((_, old)) = self.slots.remove(&slot) { self.atlas.free(old); }
-                    self.place(ctx, w as usize, h as usize)
+            // Same size in the atlas: written over its place; else a new place.
+            if let Some((k, Pic::Atlas(r))) = self.slots.get_mut(&slot) {
+                if (r.w as usize, r.h as usize) == (w as usize, h as usize) {
+                    self.atlas.write(*r, image);
+                    *k = key;
+                    continue;
                 }
-            };
-            if let Some(r) = region {
-                self.atlas.write(r, image);
-                self.slots.insert(slot, (key, r));
             }
+            if let Some((_, Pic::Atlas(old))) = self.slots.remove(&slot) { self.atlas.free(old); }
+            if let Some(pic) = self.place(ctx, image) { self.slots.insert(slot, (key, pic)); }
         }
     }
 }
@@ -242,6 +276,30 @@ fn key_of(s: &Stroke, w: u32, h: u32, ppp: f32) -> u64 {
 mod tests {
     use super::*;
 
+    fn img(w: usize, h: usize) -> egui::ColorImage { egui::ColorImage::new([w, h], Color32::WHITE) }
+
+    /// A strip wider than a page (a wide docker on a sharp screen) still
+    /// shows: on a texture of its own, at most MAX_OWN of them kept.
+    #[test]
+    fn a_strip_too_wide_for_a_page_gets_its_own_texture_and_not_too_many() {
+        let ctx = egui::Context::default();
+        let mut p = StrokePreviews::default();
+        let mut n = 0usize;
+        for _ in 0..MAX_OWN + 10 {
+            let _ = ctx.run(Default::default(), |ctx| {
+                let slot = Slot::Brush(n);
+                p.seen.insert(slot, ctx.cumulative_pass_nr());
+                let pic = p.place(ctx, img(900, 60)).expect("a wide strip always has a place");
+                assert!(matches!(pic, Pic::Own(_)));
+                p.slots.insert(slot, (1, pic));
+            });
+            n += 1;
+        }
+        assert_eq!(p.atlas.pages(), 0, "none went to the atlas");
+        assert!(p.slots.len() <= MAX_OWN, "{} kept", p.slots.len());
+        assert!(p.slots.contains_key(&Slot::Brush(n - 1)));
+    }
+
     /// A full atlas lets the previews not drawn this frame go; those drawn
     /// now stay; a preview that left is asked for again.
     #[test]
@@ -256,7 +314,7 @@ mod tests {
             let _ = ctx.run(Default::default(), |ctx| {
                 let slot = Slot::Brush(n);
                 p.seen.insert(slot, ctx.cumulative_pass_nr());
-                if let Some(r) = p.place(ctx, 200, 100) { p.slots.insert(slot, (1, r)); p.asked.insert(slot, 1); ids.push(slot); }
+                if let Some(r) = p.place(ctx, img(200, 100)) { p.slots.insert(slot, (1, r)); p.asked.insert(slot, 1); ids.push(slot); }
             });
             frame += 1;
             n += 1;
@@ -270,7 +328,7 @@ mod tests {
             p.seen.insert(keep, ctx.cumulative_pass_nr());
             let slot = Slot::Brush(999);
             p.seen.insert(slot, ctx.cumulative_pass_nr());
-            let r = p.place(ctx, 200, 100).expect("room made by dropping the oldest");
+            let r = p.place(ctx, img(200, 100)).expect("room made by dropping the oldest");
             p.slots.insert(slot, (1, r));
         });
         assert!(p.slots.contains_key(&keep) && p.slots.contains_key(&Slot::Brush(999)));

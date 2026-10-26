@@ -109,6 +109,9 @@ pub struct GpuState {
     /// time), and so may its cached redraws. Freed once a newer UI frame
     /// has been submitted.
     textures_to_free: Vec<egui::TextureId>,
+    /// Interface textures sent whole: name, size, private bytes the
+    /// process gained meanwhile (the first 40; for the memory report).
+    texture_costs:   Vec<(String, u64, u64)>,
     view_bind_group: BindGroup,
     canvas_bgl:      BindGroupLayout,
     pub canvas:      Canvas,
@@ -162,6 +165,9 @@ pub struct GpuMemory {
     pub known:       Vec<(String, u64)>,
     /// egui's textures (fonts, icons, thumbnails): name, bytes.
     pub egui:        Vec<(String, u64)>,
+    /// The interface textures sent whole: name and size, bytes, private
+    /// bytes gained while sending.
+    pub uploads:     Vec<(String, u64, u64)>,
     /// The driver memory allocator's own count (Vulkan, DirectX 12): bytes
     /// given to resources, and reserved from the device. None: the API
     /// does not say.
@@ -195,6 +201,7 @@ impl GpuState {
         let tex = tex.read();
         for (_, meta) in tex.allocated() { m.egui.push((meta.name.clone(), meta.bytes_used() as u64)); }
         m.egui.sort_by_key(|x| std::cmp::Reverse(x.1));
+        m.uploads = self.texture_costs.clone();
         if let Some(r) = self.device.generate_allocator_report() {
             m.allocated = Some(r.total_allocated_bytes);
             m.reserved = Some(r.total_reserved_bytes);
@@ -463,6 +470,7 @@ impl GpuState {
             view: CanvasView::default(),
             last_ui: None,
             textures_to_free: Vec::new(),
+            texture_costs: Vec::new(),
             cursor_pipeline, cursor_buffer, cursor_bind,
             brush_cursor: None,
             egui_cursor: egui::CursorIcon::Default,
@@ -818,7 +826,16 @@ impl GpuState {
 
                 let tris = self.egui_ctx.tessellate(full_output.shapes, ppp);
                 for (id, delta) in &full_output.textures_delta.set {
+                    // A texture sent whole: what it costs the process (the
+                    // driver may take its share later, at the submit).
+                    let probe = MEMORY_PROBE.get().filter(|_| delta.pos.is_none() && self.texture_costs.len() < 40);
+                    let before = probe.map(|f| f());
                     self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
+                    if let (Some(f), Some(before)) = (probe, before) {
+                        let name = self.egui_ctx.tex_manager().read().meta(*id).map_or_else(|| format!("{id:?}"), |m| m.name.clone());
+                        let [w, h] = delta.image.size();
+                        self.texture_costs.push((format!("{name} {w}x{h}"), w as u64 * h as u64 * 4, f().saturating_sub(before)));
+                    }
                 }
                 // Free what the previous frame dropped (this frame no longer
                 // draws it); keep what this one dropped for later.

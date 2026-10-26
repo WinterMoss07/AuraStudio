@@ -159,6 +159,12 @@ pub fn gpu_sections(g: &GpuMemory) -> Vec<MemorySection> {
     let mut egui = MemorySection::new("GPU: interface textures (egui)", false);
     for (n, b) in &g.egui { egui.add(n.clone(), *b); }
     let mut out = vec![known, egui];
+    if !g.uploads.is_empty() {
+        // Private bytes the process gained while each texture was sent.
+        let mut up = MemorySection::new("GPU: private bytes gained when a texture was sent (first ones)", false);
+        for (n, _, gained) in &g.uploads { up.add(n.clone(), *gained); }
+        out.push(up);
+    }
     if let (Some(a), Some(r)) = (g.allocated, g.reserved) {
         let mut alloc = MemorySection::new("GPU: the driver's allocator", false);
         alloc.add("given to resources", a);
