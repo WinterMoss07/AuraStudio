@@ -4,6 +4,8 @@
 pub mod anim;
 mod compose;
 pub mod fill;
+pub mod onion;
+pub mod play;
 mod selection;
 mod stroke_cache;
 mod tiles;
@@ -296,6 +298,8 @@ pub struct LayerStack {
     removed:     Vec<Node>,
     /// The current frame, from 1 (what the animation folders show).
     time:        u32,
+    /// Onion skin marks and the ghosts they show now (onion.rs).
+    onion:       onion::OnionState,
 }
 
 /// Where a node sits: the path of indices from the root.
@@ -367,6 +371,7 @@ impl LayerStack {
             next_id: 2,
             removed: Vec::new(),
             time: 1,
+            onion: Default::default(),
         }
     }
 
@@ -434,7 +439,7 @@ impl LayerStack {
         walk(&root, (width, height), &mut ids)?;
         if count_layers(&root) == 0 { return Err("no paint layer".into()); }
         let next_id = ids.iter().max().copied().unwrap_or(0) + 1;
-        let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id, removed: Vec::new(), time: 1 };
+        let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id, removed: Vec::new(), time: 1, onion: Default::default() };
         s.active = if ids.contains(&active) { active } else { first_layer_id(&s.root).unwrap_or(0) };
         // (Files from 0.10.0 could mark several references in a folder.)
         s.one_reference_per_folder(s.active);
@@ -460,6 +465,7 @@ impl LayerStack {
     pub fn set_active(&mut self, id: u64) {
         if self.path(id).is_none() { return; }
         self.active = match self.anim_of(id) { Some((_, Some(frame))) => frame, _ => id };
+        self.update_onion();
     }
 
     pub fn node(&self, id: u64) -> Option<&Node> {
@@ -1214,17 +1220,23 @@ impl LayerStack {
 
     /// The merge of `rect` into `out` (RGBA rows), on white. ~5 ns/px.
     pub fn composite_rect_to(&self, rect: Rect, out: &mut [u8]) {
+        self.merge_to(rect, out, &self.onion.ghosts);
+    }
+
+    /// The merge of `rect` into `out` on white, with `ghosts` (the screen
+    /// shows the onion skin, a file's preview doesn't).
+    pub(crate) fn merge_to(&self, rect: Rect, out: &mut [u8], ghosts: compose::Ghosts) {
         let (x0, y0, x1, y1) = rect;
         if x0 >= x1 || y0 >= y1 { return; }
         // Clipping or filter layers: the general merge (compose.rs).
-        if self.needs_general_merge() { return self.general_to(rect, Pick::ALL, false, out); }
+        if self.needs_general_merge() { return self.general_to(rect, Pick::ALL, ghosts, false, out); }
         let n = (x1 - x0) as usize;
         debug_assert_eq!(out.len(), n * (y1 - y0) as usize * 4);
         let mut group: Vec<Premul> = Vec::new();
         for (y, dst) in (y0..y1).zip(out.chunks_exact_mut(n * 4)) {
             // White behind everything.
             dst.fill(255);
-            composite_row_opaque(&self.root, y, x0, dst, 1.0, &mut group);
+            composite_row_opaque(&self.root, y, x0, dst, 1.0, &mut group, ghosts);
         }
     }
 
@@ -1283,12 +1295,16 @@ impl LayerStack {
         let mut row = vec![0u8; w as usize * 4];
         // Filter layers read around each pixel: one merge of everything
         // costs less than every sampled row with its margin.
-        let full = self.needs_general_merge().then(|| self.composite_rect((0, 0, w, h)));
+        let full = self.needs_general_merge().then(|| {
+            let mut px = vec![0u8; w as usize * h as usize * 4];
+            self.merge_to((0, 0, w, h), &mut px, &[]);
+            px
+        });
         for ty in 0..th {
             let y = ((ty as u64 * 2 + 1) * h as u64 / (th as u64 * 2)) as u32;
             match &full {
                 Some(f) => row.copy_from_slice(&f[(y * w * 4) as usize..((y + 1) * w * 4) as usize]),
-                None => self.composite_rect_to((0, y, w, y + 1), &mut row),
+                None => self.merge_to((0, y, w, y + 1), &mut row, &[]),
             }
             for tx in 0..tw {
                 let (a, b) = (tx * w / tw, ((tx + 1) * w / tw).max(tx * w / tw + 1));
@@ -1307,8 +1323,8 @@ impl LayerStack {
 /// Blend `nodes` (bottom to top) onto an opaque RGBA row `dst`, for canvas
 /// row `y` from column `x0`. `opacity_scale` carries pass-through folder
 /// opacity down to the children.
-fn composite_row_opaque(
-    nodes: &[Node], y: u32, x0: u32, dst: &mut [u8], opacity_scale: f32, group: &mut Vec<Premul>,
+pub(crate) fn composite_row_opaque(
+    nodes: &[Node], y: u32, x0: u32, dst: &mut [u8], opacity_scale: f32, group: &mut Vec<Premul>, ghosts: compose::Ghosts,
 ) {
     let n = dst.len() / 4;
     for node in nodes {
@@ -1332,14 +1348,16 @@ fn composite_row_opaque(
             Node::Filter(_) => {}
             Node::Folder(f) => match f.blend {
                 FolderBlend::PassThrough => {
-                    composite_row_opaque(&f.children, y, x0, dst, opacity_scale * f.opacity, group);
+                    if let Some(gh) = onion::ghosts_of(ghosts, f.id) { ghost_row_opaque(f, gh, y, x0, dst, opacity_scale * f.opacity); }
+                    composite_row_opaque(&f.children, y, x0, dst, opacity_scale * f.opacity, group, ghosts);
                 }
                 FolderBlend::Isolated(mode) => {
                     // Children merged on their own (transparent start, so
                     // the general premultiplied path), then blended down.
                     group.clear();
                     group.resize(n, [0.0; 4]);
-                    composite_row(&f.children, y, x0, group, 1.0);
+                    if let Some(gh) = onion::ghosts_of(ghosts, f.id) { ghost_row(f, gh, y, x0, group, 1.0); }
+                    composite_row(&f.children, y, x0, group, 1.0, ghosts);
                     let op = f.opacity * opacity_scale;
                     for (d, g) in dst.chunks_exact_mut(4).zip(group.iter()) {
                         if g[3] <= 0.0 { continue; }
@@ -1404,7 +1422,7 @@ fn blend_px_opaque(d: &mut [u8], cs: [f32; 3], a: f32, mode: BlendMode) {
 /// Composite `nodes` (bottom to top) onto `row` (premultiplied), for canvas
 /// row `y` starting at column `x0`. `opacity_scale` carries pass-through
 /// folder opacity down to the children.
-fn composite_row(nodes: &[Node], y: u32, x0: u32, row: &mut [Premul], opacity_scale: f32) {
+pub(crate) fn composite_row(nodes: &[Node], y: u32, x0: u32, row: &mut [Premul], opacity_scale: f32, ghosts: compose::Ghosts) {
     for node in nodes {
         if !node.visible() || node.opacity() <= 0.0 { continue; }
         match node {
@@ -1429,11 +1447,13 @@ fn composite_row(nodes: &[Node], y: u32, x0: u32, row: &mut [Premul], opacity_sc
             Node::Filter(_) => {}
             Node::Folder(f) => match f.blend {
                 FolderBlend::PassThrough => {
-                    composite_row(&f.children, y, x0, row, opacity_scale * f.opacity);
+                    if let Some(gh) = onion::ghosts_of(ghosts, f.id) { ghost_row(f, gh, y, x0, row, opacity_scale * f.opacity); }
+                    composite_row(&f.children, y, x0, row, opacity_scale * f.opacity, ghosts);
                 }
                 FolderBlend::Isolated(mode) => {
                     let mut group: Vec<Premul> = vec![[0.0; 4]; row.len()];
-                    composite_row(&f.children, y, x0, &mut group, 1.0);
+                    if let Some(gh) = onion::ghosts_of(ghosts, f.id) { ghost_row(f, gh, y, x0, &mut group, 1.0); }
+                    composite_row(&f.children, y, x0, &mut group, 1.0, ghosts);
                     let op = f.opacity * opacity_scale;
                     for (dst, g) in row.iter_mut().zip(&group) {
                         if g[3] <= 0.0 { continue; }
@@ -1444,6 +1464,48 @@ fn composite_row(nodes: &[Node], y: u32, x0: u32, row: &mut [Premul], opacity_sc
             },
         }
     }
+}
+
+thread_local! {
+    /// A ghost's row, merged on its own (kept from row to row).
+    static GHOST_ROW: std::cell::RefCell<Vec<Premul>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Each ghost of `gh` (drawings of animation folder `f`) merged on its own
+/// for this row, tinted and faded, then `put` on the destination.
+fn each_ghost_row(f: &Folder, gh: &[onion::Ghost], y: u32, x0: u32, len: usize, mut put: impl FnMut(&onion::Ghost, f32, &[Premul])) {
+    GHOST_ROW.with(|buf| {
+        let mut t = buf.borrow_mut();
+        for g in gh {
+            let Some(Node::Folder(frame)) = f.children.iter().find(|c| c.id() == g.frame) else { continue };
+            t.clear();
+            t.resize(len, [0.0; 4]);
+            composite_row(&frame.children, y, x0, &mut t, 1.0, &[]);
+            put(g, frame.opacity, &t);
+        }
+    });
+}
+
+/// Ghosts onto a premultiplied row.
+pub(crate) fn ghost_row(f: &Folder, gh: &[onion::Ghost], y: u32, x0: u32, row: &mut [Premul], scale: f32) {
+    each_ghost_row(f, gh, y, x0, row.len(), |g, frame_op, t| {
+        for (d, p) in row.iter_mut().zip(t) {
+            if p[3] <= 0.0 { continue; }
+            let cs = onion::tinted([p[0] / p[3], p[1] / p[3], p[2] / p[3]], g);
+            blend_over(d, cs, p[3].min(1.0) * g.opacity * scale * frame_op, BlendMode::Normal);
+        }
+    });
+}
+
+/// Ghosts onto an opaque RGBA row.
+pub(crate) fn ghost_row_opaque(f: &Folder, gh: &[onion::Ghost], y: u32, x0: u32, dst: &mut [u8], scale: f32) {
+    each_ghost_row(f, gh, y, x0, dst.len() / 4, |g, frame_op, t| {
+        for (d, p) in dst.chunks_exact_mut(4).zip(t) {
+            if p[3] <= 0.0 { continue; }
+            let cs = onion::tinted([p[0] / p[3], p[1] / p[3], p[2] / p[3]], g);
+            blend_px_opaque(d, cs, p[3].min(1.0) * g.opacity * scale * frame_op, BlendMode::Normal);
+        }
+    });
 }
 
 /// One tile row of a fill color (blended where a layer has no tile).

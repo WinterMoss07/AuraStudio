@@ -82,6 +82,15 @@ pub struct Prefs {
     /// Unsaved work goes to the recovery file this long after it changed
     /// (0: never).
     pub autosave_minutes: u32,
+    // Animation.
+    /// Onion skin colors: drawings before, after the current one.
+    pub onion_before:     [u8; 3],
+    pub onion_after:      [u8; 3],
+    /// How fast the onion skin fades with distance (OpenToonz's paper
+    /// thickness, 0..100).
+    pub onion_thickness:  u8,
+    /// The onion skin shows during playback too.
+    pub onion_playback:   bool,
 }
 
 impl Default for Prefs {
@@ -92,6 +101,7 @@ impl Default for Prefs {
             canvas_quality: CanvasQuality::High, smooth_zoom_in: false, vsync: false,
             brush_outline: true, debounce_ms: 20,
             autosave_minutes: 5,
+            onion_before: [255, 0, 0], onion_after: [0, 255, 0], onion_thickness: 50, onion_playback: false,
         }
     }
 }
@@ -122,6 +132,10 @@ impl Prefs {
                 "brush_outline" => p.brush_outline = b,
                 "click_debounce_ms" => if let Ok(v) = v.parse::<u32>() { p.debounce_ms = v.min(200) },
                 "autosave_minutes" => if let Ok(v) = v.parse::<u32>() { p.autosave_minutes = v.min(120) },
+                "onion_before" => if let Some(c) = parse_rgb(v) { p.onion_before = c },
+                "onion_after" => if let Some(c) = parse_rgb(v) { p.onion_after = c },
+                "onion_thickness" => if let Ok(v) = v.parse::<u8>() { p.onion_thickness = v.min(100) },
+                "onion_playback" => p.onion_playback = v == "true",
                 _ => {}
             }
         }
@@ -130,25 +144,37 @@ impl Prefs {
 
     pub fn to_text(&self) -> String {
         format!(
-            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\n",
+            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\n",
             self.ui_scale, self.brush_previews, self.open_maximized, self.hidpi_scaling, self.color_managed,
             self.perceptual, self.renderer.key(),
             if self.canvas_quality == CanvasQuality::Standard { "standard" } else { "high" }, self.smooth_zoom_in, self.vsync,
             self.brush_outline, self.debounce_ms, self.autosave_minutes,
+            hex(self.onion_before), hex(self.onion_after), self.onion_thickness, self.onion_playback,
         )
     }
 }
 
+/// `#rrggbb`.
+fn hex(c: [u8; 3]) -> String { format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]) }
+
+fn parse_rgb(v: &str) -> Option<[u8; 3]> {
+    let v = v.strip_prefix('#')?;
+    if v.len() != 6 { return None; }
+    let c = |i: usize| u8::from_str_radix(&v[i..i + 2], 16).ok();
+    Some([c(0)?, c(2)?, c(4)?])
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Section { #[default] Interface, Display, Brushes, Files }
+pub enum Section { #[default] Interface, Display, Brushes, Animation, Files }
 
 impl Section {
-    const ALL: [Section; 4] = [Section::Interface, Section::Display, Section::Brushes, Section::Files];
+    const ALL: [Section; 5] = [Section::Interface, Section::Display, Section::Brushes, Section::Animation, Section::Files];
     fn name(self) -> &'static str {
         match self {
             Section::Interface => "Interface",
             Section::Display => "Canvas & display",
             Section::Brushes => "Brushes & input",
+            Section::Animation => "Animation",
             Section::Files => "Files",
         }
     }
@@ -183,6 +209,7 @@ pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile
                         Section::Interface => interface(ui, p, reset_docks),
                         Section::Display => display(ui, p, profile, in_use),
                         Section::Brushes => brushes(ui, p),
+                        Section::Animation => animation(ui, p),
                         Section::Files => files(ui, p),
                     }
                 });
@@ -277,6 +304,24 @@ fn brushes(ui: &mut Ui, p: &mut Prefs) {
     note(ui, "Ignores a worn mouse button's double release.");
 }
 
+fn animation(ui: &mut Ui, p: &mut Prefs) {
+    title(ui, "Onion skin");
+    ui.horizontal(|ui| {
+        ui.label("Drawings before");
+        ui.color_edit_button_srgb(&mut p.onion_before);
+        ui.add_space(12.0);
+        ui.label("after");
+        ui.color_edit_button_srgb(&mut p.onion_after);
+    });
+    ui.horizontal(|ui| {
+        ui.label("Paper thickness");
+        ui.add(egui::Slider::new(&mut p.onion_thickness, 0..=100));
+    });
+    note(ui, "How fast the drawings fade the farther they are (OpenToonz's paper thickness).");
+    ui.checkbox(&mut p.onion_playback, "Show the onion skin during playback");
+    note(ui, "Off: playback shows the animation alone (and plays from the GPU).");
+}
+
 fn files(ui: &mut Ui, p: &mut Prefs) {
     title(ui, "Autosave");
     ui.horizontal_wrapped(|ui| {
@@ -294,12 +339,14 @@ mod tests {
     #[test]
     fn prefs_round_trip_and_old_files_read() {
         let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl,
-            canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true, ..Prefs::default() };
+            canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true,
+            onion_before: [12, 200, 255], onion_after: [250, 128, 0], onion_thickness: 73, onion_playback: true, ..Prefs::default() };
         assert_eq!(Prefs::from_text(&p.to_text()), p);
         // A 0.7 settings file.
         let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");
         assert_eq!((old.hidpi_scaling, old.ui_scale, old.debounce_ms, old.autosave_minutes), (false, 0.85, 30, 5));
         assert_eq!((old.canvas_quality, old.smooth_zoom_in, old.vsync), (CanvasQuality::High, false, false));
+        assert_eq!((old.onion_before, old.onion_after, old.onion_thickness), ([255, 0, 0], [0, 255, 0], 50));
     }
 
     #[test]

@@ -170,6 +170,10 @@ pub enum AppEvent {
     TransformLift(Box<aurastudio_document::Lift>),
     /// Transform preview n is on the projection.
     TransformShown(u64),
+    /// How the document plays from the GPU (paint_thread::Event::PlayPlan).
+    PlayPlan { gen: u64, plan: Option<Box<aurastudio_layers::play::PlayPlan>> },
+    /// The tiles of one of its parts.
+    PlayTiles { gen: u64, key: aurastudio_gpu::PlayKey, tiles: Box<aurastudio_layers::play::PlayTiles> },
 }
 
 /// The GPU preview's mesh for `warp` (lift.rs): a grid over the source
@@ -338,6 +342,10 @@ pub struct App {
     /// frame's time; its speed and looping.
     play:       Option<(Instant, u32)>,
     play_next:  Option<Instant>,
+    /// Playback from the GPU: the build asked last (results of older ones
+    /// are dropped), and the document and revision it is for.
+    play_gen:   u64,
+    play_built: Option<(aurastudio_document::DocId, u64)>,
     fps:        u32,
     looping:    bool,
     /// The layers asked for when the transform was started.
@@ -394,6 +402,8 @@ impl App {
                 paint_thread::Event::TransformStarted(r) => AppEvent::TransformStarted(r),
                 paint_thread::Event::TransformLift(l) => AppEvent::TransformLift(l),
                 paint_thread::Event::TransformShown(n) => AppEvent::TransformShown(n),
+                paint_thread::Event::PlayPlan { gen, plan } => AppEvent::PlayPlan { gen, plan },
+                paint_thread::Event::PlayTiles { gen, key, tiles } => AppEvent::PlayTiles { gen, key, tiles },
             });
         });
         // Start with the round pen (the catalog starts with pencils).
@@ -467,6 +477,8 @@ impl App {
             xf_seq:     0,
             play:       None,
             play_next:  None,
+            play_gen:   0,
+            play_built: None,
             fps:        24,
             looping:    true,
             pending_targets: Vec::new(),
@@ -686,6 +698,7 @@ impl App {
 
     /// Interface size and 100 % zoom meaning, from the settings.
     fn apply_settings(&mut self) {
+        self.apply_onion_look();
         let Some(gpu) = &mut self.gpu else { return };
         gpu.set_pixel_exact(!self.prefs.hidpi_scaling);
         gpu.set_ui_scale(self.prefs.ui_scale);
@@ -695,6 +708,18 @@ impl App {
         self.debounce.window = Duration::from_millis(self.prefs.debounce_ms as u64);
         self.update_cursor();
         self.request_redraw();
+    }
+
+    /// The onion skin's colors and fade from the preferences, on the
+    /// document (shown again if they changed).
+    fn apply_onion_look(&mut self) {
+        let look = aurastudio_layers::onion::OnionLook { before: self.prefs.onion_before, after: self.prefs.onion_after, thickness: self.prefs.onion_thickness };
+        let Ok(mut d) = self.doc.try_lock() else { return };
+        if d.layers.onion_look() == look { return; }
+        d.layers.set_onion_look(look);
+        let shown = d.layers.onion().enabled;
+        drop(d);
+        if shown { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
     }
 
     /// Alt held with the brush or the fill: a click picks a color (Krita,
@@ -1438,8 +1463,14 @@ impl App {
         let rewind = doc.layers.time() >= doc.layers.last_frame();
         if rewind { doc.layers.set_time(1); }
         let from = doc.layers.time();
+        let key = (doc.id(), doc.revision());
+        // The onion skin during playback only if asked (then merged: the
+        // GPU tiles have no ghosts).
+        let ghosts = self.prefs.onion_playback && doc.layers.onion().enabled;
+        if !ghosts { doc.layers.pause_onion(true); }
         drop(doc);
         if rewind { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
+        if !ghosts { self.ensure_play_cache(key); }
         let now = Instant::now();
         self.play = Some((now, from));
         self.play_next = Some(now);
@@ -1449,10 +1480,33 @@ impl App {
 
     fn stop_playback(&mut self) {
         if self.play.take().is_some() {
+            // The exact merge of the frame stopped on (the GPU's frames may
+            // differ by a level here and there), with its onion skin.
+            if let Ok(mut d) = self.doc.lock() { d.layers.pause_onion(false); }
+            self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc)));
             self.request_redraw();
             crate::memory::event("play stop");
         }
         self.play_next = None;
+    }
+
+    /// The document shows its onion skin (marks on).
+    fn onion_on(&self) -> bool { self.doc.try_lock().is_ok_and(|d| d.layers.onion().enabled) }
+
+    /// Have the GPU tiles of document `key` (id, revision) made, unless
+    /// they are already (or being) made for it.
+    fn ensure_play_cache(&mut self, key: (aurastudio_document::DocId, u64)) {
+        if self.play_built == Some(key) { return; }
+        self.drop_play_cache();
+        self.play_built = Some(key);
+        self.paint.send(Cmd::PlayBuild { doc: Arc::clone(&self.doc), gen: self.play_gen });
+    }
+
+    /// The document changed: the playback tiles no longer show it.
+    fn drop_play_cache(&mut self) {
+        self.play_gen += 1;
+        self.play_built = None;
+        if let Some(gpu) = &mut self.gpu { gpu.play_end(); }
     }
 
     /// Playing: show the frame of now (frames are skipped if the merge
@@ -1476,8 +1530,16 @@ impl App {
         }
         let changed = doc.layers.time() as u64 != t;
         if changed { doc.layers.set_time(t as u32); }
+        let key = (doc.id(), doc.revision());
         drop(doc);
-        if changed { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
+        if changed {
+            // From the GPU tiles when they are there (no onion skin shown),
+            // else merged.
+            let gpu_ok = !(self.prefs.onion_playback && self.onion_on());
+            if gpu_ok { self.ensure_play_cache(key); }
+            let shown = gpu_ok && self.gpu.as_mut().is_some_and(|g| g.play_show(t as u32));
+            if !shown { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
+        }
         self.request_redraw();
         if stop { self.stop_playback(); return; }
         self.play_next = Some(start + Duration::from_secs_f64((step + 1) as f64 / fps));
@@ -1906,7 +1968,10 @@ impl App {
         }
         if actions.modified || actions.recomposite {
             if let Ok(mut d) = self.doc.try_lock() { d.touch(); }
+            self.drop_play_cache();
         }
+        // Another frame shown (no edit).
+        if actions.frame_changed && !actions.recomposite { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         match actions.play {
             Some(true) => self.start_playback(),
@@ -2106,6 +2171,7 @@ impl App {
         // A transform, polygon or playback of the document going away.
         self.play = None;
         self.play_next = None;
+        self.drop_play_cache();
         self.xf = None;
         self.xf_pending = false;
         self.poly = None;
@@ -2114,6 +2180,7 @@ impl App {
         self.autosave_at = None;
         self.doc = self.workspace.add(doc);
         crate::rescue::watch(&self.doc);
+        self.apply_onion_look();
         self.workspace.close(old);
         *self.projection.lock().unwrap() = Projection::new(w, h);
         if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
@@ -2377,7 +2444,14 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.on_painted();
                 self.ui.invalidate_thumbnail(layer_id, rect);
+                self.drop_play_cache();
                 self.request_redraw();
+            }
+            AppEvent::PlayPlan { gen, plan } => {
+                if let (true, Some(plan), Some(gpu)) = (gen == self.play_gen, plan, &mut self.gpu) { gpu.play_begin(*plan); }
+            }
+            AppEvent::PlayTiles { gen, key, tiles } => {
+                if let (true, Some(gpu)) = (gen == self.play_gen, &mut self.gpu) { gpu.play_add(key, &tiles); }
             }
             AppEvent::Notice(text) => {
                 self.ui.notify(&text);

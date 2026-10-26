@@ -477,6 +477,7 @@ impl ForgeBrush {
                     let smudge_radius_log = dab_sv.get(BrushSetting::SmudgeRadiusLog);
                     let smudge_radius = (draw_radius * smudge_radius_log.exp()).clamp(0.2, 1000.0);
                     let paint_for_sample = dab_sv.get(BrushSetting::Paint).clamp(0.0, 1.0);
+                    surface.prepare_read(px, py, smudge_radius);
                     let sample = if paint_for_sample > 0.0 {
                         surface.get_color_pigment(px, py, smudge_radius, paint_for_sample)
                     } else {

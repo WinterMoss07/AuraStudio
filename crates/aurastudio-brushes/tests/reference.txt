@@ -19,7 +19,7 @@ Charcoal & pastel / Charcoal	d558c858b4fe7a08
 Charcoal & pastel / Fine charcoal	c4b1adc88bc618c4
 Charcoal & pastel / Rough charcoal	00278c5ac7451d02
 Charcoal & pastel / Chalk	dd8a29f412994058
-Charcoal & pastel / Pastel	ebeffa1ca8300c5f
+Charcoal & pastel / Pastel	2ef8ed4423a04d73
 Paint / Digital brush	c804a716a8cb95a1
 Paint / Detail brush	cf44d9a1717bfb41
 Paint / Rigger	a78318576504b119
@@ -39,7 +39,7 @@ Airbrush / Airbrush	71e7e75f3e277328
 Airbrush / Pressure airbrush	2f0011deab94a1ab
 Airbrush / Grainy spray	6c0a7b00ac6861ad
 Blend & smudge / Blender	9d270430421ba1b5
-Blend & smudge / Grainy blender	fdeac03b8bdabaea
+Blend & smudge / Grainy blender	67b3fecc64ffed0c
 Blend & smudge / Smear	ec3e3fa3a0c9fccd
 Blend & smudge / Blending knife	786303bc44c136de
 Blend & smudge / Blur	4fe752df1608958d

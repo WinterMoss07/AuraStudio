@@ -4,7 +4,9 @@
 
 use aurastudio_canvas::{Rect, TILE};
 
-use crate::{composite_row, composite_row_opaque, FolderBlend, LayerStack, Node, Tile, BlendMode};
+use crate::compose::Ghosts;
+use crate::onion::{ghosts_of, Ghost};
+use crate::{composite_row, composite_row_opaque, ghost_row, ghost_row_opaque, BlendMode, Folder, FolderBlend, LayerStack, Node, Tile};
 
 /// Per tile, built the first time the stroke's display needs it.
 #[derive(Default)]
@@ -18,14 +20,25 @@ pub(crate) struct StrokeCache {
     above:  Vec<Option<Tile>>,
 }
 
+/// What the merge draws, in order: a node, or the onion skin's ghosts of
+/// an animation folder (drawn before its frames).
+#[derive(Clone, Copy)]
+enum Item<'a> {
+    Node(&'a Node, f32),
+    Ghosts(&'a Folder, f32, &'a [Ghost]),
+}
+
 /// Visible nodes in drawing order, pass-through folders opened (their
 /// opacity carried down), isolated folders kept whole.
-fn flatten<'a>(nodes: &'a [Node], scale: f32, out: &mut Vec<(&'a Node, f32)>) {
+fn flatten<'a>(nodes: &'a [Node], scale: f32, ghosts: Ghosts<'a>, out: &mut Vec<Item<'a>>) {
     for n in nodes {
         if !n.visible() || n.opacity() <= 0.0 { continue; }
         match n {
-            Node::Folder(f) if f.blend == FolderBlend::PassThrough => flatten(&f.children, scale * f.opacity, out),
-            _ => out.push((n, scale)),
+            Node::Folder(f) if f.blend == FolderBlend::PassThrough => {
+                if let Some(gh) = ghosts_of(ghosts, f.id) { out.push(Item::Ghosts(f, scale * f.opacity, gh)); }
+                flatten(&f.children, scale * f.opacity, ghosts, out);
+            }
+            _ => out.push(Item::Node(n, scale)),
         }
     }
 }
@@ -53,12 +66,13 @@ impl LayerStack {
         let id = self.stroke.layer;
         if self.stroke.base.is_empty() { return self.composite_rect(r); }
 
+        let ghosts = &self.onion.ghosts[..];
         let mut items = Vec::new();
-        flatten(&self.root, 1.0, &mut items);
-        let Some(k) = items.iter().position(|(n, _)| n.id() == id) else { return self.composite_rect(r) };
+        flatten(&self.root, 1.0, ghosts, &mut items);
+        let Some(k) = items.iter().position(|it| matches!(it, Item::Node(n, _) if n.id() == id)) else { return self.composite_rect(r) };
         // (Clipping and filter layers: the general merge, no cache.)
         let general = self.needs_general_merge();
-        let usable = *self.stroke.cache.usable.get_or_insert_with(|| !general && items[k + 1..].iter().all(|(n, _)| normal(n)));
+        let usable = *self.stroke.cache.usable.get_or_insert_with(|| !general && items[k + 1..].iter().all(|it| match it { Item::Node(n, _) => normal(n), Item::Ghosts(..) => true }));
         if !usable { return self.composite_rect(r); }
 
         let tiles = self.stroke.base.len();
@@ -68,7 +82,8 @@ impl LayerStack {
             cache.above = (0..tiles).map(|_| None).collect();
         }
         let (w, h, cols) = (self.width, self.height, self.width.div_ceil(TILE));
-        let (below_items, (layer, scale), above_items) = (&items[..k], items[k], &items[k + 1..]);
+        let Item::Node(layer, scale) = items[k] else { unreachable!() };
+        let (below_items, above_items) = (&items[..k], &items[k + 1..]);
         let mut group = Vec::new();
 
         // Fill the caches of the tiles this rectangle touches.
@@ -86,13 +101,19 @@ impl LayerStack {
                 for y in 0..th {
                     let o = (y * TILE * 4) as usize;
                     let dst = &mut below[o..o + tw * 4];
-                    for (n, s) in below_items {
-                        composite_row_opaque(std::slice::from_ref(*n), y0 + y, x0, dst, *s, &mut group);
+                    for it in below_items {
+                        match *it {
+                            Item::Node(n, s) => composite_row_opaque(std::slice::from_ref(n), y0 + y, x0, dst, s, &mut group, ghosts),
+                            Item::Ghosts(f, s, gh) => ghost_row_opaque(f, gh, y0 + y, x0, dst, s),
+                        }
                     }
                     let Some(above) = above.as_mut() else { continue };
                     prow.iter_mut().for_each(|p| *p = [0.0; 4]);
-                    for (n, s) in above_items {
-                        composite_row(std::slice::from_ref(*n), y0 + y, x0, &mut prow, *s);
+                    for it in above_items {
+                        match *it {
+                            Item::Node(n, s) => composite_row(std::slice::from_ref(n), y0 + y, x0, &mut prow, s, ghosts),
+                            Item::Ghosts(f, s, gh) => ghost_row(f, gh, y0 + y, x0, &mut prow, s),
+                        }
                     }
                     for (d, p) in above[o..o + tw * 4].chunks_exact_mut(4).zip(&prow) {
                         for c in 0..4 { d[c] = (p[c].clamp(0.0, 1.0) * 255.0 + 0.5) as u8; }
@@ -117,7 +138,7 @@ impl LayerStack {
                 let len = (end - x) as usize * 4;
                 let seg = &mut row[(x - r.0) as usize * 4..][..len];
                 seg.copy_from_slice(&cache.below[i].as_ref().unwrap()[o..o + len]);
-                composite_row_opaque(std::slice::from_ref(layer), y, x, seg, scale, &mut group);
+                composite_row_opaque(std::slice::from_ref(layer), y, x, seg, scale, &mut group, ghosts);
                 if let Some(above) = &cache.above[i] {
                     // d = d × (1 - A) + C over every byte (vectorizes; the
                     // alpha byte gets A = 0, C = 0: stays 255).

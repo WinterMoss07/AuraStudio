@@ -9,6 +9,7 @@
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, Rect};
 
+use crate::onion::{ghosts_of, tinted, Ghost};
 use crate::{FolderBlend, LayerStack, Node};
 
 /// Which nodes a merge takes.
@@ -82,16 +83,17 @@ impl LayerStack {
         if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }
         let mut out = vec![0u8; (r.2 - r.0) as usize * (r.3 - r.1) as usize * 4];
         if pick == Pick::ALL && !transparent && !self.needs_general_merge() {
-            self.composite_rect_to(r, &mut out);
+            // What is picked is the document: never the onion's ghosts.
+            self.merge_to(r, &mut out, &[]);
         } else {
-            self.general_to(r, pick, transparent, &mut out);
+            self.general_to(r, pick, &[], transparent, &mut out);
         }
         out
     }
 
     /// The general merge of `rect` (inside the canvas) into `out`, by
     /// bands.
-    pub(crate) fn general_to(&self, rect: Rect, pick: Pick, transparent: bool, out: &mut [u8]) {
+    pub(crate) fn general_to(&self, rect: Rect, pick: Pick, ghosts: Ghosts, transparent: bool, out: &mut [u8]) {
         let m = margin(&self.root, pick).min(MAX_MARGIN);
         let n = (rect.2 - rect.0) as usize;
         let start = if transparent { [0.0; 4] } else { [1.0; 4] };
@@ -102,7 +104,7 @@ impl LayerStack {
             let ext = (rect.0.saturating_sub(m), y.saturating_sub(m), (rect.2 + m).min(self.width), (y1 + m).min(self.height));
             let mut b = Block::new(ext, start);
             let mut stop = false;
-            compose(&self.root, &mut b, 1.0, pick, false, None, &mut stop);
+            compose(&self.root, &mut b, 1.0, pick, ghosts, false, None, &mut stop);
             for yy in y..y1 {
                 let src = &b.px[(yy - ext.1) as usize * b.w + (rect.0 - ext.0) as usize..][..n];
                 let dst = &mut out[(yy - rect.1) as usize * n * 4..][..n * 4];
@@ -174,7 +176,8 @@ fn taken(n: &Node, pick: Pick, in_reference: bool) -> bool {
 /// pass-through folders around; `in_reference`: inside a reference
 /// folder; `mask`: the clipping around them, if any.
 /// `stop`: set once `pick.until` is reached; nothing more is drawn.
-fn compose(nodes: &[Node], b: &mut Block, scale: f32, pick: Pick, in_reference: bool, mask: Option<&[f32]>, stop: &mut bool) {
+#[allow(clippy::too_many_arguments)]
+fn compose(nodes: &[Node], b: &mut Block, scale: f32, pick: Pick, ghosts: Ghosts, in_reference: bool, mask: Option<&[f32]>, stop: &mut bool) {
     let mut i = 0;
     while i < nodes.len() && !*stop {
         if nodes[i].id() == pick.until { *stop = true; return; }
@@ -191,27 +194,27 @@ fn compose(nodes: &[Node], b: &mut Block, scale: f32, pick: Pick, in_reference: 
             // pick, the reference may be among them.
             if pick.reference.is_some() && !in_reference && base.visible() {
                 for c in clipped {
-                    if taken(c, pick, false) { draw(c, b, scale, pick, false, mask, false, stop); }
+                    if taken(c, pick, false) { draw(c, b, scale, pick, ghosts, false, mask, false, stop); }
                 }
             }
         } else if !wanted {
-            draw(base, b, scale, pick, in_reference, mask, false, stop);
+            draw(base, b, scale, pick, ghosts, in_reference, mask, false, stop);
             if is_filter {
                 // Clipped to a filter layer: nothing to clip to.
                 for c in clipped {
                     if *stop || c.id() == pick.until { *stop = true; return; }
-                    if taken(c, pick, in_reference) { draw(c, b, scale, pick, in_reference, mask, false, stop); }
+                    if taken(c, pick, in_reference) { draw(c, b, scale, pick, ghosts, in_reference, mask, false, stop); }
                 }
             }
         } else {
             // The group: the base alone (full opacity, normal), then the
             // clipped nodes through its coverage.
             let mut g = Block::new(b.rect, [0.0; 4]);
-            draw(base, &mut g, 1.0, pick, in_reference, None, true, stop);
+            draw(base, &mut g, 1.0, pick, ghosts, in_reference, None, true, stop);
             let cover: Mask = g.px.iter().map(|p| p[3]).collect();
             for c in clipped {
                 if *stop || c.id() == pick.until { *stop = true; break; }
-                if taken(c, pick, base_ref) { draw(c, &mut g, 1.0, pick, base_ref, Some(&cover), false, stop); }
+                if taken(c, pick, base_ref) { draw(c, &mut g, 1.0, pick, ghosts, base_ref, Some(&cover), false, stop); }
             }
             let (op, mode) = match base {
                 Node::Layer(l) => (l.opacity, l.blend),
@@ -221,6 +224,26 @@ fn compose(nodes: &[Node], b: &mut Block, scale: f32, pick: Pick, in_reference: 
             blend_block(b, &g, op * scale, mode, mask);
         }
         i = j;
+    }
+}
+
+/// Ghosts of an animation folder (onion.rs).
+pub(crate) type Ghosts<'a> = &'a [(u64, Vec<Ghost>)];
+
+/// The ghosts `gh` of animation folder `f` onto `b`, far to near: each
+/// drawing merged on its own, tinted, faded.
+fn ghost_block(f: &crate::Folder, gh: &[Ghost], b: &mut Block, scale: f32, pick: Pick) {
+    for gst in gh {
+        let Some(Node::Folder(frame)) = f.children.iter().find(|c| c.id() == gst.frame) else { continue };
+        let mut t = Block::new(b.rect, [0.0; 4]);
+        let mut stop = false;
+        compose(&frame.children, &mut t, 1.0, pick, &[], false, None, &mut stop);
+        let op = gst.opacity * scale * frame.opacity;
+        for (d, p) in b.px.iter_mut().zip(&t.px) {
+            if p[3] <= 0.0 { continue; }
+            let cs = tinted([p[0] / p[3], p[1] / p[3], p[2] / p[3]], gst);
+            blend_over(d, cs, p[3].min(1.0) * op, BlendMode::Normal);
+        }
     }
 }
 
@@ -237,7 +260,7 @@ fn blend_block(b: &mut Block, g: &Block, op: f32, mode: BlendMode, mask: Option<
 /// Draw `n` onto `b`, through `mask` if clipped; `alone`: as the base of
 /// a clipping group (full opacity, normal blending: the group gets them).
 #[allow(clippy::too_many_arguments)]
-fn draw(n: &Node, b: &mut Block, scale: f32, pick: Pick, in_reference: bool, mask: Option<&[f32]>, alone: bool, stop: &mut bool) {
+fn draw(n: &Node, b: &mut Block, scale: f32, pick: Pick, ghosts: Ghosts, in_reference: bool, mask: Option<&[f32]>, alone: bool, stop: &mut bool) {
     let is_ref = in_reference || is_reference(n, pick);
     match n {
         Node::Layer(l) => {
@@ -267,12 +290,16 @@ fn draw(n: &Node, b: &mut Block, scale: f32, pick: Pick, in_reference: bool, mas
             }
         }
         Node::Folder(f) => match (f.blend, mask, alone) {
-            (FolderBlend::PassThrough, None, false) => compose(&f.children, b, scale * f.opacity, pick, is_ref, None, stop),
+            (FolderBlend::PassThrough, None, false) => {
+                if let Some(gh) = ghosts_of(ghosts, f.id) { ghost_block(f, gh, b, scale * f.opacity, pick); }
+                compose(&f.children, b, scale * f.opacity, pick, ghosts, is_ref, None, stop)
+            }
             // Clipped, isolated, or a group's base: merged on its own first.
             (blend, _, _) => {
                 let mode = match blend { FolderBlend::Isolated(m) if !alone => m, _ => BlendMode::Normal };
                 let mut t = Block::new(b.rect, [0.0; 4]);
-                compose(&f.children, &mut t, 1.0, pick, is_ref, None, stop);
+                if let Some(gh) = ghosts_of(ghosts, f.id) { ghost_block(f, gh, &mut t, 1.0, pick); }
+                compose(&f.children, &mut t, 1.0, pick, ghosts, is_ref, None, stop);
                 let op = if alone { 1.0 } else { f.opacity * scale };
                 blend_block(b, &t, op, mode, mask);
             }
@@ -334,7 +361,7 @@ mod tests {
         assert!(!s.needs_general_merge());
         let plain = s.composite_rect((0, 0, W, H));
         let mut general = vec![0u8; plain.len()];
-        s.general_to((0, 0, W, H), Pick::ALL, false, &mut general);
+        s.general_to((0, 0, W, H), Pick::ALL, &[], false, &mut general);
         let worst = plain.iter().zip(&general).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
         assert!(worst <= 1, "differ by {worst}");
     }

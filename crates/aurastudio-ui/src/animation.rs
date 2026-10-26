@@ -27,8 +27,12 @@ use crate::{theme, Actions, Model, Notice};
 /// folders' names (layer header) and the frame numbers (frame header).
 struct Sizes { layer: f32, frame: f32, layer_head: f32, frame_head: f32 }
 
-const XSHEET: Sizes = Sizes { layer: 96.0, frame: 20.0, layer_head: 64.0, frame_head: 40.0 };
-const TIMELINE: Sizes = Sizes { layer: 34.0, frame: 22.0, layer_head: 190.0, frame_head: 24.0 };
+const XSHEET: Sizes = Sizes { layer: 96.0, frame: 20.0, layer_head: 64.0, frame_head: 40.0 + ONION };
+const TIMELINE: Sizes = Sizes { layer: 34.0, frame: 22.0, layer_head: 190.0, frame_head: 24.0 + ONION };
+
+/// The onion skin strip along the frame header (OpenToonz): fixed marks
+/// on the outer lane, mobile ones on the inner lane.
+const ONION: f32 = 20.0;
 
 /// Least width of a context menu (it never shrinks to a letter a line).
 const MENU_W: f32 = 200.0;
@@ -46,7 +50,16 @@ struct Ask { folder: u64, frames: Vec<u32>, delta: i32, copy: bool }
 /// What a right click was on (kept while the menu is open: the pointer is
 /// on the menu then, not on the grid).
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Menu { Cell(Column, u32), Head(Column) }
+enum Menu { Cell(Column, u32), Head(Column), Onion(OnionMark) }
+
+/// An onion skin mark: mobile (drawings from the current one) or fixed
+/// (a frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum OnionMark { Mobile(i32), Fixed(u32) }
+
+/// A drag along the onion strip: the lane, and whether the marks crossed
+/// are turned on; the frame it is at.
+struct OnionDrag { fixed: bool, on: bool, last: u32 }
 
 /// The panel's state (kept by the UI).
 pub struct AnimPanel {
@@ -74,6 +87,7 @@ pub struct AnimPanel {
     /// A folder being renamed: id, text, focus asked.
     rename:       Option<(u64, String, bool)>,
     menu:         Option<Menu>,
+    onion_drag:   Option<OnionDrag>,
     /// The "Back" button (a folder dropped there leaves its group).
     exit_rect:    Option<Rect>,
     /// Where the panel was drawn last (the Delete key acts here when the
@@ -87,7 +101,7 @@ impl Default for AnimPanel {
     fn default() -> Self {
         Self {
             open: true, vertical: false, scroll: Vec2::ZERO, followed: 0, group: None, picked: Vec::new(), picked_in: None,
-            anchor: None, drag: None, col_drag: None, boxsel: None, scrubbing: false, ask: None, rename: None, menu: None,
+            anchor: None, drag: None, col_drag: None, boxsel: None, scrubbing: false, ask: None, rename: None, menu: None, onion_drag: None,
             exit_rect: None, rect: None, delete_req: false,
         }
     }
@@ -231,7 +245,7 @@ fn go(m: &mut Model, a: &mut Actions, n: u32) {
     let n = n.max(1);
     if m.layers.time() != n {
         m.layers.set_time(n);
-        a.recomposite = true;
+        a.frame_changed = true;
     }
 }
 
@@ -351,6 +365,20 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
          Rect::from_min_max(pos2(area.left() + s.layer_head, area.top()), pos2(area.right(), area.top() + s.frame_head)),
          Rect::from_min_max(pos2(area.left() + s.layer_head, area.top() + s.frame_head), area.max))
     };
+    // The onion strip on the outer side of the frame header (fixed lane
+    // outside, mobile inside), the numbers next to the cells.
+    let (onion, frame_head) = if st.vertical {
+        (Rect::from_min_max(frame_head.min, pos2(frame_head.left() + ONION, frame_head.bottom())),
+         Rect::from_min_max(pos2(frame_head.left() + ONION, frame_head.top()), frame_head.max))
+    } else {
+        (Rect::from_min_max(frame_head.min, pos2(frame_head.right(), frame_head.top() + ONION)),
+         Rect::from_min_max(pos2(frame_head.left(), frame_head.top() + ONION), frame_head.max))
+    };
+    let (fixed_lane, mobile_lane) = if st.vertical {
+        (Rect::from_min_max(onion.min, pos2(onion.center().x, onion.bottom())), Rect::from_min_max(pos2(onion.center().x, onion.top()), onion.max))
+    } else {
+        (Rect::from_min_max(onion.min, pos2(onion.right(), onion.center().y)), Rect::from_min_max(pos2(onion.left(), onion.center().y), onion.max))
+    };
 
     // Scrolling: the wheel goes through time, Shift + wheel across folders.
     if resp.hovered() {
@@ -454,6 +482,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
 
     // Frame header: the numbers (every one; on the timeline every 5th),
     // the current frame lit.
+    draw_onion(&p, &g, m, onion, fixed_lane, mobile_lane, f0, f1, t);
     let hp = p.with_clip_rect(frame_head);
     hp.rect_filled(frame_head, 0.0, theme::SURFACE);
     for f in f0..=f1 {
@@ -557,7 +586,12 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     if resp.drag_started() {
         // (Where the button went down: the pointer may have left the cell.)
         if let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
-            if in_cells(q) {
+            if onion.contains(q) {
+                // Each mark crossed takes the state the first one got.
+                let fixed = fixed_lane.contains(q);
+                let f = g.frame_at(q);
+                if let Some(on) = onion_toggle(m, a, fixed, f, None) { st.onion_drag = Some(OnionDrag { fixed, on, last: f }); }
+            } else if in_cells(q) {
                 let (c, f) = (g.col_at(q), g.frame_at(q));
                 match cols.get(c) {
                     Some(&Column::Folder(folder)) if m.layers.frame_at(folder, f).is_some() => {
@@ -581,6 +615,13 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     if resp.dragged() {
         if let Some(q) = pointer {
             let f = g.frame_at(q);
+            if let Some(od) = &mut st.onion_drag {
+                if f != od.last {
+                    let (lo, hi) = (od.last.min(f), od.last.max(f));
+                    for k in lo..=hi { if k != od.last { onion_toggle(m, a, od.fixed, k, Some(od.on)); } }
+                    od.last = f;
+                }
+            }
             if st.scrubbing { a.play = Some(false); go(m, a, f); }
             if let Some(d) = &mut st.drag { d.to = f; }
             // A folder dragged: the column under the pointer, before / after / inside.
@@ -607,6 +648,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     }
     if resp.drag_stopped() {
         st.scrubbing = false;
+        st.onion_drag = None;
         if let Some(d) = st.drag.take() {
             let copy = mods.command;
             let delta = d.to as i32 - d.from as i32;
@@ -651,7 +693,18 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     }
     if resp.clicked() {
         if let Some(q) = resp.interact_pointer_pos() {
-            if in_cells(q) {
+            if onion.contains(q) {
+                let f = g.frame_at(q);
+                if mobile_lane.contains(q) && f == t {
+                    // The current frame's mark: the onion skin on or off.
+                    let mut o = m.layers.onion().clone();
+                    o.enabled = !o.enabled;
+                    if o.enabled && o.mobile.is_empty() && o.fixed.is_empty() { o.mobile = [(-1, None), (-2, None), (-3, None)].into(); }
+                    onion_set(m, a, o);
+                } else {
+                    onion_toggle(m, a, fixed_lane.contains(q), f, None);
+                }
+            } else if in_cells(q) {
                 let (c, f) = (g.col_at(q), g.frame_at(q));
                 a.play = Some(false);
                 match cols.get(c).copied() {
@@ -701,7 +754,9 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     }
     // Right click: the menu is for what was under the pointer then.
     let hit = resp.interact_pointer_pos().and_then(|q| {
-        if in_cells(q) {
+        if onion.contains(q) {
+            onion_mark_at(m, fixed_lane.contains(q), g.frame_at(q)).map(Menu::Onion)
+        } else if in_cells(q) {
             let col = cols.get(g.col_at(q)).copied()?;
             Some(Menu::Cell(col, g.frame_at(q)))
         } else {
@@ -724,11 +779,147 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         match menu {
             Some(Menu::Cell(col, f)) => cell_menu(ui, st, m, a, col, f),
             Some(Menu::Head(col)) => head_menu(ui, st, ls, notice, m, a, col),
+            Some(Menu::Onion(mark)) => onion_menu(ui, m, a, mark),
             None => ui.close_menu(),
         }
     });
     if pointer.is_some_and(in_cells) && resp.hovered() && !resp.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+    }
+}
+
+// --- Onion skin ------------------------------------------------------------
+
+/// The drawings of the active animation folder and the index of the one
+/// shown now (None before the first one, or outside animation folders).
+fn onion_drawings(m: &Model) -> Option<(Vec<(u32, u64)>, usize)> {
+    let (folder, _) = m.layers.anim_of(m.layers.active_id())?;
+    let frames = m.layers.frames(folder);
+    let t = m.layers.time();
+    let cur = frames.iter().rposition(|f| f.0 <= t)?;
+    Some((frames, cur))
+}
+
+/// The mark the onion strip has at frame `f` (of that lane), if any. On
+/// the mobile lane, a frame stands for the drawing it shows.
+fn onion_mark_at(m: &Model, fixed: bool, f: u32) -> Option<OnionMark> {
+    let o = m.layers.onion();
+    if fixed { return o.fixed.contains_key(&f).then_some(OnionMark::Fixed(f)); }
+    let (frames, cur) = onion_drawings(m)?;
+    let i = frames.iter().rposition(|x| x.0 <= f)?;
+    let off = i as i32 - cur as i32;
+    (off != 0 && o.mobile.contains_key(&off)).then_some(OnionMark::Mobile(off))
+}
+
+/// New marks for the document: the merge shows them, the file keeps
+/// them (no undo step, as in OpenToonz).
+fn onion_set(m: &mut Model, a: &mut Actions, o: aurastudio_layers::onion::Onion) {
+    if *m.layers.onion() == o { return; }
+    m.layers.set_onion(o);
+    a.recomposite = true;
+}
+
+/// Turn the mark of frame `f` on its lane on or off (`to`: that state;
+/// None: the other one). Returns the state it got (None: nothing there,
+/// the current drawing or its hold). Turning a mark on turns the onion
+/// skin on.
+fn onion_toggle(m: &mut Model, a: &mut Actions, fixed: bool, f: u32, to: Option<bool>) -> Option<bool> {
+    let mut o = m.layers.onion().clone();
+    let on = if fixed {
+        let on = to.unwrap_or(!o.fixed.contains_key(&f));
+        if on { o.fixed.entry(f).or_insert(None); } else { o.fixed.remove(&f); }
+        on
+    } else {
+        let (frames, cur) = onion_drawings(m)?;
+        let i = frames.iter().rposition(|x| x.0 <= f)?;
+        let off = i as i32 - cur as i32;
+        if off == 0 { return None; }
+        let on = to.unwrap_or(!(o.enabled && o.mobile.contains_key(&off)));
+        if on { o.mobile.entry(off).or_insert(None); } else { o.mobile.remove(&off); }
+        on
+    };
+    if on { o.enabled = true; }
+    onion_set(m, a, o);
+    Some(on)
+}
+
+/// A mark's right-click menu: its opacity, or the automatic fade.
+fn onion_menu(ui: &mut Ui, m: &mut Model, a: &mut Actions, mark: OnionMark) {
+    let mut o = m.layers.onion().clone();
+    let slot = match mark {
+        OnionMark::Mobile(off) => o.mobile.get_mut(&off),
+        OnionMark::Fixed(f) => o.fixed.get_mut(&f),
+    };
+    let Some(slot) = slot else { ui.close_menu(); return };
+    ui.label(RichText::new(match mark {
+        OnionMark::Mobile(off) if off < 0 => format!("Drawing {} before", -off),
+        OnionMark::Mobile(off) => format!("Drawing {off} after"),
+        OnionMark::Fixed(f) => format!("Frame {f}, always shown"),
+    }).strong());
+    let look = m.layers.onion_look();
+    let distance = match mark { OnionMark::Mobile(off) => off.unsigned_abs(), OnionMark::Fixed(_) => 1 };
+    let mut auto = slot.is_none();
+    let mut pct = (slot.unwrap_or_else(|| look.fade(distance)) * 100.0).round();
+    ui.horizontal(|ui| {
+        ui.label("Opacity");
+        if ui.add_enabled(!auto, egui::Slider::new(&mut pct, 0.0..=100.0).suffix(" %").integer()).changed() { *slot = Some(pct / 100.0); }
+    });
+    if ui.checkbox(&mut auto, "Automatic (fades with distance)").changed() {
+        *slot = if auto { None } else { Some(pct / 100.0) };
+    }
+    if ui.button("Remove mark").clicked() {
+        match mark {
+            OnionMark::Mobile(off) => { o.mobile.remove(&off); }
+            OnionMark::Fixed(f) => { o.fixed.remove(&f); }
+        }
+        ui.close_menu();
+    }
+    onion_set(m, a, o);
+}
+
+/// The onion strip: the lanes, the marks as dots (red before, green
+/// after, darker with an opacity of their own), the current frame's
+/// switch, a line over the mobile range.
+#[allow(clippy::too_many_arguments)]
+fn draw_onion(p: &egui::Painter, g: &Grid, m: &Model, onion: Rect, fixed_lane: Rect, mobile_lane: Rect, f0: u32, f1: u32, t: u32) {
+    let op = p.with_clip_rect(onion);
+    op.rect_filled(onion, 0.0, theme::DESK);
+    let o = m.layers.onion();
+    let look = m.layers.onion_look();
+    let col = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+    let (before, after) = (col(look.before), col(look.after));
+    let dim = |c: Color32| if o.enabled { c } else { c.gamma_multiply(0.35) };
+    let dot = |lane: Rect, f: u32, c: Color32, own: bool| {
+        let r = g.frame_head(lane, f);
+        let fill = if own { c.gamma_multiply(0.55) } else { c };
+        op.circle(r.center(), 3.6, dim(fill), Stroke::new(1.0_f32, dim(Color32::from_black_alpha(160))));
+    };
+    // Mobile marks, at the drawings they stand for.
+    if let Some((frames, cur)) = onion_drawings(m) {
+        let (mut lo, mut hi) = (t, t);
+        for (&off, op_v) in &o.mobile {
+            let i = cur as i64 + off as i64;
+            if !(0..frames.len() as i64).contains(&i) { continue; }
+            let n = frames[i as usize].0;
+            lo = lo.min(n);
+            hi = hi.max(n);
+            if (f0..=f1).contains(&n) { dot(mobile_lane, n, if off < 0 { before } else { after }, op_v.is_some()); }
+        }
+        if lo < hi {
+            let (a0, a1) = (g.frame_head(mobile_lane, lo).center(), g.frame_head(mobile_lane, hi).center());
+            op.line_segment([a0, a1], Stroke::new(1.0_f32, dim(theme::TEXT_WEAK)));
+        }
+    }
+    // Fixed marks.
+    for (&f, op_v) in &o.fixed {
+        if (f0..=f1).contains(&f) { dot(fixed_lane, f, if f < t { before } else if f > t { after } else { theme::TEXT }, op_v.is_some()); }
+    }
+    // The switch on the current frame.
+    let r = g.frame_head(mobile_lane, t);
+    if o.enabled {
+        op.circle(r.center(), 5.0, theme::ACCENT, Stroke::new(1.2_f32, Color32::WHITE));
+    } else {
+        op.circle_stroke(r.center(), 5.0, Stroke::new(1.2_f32, theme::TEXT_WEAK));
     }
 }
 

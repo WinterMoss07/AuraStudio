@@ -293,7 +293,7 @@ impl Run {
         // The animation folder the active node is in (or is), and one of
         // its frames.
         let anim = d.layers.anim_of(d.layers.active_id()).map(|x| x.0);
-        let name = match r.below(41) {
+        let name = match r.below(43) {
             0 if !full => { let before: HashSet<u64> = ids.iter().copied().collect(); let id = d.layers.add_layer("L"); assert!(!before.contains(&id), "id reused"); "add layer" }
             1 if !full => { d.layers.add_folder("F"); "add folder" }
             2 if !full => { d.layers.add_filter_layer(random_filter(r)); "add filter layer" }
@@ -422,6 +422,22 @@ impl Run {
                 Some((_, Some(frame))) => { d.layers.apply_to_folder(frame); "apply to folder" }
                 _ => "apply: no frame",
             },
+            29 => {
+                // Onion skin marks: on or off, mobile and fixed, own
+                // opacities or automatic, any look.
+                let mut o = aurastudio_layers::onion::Onion { enabled: r.chance(0.8), ..Default::default() };
+                for _ in 0..r.below(5) {
+                    let op = r.chance(0.5).then(|| r.below(101) as f32 / 100.0);
+                    if r.chance(0.6) { o.mobile.insert(r.below(9) as i32 - 4, op); } else { o.fixed.insert(1 + r.below(14) as u32, op); }
+                }
+                o.mobile.remove(&0);
+                d.layers.set_onion(o);
+                if r.chance(0.3) {
+                    d.layers.set_onion_look(aurastudio_layers::onion::OnionLook { before: [r.below(256) as u8, 0, 90], after: [10, r.below(256) as u8, 0], thickness: r.below(101) as u8 });
+                }
+                if r.chance(0.2) { d.layers.pause_onion(r.chance(0.5)); }
+                "onion skin"
+            }
             _ => match anim {
                 Some(f) => {
                     let frames = d.layers.frames(f);
@@ -522,6 +538,9 @@ impl Run {
             })
         }
         if !l.needs_general_merge() && !divides(&l.root) {
+            // Both without the onion's ghosts (the screen's are checked by
+            // the layers tests).
+            let whole = l.composite_pick((0, 0, w, h), Pick::ALL, false);
             let g = l.composite_pick((0, 0, w, h), Pick { skip: u64::MAX, ..Pick::ALL }, false);
             let worst = whole.iter().zip(&g).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
             // The plain merge rounds to 8 bits after each layer (Krita does
@@ -574,6 +593,37 @@ impl Run {
             until: if self.r.chance(0.3) { ids[self.r.below(ids.len() as u64) as usize] } else { 0 },
         };
         assert_eq!(l.composite_pick(r, pick, self.r.chance(0.5)).len(), ((r.2 - r.0) * (r.3 - r.1) * 4) as usize);
+    }
+
+    /// Played from its parts (what the GPU draws), every frame is the
+    /// merge, to a level; the stack is left as it was.
+    fn play_check(&mut self) {
+        let mut d = self.doc.lock().unwrap();
+        let Some(plan) = d.layers.play_plan() else { return };
+        let (w, h) = (d.layers.width, d.layers.height);
+        let (time, active) = (d.layers.time(), d.layers.active_id());
+        fn shown(nodes: &[Node], out: &mut Vec<(u64, bool)>) {
+            for n in nodes {
+                out.push((n.id(), n.visible()));
+                if let Node::Folder(f) = n { shown(&f.children, out); }
+            }
+        }
+        let mut tree = Vec::new();
+        shown(&d.layers.root, &mut tree);
+        for t in [time, 1 + self.r.below(d.layers.last_frame() as u64) as u32] {
+            d.layers.set_time(t);
+            d.layers.set_active(active);
+            let played = d.layers.play_cpu(&plan, t);
+            let merged = d.layers.composite_pick((0, 0, w, h), aurastudio_layers::Pick::ALL, false);
+            let worst = merged.chunks_exact(4).zip(played.chunks_exact(3)).map(|(m, p)| (0..3).map(|c| m[c].abs_diff(p[c])).max().unwrap()).max().unwrap_or(0);
+            assert!(worst <= 2, "frame {t} played from its parts differs from the merge by {worst}");
+        }
+        d.layers.set_time(time);
+        d.layers.set_active(active);
+        let mut after = Vec::new();
+        shown(&d.layers.root, &mut after);
+        assert!(tree == after, "making the playback parts changed the stack");
+        *self.checks.entry("playback = merge").or_default() += 1;
     }
 
     /// The paint thread's whole merge, as the screen gets it, is the merge.
@@ -671,7 +721,8 @@ impl Run {
             760..=799 => { self.undo_redo_check(); "check: undo + redo" }
             800..=839 => { self.merge_check(); "check: merges" }
             840..=854 => { self.screen_check(); "check: screen" }
-            855..=864 => { self.file_check(); "check: file" }
+            855..=859 => { self.file_check(); "check: file" }
+            860..=864 => { self.play_check(); "check: playback" }
             865..=869 => {
                 let (w, h) = canvas_size(&mut self.r);
                 self.doc.lock().unwrap().resize(w, h);

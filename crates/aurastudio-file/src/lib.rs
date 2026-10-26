@@ -58,6 +58,20 @@ struct DocJson {
     /// Autosaves only: the file the work belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin:  Option<PathBuf>,
+    /// The onion skin's marks (animation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    onion:   Option<OnionJson>,
+}
+
+/// Onion skin marks: on or off, mobile marks (drawings from the current
+/// one) and fixed ones (frames), each with its opacity (None: automatic).
+#[derive(Serialize, Deserialize, Default)]
+struct OnionJson {
+    enabled: bool,
+    #[serde(default)]
+    mobile:  Vec<(i32, Option<f32>)>,
+    #[serde(default)]
+    fixed:   Vec<(u32, Option<f32>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -266,6 +280,14 @@ pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
             undo: undo.iter().map(step).collect(),
             redo: redo.iter().map(step).collect(),
             origin: origin.map(Path::to_path_buf),
+            onion: {
+                let o = doc.layers.onion();
+                (o.enabled || !o.mobile.is_empty() || !o.fixed.is_empty()).then(|| OnionJson {
+                    enabled: o.enabled,
+                    mobile: o.mobile.iter().map(|(k, v)| (*k, *v)).collect(),
+                    fixed: o.fixed.iter().map(|(k, v)| (*k, *v)).collect(),
+                })
+            },
         },
         layers,
         undo: undo.into_iter().map(|s| s.data).collect(),
@@ -423,6 +445,14 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
     if json.dpi.is_finite() && (1.0..=10_000.0).contains(&json.dpi) { doc.dpi = json.dpi; }
     doc.kind = kind;
     let active = doc.layers.active_id();
+    if let Some(o) = json.onion {
+        let ok = |v: &Option<f32>| v.is_none_or(|v| v.is_finite());
+        doc.layers.set_onion(aurastudio_layers::onion::Onion {
+            enabled: o.enabled,
+            mobile: o.mobile.into_iter().filter(|m| m.0 != 0 && m.0.abs() <= 1000 && ok(&m.1)).collect(),
+            fixed: o.fixed.into_iter().filter(|m| (1..=aurastudio_layers::anim::MAX_FRAME).contains(&m.0) && ok(&m.1)).collect(),
+        });
+    }
     doc.layers.set_time(json.frame);
     doc.layers.set_active(active);
     Ok(Opened { doc, origin: json.origin })
@@ -919,6 +949,7 @@ mod tests {
         }
         doc.layers.set_time(3);
         doc.layers.check_animation().unwrap();
+        doc.layers.set_onion(aurastudio_layers::onion::Onion { enabled: true, mobile: [(-1, None), (2, Some(0.25))].into(), fixed: [(4, None)].into() });
         let snap = snapshot(&doc, None);
         assert_eq!(snap.json.version, FORMAT_VERSION);
         let back = roundtrip(&doc).doc;
@@ -927,6 +958,7 @@ mod tests {
         assert_eq!(back.layers.anim(a), doc.layers.anim(a));
         assert_eq!(back.layers.frames(a), doc.layers.frames(a));
         assert_eq!(back.layers.active_id(), doc.layers.active_id());
+        assert_eq!(back.layers.onion(), doc.layers.onion(), "the onion skin's marks");
         let mut x = Vec::new();
         describe(&back.layers.root, &mut x);
         let mut y = Vec::new();

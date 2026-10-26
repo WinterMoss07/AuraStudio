@@ -158,6 +158,8 @@ pub struct Actions {
     pub show_docker: Option<dockers::Tab>,
     /// Start (true) or stop animation playback.
     pub play:        Option<bool>,
+    /// Another frame is current (no edit): merge it for the screen.
+    pub frame_changed: bool,
     /// No layer edit is under way (nothing held, no name being typed, no
     /// filter layer's dialog open): one done can be recorded for undo.
     pub layers_idle: bool,

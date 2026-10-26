@@ -37,4 +37,4 @@ codegen-units = 16
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.16.3"
+version = "0.17.0"

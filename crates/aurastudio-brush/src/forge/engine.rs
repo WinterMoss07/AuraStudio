@@ -62,8 +62,8 @@ pub struct Forge {
     /// (it is over the canvas, see `stroke_to`).
     last: Option<PenSample>,
     on_canvas: bool,
-    /// Upper bound of the dab radius, for preloading the tiles a dab or a
-    /// smudge sample may read.
+    /// Upper bound of the dab radius: how far off the canvas the pen may
+    /// go and still paint on it (see `stroke_to`).
     reach: f32,
     /// The preset's own eraser setting (the Eraser tool turns it fully on).
     preset_eraser: f32,
@@ -199,12 +199,9 @@ impl Forge {
         if self.washes() {
             return self.wash_step(surface, |b, st, t| { b.stroke_to(st, t, x, y, pressure, tilt.0, tilt.1, dtime); });
         }
-        // The tiles dabs and smudge samples may touch, loaded first
-        // (tile_lookup can't load), around the path and the biggest dab.
+        // Tiles load as dabs reach them, or as smudge reads them
+        // (`prepare_read`): only where the stroke goes, not a box around it.
         let mut tiles = TileCache { tiles: &mut self.tiles, scratch: &mut self.scratch, surface, dirty: HashSet::new(), area: None, opacity: self.opacity };
-        let prev = if self.state.started { (self.state.actual_x, self.state.actual_y) } else { (x, y) };
-        let reach = self.reach.max(self.state.actual_radius * 3.0 + 16.0);
-        tiles.preload(x.min(prev.0) - reach, y.min(prev.1) - reach, x.max(prev.0) + reach, y.max(prev.1) + reach);
         self.brush.stroke_to(&mut self.state, &mut tiles, x, y, pressure, tilt.0, tilt.1, dtime);
         let (dirty, area) = (std::mem::take(&mut tiles.dirty), tiles.area);
         write_back(&self.tiles, &dirty, area, surface)
@@ -283,7 +280,7 @@ impl<S: PaintSurface> TileCache<'_, S> {
     }
 
     /// Load the canvas tiles in this area (the rest is off the canvas).
-    fn preload(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+    fn load_area(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         let (w, h) = (self.surface.width() as f32, self.surface.height() as f32);
         let t = |v: f32, max: f32| (v.clamp(0.0, max - 1.0).floor() as i32).div_euclid(TS);
         if x1 < 0.0 || y1 < 0.0 || x0 >= w || y0 >= h { return; }
@@ -303,6 +300,13 @@ impl<S: PaintSurface> TiledSurface for TileCache<'_, S> {
     }
 
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+
+    fn prepare_read(&mut self, x: f32, y: f32, radius: f32) {
+        // (The tiles get_color_default reads: radius at least 1, plus a
+        // pixel of fringe.)
+        let r = radius.max(1.0) + 1.0;
+        self.load_area(x - r, y - r, x + r, y + r);
+    }
 
     fn draw_dab(&mut self, dab: &Dab) -> bool {
         // (As draw_dab_default's bounds: radius + 1 around the center.)
@@ -404,26 +408,45 @@ fn from_fix15(p: [u16; 4]) -> [u8; 4] {
 }
 
 /// Copy the changed pixels (of the dirty tiles, inside `area`) into the
-/// layer; returns their bounds.
+/// layer; returns their bounds. A big area is converted on several cores
+/// (the conversion is most of the cost), then copied in.
 fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dirty: &HashSet<(i32, i32)>, area: Option<(i32, i32, i32, i32)>, surface: &mut S) -> Option<Rect> {
     let (w, h) = (surface.width(), surface.height());
     let a = area?;
-    let mut out: Option<Rect> = None;
-    for &(tx, ty) in dirty {
-        let Some(tile) = tiles.get(&(tx, ty)) else { continue };
-        let x0 = (tx * TS).max(0).max(a.0);
-        let y0 = (ty * TS).max(0).max(a.1);
-        let x1 = (tx * TS + TS).min(w as i32).min(a.2);
-        let y1 = (ty * TS + TS).min(h as i32).min(a.3);
-        if x0 >= x1 || y0 >= y1 { continue; }
-        for y in y0..y1 {
-            let row = &tile[(y - ty * TS) as usize][(x0 - tx * TS) as usize..];
-            let (pixels, _, _) = surface.span_mut(x0 as u32, y as u32, (x1 - x0) as usize);
-            for (p, &v) in pixels.chunks_exact_mut(4).zip(row) {
-                p.copy_from_slice(&from_fix15(v));
-            }
+    // (tile, its part to write: x0, y0, x1, y1 in canvas pixels)
+    type Job<'t> = (&'t TilePixels, (i32, i32, i32, i32));
+    let jobs: Vec<Job> = dirty.iter().filter_map(|&(tx, ty)| {
+        let tile = tiles.get(&(tx, ty))?;
+        let r = ((tx * TS).max(0).max(a.0), (ty * TS).max(0).max(a.1), (tx * TS + TS).min(w as i32).min(a.2), (ty * TS + TS).min(h as i32).min(a.3));
+        (r.0 < r.2 && r.1 < r.3).then_some((&**tile, r))
+    }).collect();
+    let convert = |(tile, r): &Job| -> Vec<u8> {
+        let (tx0, ty0) = (r.0.div_euclid(TS) * TS, r.1.div_euclid(TS) * TS);
+        let mut out = Vec::with_capacity(((r.2 - r.0) * (r.3 - r.1) * 4) as usize);
+        for y in r.1..r.3 {
+            for &v in &tile[(y - ty0) as usize][(r.0 - tx0) as usize..(r.2 - tx0) as usize] { out.extend_from_slice(&from_fix15(v)); }
         }
-        merge(&mut out, Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32)));
+        out
+    };
+    let pixels: usize = jobs.iter().map(|(_, r)| ((r.2 - r.0) * (r.3 - r.1)) as usize).sum();
+    let threads = if pixels < 128 * 1024 { 1 } else { std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8).min(jobs.len()) };
+    let converted: Vec<Vec<u8>> = if threads > 1 {
+        let per = jobs.len().div_ceil(threads);
+        std::thread::scope(|sc| {
+            let parts: Vec<_> = jobs.chunks(per).map(|c| sc.spawn(move || c.iter().map(convert).collect::<Vec<_>>())).collect();
+            parts.into_iter().flat_map(|p| p.join().expect("conversion thread")).collect()
+        })
+    } else {
+        jobs.iter().map(convert).collect()
+    };
+    let mut out: Option<Rect> = None;
+    for ((_, r), px) in jobs.iter().zip(&converted) {
+        let row = (r.2 - r.0) as usize * 4;
+        for (y, src) in (r.1..r.3).zip(px.chunks_exact(row)) {
+            let (dst, _, _) = surface.span_mut(r.0 as u32, y as u32, (r.2 - r.0) as usize);
+            dst.copy_from_slice(src);
+        }
+        merge(&mut out, Some((r.0 as u32, r.1 as u32, r.2 as u32, r.3 as u32)));
     }
     out
 }

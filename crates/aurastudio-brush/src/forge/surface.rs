@@ -30,6 +30,11 @@ pub trait TiledSurface {
         crate::forge::brushmodes::draw_dab_default(self, dab)
     }
 
+    /// About to read the colors within `radius` of (x, y) (smudge): a
+    /// surface that loads its tiles on demand loads them here (reads go
+    /// through `tile_lookup`, which can't).
+    fn prepare_read(&mut self, _x: f32, _y: f32, _radius: f32) {}
+
     /// Read-only tile lookup, used by the default `get_color` and by any
     /// caller that wants to inspect the canvas without dirtying tiles.
     fn tile_lookup(&self, _tx: i32, _ty: i32) -> Option<&TilePixels> {

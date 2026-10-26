@@ -186,106 +186,127 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     // Opacities truncated once, as C's uint16_t parameters.
     let fix = |v: f32| -> u32 { (v * FIX15_ONE as f32) as u32 };
 
+    // The passes of process_op (mypaint-tiled-surface.c) on one tile.
+    let blend = |tile: &mut TilePixels, mask_entries: &[(usize, usize, u32)]| {
+        if paint < 1.0 {
+            if normal_f != 0.0 {
+                let opacity = fix(normal_f * opaque_f * (1.0 - paint));
+                if color_a == 1.0 {
+                    blend_normal(tile, mask_entries, src_r, src_g, src_b, opacity);
+                } else {
+                    blend_normal_and_eraser(
+                        tile,
+                        mask_entries,
+                        src_r,
+                        src_g,
+                        src_b,
+                        fix(color_a),
+                        opacity,
+                    );
+                }
+            }
+            if lock_alpha != 0.0 && color_a != 0.0 {
+                let opacity = fix(lock_alpha
+                    * opaque_f
+                    * (1.0 - colorize)
+                    * (1.0 - posterize)
+                    * (1.0 - paint));
+                blend_lock_alpha(tile, mask_entries, src_r, src_g, src_b, opacity);
+            }
+        }
+        if paint > 0.0 {
+            if normal_f != 0.0 {
+                let opacity = fix(normal_f * opaque_f * paint);
+                if color_a == 1.0 {
+                    blend_normal_paint(tile, mask_entries, src_r, src_g, src_b, opacity);
+                } else {
+                    blend_normal_and_eraser_paint(
+                        tile,
+                        mask_entries,
+                        src_r,
+                        src_g,
+                        src_b,
+                        fix(color_a),
+                        opacity,
+                    );
+                }
+            }
+            if lock_alpha != 0.0 && color_a != 0.0 {
+                let opacity =
+                    fix(lock_alpha * opaque_f * (1.0 - colorize) * (1.0 - posterize) * paint);
+                blend_lock_alpha_paint(tile, mask_entries, src_r, src_g, src_b, opacity);
+            }
+        }
+        if colorize != 0.0 {
+            blend_color(
+                tile,
+                mask_entries,
+                src_r,
+                src_g,
+                src_b,
+                fix(colorize * opaque_f),
+            );
+        }
+        if posterize != 0.0 {
+            blend_posterize(
+                tile,
+                mask_entries,
+                fix(posterize * opaque_f),
+                posterize_num,
+            );
+        }
+    };
+
+    let tiles: Vec<(i32, i32)> = (ty0..=ty1).flat_map(|ty| (tx0..=tx1).map(move |tx| (tx, ty))).collect();
+    let mask_of = |entries: &mut Vec<(usize, usize, u32)>, (tx, ty): (i32, i32)| {
+        let xl = dab.x - (tx * TILE_SIZE as i32) as f32;
+        let yl = dab.y - (ty * TILE_SIZE as i32) as f32;
+        collect_dab_mask(entries, xl, yl, radius, hardness, aspect, cs, sn, r_aa_start);
+    };
     // (Kept from dab to dab: no allocation per dab.)
     thread_local! {
-        static MASK: std::cell::RefCell<Vec<(usize, usize, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+        static MASKS: std::cell::RefCell<Vec<Vec<(usize, usize, u32)>>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    let mut mask_entries = MASK.with(|m| std::mem::take(&mut *m.borrow_mut()));
+    let mut masks = MASKS.with(|m| std::mem::take(&mut *m.borrow_mut()));
     let mut painted = false;
-    for ty in ty0..=ty1 {
-        for tx in tx0..=tx1 {
-            let xl = dab.x - (tx * TILE_SIZE as i32) as f32;
-            let yl = dab.y - (ty * TILE_SIZE as i32) as f32;
-            collect_dab_mask(
-                &mut mask_entries,
-                xl,
-                yl,
-                radius,
-                hardness,
-                aspect,
-                cs,
-                sn,
-                r_aa_start,
-            );
-            if mask_entries.is_empty() {
-                continue;
+    let threads = mask_threads(tiles.len());
+    if threads > 1 {
+        // A big dab: the masks (most of its cost) on several cores, then
+        // blended in order. The same pixels as one by one.
+        if masks.len() < tiles.len() { masks.resize_with(tiles.len(), Vec::new); }
+        let per = tiles.len().div_ceil(threads);
+        std::thread::scope(|sc| {
+            for (chunk, out) in tiles.chunks(per).zip(masks.chunks_mut(per)) {
+                sc.spawn(move || for (t, m) in chunk.iter().zip(out.iter_mut()) { mask_of(m, *t) });
             }
-
-            let tile = surface.tile_request_start(tx, ty);
-            // The passes of process_op (mypaint-tiled-surface.c).
-            if paint < 1.0 {
-                if normal_f != 0.0 {
-                    let opacity = fix(normal_f * opaque_f * (1.0 - paint));
-                    if color_a == 1.0 {
-                        blend_normal(tile, &mask_entries, src_r, src_g, src_b, opacity);
-                    } else {
-                        blend_normal_and_eraser(
-                            tile,
-                            &mask_entries,
-                            src_r,
-                            src_g,
-                            src_b,
-                            fix(color_a),
-                            opacity,
-                        );
-                    }
-                }
-                if lock_alpha != 0.0 && color_a != 0.0 {
-                    let opacity = fix(lock_alpha
-                        * opaque_f
-                        * (1.0 - colorize)
-                        * (1.0 - posterize)
-                        * (1.0 - paint));
-                    blend_lock_alpha(tile, &mask_entries, src_r, src_g, src_b, opacity);
-                }
-            }
-            if paint > 0.0 {
-                if normal_f != 0.0 {
-                    let opacity = fix(normal_f * opaque_f * paint);
-                    if color_a == 1.0 {
-                        blend_normal_paint(tile, &mask_entries, src_r, src_g, src_b, opacity);
-                    } else {
-                        blend_normal_and_eraser_paint(
-                            tile,
-                            &mask_entries,
-                            src_r,
-                            src_g,
-                            src_b,
-                            fix(color_a),
-                            opacity,
-                        );
-                    }
-                }
-                if lock_alpha != 0.0 && color_a != 0.0 {
-                    let opacity =
-                        fix(lock_alpha * opaque_f * (1.0 - colorize) * (1.0 - posterize) * paint);
-                    blend_lock_alpha_paint(tile, &mask_entries, src_r, src_g, src_b, opacity);
-                }
-            }
-            if colorize != 0.0 {
-                blend_color(
-                    tile,
-                    &mask_entries,
-                    src_r,
-                    src_g,
-                    src_b,
-                    fix(colorize * opaque_f),
-                );
-            }
-            if posterize != 0.0 {
-                blend_posterize(
-                    tile,
-                    &mask_entries,
-                    fix(posterize * opaque_f),
-                    posterize_num,
-                );
-            }
+        });
+        for (&(tx, ty), m) in tiles.iter().zip(&masks) {
+            if m.is_empty() { continue; }
+            blend(surface.tile_request_start(tx, ty), m);
+            surface.tile_request_end(tx, ty);
+            painted = true;
+        }
+    } else {
+        if masks.is_empty() { masks.push(Vec::new()); }
+        for &(tx, ty) in &tiles {
+            mask_of(&mut masks[0], (tx, ty));
+            if masks[0].is_empty() { continue; }
+            blend(surface.tile_request_start(tx, ty), &masks[0]);
             surface.tile_request_end(tx, ty);
             painted = true;
         }
     }
-    MASK.with(|m| *m.borrow_mut() = mask_entries);
+    MASKS.with(|m| *m.borrow_mut() = masks);
     painted
+}
+
+/// Threads to compute a dab's masks on `tiles` tiles: one for small dabs
+/// (starting threads would cost more than it saves).
+fn mask_threads(tiles: usize) -> usize {
+    const TILES_PER_THREAD: usize = 12;
+    if tiles < 2 * TILES_PER_THREAD { return 1; }
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8);
+    (tiles / TILES_PER_THREAD).clamp(1, cores)
 }
 
 /// The dab's mask on one tile (render_dab_mask): non-zero fix15 entries.

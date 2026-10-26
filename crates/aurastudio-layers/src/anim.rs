@@ -351,6 +351,7 @@ impl LayerStack {
         walk(&mut self.root, self.time);
         self.prune_empty_groups();
         if let Some((_, Some(frame))) = self.anim_of(self.active) { self.active = frame; }
+        self.update_onion();
     }
 
     /// A group left without animation folders goes away (the active node

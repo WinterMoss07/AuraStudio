@@ -1,10 +1,12 @@
 mod display;
 mod lift;
 mod mip;
+mod playback;
 mod upload;
 mod view;
 pub use display::CanvasQuality;
 pub use view::{wrap_angle, CanvasView};
+pub use playback::PlayKey;
 
 use std::sync::Arc;
 use wgpu::*;
@@ -176,6 +178,10 @@ pub struct GpuState {
     /// A transform's live preview (lift.rs), and its pipelines.
     lift:            Option<lift::Lift>,
     lift_pipes:      Option<lift::Pipes>,
+    /// Animation playback from tiles on the GPU (playback.rs), made when
+    /// first played; the frame to draw at the next render.
+    playback:        Option<playback::Playback>,
+    play_frame:      Option<u32>,
 }
 
 pub use lift::GRID as LIFT_GRID;
@@ -253,6 +259,8 @@ pub struct GpuMemory {
     pub shaders:     String,
 }
 
+fn mb_text(b: u64) -> String { format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)) }
+
 /// Bytes of a 2D RGBA8 texture of `w` x `h` with all its mip levels.
 fn mipped_bytes(w: u32, h: u32) -> u64 {
     let (mut w, mut h, mut total) = (w.max(1) as u64, h.max(1) as u64, 0u64);
@@ -273,6 +281,9 @@ impl GpuState {
             m.known.push((format!("canvas texture {w}x{h} with mipmaps"), mipped_bytes(w, h)));
         } else {
             m.known.push((format!("canvas texture {w}x{h}"), w as u64 * h as u64 * 4));
+        }
+        if let Some(p) = &self.playback {
+            if p.page_bytes() > 0 { m.known.push((format!("playback tiles ({} of pixels)", mb_text(p.bytes)), p.page_bytes())); }
         }
         let lut = self.lut.size as u64;
         m.known.push((format!("display lookup table {lut}^3"), lut * lut * lut * 8));
@@ -493,6 +504,8 @@ impl GpuState {
             ui_scale: 1.0,
             lift: None,
             lift_pipes: None,
+            playback: None,
+            play_frame: None,
         })
     }
 
@@ -565,6 +578,48 @@ impl GpuState {
     pub fn lift_end(&mut self) {
         self.lift = None;
         if let Some(q) = self.quality_later.take() { self.set_quality(q); }
+    }
+
+    /// Playback from the GPU for `plan`: the tiles come with `play_add`.
+    pub fn play_begin(&mut self, plan: aurastudio_layers::play::PlayPlan) {
+        let device = &self.device;
+        self.playback.get_or_insert_with(|| playback::Playback::new(device)).begin(plan);
+        self.play_frame = None;
+    }
+
+    /// The plan being played from the GPU, if any.
+    pub fn play_plan(&self) -> Option<&aurastudio_layers::play::PlayPlan> { self.playback.as_ref()?.plan() }
+
+    /// The tiles of `key` are on the GPU.
+    pub fn play_has(&self, key: PlayKey) -> bool { self.playback.as_ref().is_some_and(|p| p.has(key)) }
+
+    pub fn play_add(&mut self, key: PlayKey, tiles: &aurastudio_layers::play::PlayTiles) {
+        if let Some(p) = &mut self.playback { p.add(&self.device, &self.queue, key, tiles); }
+    }
+
+    /// Show frame `t` from the tiles at the next render. False when a part
+    /// it needs isn't there yet (the merge shows it instead).
+    pub fn play_show(&mut self, t: u32) -> bool {
+        let Some(p) = &self.playback else { return false };
+        let Some(plan) = p.plan() else { return false };
+        if (plan.width, plan.height) != (self.canvas.width, self.canvas.height) || self.lift.is_some() { return false; }
+        let mut k = 0;
+        let ready = plan.parts.iter().all(|part| match part {
+            aurastudio_layers::play::PlayPart::Static(i) => p.has(PlayKey::Static(*i)),
+            aurastudio_layers::play::PlayPart::Anim { .. } => {
+                let d = plan.shown_at(t)[k];
+                k += 1;
+                d.is_none_or(|d| p.has(PlayKey::Drawing(d)))
+            }
+        });
+        if ready { self.play_frame = Some(t); }
+        ready
+    }
+
+    /// Stop playing from the GPU and let its tiles go.
+    pub fn play_end(&mut self) {
+        if let Some(p) = &mut self.playback { p.end(); }
+        self.play_frame = None;
     }
 
     /// How the canvas is drawn. The pixels are copied into a texture with
@@ -951,6 +1006,10 @@ impl GpuState {
         // A transform's live preview, into the canvas.
         if let (Some(l), Some(p)) = (&mut self.lift, &self.lift_pipes) {
             if let Some(r) = l.draw(&mut enc, p) { self.mip.mark(r); }
+        }
+        // A frame of the animation, drawn from its tiles.
+        if let (Some(t), Some(p)) = (self.play_frame.take(), &self.playback) {
+            if p.draw(&self.queue, &mut enc, &self.canvas, t) { self.mip.mark((0, 0, self.canvas.width, self.canvas.height)); }
         }
         // Zoomed-out views sample the mipmaps: bring them up to date.
         self.mip.rebuild(&mut enc, &self.canvas);

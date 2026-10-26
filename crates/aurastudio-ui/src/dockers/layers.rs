@@ -751,7 +751,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 select(st, m, id, mods, &shown_ids);
                 // A frame chosen: go to it.
                 if let Some(n) = m.layers.node(id).and_then(Node::frame) {
-                    if m.layers.time() != n { m.layers.set_time(n); a.recomposite = true; }
+                    if m.layers.time() != n { m.layers.set_time(n); a.frame_changed = true; }
                 }
             }
             RowEvent::ToggleVisible => {

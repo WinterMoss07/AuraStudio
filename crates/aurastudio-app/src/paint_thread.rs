@@ -7,13 +7,15 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
+use aurastudio_gpu::PlayKey;
+use aurastudio_layers::play::{PlayPart, PlayPlan, PlayTiles};
 
 use crate::projection::{add_rect, union, SharedProjection};
 
@@ -71,6 +73,10 @@ pub enum Cmd {
     /// file is written on its own thread; painting goes on meanwhile.
     /// `origin`: autosaves only, the file the work belongs to.
     Save { doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool },
+    /// Prepare animation playback from the GPU: the plan, then the tiles of
+    /// each part one by one while nothing else waits (statics first, then
+    /// the drawings from the current frame on). `gen` comes back with them.
+    PlayBuild { doc: SharedDoc, gen: u64 },
 }
 
 /// What the transform tool asks.
@@ -102,6 +108,11 @@ pub enum Event {
     LayerChanged { layer_id: u64, rect: Option<Rect> },
     /// Short message for the options bar ("Nothing to undo"...).
     Notice(&'static str),
+    /// How the document plays from the GPU (None: it can't, the merge
+    /// shows each frame).
+    PlayPlan { gen: u64, plan: Option<Box<PlayPlan>> },
+    /// The tiles of one part of it.
+    PlayTiles { gen: u64, key: PlayKey, tiles: Box<PlayTiles> },
     /// A save finished: the document revision now on disk, or the error.
     Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
 }
@@ -198,6 +209,17 @@ struct Worker {
     limit_params: Option<aurastudio_layers::FillParams>,
     limit:    Option<aurastudio_layers::Selection>,
     stats:    Stats,
+    /// Playback tiles still to make.
+    play:     Option<PlayJob>,
+}
+
+/// The parts of a playback plan left to make.
+struct PlayJob {
+    doc:      SharedDoc,
+    gen:      u64,
+    plan:     PlayPlan,
+    revision: u64,
+    keys:     VecDeque<PlayKey>,
 }
 
 /// A document edit refused while a filter's preview (or a transform) is
@@ -221,6 +243,53 @@ fn refused(cmd: &Cmd) -> Option<(&'static str, SharedDoc)> {
 }
 
 impl Worker {
+    /// Start making the playback plan and its tiles.
+    fn play_build(&mut self, doc: SharedDoc, gen: u64) {
+        let (plan, revision, time) = {
+            let d = doc.lock().unwrap();
+            (d.layers.play_plan(), d.revision(), d.layers.time())
+        };
+        (self.notify)(Event::PlayPlan { gen, plan: plan.clone().map(Box::new) });
+        self.play = plan.map(|plan| {
+            let mut keys: VecDeque<PlayKey> = (0..plan.statics()).map(PlayKey::Static).collect();
+            // The drawings in the order they come from the current frame.
+            let mut drawings: Vec<(u32, u64)> = plan.parts.iter().flat_map(|p| match p {
+                PlayPart::Anim { frames, .. } => frames.clone(),
+                PlayPart::Static(_) => Vec::new(),
+            }).collect();
+            // (A held frame counts from the drawing it shows.)
+            let start = plan.parts.iter().filter_map(|p| match p {
+                PlayPart::Anim { frames, .. } => frames.iter().rev().find(|f| f.0 <= time).map(|f| f.0),
+                PlayPart::Static(_) => None,
+            }).min().unwrap_or(1);
+            drawings.sort_by_key(|&(n, _)| (n < start, n));
+            keys.extend(drawings.into_iter().map(|d| PlayKey::Drawing(d.1)));
+            PlayJob { doc, gen, plan, revision, keys }
+        });
+    }
+
+    /// Make the tiles of the next part (given up if the document changed).
+    fn play_step(&mut self) {
+        let Some(job) = &mut self.play else { return };
+        let Some(key) = job.keys.pop_front() else { self.play = None; return };
+        let tiles = {
+            let mut d = job.doc.lock().unwrap();
+            if d.revision() != job.revision { None } else {
+                Some(match key {
+                    PlayKey::Static(i) => d.layers.play_static(&job.plan, i),
+                    PlayKey::Drawing(id) => d.layers.play_drawing(&job.plan, id),
+                })
+            }
+        };
+        let gen = job.gen;
+        if job.keys.is_empty() { self.play = None; }
+        match tiles {
+            Some(tiles) => (self.notify)(Event::PlayTiles { gen, key, tiles: Box::new(tiles) }),
+            None => self.play = None,
+        }
+        let_ui_in();
+    }
+
     fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify,
@@ -234,6 +303,7 @@ impl Worker {
             limit_params: None,
             limit: None,
             stats: Stats::default(),
+            play: None,
         }
     }
 
@@ -242,7 +312,17 @@ impl Worker {
         loop {
             // Sleep until there is work, then take everything queued.
             if queue.is_empty() {
-                match rx.recv() {
+                // Playback tiles are made while nothing else waits.
+                let cmd = if self.play.is_some() {
+                    match rx.try_recv() {
+                        Ok(cmd) => Ok(cmd),
+                        Err(TryRecvError::Empty) => { self.play_step(); continue; }
+                        Err(TryRecvError::Disconnected) => return,
+                    }
+                } else {
+                    rx.recv().map_err(|_| ())
+                };
+                match cmd {
                     Ok(cmd) => queue.push_back(cmd),
                     Err(_) => return,
                 }
@@ -317,6 +397,7 @@ impl Worker {
                     }
                     Cmd::Recomposite(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_))) => {}
                     Cmd::Recomposite(doc) => self.recomposite(doc),
+                    Cmd::PlayBuild { doc, gen } => self.play_build(doc, gen),
                     Cmd::Filter { doc, action } => {
                         use aurastudio_ui::FilterAction as F;
                         let t = Instant::now();

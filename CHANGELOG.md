@@ -3,6 +3,52 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.17.0 — 2026-10-26
+
+Big brushes without the lag, playback from tiles kept on the GPU, and the
+onion skin.
+
+**Big brushes**
+- No more stall on the first dab of a big brush: the tiles around the
+  stroke are no longer all loaded up front (3 × the radius in every
+  direction), only the ones a dab paints or a smudge reads.
+- A big dab's mask is computed on several cores (up to 8), then blended
+  in order: the same pixels as before. Writing the stroke back into the
+  layer is split across cores too when the area is big.
+- Fix: Pastel and Grainy blender could read their smudge color outside
+  the tiles loaded for the stroke (their random offset goes further than
+  the dab) and saw transparent paint there; they now read the real
+  canvas, as MyPaint does (brush reference updated for these two).
+
+**Playback from the GPU**
+- Pressing Play builds, in the background, a cache of the animation in
+  16 px tiles: each drawing of each animation folder, plus the layers
+  between folders merged once. A tile of one color (line art) is kept as
+  alpha only. Frames are then put together on the GPU: no merge on the
+  CPU while playing. 32 HD drawings of line art: about 5 MB instead of
+  250 MB of full frames.
+- The cache is used when the stack allows it (Normal blending, no filter
+  layer or clipping around the animation); otherwise playback merges as
+  before. It is dropped as soon as the document changes.
+- Memory report: the playback tiles show in it.
+
+**Onion skin (OpenToonz's way)**
+- An onion strip above the timeline's frame numbers. Its inner lane holds
+  mobile marks (drawings before / after the current one), its outer lane
+  fixed marks (a frame whose drawing stays shown wherever you are).
+- Click a mark to set or remove it, drag across frames to set several;
+  click the current frame's dot to turn the onion skin on or off (the
+  first time: the three drawings before). Right-click a mark: its
+  opacity, automatic fade, or remove it.
+- Drawings are counted, not frames: −1 is the drawing before, however
+  long it holds. All visible cels of a drawing show.
+- Drawings before are tinted red, after green, faded with distance
+  (OpenToonz's paper thickness). Shown for the active animation folder,
+  never exported, picked or saved in the image; the marks are saved with
+  the document.
+- Preferences > Animation: the two colors, the fade, and whether the
+  onion skin stays on during playback (off by default).
+
 ## 0.16.3 — 2026-10-26
 
 A cleanup pass over the whole code: no new feature, fewer lines, fewer
