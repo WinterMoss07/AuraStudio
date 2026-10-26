@@ -88,12 +88,14 @@ impl Backend {
 pub struct GpuState {
     backend:         Backend,
     surface:         Surface<'static>,
-    device:          Device,
+    device:          Arc<Device>,
     queue:           Queue,
     config:          SurfaceConfiguration,
     /// Set after rebuilding a suboptimal swapchain, cleared once presents
     /// are optimal again.
     swapchain_rebuilt: bool,
+    /// Swapchains built since the start (the first one included).
+    swapchain_builds: u64,
     /// egui's wish for the next frame, from the last render().
     repaint_delay:   Option<std::time::Duration>,
     /// Scale of the monitor the window is on (Windows display scaling:
@@ -106,8 +108,10 @@ pub struct GpuState {
     /// Interface size chosen in the View menu (1.0 = the system's).
     ui_scale:        f32,
     canvas_pipeline: RenderPipeline,
-    /// The exact average (High quality).
-    canvas_high:     RenderPipeline,
+    /// The exact average (High quality), built in the background.
+    canvas_high:     display::HighPipeline,
+    /// How long building it took (ms), once known.
+    high_ms:         Option<f32>,
     quality:         CanvasQuality,
     /// A quality chosen during a transform, applied when it ends (the
     /// transform draws into the canvas texture).
@@ -181,6 +185,25 @@ pub static MEMORY_PROBE: std::sync::OnceLock<fn() -> u64> = std::sync::OnceLock:
 static STEPS: std::sync::Mutex<Vec<(&'static str, u64, f32)>> = std::sync::Mutex::new(Vec::new());
 static STEPS_T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 static ADAPTER_INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static SHADER_COMPILER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// DirectX 12's shader compiler: DXC (new, fast) when Microsoft's
+/// dxcompiler.dll and dxil.dll sit next to the program, else FXC (built
+/// into Windows, slow on loops). Other APIs: their own.
+fn shader_compiler(b: Backend) -> (Dx12Compiler, &'static str) {
+    match b {
+        Backend::DirectX12 => {
+            let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf()));
+            match dir.filter(|d| d.join("dxcompiler.dll").is_file() && d.join("dxil.dll").is_file()) {
+                Some(d) => (Dx12Compiler::Dxc { dxil_path: Some(d.clone()), dxc_path: Some(d) }, "DXC (dxcompiler.dll next to the program)"),
+                None => (Dx12Compiler::Fxc, "FXC (put dxcompiler.dll and dxil.dll next to the program for DXC)"),
+            }
+        }
+        Backend::Vulkan => (Dx12Compiler::Fxc, "SPIR-V (Vulkan driver)"),
+        Backend::Metal => (Dx12Compiler::Fxc, "Metal"),
+        Backend::OpenGl => (Dx12Compiler::Fxc, "GLSL (OpenGL driver)"),
+    }
+}
 
 /// Note the memory now as step `name` of the start (once per name).
 fn step(name: &'static str) {
@@ -222,6 +245,8 @@ pub struct GpuMemory {
     pub traffic:     TextureTraffic,
     /// Times uploads waited for the GPU to keep staging memory low.
     pub upload_waits: u64,
+    /// The shader compiler, and how long the High canvas shader took.
+    pub shaders:     String,
 }
 
 /// Bytes of a 2D RGBA8 texture of `w` x `h` with all its mip levels.
@@ -249,8 +274,13 @@ impl GpuState {
         m.known.push((format!("display lookup table {lut}^3"), lut * lut * lut * 8));
         let images = swapchain_images(self.config.present_mode);
         m.known.push((format!("~swapchain {}x{} ({images} images)", self.config.width, self.config.height), self.config.width as u64 * self.config.height as u64 * 4 * images));
-        m.present = format!("{:?}", self.config.present_mode);
+        m.present = format!("{:?}, swapchain built {} times", self.config.present_mode, self.swapchain_builds);
         m.quality = format!("{:?}", self.quality);
+        m.shaders = format!(
+            "{}; High canvas shader {}",
+            SHADER_COMPILER.get().copied().unwrap_or("?"),
+            self.high_ms.map_or("still building".to_string(), |ms| format!("built in {ms:.0} ms (in the background)")),
+        );
         m.traffic = self.traffic;
         m.upload_waits = self.uploads.flushes;
         let tex = self.egui_ctx.tex_manager();
@@ -307,7 +337,8 @@ impl GpuState {
         let mut found = None;
         step("before graphics");
         for b in order {
-            let instance = Instance::new(InstanceDescriptor { backends: b.wgpu(), ..Default::default() });
+            let (dx12_shader_compiler, _) = shader_compiler(b);
+            let instance = Instance::new(InstanceDescriptor { backends: b.wgpu(), dx12_shader_compiler, ..Default::default() });
             step("graphics instance");
             let surface = match instance.create_surface(Arc::clone(&window)) {
                 Ok(s) => s,
@@ -343,6 +374,7 @@ impl GpuState {
             ).await;
             match device {
                 Ok((device, queue)) => {
+                    let device = Arc::new(device);
                     if b != prefer { log::warn!("graphics: {} unavailable, using {}", prefer.name(), b.name()); }
                     found = Some((b, surface, adapter, device, queue));
                     break;
@@ -351,6 +383,7 @@ impl GpuState {
             }
         }
         let Some((backend, surface, adapter, device, queue)) = found else { return Err(errors.join("; ")) };
+        let _ = SHADER_COMPILER.set(shader_compiler(backend).1);
         step("device");
 
         let caps   = surface.get_capabilities(&adapter);
@@ -392,7 +425,9 @@ impl GpuState {
             usage:    BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
-        let (canvas_pipeline, canvas_high) = display::canvas_pipelines(&device, &canvas_bgl, format);
+        let (canvas_shader, canvas_layout) = display::canvas_program(&device, &canvas_bgl);
+        let canvas_pipeline = display::canvas_pipeline(&device, &canvas_shader, &canvas_layout, format, "fs_main");
+        let (canvas_high, high_ms) = display::HighPipeline::start(&device, canvas_shader, canvas_layout, format, backend == Backend::OpenGl);
 
         step("canvas shader");
         let (cursor_pipeline, cursor_buffer, cursor_bind) = cursor_pipeline(&device, format);
@@ -426,7 +461,7 @@ impl GpuState {
         Ok(Self {
             backend,
             surface, device, queue, config,
-            canvas_pipeline, canvas_high, quality, quality_later: None, smooth_zoom_in: false, vsync, surface_caps: caps,
+            canvas_pipeline, canvas_high, high_ms, quality, quality_later: None, smooth_zoom_in: false, vsync, surface_caps: caps,
             uploads: upload::Uploads::default(),
             egui_bytes: std::collections::HashMap::new(),
             traffic: TextureTraffic::default(),
@@ -446,6 +481,7 @@ impl GpuState {
             viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
             text_input_active: false,
             swapchain_rebuilt: false,
+            swapchain_builds: 1,
             repaint_delay: None,
             clear_color: [0.4, 0.4, 0.4],
             dpi_scale,
@@ -458,6 +494,12 @@ impl GpuState {
 
     /// The graphics API drawing the window.
     pub fn backend(&self) -> Backend { self.backend }
+
+    /// (Re)build the swapchain with `config`, counted for the report.
+    fn configure_surface(&mut self) {
+        self.surface.configure(&self.device, &self.config);
+        self.swapchain_builds += 1;
+    }
 
     /// An interface texture sent whole (new, or replacing one of the same id).
     fn note_made(&mut self, id: egui::TextureId, bytes: u64) {
@@ -553,7 +595,7 @@ impl GpuState {
         let mode = present_mode(&self.surface_caps, on);
         if mode != self.config.present_mode {
             self.config.present_mode = mode;
-            self.surface.configure(&self.device, &self.config);
+            self.configure_surface();
             log::info!("present mode {mode:?}");
         }
     }
@@ -750,9 +792,13 @@ impl GpuState {
 
     pub fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
         if size.width == 0 || size.height == 0 { return; }
+        // Back from minimized at the same size: the swapchain is kept
+        // (rebuilding it held old and new images at once, 2 × 23 MB, and
+        // the driver kept a few MB each time).
+        if size.width == self.config.width && size.height == self.config.height { return; }
         self.config.width  = size.width;
         self.config.height = size.height;
-        self.surface.configure(&self.device, &self.config);
+        self.configure_surface();
         // Recomputed from the egui layout on the next frame; until then,
         // the whole window.
         self.viewport = [0.0, 0.0, size.width as f32, size.height as f32];
@@ -872,7 +918,7 @@ impl GpuState {
             Ok(t) => t,
             Err(e) => {
                 if matches!(e, SurfaceError::Lost | SurfaceError::Outdated) {
-                    self.surface.configure(&self.device, &self.config);
+                    self.configure_surface();
                 } else {
                     log::error!("Surface error: {e:?}");
                 }
@@ -919,8 +965,15 @@ impl GpuState {
 
             let [vx, vy, vw, vh] = self.viewport;
             pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
-            let high = self.quality == CanvasQuality::High;
-            pass.set_pipeline(if high { &self.canvas_high } else { &self.canvas_pipeline });
+            let (exact, took) = self.canvas_high.ready();
+            if let Some(ms) = took {
+                self.high_ms = Some(ms);
+                log::info!("High canvas shader built in {ms:.0} ms (in the background)");
+            }
+            // Until the High pipeline is ready, the Standard one draws (the
+            // pixels alone, bilinear: no mipmaps in High).
+            let high = self.quality == CanvasQuality::High && exact.is_some();
+            pass.set_pipeline(match exact { Some(p) if high => p, _ => &self.canvas_pipeline });
             let sharp = !high && !self.smooth_zoom_in && self.view.zoom >= NEAREST_FROM_ZOOM;
             let bind = if sharp { &self.nearest_bind_group } else { &self.view_bind_group };
             pass.set_bind_group(0, bind, &[]);
@@ -996,7 +1049,7 @@ impl GpuState {
             if size.width > 0 && size.height > 0 {
                 self.config.width  = size.width;
                 self.config.height = size.height;
-                self.surface.configure(&self.device, &self.config);
+                self.configure_surface();
             }
         }
         self.swapchain_rebuilt = suboptimal;

@@ -792,6 +792,23 @@ mod tests {
         assert_eq!(jiggle, 0);
     }
 
+    /// A docker made narrower by one step: the new strips go where the old
+    /// ones were; no texture is made.
+    #[test]
+    fn narrowing_a_docker_makes_no_texture() {
+        let ctx = egui::Context::default();
+        let mut p = StrokePreviews::default();
+        let t0 = Instant::now();
+        let mut arrive = Vec::new();
+        for n in 0..20u64 { rows_at(&mut p, &ctx, n + 1, t0 + Duration::from_millis(16 * n), 690, &mut arrive); }
+        assert!(p.slots.values().all(|(_, s)| s.size() == (608, 88)));
+        let made = p.pool.created();
+        for n in 20..60u64 { rows_at(&mut p, &ctx, n + 1, t0 + Duration::from_millis(16 * n), 560, &mut arrive); }
+        assert!(p.slots.values().all(|(_, s)| s.size() == (512, 88)), "repainted at the new width");
+        assert_eq!(p.pool.created(), made, "no new texture");
+        assert_eq!(p.pool.textures(), 1);
+    }
+
     /// A slider dragged through 50 values: only where it stops is written
     /// to disk.
     #[test]

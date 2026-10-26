@@ -1,16 +1,18 @@
-//! Same-size pictures (the stroke preview strips) stacked in a few small
-//! textures, one class per size. A page holds only the slots its size
-//! needs (the strips drawn plus a small margin), and stays under 1 MiB once
-//! the driver has padded it: the Vulkan allocator rounds every texture
-//! under 8 MB up to a power of two, so 1.05 MB would cost 2 MB.
+//! The stroke preview strips, stacked in a few small textures. Strips of
+//! one height share pages: a page made for one width also takes narrower
+//! strips (down to two thirds of its width), so a docker made narrower
+//! reuses the textures it has instead of making new ones. A page holds only
+//! the slots its height needs (the strips drawn plus a small margin), and
+//! stays under 1 MiB once the driver has padded it: the Vulkan allocator
+//! rounds every texture under 8 MB up to a power of two, so 1.05 MB would
+//! cost 2 MB.
 //!
-//! Pages that stay empty go back to the GPU after a while; the pages of a
-//! size no longer drawn (the docker changed width, another screen scale)
-//! go as soon as they are empty.
+//! Pages that stay empty go back to the GPU after a while; an empty page
+//! no strip on screen can use (too narrow, or far too wide) goes at once.
 //!
-//! Why not the shelf atlas: every strip has the same size, so a page is a
-//! column of equal slots, nothing fragments, and a strip wider than an
-//! atlas page (560 px at 200 %) still fits.
+//! Why not the shelf atlas: strips are wide and all of one height, so a
+//! page is a column of equal slots, nothing fragments, and a strip wider
+//! than an atlas page (560 px at 200 %) still fits.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -22,12 +24,14 @@ use egui::{pos2, Color32, ColorImage, Context, Rect, TextureHandle, TextureId, T
 const PAGE_BUDGET: usize = (1 << 20) - (64 << 10);
 /// Largest texture side the pool asks for.
 const MAX_SIDE: usize = 8192;
-/// A page of a size still drawn, empty this long, goes back to the GPU.
+/// A page still usable, empty this long, goes back to the GPU.
 const EMPTY_FOR: Duration = Duration::from_secs(2);
-/// A size not drawn for this many passes (and holding nothing) goes away.
+/// A height not drawn for this many passes (and holding nothing) goes away.
 const UNUSED_PASSES: u64 = 2;
 
-type Class = (u16, u16);
+/// Whether a strip `w` wide may sit in a page `page_w` wide: as wide, or
+/// narrower down to two thirds of it (two steps of the preview widths).
+pub fn fits_page(w: usize, page_w: usize) -> bool { w <= page_w && w * 3 >= page_w * 2 }
 
 /// A place for one strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,25 +49,34 @@ impl Strip {
 
 struct Page {
     tex:         TextureHandle,
+    /// Its width (pixels): strips as wide or a little narrower.
+    w:           usize,
     /// One per slot (its length is the page's slot count).
     used:        Vec<bool>,
     empty_since: Option<Instant>,
 }
 
-struct Sized {
+/// The pages of one strip height.
+struct Height {
     /// A released page leaves a hole (None) so that the indices held by
     /// strips never move.
-    pages:      Vec<Option<Page>>,
-    last_drawn: u64,
+    pages: Vec<Option<Page>>,
+    /// Widths drawn, and the pass they were last drawn in.
+    drawn: HashMap<u16, u64>,
 }
 
-impl Sized {
-    fn capacity(&self) -> usize { self.pages.iter().flatten().map(|p| p.used.len()).sum() }
+impl Height {
+    /// Slots of the pages a strip `w` wide may use.
+    fn capacity(&self, w: usize) -> usize {
+        self.pages.iter().flatten().filter(|p| fits_page(w, p.w)).map(|p| p.used.len()).sum()
+    }
+
+    fn last_drawn(&self) -> u64 { self.drawn.values().copied().max().unwrap_or(0) }
 }
 
 #[derive(Default)]
 pub struct StripPool {
-    classes: HashMap<Class, Sized>,
+    heights: HashMap<u16, Height>,
     /// Pages made since the start (for the report and the tests).
     created: u64,
 }
@@ -88,26 +101,34 @@ impl StripPool {
 
     /// Note that a strip of this size was drawn in `pass`.
     pub fn mark_drawn(&mut self, w: usize, h: usize, pass: u64) {
-        if let Some(c) = self.classes.get_mut(&(w as u16, h as u16)) { c.last_drawn = pass; }
+        if let Some(g) = self.heights.get_mut(&(h as u16)) { g.drawn.insert(w as u16, pass); }
     }
 
-    /// A free slot for a `w` × `h` strip. A page is added only while the
-    /// size holds fewer than `wanted` slots, with just the slots missing.
-    /// None: no room (the caller lets an old strip go, or waits).
+    /// A free slot for a `w` × `h` strip, in a page as wide or a little
+    /// wider. A page `w` wide is added only while the pages it may use
+    /// hold fewer than `wanted` slots, with just the slots missing. None:
+    /// no room (the caller lets an old strip go, or waits).
     pub fn alloc(&mut self, ctx: &Context, w: usize, h: usize, wanted: usize, pass: u64) -> Option<Strip> {
         if !Self::fits(w, h) { return None; }
-        let class = self.classes.entry((w as u16, h as u16)).or_insert_with(|| Sized { pages: Vec::new(), last_drawn: pass });
-        class.last_drawn = pass;
+        let g = self.heights.entry(h as u16).or_insert_with(|| Height { pages: Vec::new(), drawn: HashMap::new() });
+        g.drawn.insert(w as u16, pass);
         let make = |page: usize, slot: usize| Strip { w: w as u16, h: h as u16, page: page as u16, slot: slot as u16 };
-        for (pi, p) in class.pages.iter_mut().enumerate() {
+        // The narrowest page that takes it, first.
+        let mut best: Option<(usize, usize, usize)> = None;
+        for (pi, p) in g.pages.iter().enumerate() {
             let Some(p) = p else { continue };
+            if !fits_page(w, p.w) { continue; }
             if let Some(si) = p.used.iter().position(|u| !u) {
-                p.used[si] = true;
-                p.empty_since = None;
-                return Some(make(pi, si));
+                if best.is_none_or(|b| p.w < b.2) { best = Some((pi, si, p.w)); }
             }
         }
-        let have = class.capacity();
+        if let Some((pi, si, _)) = best {
+            let p = g.pages[pi].as_mut()?;
+            p.used[si] = true;
+            p.empty_since = None;
+            return Some(make(pi, si));
+        }
+        let have = g.capacity(w);
         let wanted = wanted.max(1);
         if have >= wanted { return None; }
         let n = (wanted - have).min(max_slots(w, h));
@@ -117,12 +138,12 @@ impl StripPool {
             TextureOptions::NEAREST,
         );
         self.created += 1;
-        let page = Page { tex, used: vec![false; n], empty_since: None };
-        let pi = match class.pages.iter().position(|p| p.is_none()) {
-            Some(i) => { class.pages[i] = Some(page); i }
-            None => { class.pages.push(Some(page)); class.pages.len() - 1 }
+        let page = Page { tex, w, used: vec![false; n], empty_since: None };
+        let pi = match g.pages.iter().position(|p| p.is_none()) {
+            Some(i) => { g.pages[i] = Some(page); i }
+            None => { g.pages.push(Some(page)); g.pages.len() - 1 }
         };
-        class.pages[pi].as_mut()?.used[0] = true;
+        g.pages[pi].as_mut()?.used[0] = true;
         Some(make(pi, 0))
     }
 
@@ -144,65 +165,77 @@ impl StripPool {
 
     /// The page texture and the part of it the strip covers.
     pub fn image(&self, s: Strip) -> Option<(TextureId, Rect)> {
-        let class = self.classes.get(&(s.w, s.h))?;
-        let p = class.pages.get(s.page as usize)?.as_ref()?;
+        let p = self.heights.get(&s.h)?.pages.get(s.page as usize)?.as_ref()?;
         let total = (p.used.len() * (s.h as usize + 1)) as f32;
         let y0 = s.slot as f32 * (s.h as f32 + 1.0);
-        Some((p.tex.id(), Rect::from_min_max(pos2(0.0, y0 / total), pos2(1.0, (y0 + s.h as f32) / total))))
+        let x1 = s.w as f32 / p.w as f32;
+        Some((p.tex.id(), Rect::from_min_max(pos2(0.0, y0 / total), pos2(x1, (y0 + s.h as f32) / total))))
     }
 
-    /// Once per pass: empty pages go back to the GPU (at once for a size
-    /// no longer drawn, after a while otherwise), then sizes left with
-    /// nothing.
+    /// Once per pass: empty pages go back to the GPU (at once when no
+    /// strip drawn in the last pass could use them, after a while
+    /// otherwise), then heights left with nothing.
     pub fn tidy(&mut self, pass: u64, now: Instant) {
-        for class in self.classes.values_mut() {
-            let abandoned = pass > class.last_drawn + 1;
-            for slot in &mut class.pages {
-                let release = slot.as_ref().is_some_and(|p| p.empty_since.is_some_and(|t| abandoned || now.saturating_duration_since(t) >= EMPTY_FOR));
+        for g in self.heights.values_mut() {
+            let recent: Vec<usize> = g.drawn.iter().filter(|(_, p)| **p + 1 >= pass).map(|(w, _)| *w as usize).collect();
+            for slot in &mut g.pages {
+                let release = slot.as_ref().is_some_and(|p| p.empty_since.is_some_and(|t| {
+                    let useful = recent.iter().any(|w| fits_page(*w, p.w));
+                    !useful || now.saturating_duration_since(t) >= EMPTY_FOR
+                }));
                 if release { *slot = None; }
             }
-            while class.pages.last().is_some_and(|p| p.is_none()) { class.pages.pop(); }
+            while g.pages.last().is_some_and(|p| p.is_none()) { g.pages.pop(); }
+            g.drawn.retain(|_, p| *p + UNUSED_PASSES >= pass);
         }
-        self.classes.retain(|_, c| !(c.pages.is_empty() && pass > c.last_drawn + UNUSED_PASSES));
+        self.heights.retain(|_, g| !(g.pages.is_empty() && pass > g.last_drawn() + UNUSED_PASSES));
     }
 
     /// When the next page would be released (for a repaint then).
     pub fn next_release(&self, now: Instant) -> Option<Duration> {
-        self.classes.values().flat_map(|c| c.pages.iter().flatten())
+        self.heights.values().flat_map(|g| g.pages.iter().flatten())
             .filter_map(|p| p.empty_since).map(|t| (t + EMPTY_FOR).saturating_duration_since(now)).min()
     }
 
-    pub fn textures(&self) -> usize { self.classes.values().map(|c| c.pages.iter().flatten().count()).sum() }
+    pub fn textures(&self) -> usize { self.heights.values().map(|g| g.pages.iter().flatten().count()).sum() }
 
-    /// Sizes holding at least one page.
-    pub fn sizes(&self) -> usize { self.classes.values().filter(|c| c.pages.iter().flatten().next().is_some()).count() }
+    /// Page widths held (per height), counted once each.
+    pub fn sizes(&self) -> usize {
+        self.heights.values().map(|g| {
+            let mut ws: Vec<usize> = g.pages.iter().flatten().map(|p| p.w).collect();
+            ws.sort_unstable();
+            ws.dedup();
+            ws.len()
+        }).sum()
+    }
 
     /// Pages made since the start.
     pub fn created(&self) -> u64 { self.created }
 
+    /// Pages exactly `w` wide for strips `h` high.
     #[cfg(test)]
     pub fn pages_of(&self, w: usize, h: usize) -> usize {
-        self.classes.get(&(w as u16, h as u16)).map_or(0, |c| c.pages.iter().flatten().count())
+        self.heights.get(&(h as u16)).map_or(0, |g| g.pages.iter().flatten().filter(|p| p.w == w).count())
     }
 
-    /// Slots of this size, in all its pages.
+    /// Slots a strip of this size may use, in all its pages.
     #[cfg(test)]
     pub fn capacity_of(&self, w: usize, h: usize) -> usize {
-        self.classes.get(&(w as u16, h as u16)).map_or(0, Sized::capacity)
+        self.heights.get(&(h as u16)).map_or(0, |g| g.capacity(w))
     }
 
     pub fn bytes(&self) -> usize {
-        self.classes.iter().map(|((w, h), c)| c.pages.iter().flatten().map(|p| p.used.len() * (*h as usize + 1) * *w as usize * 4).sum::<usize>()).sum()
+        self.heights.iter().map(|(h, g)| g.pages.iter().flatten().map(|p| p.used.len() * (*h as usize + 1) * p.w * 4).sum::<usize>()).sum()
     }
 
     /// Slots in use.
     #[cfg(test)]
     pub fn used(&self) -> usize {
-        self.classes.values().flat_map(|c| c.pages.iter().flatten()).map(|p| p.used.iter().filter(|u| **u).count()).sum()
+        self.heights.values().flat_map(|g| g.pages.iter().flatten()).map(|p| p.used.iter().filter(|u| **u).count()).sum()
     }
 
     fn page_mut(&mut self, s: Strip) -> Option<&mut Page> {
-        self.classes.get_mut(&(s.w, s.h))?.pages.get_mut(s.page as usize)?.as_mut()
+        self.heights.get_mut(&s.h)?.pages.get_mut(s.page as usize)?.as_mut()
     }
 }
 
@@ -301,24 +334,48 @@ mod tests {
         pool.tidy(10, t0 + Duration::from_secs(3));
         assert_eq!(pool.textures(), 0);
         assert_eq!(pool.bytes(), 0);
-        assert!(pool.classes.is_empty());
+        assert!(pool.heights.is_empty());
     }
 
-    /// The docker changed width: the old size's pages go back as soon as
-    /// they are empty, not two seconds later.
+    /// The docker got wider: the narrower pages, of no use now, go back
+    /// as soon as they are empty, not two seconds later.
     #[test]
-    fn the_pages_of_a_size_no_longer_drawn_go_at_once() {
+    fn pages_too_narrow_for_what_is_drawn_go_at_once() {
         let ctx = Context::default();
         let mut pool = StripPool::default();
         let t0 = Instant::now();
         let old: Vec<Strip> = (0..3).map(|_| pool.alloc(&ctx, 512, 88, 3, 1).unwrap()).collect();
         let _new: Vec<Strip> = (0..3).map(|_| pool.alloc(&ctx, 608, 88, 3, 5).unwrap()).collect();
+        assert_eq!(pool.created(), 2, "608 does not fit a 512 page");
         for s in &old { pool.free(*s, t0); }
         pool.mark_drawn(608, 88, 5);
         pool.tidy(5, t0);
         assert_eq!(pool.pages_of(512, 88), 0);
         assert_eq!(pool.pages_of(608, 88), 1);
-        assert_eq!(pool.created(), 2);
+    }
+
+    /// The docker got narrower: the strips of the new width take the
+    /// places of the old ones in the same pages; nothing is made.
+    #[test]
+    fn narrower_strips_reuse_the_wider_pages() {
+        let ctx = Context::default();
+        let mut pool = StripPool::default();
+        let t0 = Instant::now();
+        let old: Vec<Strip> = (0..4).map(|_| pool.alloc(&ctx, 608, 88, 4, 1).unwrap()).collect();
+        let made = pool.created();
+        for (i, s) in old.iter().enumerate() {
+            pool.free(*s, t0);
+            let n = pool.alloc(&ctx, 512, 88, 4, 2).expect("a place in the wider page");
+            pool.write(n, img(512, 88, i as u8));
+            let (_, uv) = pool.image(n).unwrap();
+            assert!((uv.max.x - 512.0 / 608.0).abs() < 1e-6, "only the strip's part of the row");
+        }
+        assert_eq!(pool.created(), made);
+        pool.mark_drawn(512, 88, 3);
+        pool.tidy(3, t0);
+        assert_eq!(pool.pages_of(608, 88), 1, "still in use");
+        // Far narrower strips don't waste a wide page.
+        assert!(!fits_page(352, 608) && fits_page(416, 608) && fits_page(608, 608) && !fits_page(609, 608));
     }
 
     #[test]

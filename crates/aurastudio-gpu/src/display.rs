@@ -99,8 +99,8 @@ pub(crate) fn canvas_bgl(device: &Device) -> BindGroupLayout {
     })
 }
 
-/// The two canvas pipelines: Standard (`fs_main`) and High (`fs_high`).
-pub(crate) fn canvas_pipelines(device: &Device, bgl: &BindGroupLayout, format: TextureFormat) -> (RenderPipeline, RenderPipeline) {
+/// The canvas shader and its pipeline layout.
+pub(crate) fn canvas_program(device: &Device, bgl: &BindGroupLayout) -> (ShaderModule, PipelineLayout) {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
         label:  Some("canvas_shader"),
         source: ShaderSource::Wgsl(include_str!("shaders/canvas.wgsl").into()),
@@ -108,12 +108,18 @@ pub(crate) fn canvas_pipelines(device: &Device, bgl: &BindGroupLayout, format: T
     let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some("canvas_pipeline_layout"), bind_group_layouts: &[bgl], push_constant_ranges: &[],
     });
-    let make = |entry: &str| device.create_render_pipeline(&RenderPipelineDescriptor {
+    (shader, layout)
+}
+
+/// The canvas pipeline drawing with fragment entry `entry`: `fs_main`
+/// (Standard) or `fs_high` (High).
+pub(crate) fn canvas_pipeline(device: &Device, shader: &ShaderModule, layout: &PipelineLayout, format: TextureFormat, entry: &str) -> RenderPipeline {
+    device.create_render_pipeline(&RenderPipelineDescriptor {
         label:  Some(entry),
-        layout: Some(&layout),
-        vertex: VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: PipelineCompilationOptions::default() },
+        layout: Some(layout),
+        vertex: VertexState { module: shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: PipelineCompilationOptions::default() },
         fragment: Some(FragmentState {
-            module: &shader, entry_point: Some(entry),
+            module: shader, entry_point: Some(entry),
             targets: &[Some(ColorTargetState { format, blend: Some(BlendState::REPLACE), write_mask: ColorWrites::ALL })],
             compilation_options: PipelineCompilationOptions::default(),
         }),
@@ -122,8 +128,59 @@ pub(crate) fn canvas_pipelines(device: &Device, bgl: &BindGroupLayout, format: T
         multisample:   MultisampleState::default(),
         multiview:     None,
         cache:         None,
-    });
-    (make("fs_main"), make("fs_high"))
+    })
+}
+
+/// The High pipeline, being built on another thread (the shader compiler
+/// of DirectX 12 takes a few hundred milliseconds on its loops): the
+/// canvas is drawn with the Standard one meanwhile.
+pub(crate) enum HighPipeline {
+    Building(std::thread::JoinHandle<(RenderPipeline, f32)>),
+    Ready(RenderPipeline),
+    /// The thread could not start or failed: built here when first needed.
+    Missing,
+}
+
+impl HighPipeline {
+    /// Start building it (on this thread for OpenGL, whose context is
+    /// tied to a thread).
+    pub fn start(device: &std::sync::Arc<Device>, shader: ShaderModule, layout: PipelineLayout, format: TextureFormat, here: bool) -> (Self, Option<f32>) {
+        let build = move |device: &Device| {
+            let t = std::time::Instant::now();
+            let p = canvas_pipeline(device, &shader, &layout, format, "fs_high");
+            (p, t.elapsed().as_secs_f32() * 1000.0)
+        };
+        if here {
+            let (p, ms) = build(device);
+            return (HighPipeline::Ready(p), Some(ms));
+        }
+        let d = std::sync::Arc::clone(device);
+        match std::thread::Builder::new().name("canvas shader".into()).spawn(move || build(&d)) {
+            Ok(h) => (HighPipeline::Building(h), None),
+            Err(e) => { log::warn!("canvas shader thread: {e}"); (HighPipeline::Missing, None) }
+        }
+    }
+
+    /// The pipeline if it is ready (collected once the thread is done),
+    /// and the time it took when it just became ready.
+    pub fn ready(&mut self) -> (Option<&RenderPipeline>, Option<f32>) {
+        let mut took = None;
+        if matches!(self, HighPipeline::Building(h) if h.is_finished()) {
+            let HighPipeline::Building(h) = std::mem::replace(self, HighPipeline::Missing) else { unreachable!() };
+            match h.join() {
+                Ok((p, ms)) => { *self = HighPipeline::Ready(p); took = Some(ms); }
+                Err(_) => log::error!("canvas shader thread failed"),
+            }
+        }
+        match self { HighPipeline::Ready(p) => (Some(p), took), _ => (None, took) }
+    }
+}
+
+/// The two canvas pipelines: Standard (`fs_main`) and High (`fs_high`).
+#[cfg(test)]
+pub(crate) fn canvas_pipelines(device: &Device, bgl: &BindGroupLayout, format: TextureFormat) -> (RenderPipeline, RenderPipeline) {
+    let (shader, layout) = canvas_program(device, bgl);
+    (canvas_pipeline(device, &shader, &layout, format, "fs_main"), canvas_pipeline(device, &shader, &layout, format, "fs_high"))
 }
 
 #[cfg(test)]
@@ -358,6 +415,30 @@ mod tests {
             assert!(n > 100, "zoom {zoom} angle {angle}: only {n} pixels compared");
             assert!(d <= 1.0, "zoom {zoom} angle {angle}: off by {d:.2} / 255 over {n} pixels");
         }
+    }
+
+    /// The High pipeline built on another thread comes back ready, with
+    /// its time; built here (OpenGL) it is ready at once.
+    #[test]
+    fn the_high_pipeline_is_built_in_the_background() {
+        let Some(g) = gpu() else { return };
+        let device = std::sync::Arc::new(g.device);
+        let bgl = canvas_bgl(&device);
+        let (shader, layout) = canvas_program(&device, &bgl);
+        let (mut high, now) = HighPipeline::start(&device, shader, layout, TextureFormat::Rgba8Unorm, false);
+        assert!(now.is_none());
+        let t = std::time::Instant::now();
+        let took = loop {
+            let (p, took) = high.ready();
+            if p.is_some() { break took; }
+            assert!(t.elapsed().as_secs() < 60, "never ready");
+            std::thread::yield_now();
+        };
+        assert!(took.is_some_and(|ms| ms >= 0.0));
+        assert!(high.ready().0.is_some() && high.ready().1.is_none(), "the time is told once");
+        let (shader, layout) = canvas_program(&device, &bgl);
+        let (mut here, ms) = HighPipeline::start(&device, shader, layout, TextureFormat::Rgba8Unorm, true);
+        assert!(ms.is_some() && here.ready().0.is_some());
     }
 
     /// High at 100 % upright is the canvas itself, pixel for pixel.

@@ -222,6 +222,7 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>
     if let Some(g) = gpu {
         header.push(format!("Graphics: {} on {}", g.backend, if g.adapter.is_empty() { "?" } else { &g.adapter }));
         header.push(format!("Display: canvas quality {}, frames presented {}", g.quality, g.present));
+        header.push(format!("Shaders: {}", g.shaders));
         let t = &g.traffic;
         let mb = aurastudio_ui::mb;
         header.push(format!(

@@ -3,6 +3,27 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.16.1 — 2026-10-26
+
+**Memory**
+- Back from minimized, the swapchain is kept when the window has the same
+  size: rebuilding it held old and new images at once (Walid: 122 → 147 MB,
+  then 122 + 3 MB kept by the driver each time). Rebuilds are counted in the
+  memory report.
+- Stroke preview pages are shared by strips of one height: a page made for
+  one width takes narrower strips (down to two thirds of its width), so a
+  docker made narrower reuses its textures and makes none; a page no strip
+  on screen can use goes as soon as it is empty.
+
+**Startup (DirectX 12 above all)**
+- The High canvas shader is built on another thread while the app starts
+  (the canvas is drawn with the Standard one meanwhile); OpenGL builds it at
+  once. Its build time is in the memory report.
+- DirectX 12 uses Microsoft's DXC shader compiler when `dxcompiler.dll` and
+  `dxil.dll` are next to the program (from the DirectXShaderCompiler
+  releases, about 18 MB together, not shipped), else FXC as before. The memory
+  report says which one runs.
+
 ## 0.16.0 — 2026-10-26
 
 **Canvas display quality (Preferences > Canvas & display)**
