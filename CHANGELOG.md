@@ -3,6 +3,44 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.15.2 — 2026-10-26
+
+**Stroke previews: fixed budget, working disk cache**
+- All the strips of a size (a row of the Tools docker) are stacked in a few
+  textures of about 1 MB (the "strip pool") instead of one texture each: a
+  strip wider than an atlas page (560 px at 200 %) fits. Only the strips drawn
+  in the last pass, plus four, stay on the GPU; the others come back from the
+  disk cache when scrolled to. A hidden docker lets go of its strips after a
+  second, and empty pages go back to the GPU after two.
+- A strip drawn in the last pass is never given up. When there is no room the
+  new picture waits (it used to be able to push a visible row out, which
+  painted it again, in a loop).
+- The disk cache survives program updates: its folder is named after
+  `RENDER_VERSION` (bumped only when the way previews are drawn changes), not
+  after the program version. Its keys are stable (FNV-1a, not `DefaultHasher`)
+  and include the brush's whole definition (`Preset::definition_hash`), so an
+  edited or re-imported brush with the same name gets a new picture. Files that
+  are read again are touched, so the clean-up (600 files) keeps what is used.
+- Memory report: a line on the previews (strips, textures, pictures read from
+  the disk cache / painted, cache size).
+
+**Atlas (icons, layer thumbnails)**
+- A page with nothing left starts over; an empty page (not the first) goes
+  back to the GPU after two seconds; a freed place is reused by any picture that
+  fits it (best fit) instead of only one of exactly its size.
+- Smoothed atlases repeat each picture's edge in a one pixel ring (no soft
+  borders).
+- An icon the atlas has no room for is tried again later (it used to stay
+  invisible for the whole session); the icon atlas starts over when the screen
+  scale changes (a window moved between a 150 % and a 200 % screen).
+
+**Layer thumbnails**
+- Made at the size they are shown (28 points at the screen scale: 56 px at
+  200 %) and kept on the CPU. A stroke, an undo or a filter reports the
+  rectangle it changed, and only the thumbnail pixels it touches are redone
+  (0.4 ms for 300 × 300 on a 2000 × 3000 layer, against 12 ms for the whole).
+  A full rebuild is still one layer per frame, 200 ms after the last change.
+
 ## 0.15.1 — 2026-10-26
 
 **Fixes**

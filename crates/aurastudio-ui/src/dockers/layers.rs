@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use aurastudio_canvas::Rect as PxRect;
 use aurastudio_filters::{Filter, GROUPS};
 use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
@@ -31,10 +32,15 @@ pub struct LayersState {
     /// Thumbnails live in one shared atlas.
     atlas:    Atlas,
     thumbs:   HashMap<u64, Region>,
-    /// Layers the atlas had no room for (not asked again every frame).
-    no_room:  HashSet<u64>,
-    /// Layers to redraw, and when they last changed.
-    stale:    HashMap<u64, Instant>,
+    /// Layers the atlas had no room for, and when to try again (not every frame).
+    no_room:  HashMap<u64, Instant>,
+    /// Each thumbnail's pixels on the CPU (width, height, straight RGBA):
+    /// a change inside a rectangle only redoes the pixels it touches.
+    cpu:      HashMap<u64, (usize, usize, Vec<u8>)>,
+    /// Layers to redo: when they last changed, and where (None: anywhere).
+    dirty:    HashMap<u64, (Instant, Option<PxRect>)>,
+    /// Screen scale the thumbnails were made for.
+    ppp:      f32,
     /// Layer being renamed: (id, text, focus not requested yet).
     renaming: Option<(u64, String, bool)>,
     /// Labels shown (bit i: label i); 0: everything.
@@ -58,7 +64,7 @@ impl Default for LayersState {
     fn default() -> Self {
         Self {
             atlas: Atlas::new("layer-thumbnails", egui::TextureOptions::LINEAR, 4),
-            thumbs: HashMap::new(), no_room: HashSet::new(), stale: HashMap::new(),
+            thumbs: HashMap::new(), no_room: HashMap::new(), cpu: HashMap::new(), dirty: HashMap::new(), ppp: 0.0,
             renaming: None, label_filter: 0, pending: None, edit_filter: None,
             selected: Vec::new(), rect: None, delete_req: false,
         }
@@ -66,13 +72,24 @@ impl Default for LayersState {
 }
 
 impl LayersState {
-    pub fn invalidate(&mut self, id: u64) {
-        self.stale.insert(id, Instant::now());
+    /// The pixels of layer `id` changed, inside `rect` (None: anywhere).
+    pub fn invalidate(&mut self, id: u64, rect: Option<PxRect>) {
+        let merged = match self.dirty.get(&id) {
+            // Two changes: the union, and anywhere if either was anywhere.
+            Some((_, old)) => match (old, rect) {
+                (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))),
+                _ => None,
+            },
+            None => rect,
+        };
+        self.dirty.insert(id, (Instant::now(), merged));
     }
 
     pub fn invalidate_all(&mut self) {
         for (_, r) in self.thumbs.drain() { self.atlas.free(r); }
         self.no_room.clear();
+        self.cpu.clear();
+        self.dirty.clear();
     }
 
     pub fn shortcut(&mut self, cmd: LayerCmd) { self.pending = Some(cmd); }
@@ -86,34 +103,64 @@ impl LayersState {
         v
     }
 
-    /// Keep one small picture per paint layer, rebuilt when its pixels
-    /// changed: one layer per frame, and not while it is still changing.
+    /// Keep one small picture per paint layer, as sharp as the screen
+    /// shows it (`THUMB` points at the screen scale), rebuilt when its
+    /// pixels changed: a change inside a known rectangle redoes only the
+    /// thumbnail pixels it touches; a full rebuild takes one layer per
+    /// frame; nothing is done while a layer is still changing.
     pub fn refresh_thumbnails(&mut self, ctx: &egui::Context, layers: &LayerStack) {
+        let ppp = ctx.pixels_per_point();
+        if (self.ppp - ppp).abs() > 1e-3 {
+            self.invalidate_all();
+            self.ppp = ppp;
+        }
+        let max = ((THUMB * ppp).round() as u32).max(8);
         let ids = layers.layer_ids();
         let alive: HashSet<u64> = ids.iter().copied().collect();
         let gone: Vec<u64> = self.thumbs.keys().filter(|id| !alive.contains(id)).copied().collect();
         for id in gone {
             if let Some(r) = self.thumbs.remove(&id) { self.atlas.free(r); }
         }
-        self.stale.retain(|id, _| alive.contains(id));
-        self.no_room.retain(|id| alive.contains(id));
+        self.cpu.retain(|id, _| alive.contains(id));
+        self.dirty.retain(|id, _| alive.contains(id));
+        self.no_room.retain(|id, _| alive.contains(id));
+        self.atlas.tidy();
 
         let now = Instant::now();
         let mut waiting = None::<std::time::Duration>;
+        let mut wait = |left: std::time::Duration| waiting = Some(waiting.map_or(left, |w| w.min(left)));
+        // Partial updates share a small budget per frame.
+        let started = Instant::now();
         for id in ids {
-            let changed = self.stale.get(&id).copied();
-            if (self.thumbs.contains_key(&id) || self.no_room.contains(&id)) && changed.is_none() { continue; }
-            if let Some(t) = changed {
+            let change = self.dirty.get(&id).copied();
+            let shown = self.thumbs.contains_key(&id);
+            if let Some(retry) = self.no_room.get(&id) {
+                if change.is_none() && *retry > now { wait(*retry - now); continue; }
+            } else if shown && change.is_none() {
+                continue;
+            }
+            if let (Some((t, _)), true) = (change, shown) {
                 let quiet = now.saturating_duration_since(t);
-                if quiet < THUMB_DEBOUNCE && self.thumbs.contains_key(&id) {
-                    let left = THUMB_DEBOUNCE - quiet;
-                    waiting = Some(waiting.map_or(left, |w| w.min(left)));
+                if quiet < THUMB_DEBOUNCE { wait(THUMB_DEBOUNCE - quiet); continue; }
+            }
+            let Some(Node::Layer(layer)) = layers.node(id) else { continue };
+            self.dirty.remove(&id);
+            let (tw, th) = crate::thumbnail::target_size(layer.tiles.width(), layer.tiles.height(), max);
+            let rect = change.and_then(|(_, r)| r);
+
+            // Known place, same size: only the touched pixels are redone.
+            if let (Some(region), Some(rect), Some(buf)) = (self.thumbs.get(&id).copied(), rect, self.cpu.get_mut(&id)) {
+                if (buf.0, buf.1) == (tw, th) {
+                    crate::thumbnail::area_average_into(&layer.tiles, tw, th, Some(rect), &mut buf.2);
+                    self.atlas.write(region, egui::ColorImage::from_rgba_unmultiplied([tw, th], &buf.2));
+                    if started.elapsed() > std::time::Duration::from_millis(2) { ctx.request_repaint(); return; }
                     continue;
                 }
             }
-            let Some(Node::Layer(layer)) = layers.node(id) else { continue };
-            self.stale.remove(&id);
-            let (tw, th, rgba) = crate::thumbnail::area_average(&layer.tiles, 64);
+
+            // Otherwise all of it, one layer per frame.
+            let mut rgba = vec![0u8; tw * th * 4];
+            crate::thumbnail::area_average_into(&layer.tiles, tw, th, None, &mut rgba);
             let image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &rgba);
             let same = self.thumbs.get(&id).copied().filter(|r| (r.w as usize, r.h as usize) == (tw, th));
             let region = match same {
@@ -127,9 +174,14 @@ impl LayersState {
                 Some(r) => {
                     self.atlas.write(r, image);
                     self.thumbs.insert(id, r);
+                    self.cpu.insert(id, (tw, th, rgba));
                     self.no_room.remove(&id);
                 }
-                None => { self.no_room.insert(id); }
+                None => {
+                    // The atlas is full: the layer shows no thumbnail for now, and is tried again later.
+                    self.cpu.remove(&id);
+                    self.no_room.insert(id, now + std::time::Duration::from_secs(2));
+                }
             }
             // The next one next frame.
             ctx.request_repaint();
@@ -1113,15 +1165,55 @@ mod thumbnail_tests {
         assert_eq!(st.atlas.pages(), 1);
         // A layer that just changed waits; a quiet one is rebuilt.
         let id = stack.layer_ids()[0];
-        st.invalidate(id);
+        st.invalidate(id, None);
         st.refresh_thumbnails(&ctx, &stack);
-        assert!(st.stale.contains_key(&id), "still changing: kept for later");
-        st.stale.insert(id, Instant::now() - THUMB_DEBOUNCE * 2);
+        assert!(st.dirty.contains_key(&id), "still changing: kept for later");
+        st.dirty.insert(id, (Instant::now() - THUMB_DEBOUNCE * 2, None));
         st.refresh_thumbnails(&ctx, &stack);
-        assert!(!st.stale.contains_key(&id));
+        assert!(!st.dirty.contains_key(&id));
         // A deleted layer gives its place back.
         let before = st.thumbs.len();
         st.invalidate_all();
         assert!(before > 0 && st.thumbs.is_empty());
+    }
+
+    /// A change inside a rectangle redoes only the thumbnail pixels it
+    /// touches, and the result is the thumbnail of the new pixels; the
+    /// thumbnails follow the screen scale.
+    #[test]
+    fn a_change_in_a_rectangle_updates_the_thumbnail_in_place() {
+        let ctx = egui::Context::default();
+        let mut stack = LayerStack::new_document(400, 300);
+        let id = stack.add_layer("paint");
+        let mut st = LayersState::default();
+        while st.thumbs.len() < stack.layer_ids().len() { st.refresh_thumbnails(&ctx, &stack); }
+        let before = st.cpu[&id].clone();
+        // Paint a block.
+        let rect = (100, 80, 220, 160);
+        if let Some(Node::Layer(l)) = stack.node_mut(id) {
+            l.tiles.write_rect(rect, &vec![200u8; 120 * 80 * 4]);
+        }
+        st.dirty.insert(id, (Instant::now() - THUMB_DEBOUNCE * 2, Some(rect)));
+        st.refresh_thumbnails(&ctx, &stack);
+        let after = st.cpu[&id].clone();
+        assert_ne!(before.2, after.2, "the block shows");
+        // Exactly what a new thumbnail gives.
+        let Some(Node::Layer(l)) = stack.node(id) else { panic!() };
+        let (tw, th, full) = crate::thumbnail::area_average(&l.tiles, after.0.max(after.1) as u32);
+        assert_eq!((after.0, after.1), (tw, th));
+        assert_eq!(after.2, full);
+        // Two changes before the rebuild: their union.
+        st.invalidate(id, Some((0, 0, 10, 10)));
+        st.invalidate(id, Some((300, 200, 310, 210)));
+        assert_eq!(st.dirty[&id].1, Some((0, 0, 310, 210)));
+        st.invalidate(id, None);
+        assert_eq!(st.dirty[&id].1, None, "anywhere stays anywhere");
+        // Another screen scale: all rebuilt at the new size.
+        ctx.set_pixels_per_point(2.0);
+        let _ = ctx.run(Default::default(), |_| {});
+        let n = stack.layer_ids().len();
+        for _ in 0..n + 2 { st.refresh_thumbnails(&ctx, &stack); }
+        let (w2, h2, _) = st.cpu[&id].clone();
+        assert_eq!(w2.max(h2), 56);
     }
 }

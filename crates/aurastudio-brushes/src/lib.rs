@@ -1,6 +1,7 @@
 //! Brush library: the bundled presets (catalog.txt) and imported .myb
 //! files, by medium, each with its own size, opacity, hardness, blend.
 
+pub mod hash;
 pub mod stroke_preview;
 
 use std::path::{Path, PathBuf};
@@ -112,13 +113,26 @@ pub struct Preset {
     pub order:  u32,
     /// Its medium's group (kept by the Library).
     pub kind:   Kind,
+    /// Hash of its Forge definition (`hash::of_debug`): what the stroke
+    /// previews kept on disk are keyed by. Set again if `brush` changes.
+    pub definition_hash: u64,
 }
 
 impl Preset {
+    /// With `definition_hash` computed from `brush`.
+    fn hashed(mut self) -> Self {
+        self.definition_hash = hash::of_debug(&*self.brush);
+        self
+    }
+
+    /// Call after changing `brush` (a brush editor), so that its stroke
+    /// previews are painted again.
+    pub fn rehash(&mut self) { self.definition_hash = hash::of_debug(&*self.brush); }
+
     fn builtin(name: &str, medium: &str, radius: f32, hardness: f32) -> Self {
         let settings = Brush { radius, hardness, ..Brush::new() };
         Self { name: name.into(), medium: medium.into(), author: "AuraStudio".into(), origin: Origin::Forge,
-            brush: Arc::new(ForgeBrush::round()), settings, file: None, order: 0, kind: Kind::of_bundled(medium) }
+            definition_hash: 0, brush: Arc::new(ForgeBrush::round()), settings, file: None, order: 0, kind: Kind::of_bundled(medium) }.hashed()
     }
 
     /// A Forge engine for a stroke with this preset.
@@ -137,7 +151,7 @@ impl Preset {
             ..Brush::new()
         };
         let kind = Kind::of_bundled(&medium);
-        Self { name, medium, author, origin: Origin::MyPaint, brush: Arc::new(brush), settings, file, order: 0, kind }
+        Self { name, medium, author, origin: Origin::MyPaint, definition_hash: 0, brush: Arc::new(brush), settings, file, order: 0, kind }.hashed()
     }
 
     /// Stable key in the saved layout.
@@ -397,6 +411,22 @@ fn myb_files(path: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_preset_hash_follows_the_brush_definition_only() {
+        let a = Preset::builtin("Round", "Pencil", 10.0, 1.0);
+        let b = Preset::builtin("Other name", "Ink", 30.0, 0.5);
+        assert_ne!(a.definition_hash, 0);
+        // Name, medium and size are not the definition.
+        assert_eq!(a.definition_hash, b.definition_hash);
+        let mut c = a.clone();
+        let mut brush = (*c.brush).clone();
+        brush.options.dab_on_press = !brush.options.dab_on_press;
+        c.brush = Arc::new(brush);
+        assert_eq!(c.definition_hash, a.definition_hash, "stale until rehash()");
+        c.rehash();
+        assert_ne!(c.definition_hash, a.definition_hash);
+    }
+
     use super::*;
 
     /// Tests reading or setting AURASTUDIO_BRUSH_DIR take turns.

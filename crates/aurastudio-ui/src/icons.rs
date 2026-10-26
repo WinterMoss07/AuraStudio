@@ -126,14 +126,41 @@ impl Icon {
 /// (and per look) instead of a texture each.
 struct Icons {
     atlas:   Atlas,
-    regions: HashMap<(Icon, u32, bool), Option<Region>>,
+    regions: HashMap<(Icon, u32, bool), Region>,
+    /// An icon the atlas had no room for, and the pass to try again at
+    /// (never for good: room comes back, and rasterizing every frame
+    /// would cost).
+    failed:  HashMap<(Icon, u32, bool), u64>,
+    /// Screen scale the sizes in `regions` were made for.
+    ppp:     f32,
+    /// Last pass the atlas was tidied in.
+    tidied:  u64,
+}
+
+/// Passes before an icon the atlas had no room for is tried again.
+const RETRY_AFTER: u64 = 60;
+/// Pages the icons may take (256 KB, then 1 MB each).
+const MAX_PAGES: usize = 4;
+
+impl Icons {
+    fn new(max_pages: usize) -> Self {
+        Self { atlas: Atlas::new("icons", egui::TextureOptions::LINEAR, max_pages), regions: HashMap::new(), failed: HashMap::new(), ppp: 0.0, tidied: 0 }
+    }
+
+    /// Everything made for another screen scale goes (a window moved from
+    /// a 150 % screen to a 200 % one must not keep both).
+    fn set_scale(&mut self, ppp: f32) {
+        if (self.ppp - ppp).abs() > 1e-3 {
+            *self = Self::new(self.atlas_max());
+            self.ppp = ppp;
+        }
+    }
+
+    fn atlas_max(&self) -> usize { self.atlas.max_pages() }
 }
 
 thread_local! {
-    static ICONS: RefCell<Icons> = RefCell::new(Icons {
-        atlas: Atlas::new("icons", egui::TextureOptions::LINEAR, 4),
-        regions: HashMap::new(),
-    });
+    static ICONS: RefCell<Icons> = RefCell::new(Icons::new(MAX_PAGES));
 }
 
 /// The SVG text of `icon`: whole, or with a thin stroke (its core).
@@ -152,17 +179,36 @@ pub fn paint(ui: &Ui, icon: Icon, rect: Rect, size: f32, tint: Color32) {
 }
 
 fn draw(ui: &Ui, icon: Icon, rect: Rect, size: f32, tint: Color32, core: bool) {
-    let px = ((size * ui.ctx().pixels_per_point()).round() as u32).clamp(4, 256);
     let ctx = ui.ctx();
+    let ppp = ctx.pixels_per_point();
+    let px = ((size * ppp).round() as u32).clamp(4, 256);
+    let pass = ctx.cumulative_pass_nr();
+    let key = (icon, px, core);
     let found = ICONS.with(|i| {
         let i = &mut *i.borrow_mut();
-        let r = *i.regions.entry((icon, px, core)).or_insert_with(|| {
-            let image = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, core), Some(egui::load::SizeHint::Size(px, px))).ok()?;
-            let r = i.atlas.alloc(ctx, image.size[0], image.size[1])?;
-            i.atlas.write(r, image);
-            Some(r)
-        });
-        r.map(|r| i.atlas.image(r))
+        i.set_scale(ppp);
+        if i.tidied != pass { i.tidied = pass; i.atlas.tidy(); }
+        if let Some(r) = i.regions.get(&key) { return Some(i.atlas.image(*r)); }
+        if i.failed.get(&key).is_some_and(|retry| pass < *retry) { return None; }
+        let image = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, core), Some(egui::load::SizeHint::Size(px, px)));
+        let Ok(image) = image else {
+            log::warn!("icon {icon:?} at {px} px does not rasterize");
+            i.failed.insert(key, u64::MAX);
+            return None;
+        };
+        match i.atlas.alloc(ctx, image.size[0], image.size[1]) {
+            Some(r) => {
+                i.atlas.write(r, image);
+                i.failed.remove(&key);
+                i.regions.insert(key, r);
+                Some(i.atlas.image(r))
+            }
+            None => {
+                if !i.failed.contains_key(&key) { log::warn!("icon atlas full: {icon:?} at {px} px waits"); }
+                i.failed.insert(key, pass + RETRY_AFTER);
+                None
+            }
+        }
     });
     if let Some((id, uv)) = found {
         ui.painter().image(id, Rect::from_center_size(rect.center(), vec2(size, size)), uv, tint);
@@ -215,7 +261,7 @@ pub fn paint_lock(ui: &Ui, rect: Rect, locked: bool, by_parent: bool, hovered: b
 mod tests {
     use super::*;
 
-    fn used_regions() -> usize { ICONS.with(|i| i.borrow().regions.values().flatten().count()) }
+    fn used_regions() -> usize { ICONS.with(|i| i.borrow().regions.len()) }
 
     /// Every icon rasterizes, to pixels that are not all empty.
     #[test]
@@ -261,5 +307,66 @@ mod tests {
             Effects, Misc, Plus, Shapes, EllipseSelect, PolySelect, Wand, Transform, SelReplace, SelAdd, SelSubtract, SelIntersect,
             Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Check, Move, Film, Minus, ArrowUp, ArrowDown, Camera, Comics,
             Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, XSheet, Timeline, InsertFrame, RemoveFrame, SwitchView, Folders]
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    fn used_regions() -> usize { ICONS.with(|i| i.borrow().regions.len()) }
+
+    fn frame(ctx: &egui::Context, f: impl FnOnce(&Ui)) {
+        let mut f = Some(f);
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| { if let Some(f) = f.take() { f(ui); } });
+        });
+    }
+
+    fn r() -> Rect { Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(20.0, 20.0)) }
+
+    /// A full atlas hides an icon only for a while: when room comes back it shows.
+    #[test]
+    fn a_full_atlas_never_hides_an_icon_for_good() {
+        let ctx = egui::Context::default();
+        ICONS.with(|i| { *i.borrow_mut() = Icons::new(1); i.borrow_mut().ppp = ctx.pixels_per_point(); });
+        // Take the whole first page.
+        let filler = ICONS.with(|i| i.borrow_mut().atlas.alloc(&ctx, 250, 250)).expect("the page");
+        frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
+        assert_eq!(used_regions(), 0, "no room");
+        assert_eq!(ICONS.with(|i| i.borrow().failed.len()), 1);
+        // Room comes back; after the wait it shows (not before: no work every frame).
+        ICONS.with(|i| i.borrow_mut().atlas.free(filler));
+        frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
+        assert_eq!(used_regions(), 0, "still waiting");
+        for _ in 0..RETRY_AFTER + 2 { frame(&ctx, |_| {}); }
+        frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
+        assert_eq!(used_regions(), 1, "back");
+        assert!(ICONS.with(|i| i.borrow().failed.is_empty()));
+    }
+
+    /// Another screen scale starts the atlas over: sizes of the old one are gone.
+    #[test]
+    fn a_new_scale_resets_the_icon_atlas() {
+        let ctx = egui::Context::default();
+        ICONS.with(|i| *i.borrow_mut() = Icons::new(MAX_PAGES));
+        ctx.set_pixels_per_point(1.5);
+        frame(&ctx, |ui| for icon in [Icon::Eye, Icon::Lock, Icon::Brush] { paint(ui, icon, r(), 14.0, Color32::WHITE); });
+        assert_eq!(used_regions(), 3);
+        let keys: Vec<_> = ICONS.with(|i| i.borrow().regions.keys().map(|k| k.1).collect());
+        assert!(keys.iter().all(|px| *px == 21), "{keys:?}");
+        ctx.set_pixels_per_point(2.0);
+        frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
+        let keys: Vec<_> = ICONS.with(|i| i.borrow().regions.keys().map(|k| k.1).collect());
+        assert_eq!(keys, [28], "only the new scale");
+        // And back: the atlas does not grow with each move.
+        for _ in 0..4 {
+            ctx.set_pixels_per_point(1.5);
+            frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
+            ctx.set_pixels_per_point(2.0);
+            frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
+        }
+        assert_eq!(ICONS.with(|i| i.borrow().atlas.pages()), 1);
+        assert_eq!(used_regions(), 1);
     }
 }

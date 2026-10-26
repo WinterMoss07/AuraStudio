@@ -34,6 +34,9 @@ pub struct ToolListState {
 }
 
 impl ToolListState {
+    /// Once per frame (see `StrokePreviews::idle`).
+    pub fn idle(&mut self, ctx: &egui::Context) { self.previews.idle(ctx); }
+
     /// Show medium `name` and edit its name.
     pub fn rename(&mut self, name: &str) {
         self.renaming = Some((name.to_owned(), name.to_owned(), false));

@@ -6,6 +6,7 @@ mod animation;
 mod atlas;
 mod memory;
 mod bars;
+mod strip_pool;
 mod stroke_preview;
 mod thumbnail;
 mod dock_layout;
@@ -29,7 +30,7 @@ pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
 pub use dockers::layers::LayerCmd;
 pub use filters::FilterAction;
-pub use stroke_preview::set_cache_dir as set_preview_cache_dir;
+pub use stroke_preview::{cache_usage as preview_cache_usage, set_cache_dir as set_preview_cache_dir, stats as preview_stats, PreviewStats};
 pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
@@ -328,9 +329,9 @@ impl UiState {
         self.select_dialog = Some((kind, v));
     }
 
-    /// The pixels of this layer changed: rebuild its thumbnail.
-    pub fn invalidate_thumbnail(&mut self, layer_id: u64) {
-        self.layers.invalidate(layer_id);
+    /// The pixels of this layer changed, inside `rect` (None: anywhere): rebuild its thumbnail.
+    pub fn invalidate_thumbnail(&mut self, layer_id: u64, rect: Option<aurastudio_canvas::Rect>) {
+        self.layers.invalidate(layer_id, rect);
     }
 
     /// Every layer changed (canvas resize...).
@@ -382,6 +383,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         state.theme_applied = true;
     }
     state.layers.refresh_thumbnails(ctx, model.layers);
+    state.tool_list.idle(ctx);
     // (Drawn again below if shown: the Delete key goes by where they are.)
     state.pointer = ctx.pointer_latest_pos();
     state.layers.rect = None;

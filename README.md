@@ -101,8 +101,9 @@ Geometry, Selection, Transform.
 - **Memory report** (Window > Memory report): every megabyte the app
   holds, by name (tiles by layer, history, GPU textures, the driver's
   allocator), beside the system's figures, the start-up timed step by step;
-  Copy to paste it. Small pictures (icons, stroke previews, thumbnails)
-  share a few atlas pages; stroke previews are cached on disk and only the visible ones stay in memory.
+  Copy to paste it. Icons and layer thumbnails share a few atlas pages; stroke previews
+  are stacked in a few textures (only the visible ones stay on the GPU) and cached on
+  disk between runs.
 - **Document types**: the tab a document is made from is its type
   (Illustration, Animation, Comics), kept in the file and shown in the
   menu bar. It turns features on or off, the interface stays the same:

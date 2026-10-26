@@ -154,7 +154,8 @@ pub enum AppEvent {
     /// The paint thread changed some canvas area.
     Painted,
     /// A layer's pixels changed for good (stroke done, undo, clear).
-    LayerChanged(u64),
+    /// A layer changed, where (None: anywhere).
+    LayerChanged(u64, Option<aurastudio_canvas::Rect>),
     /// A message for the options bar.
     Notice(String),
     /// A start screen thumbnail was decoded.
@@ -379,7 +380,7 @@ impl App {
         let paint = PaintThread::spawn(Arc::clone(&projection), move |e| {
             let _ = worker_proxy.send_event(match e {
                 paint_thread::Event::Painted => AppEvent::Painted,
-                paint_thread::Event::LayerChanged { layer_id } => AppEvent::LayerChanged(layer_id),
+                paint_thread::Event::LayerChanged { layer_id, rect } => AppEvent::LayerChanged(layer_id, rect),
                 paint_thread::Event::Notice(text) => AppEvent::Notice(text.into()),
                 paint_thread::Event::Saved { doc, path, revision, auto, result } => AppEvent::Saved { doc, path, revision, auto, result },
                 paint_thread::Event::Selection => AppEvent::Selection,
@@ -2375,13 +2376,13 @@ impl ApplicationHandler<AppEvent> for App {
             // Only there to wake the loop; about_to_wait does the work.
             AppEvent::Wake => {}
             AppEvent::Painted => self.on_painted(),
-            AppEvent::LayerChanged(layer_id) => {
+            AppEvent::LayerChanged(layer_id, rect) => {
                 if self.frame_stats.count > 0 {
                     log::info!("stroke frames (composite+render, main thread): {}", self.frame_stats);
                     self.frame_stats = Timing::default();
                 }
                 self.on_painted();
-                self.ui.invalidate_thumbnail(layer_id);
+                self.ui.invalidate_thumbnail(layer_id, rect);
                 self.request_redraw();
             }
             AppEvent::Notice(text) => {

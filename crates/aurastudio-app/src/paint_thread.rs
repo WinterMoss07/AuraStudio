@@ -82,7 +82,8 @@ pub enum Event {
     Painted,
     /// A layer's pixels changed for good (stroke done, undo...): refresh
     /// its thumbnail.
-    LayerChanged { layer_id: u64 },
+    /// A layer's pixels changed; `rect`: where (None: anywhere, or unknown).
+    LayerChanged { layer_id: u64, rect: Option<Rect> },
     /// Short message for the options bar ("Nothing to undo"...).
     Notice(&'static str),
     /// A save finished: the document revision now on disk, or the error.
@@ -265,14 +266,14 @@ impl Worker {
                                 let had = d.selection.clone();
                                 if let Some((ids, r)) = d.transform_apply(&w, i) {
                                     if r.2 > r.0 { add_rect(&mut self.pending, r); }
-                                    for id in ids { events.push(Event::LayerChanged { layer_id: id }); }
+                                    for id in ids { events.push(Event::LayerChanged { layer_id: id, rect: (r.2 > r.0).then_some(r) }); }
                                 }
                                 if d.selection != had { events.push(Event::Selection); }
                             }
                             TransformAction::Cancel => {
                                 if let Some((ids, r)) = d.transform_cancel() {
                                     if r.2 > r.0 { add_rect(&mut self.pending, r); }
-                                    for id in ids { events.push(Event::LayerChanged { layer_id: id }); }
+                                    for id in ids { events.push(Event::LayerChanged { layer_id: id, rect: (r.2 > r.0).then_some(r) }); }
                                 }
                             }
                         }
@@ -306,7 +307,7 @@ impl Worker {
                         match done {
                             Some((id, r)) => {
                                 if r.2 > r.0 { add_rect(&mut self.pending, r); }
-                                if keep { events.push(Event::LayerChanged { layer_id: id }); }
+                                if keep { events.push(Event::LayerChanged { layer_id: id, rect: (r.2 > r.0).then_some(r) }); }
                             }
                             None if !matches!(action, F::Cancel) => events.push(Event::Notice("Layer is locked or is a folder")),
                             None => {}
@@ -463,14 +464,15 @@ impl Worker {
         if c.selection { events.push(Event::Selection); }
         if c.tree {
             self.recomposite(doc);
-            events.push(Event::LayerChanged { layer_id: c.layer_id });
-            for (id, _) in c.more { events.push(Event::LayerChanged { layer_id: id }); }
+            // (The tree changed: any layer may look different.)
+            events.push(Event::LayerChanged { layer_id: c.layer_id, rect: None });
+            for (id, _) in c.more { events.push(Event::LayerChanged { layer_id: id, rect: None }); }
             return;
         }
         for (id, r) in std::iter::once((c.layer_id, c.rect)).chain(c.more) {
             if r.2 > r.0 && r.3 > r.1 {
                 add_rect(&mut self.pending, r);
-                events.push(Event::LayerChanged { layer_id: id });
+                events.push(Event::LayerChanged { layer_id: id, rect: Some(r) });
             }
         }
         self.doc = Some(doc);
@@ -478,9 +480,9 @@ impl Worker {
 
     /// End the open stroke (recorded for undo) and report its layer.
     fn finish_stroke(&mut self, events: &mut Vec<Event>) {
-        if let Some((rect, id)) = self.with_doc(|w, d| w.end(d)).flatten() {
+        if let Some((rect, whole, id)) = self.with_doc(|w, d| w.end(d)).flatten() {
             if let Some(r) = rect { add_rect(&mut self.pending, r); }
-            events.push(Event::LayerChanged { layer_id: id });
+            events.push(Event::LayerChanged { layer_id: id, rect: whole });
         }
     }
 
@@ -522,7 +524,7 @@ impl Worker {
         match edit {
             Some((id, r)) => {
                 add_rect(&mut self.pending, r);
-                events.push(Event::LayerChanged { layer_id: id });
+                events.push(Event::LayerChanged { layer_id: id, rect: Some(r) });
             }
             None => events.push(Event::Notice(none_msg)),
         }
@@ -585,8 +587,9 @@ impl Worker {
     }
 
     /// Finish the stroke and record it for undo. Returns the last painted
-    /// area and the layer id, or None if nothing was painted.
-    fn end(&mut self, doc: &mut Document) -> Option<(Option<Rect>, u64)> {
+    /// area, the area of the whole stroke and the layer id, or None if
+    /// nothing was painted.
+    fn end(&mut self, doc: &mut Document) -> Option<(Option<Rect>, Option<Rect>, u64)> {
         let was_active = std::mem::take(&mut self.active);
         // Also after an aborted stroke (layer deleted / canvas resized):
         // whatever was painted before is still recorded for undo.
@@ -612,7 +615,8 @@ impl Worker {
         if let Some(r) = rect { self.stroke_rect = Some(self.stroke_rect.map_or(r, |s| union(s, r))); }
         // After a resize the snapshot no longer matches: nothing to record.
         if !same_size { self.stroke_rect = None; }
-        if let Some(r) = self.stroke_rect.take() {
+        let whole = self.stroke_rect.take();
+        if let Some(r) = whole {
             let t0 = Instant::now();
             doc.commit_stroke(id, r);
             log::info!("stroke: {} samples | paint {} | max queued {} | undo save {:.1} ms ({} KB history)",
@@ -624,7 +628,7 @@ impl Worker {
         self.reshow(doc);
         // The stroke buffers are freed until the next stroke.
         doc.layers.end_stroke();
-        Some((rect, id))
+        Some((rect, whole, id))
     }
 }
 
@@ -702,7 +706,7 @@ mod tests {
         let (ev_tx, ev_rx) = channel();
         let projection = proj(64, 64);
         let pt = PaintThread::spawn(Arc::clone(&projection), move |e| {
-            if let Event::LayerChanged { layer_id } = e { let _ = ev_tx.send(layer_id); }
+            if let Event::LayerChanged { layer_id, .. } = e { let _ = ev_tx.send(layer_id); }
         });
         stroke(&pt, &doc, 32.0);
         assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok(id));

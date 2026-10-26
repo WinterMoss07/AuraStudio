@@ -8,6 +8,10 @@ use aurastudio_brush::forge::{BrushSetting, Spacing};
 use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_canvas::FlatSurface;
 
+/// Bump when `render` or the brush engine changes how a preview looks:
+/// previews kept on disk under another version are not used.
+pub const RENDER_VERSION: u32 = 1;
+
 /// Stroke color: light, for the dark UI.
 pub const INK: [u8; 3] = [236, 236, 240];
 /// The paint of the detail mode's left half.

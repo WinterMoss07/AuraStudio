@@ -180,6 +180,17 @@ pub fn gpu_sections(g: &GpuMemory) -> Vec<MemorySection> {
 }
 
 /// A report from its parts.
+/// The stroke previews in one line: what they hold on the GPU, and how the
+/// disk cache served them (pictures read from it / painted since the start).
+fn previews_line() -> String {
+    let s = aurastudio_ui::preview_stats();
+    let (files, bytes) = aurastudio_ui::preview_cache_usage();
+    format!(
+        "Stroke previews: {} strips in {} textures ({}), {} waiting for room; since the start {} read from the disk cache, {} painted; cache {} files, {}",
+        s.strips, s.textures, aurastudio_ui::mb(s.bytes as u64), s.parked, s.disk_hits, s.painted, files, aurastudio_ui::mb(bytes),
+    )
+}
+
 pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>) -> MemoryReport {
     let (working_set, private) = process_memory();
     let mut sections = Vec::new();
@@ -194,6 +205,7 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>
     if let Some(g) = gpu {
         header.push(format!("Graphics: {} on {}", g.backend, if g.adapter.is_empty() { "?" } else { &g.adapter }));
     }
+    header.push(previews_line());
     MemoryReport { working_set, private, heap: Some(heap_bytes()), header, sections }
 }
 
