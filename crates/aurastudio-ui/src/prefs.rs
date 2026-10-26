@@ -35,6 +35,16 @@ impl Default for Renderer {
     fn default() -> Self { Renderer::offered()[0] }
 }
 
+/// How the canvas is drawn on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CanvasQuality {
+    /// The exact average of the canvas pixels under each screen pixel.
+    #[default]
+    High,
+    /// Mipmaps (lighter on old graphics chips, a third more memory).
+    Standard,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prefs {
     // Interface.
@@ -55,6 +65,13 @@ pub struct Prefs {
     /// Graphics API wanted (the next start uses it; another one if it
     /// can't run).
     pub renderer:         Renderer,
+    /// How the canvas is drawn.
+    pub canvas_quality:   CanvasQuality,
+    /// Above 100 %: canvas pixels blended instead of sharp squares.
+    pub smooth_zoom_in:   bool,
+    /// Frames shown in step with the screen (no tearing, a little more
+    /// latency); off: as soon as drawn.
+    pub vsync:            bool,
     // Brushes and input.
     /// The brush outline replaces the cursor over the canvas (off: a
     /// crosshair).
@@ -72,6 +89,7 @@ impl Default for Prefs {
         Self {
             ui_scale: 1.0, brush_previews: true, open_maximized: true,
             hidpi_scaling: true, color_managed: true, perceptual: true, renderer: Renderer::default(),
+            canvas_quality: CanvasQuality::High, smooth_zoom_in: false, vsync: false,
             brush_outline: true, debounce_ms: 20,
             autosave_minutes: 5,
         }
@@ -98,6 +116,9 @@ impl Prefs {
                 "color_managed" => p.color_managed = b,
                 "perceptual" => p.perceptual = b,
                 "renderer" => if let Some(r) = Renderer::from_key(v).filter(|r| Renderer::offered().contains(r)) { p.renderer = r },
+                "canvas_quality" => p.canvas_quality = if v == "standard" { CanvasQuality::Standard } else { CanvasQuality::High },
+                "smooth_zoom_in" => p.smooth_zoom_in = b,
+                "vsync" => p.vsync = v == "true",
                 "brush_outline" => p.brush_outline = b,
                 "click_debounce_ms" => if let Ok(v) = v.parse::<u32>() { p.debounce_ms = v.min(200) },
                 "autosave_minutes" => if let Ok(v) = v.parse::<u32>() { p.autosave_minutes = v.min(120) },
@@ -109,9 +130,11 @@ impl Prefs {
 
     pub fn to_text(&self) -> String {
         format!(
-            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\n",
+            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\n",
             self.ui_scale, self.brush_previews, self.open_maximized, self.hidpi_scaling, self.color_managed,
-            self.perceptual, self.renderer.key(), self.brush_outline, self.debounce_ms, self.autosave_minutes,
+            self.perceptual, self.renderer.key(),
+            if self.canvas_quality == CanvasQuality::Standard { "standard" } else { "high" }, self.smooth_zoom_in, self.vsync,
+            self.brush_outline, self.debounce_ms, self.autosave_minutes,
         )
     }
 }
@@ -215,9 +238,23 @@ fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>, in_use: &str) {
     } else {
         note(ui, "Another one is used if it can't run.");
     }
+    title(ui, "Canvas quality");
+    ui.horizontal_wrapped(|ui| {
+        ui.radio_value(&mut p.canvas_quality, CanvasQuality::High, "High");
+        ui.radio_value(&mut p.canvas_quality, CanvasQuality::Standard, "Standard");
+    });
+    note(ui, match p.canvas_quality {
+        CanvasQuality::High => "Every screen pixel shows the exact average of the canvas under it.",
+        CanvasQuality::Standard => "Mipmaps: lighter on old graphics chips, a third more memory.",
+    });
     title(ui, "Zoom");
     ui.checkbox(&mut p.hidpi_scaling, "HiDPI image scaling");
     note(ui, "Off: 100 % is one image pixel per screen pixel.");
+    ui.checkbox(&mut p.smooth_zoom_in, "Smooth zoom above 100 %");
+    note(ui, "Off: canvas pixels stay sharp squares close up.");
+    title(ui, "Screen sync");
+    ui.checkbox(&mut p.vsync, "Show frames in step with the screen (V-Sync)");
+    note(ui, "Off: lowest pen latency, a tear may show while panning.");
     title(ui, "Color management");
     note(ui, &format!("Monitor profile: {}", profile.unwrap_or("none found (sRGB)")));
     ui.add_enabled_ui(profile.is_some(), |ui| {
@@ -257,11 +294,13 @@ mod tests {
 
     #[test]
     fn prefs_round_trip_and_old_files_read() {
-        let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl, ..Prefs::default() };
+        let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl,
+            canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true, ..Prefs::default() };
         assert_eq!(Prefs::from_text(&p.to_text()), p);
         // A 0.7 settings file.
         let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");
         assert_eq!((old.hidpi_scaling, old.ui_scale, old.debounce_ms, old.autosave_minutes), (false, 0.85, 30, 5));
+        assert_eq!((old.canvas_quality, old.smooth_zoom_in, old.vsync), (CanvasQuality::High, false, false));
     }
 
     #[test]

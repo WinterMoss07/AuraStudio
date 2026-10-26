@@ -138,6 +138,23 @@ pub fn process_memory() -> (Option<u64>, Option<u64>) {
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn process_memory() -> (Option<u64>, Option<u64>) { (None, None) }
 
+/// (committed, in use) of the process heap, where Rust's allocations
+/// live: committed minus in use is memory freed but kept by the heap.
+#[cfg(windows)]
+fn system_heap() -> Option<(u64, u64)> {
+    use windows::Win32::System::Memory::{GetProcessHeap, HeapSummary, HEAP_SUMMARY};
+    // SAFETY: the process heap handle is valid for the process's life; the
+    // summary is a plain struct whose size is given in `cb`.
+    unsafe {
+        let heap = GetProcessHeap().ok()?;
+        let mut s = HEAP_SUMMARY { cb: std::mem::size_of::<HEAP_SUMMARY>() as u32, ..Default::default() };
+        HeapSummary(heap, 0, &mut s).as_bool().then_some((s.cbCommitted as u64, s.cbAllocated as u64))
+    }
+}
+
+#[cfg(not(windows))]
+fn system_heap() -> Option<(u64, u64)> { None }
+
 /// The document's pieces: tiles by layer, history, selection.
 pub fn document_sections(doc: &Document) -> Vec<MemorySection> {
     let mut tiles = MemorySection::new(format!("Document \"{}\" {}x{}: tiles by layer", doc.name, doc.layers.width, doc.layers.height), true);
@@ -186,8 +203,8 @@ fn previews_line() -> String {
     let s = aurastudio_ui::preview_stats();
     let (files, bytes) = aurastudio_ui::preview_cache_usage();
     format!(
-        "Stroke previews: {} strips in {} textures ({}), {} waiting for room; since the start {} read from the disk cache, {} painted; cache {} files, {}",
-        s.strips, s.textures, aurastudio_ui::mb(s.bytes as u64), s.parked, s.disk_hits, s.painted, files, aurastudio_ui::mb(bytes),
+        "Stroke previews: {} strips in {} textures ({}, {} sizes), {} waiting for room; since the start {} pages made, {} read from the disk cache, {} painted; cache {} files, {}",
+        s.strips, s.textures, aurastudio_ui::mb(s.bytes as u64), s.sizes, s.parked, s.pages_made, s.disk_hits, s.painted, files, aurastudio_ui::mb(bytes),
     )
 }
 
@@ -204,8 +221,21 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>
     let mut header = Vec::new();
     if let Some(g) = gpu {
         header.push(format!("Graphics: {} on {}", g.backend, if g.adapter.is_empty() { "?" } else { &g.adapter }));
+        header.push(format!("Display: canvas quality {}, frames presented {}", g.quality, g.present));
+        let t = &g.traffic;
+        let mb = aurastudio_ui::mb;
+        header.push(format!(
+            "Interface textures since the start: {} sent whole ({}), {} freed ({}); alive now {}, most at once {}; uploads waited {} times (staging kept under 4 MB)",
+            t.made, mb(t.made_bytes), t.freed, mb(t.freed_bytes), mb(t.live_bytes), mb(t.peak_bytes), g.upload_waits,
+        ));
     }
     header.push(previews_line());
+    if let Some((committed, used)) = system_heap() {
+        header.push(format!(
+            "System heap (where the app allocates): {} committed, {} in use ({} freed but kept)",
+            aurastudio_ui::mb(committed), aurastudio_ui::mb(used), aurastudio_ui::mb(committed.saturating_sub(used)),
+        ));
+    }
     MemoryReport { working_set, private, heap: Some(heap_bytes()), header, sections }
 }
 

@@ -682,6 +682,9 @@ impl App {
         let Some(gpu) = &mut self.gpu else { return };
         gpu.set_pixel_exact(!self.prefs.hidpi_scaling);
         gpu.set_ui_scale(self.prefs.ui_scale);
+        gpu.set_quality(gpu_quality(self.prefs.canvas_quality));
+        gpu.set_smooth_zoom_in(self.prefs.smooth_zoom_in);
+        gpu.set_vsync(self.prefs.vsync);
         self.debounce.window = Duration::from_millis(self.prefs.debounce_ms as u64);
         self.update_cursor();
         self.request_redraw();
@@ -2508,7 +2511,7 @@ impl ApplicationHandler<AppEvent> for App {
             aurastudio_ui::Renderer::OpenGl => Backend::OpenGl,
             aurastudio_ui::Renderer::Metal => Backend::Metal,
         };
-        let mut gpu = match pollster::block_on(GpuState::new(Arc::clone(&window), size, prefer)) {
+        let mut gpu = match pollster::block_on(GpuState::new(Arc::clone(&window), size, prefer, gpu_quality(self.prefs.canvas_quality), self.prefs.vsync)) {
             Ok(g) => g,
             Err(e) => {
                 // Nothing to draw with at all: say so, don't just vanish.
@@ -2931,6 +2934,14 @@ fn window_icon() -> Option<winit::window::Icon> {
     let img = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?.into_rgba8();
     let (w, h) = img.dimensions();
     winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
+/// The canvas display quality chosen in Preferences, for the GPU side.
+fn gpu_quality(q: aurastudio_ui::CanvasQuality) -> aurastudio_gpu::CanvasQuality {
+    match q {
+        aurastudio_ui::CanvasQuality::High => aurastudio_gpu::CanvasQuality::High,
+        aurastudio_ui::CanvasQuality::Standard => aurastudio_gpu::CanvasQuality::Standard,
+    }
 }
 
 /// Send the whole merged image to the GPU, in bands of rows: the full

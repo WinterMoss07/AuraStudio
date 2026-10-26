@@ -1,6 +1,9 @@
+mod display;
 mod lift;
 mod mip;
+mod upload;
 mod view;
+pub use display::CanvasQuality;
 pub use view::{wrap_angle, CanvasView};
 
 use std::sync::Arc;
@@ -9,19 +12,40 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 use aurastudio_canvas::Canvas;
 
-/// From this zoom up, canvas pixels are shown as sharp squares (nearest
-/// sampling) instead of being blurred, like Krita / CSP close up.
+/// Standard quality: from this zoom up, canvas pixels are shown as sharp
+/// squares (nearest sampling) instead of being blurred, like Krita / CSP
+/// close up (unless smooth zoom-in is chosen).
 const NEAREST_FROM_ZOOM: f32 = 2.0;
 
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct ViewUniform {
-    m0:          [f32; 4],
-    m1:          [f32; 4],
-    canvas_size: [f32; 2],
-    _pad:        [f32; 2],
-    /// x: display color management on (1) / off (0), y: LUT size.
-    cm:          [f32; 4],
+/// How the window is presented. Immediate: a frame is shown as soon as it
+/// is drawn (lowest pen latency, two images); Fifo: in step with the
+/// screen (no tearing). Mailbox only when asked (AURASTUDIO_PRESENT): the
+/// driver may keep a third image for it.
+fn present_mode(caps: &SurfaceCapabilities, vsync: bool) -> PresentMode {
+    let wanted = match std::env::var("AURASTUDIO_PRESENT").ok().as_deref() {
+        Some("mailbox")   => vec![PresentMode::Mailbox],
+        Some("immediate") => vec![PresentMode::Immediate],
+        Some("fifo")      => vec![PresentMode::Fifo],
+        _ if vsync => vec![PresentMode::Fifo],
+        _ => vec![PresentMode::Immediate],
+    };
+    wanted.into_iter().find(|m| caps.present_modes.contains(m)).unwrap_or(PresentMode::Fifo)
+}
+
+/// Images of the swapchain, about: one frame in flight plus the one shown,
+/// a third for Mailbox.
+fn swapchain_images(mode: PresentMode) -> u64 { if mode == PresentMode::Mailbox { 3 } else { 2 } }
+
+/// Interface textures made and freed since the start (bytes), for the
+/// memory report: a churn shows here even when the textures alive are few.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TextureTraffic {
+    pub made:       u64,
+    pub made_bytes: u64,
+    pub freed:      u64,
+    pub freed_bytes: u64,
+    pub live_bytes: u64,
+    pub peak_bytes: u64,
 }
 
 #[repr(C)]
@@ -82,6 +106,22 @@ pub struct GpuState {
     /// Interface size chosen in the View menu (1.0 = the system's).
     ui_scale:        f32,
     canvas_pipeline: RenderPipeline,
+    /// The exact average (High quality).
+    canvas_high:     RenderPipeline,
+    quality:         CanvasQuality,
+    /// A quality chosen during a transform, applied when it ends (the
+    /// transform draws into the canvas texture).
+    quality_later:   Option<CanvasQuality>,
+    /// Above 100 %: canvas pixels blended (bilinear) instead of sharp.
+    smooth_zoom_in:  bool,
+    /// Presentation in step with the screen (Fifo) instead of Immediate.
+    vsync:           bool,
+    surface_caps:    SurfaceCapabilities,
+    /// Pixels sent to textures, with a ceiling on the staging memory.
+    uploads:         upload::Uploads,
+    /// Bytes of each interface texture alive, and the traffic so far.
+    egui_bytes:      std::collections::HashMap<egui::TextureId, u64>,
+    traffic:         TextureTraffic,
     /// Keeps the canvas texture's mipmaps up to date.
     mip:             mip::MipGen,
     view_buffer:     Buffer,
@@ -175,6 +215,13 @@ pub struct GpuMemory {
     pub reserved:    Option<u64>,
     /// The allocations it lists, biggest first.
     pub allocations: Vec<(String, u64)>,
+    /// How frames are presented, and the canvas display quality.
+    pub present:     String,
+    pub quality:     String,
+    /// Interface textures made and freed since the start.
+    pub traffic:     TextureTraffic,
+    /// Times uploads waited for the GPU to keep staging memory low.
+    pub upload_waits: u64,
 }
 
 /// Bytes of a 2D RGBA8 texture of `w` x `h` with all its mip levels.
@@ -193,10 +240,19 @@ impl GpuState {
     pub fn memory(&self) -> GpuMemory {
         let mut m = GpuMemory { backend: format!("{:?}", self.backend), adapter: ADAPTER_INFO.get().cloned().unwrap_or_default(), ..Default::default() };
         let (w, h) = (self.canvas.width, self.canvas.height);
-        m.known.push((format!("canvas texture {w}x{h} with mipmaps"), mipped_bytes(w, h)));
+        if self.canvas.texture.mip_level_count() > 1 {
+            m.known.push((format!("canvas texture {w}x{h} with mipmaps"), mipped_bytes(w, h)));
+        } else {
+            m.known.push((format!("canvas texture {w}x{h}"), w as u64 * h as u64 * 4));
+        }
         let lut = self.lut.size as u64;
         m.known.push((format!("display lookup table {lut}^3"), lut * lut * lut * 8));
-        m.known.push((format!("~swapchain {}x{} (3 images)", self.config.width, self.config.height), self.config.width as u64 * self.config.height as u64 * 4 * 3));
+        let images = swapchain_images(self.config.present_mode);
+        m.known.push((format!("~swapchain {}x{} ({images} images)", self.config.width, self.config.height), self.config.width as u64 * self.config.height as u64 * 4 * images));
+        m.present = format!("{:?}", self.config.present_mode);
+        m.quality = format!("{:?}", self.quality);
+        m.traffic = self.traffic;
+        m.upload_waits = self.uploads.flushes;
         let tex = self.egui_ctx.tex_manager();
         let tex = tex.read();
         for (_, meta) in tex.allocated() { m.egui.push((meta.name.clone(), meta.bytes_used() as u64)); }
@@ -231,7 +287,9 @@ impl GpuState {
     /// `canvas_size`: initial canvas width and height in pixels. The
     /// graphics API `prefer`, else the next one that runs (Vulkan, DirectX
     /// 12, OpenGL); AURASTUDIO_BACKEND overrides. Err: none runs.
-    pub async fn new(window: Arc<Window>, canvas_size: (u32, u32), prefer: Backend) -> Result<Self, String> {
+    /// `quality`: how the canvas is drawn; `vsync`: presentation in step
+    /// with the screen.
+    pub async fn new(window: Arc<Window>, canvas_size: (u32, u32), prefer: Backend, quality: CanvasQuality, vsync: bool) -> Result<Self, String> {
         let size = window.inner_size();
 
         let forced = match std::env::var("AURASTUDIO_BACKEND").ok().as_deref() {
@@ -301,17 +359,7 @@ impl GpuState {
             .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
 
-        // Lowest latency first: Mailbox, Immediate, then Fifo (~14 ms more);
-        // AURASTUDIO_PRESENT overrides.
-        let wanted = match std::env::var("AURASTUDIO_PRESENT").ok().as_deref() {
-            Some("mailbox")   => vec![PresentMode::Mailbox],
-            Some("immediate") => vec![PresentMode::Immediate],
-            Some("fifo")      => vec![PresentMode::Fifo],
-            _ => vec![PresentMode::Mailbox, PresentMode::Immediate],
-        };
-        let present_mode = wanted.into_iter()
-            .find(|m| caps.present_modes.contains(m))
-            .unwrap_or(PresentMode::Fifo);
+        let present_mode = present_mode(&caps, vsync);
         log::info!("surface: {format:?}, present mode {present_mode:?} (available: {:?}), backend {:?}",
             caps.present_modes, adapter.get_info().backend);
 
@@ -330,65 +378,13 @@ impl GpuState {
         surface.configure(&device, &config);
         step("swapchain");
 
-        let canvas_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label:   Some("canvas_bgl"),
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding:    0,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        multisampled:   false,
-                        view_dimension: TextureViewDimension::D2,
-                        sample_type:    TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding:    1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding:    2,
-                    visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                    ty: BindingType::Buffer {
-                        ty:                 BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size:   None,
-                    },
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding:    3,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        multisampled:   false,
-                        view_dimension: TextureViewDimension::D3,
-                        sample_type:    TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                BindGroupLayoutEntry {
-                    binding:    4,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+        let canvas_bgl = display::canvas_bgl(&device);
 
         // Display LUT: identity (2^3 corners) until the app sets the real
         // one, and switched off anyway.
         let lut = DisplayLut::new(&device, &queue, &IDENTITY_LUT, 2);
 
-        let view_uniform = ViewUniform {
-            m0: [0.0; 4],
-            m1: [0.0; 4],
-            canvas_size: [canvas_size.0 as f32, canvas_size.1 as f32],
-            _pad: [0.0; 2],
-            cm: [0.0; 4],
-        };
+        let view_uniform = display::ViewUniform { canvas_size: [canvas_size.0 as f32, canvas_size.1 as f32], ..bytemuck::Zeroable::zeroed() };
 
         let view_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
             label:    Some("view_buffer"),
@@ -396,46 +392,11 @@ impl GpuState {
             usage:    BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
-        let shader = device.create_shader_module(ShaderModuleDescriptor {
-            label:  Some("canvas_shader"),
-            source: ShaderSource::Wgsl(include_str!("shaders/canvas.wgsl").into()),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label:                Some("canvas_pipeline_layout"),
-            bind_group_layouts:   &[&canvas_bgl],
-            push_constant_ranges: &[],
-        });
-
-        let canvas_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label:  Some("canvas_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module:              &shader,
-                entry_point:         Some("vs_main"),
-                buffers:             &[],
-                compilation_options: PipelineCompilationOptions::default(),
-            },
-            fragment: Some(FragmentState {
-                module:              &shader,
-                entry_point:         Some("fs_main"),
-                targets:             &[Some(ColorTargetState {
-                    format,
-                    blend:      Some(BlendState::REPLACE),
-                    write_mask: ColorWrites::ALL,
-                })],
-                compilation_options: PipelineCompilationOptions::default(),
-            }),
-            primitive:     PrimitiveState::default(),
-            depth_stencil: None,
-            multisample:   MultisampleState::default(),
-            multiview:     None,
-            cache:         None,
-        });
+        let (canvas_pipeline, canvas_high) = display::canvas_pipelines(&device, &canvas_bgl, format);
 
         step("canvas shader");
         let (cursor_pipeline, cursor_buffer, cursor_bind) = cursor_pipeline(&device, format);
-        let canvas = Canvas::new(&device, canvas_size.0, canvas_size.1);
+        let canvas = Canvas::new(&device, canvas_size.0, canvas_size.1, quality.mipmaps());
         let nearest_sampler = device.create_sampler(&SamplerDescriptor {
             label:          Some("canvas_sampler_nearest"),
             address_mode_u: AddressMode::ClampToEdge,
@@ -465,7 +426,11 @@ impl GpuState {
         Ok(Self {
             backend,
             surface, device, queue, config,
-            canvas_pipeline, view_buffer, view_bind_group, canvas_bgl,
+            canvas_pipeline, canvas_high, quality, quality_later: None, smooth_zoom_in: false, vsync, surface_caps: caps,
+            uploads: upload::Uploads::default(),
+            egui_bytes: std::collections::HashMap::new(),
+            traffic: TextureTraffic::default(),
+            view_buffer, view_bind_group, canvas_bgl,
             nearest_sampler, nearest_bind_group,
             view: CanvasView::default(),
             last_ui: None,
@@ -494,6 +459,29 @@ impl GpuState {
     /// The graphics API drawing the window.
     pub fn backend(&self) -> Backend { self.backend }
 
+    /// An interface texture sent whole (new, or replacing one of the same id).
+    fn note_made(&mut self, id: egui::TextureId, bytes: u64) {
+        let t = &mut self.traffic;
+        if let Some(old) = self.egui_bytes.insert(id, bytes) {
+            t.freed += 1;
+            t.freed_bytes += old;
+            t.live_bytes = t.live_bytes.saturating_sub(old);
+        }
+        t.made += 1;
+        t.made_bytes += bytes;
+        t.live_bytes += bytes;
+        t.peak_bytes = t.peak_bytes.max(t.live_bytes);
+    }
+
+    fn note_freed(&mut self, id: egui::TextureId) {
+        if let Some(b) = self.egui_bytes.remove(&id) {
+            let t = &mut self.traffic;
+            t.freed += 1;
+            t.freed_bytes += b;
+            t.live_bytes = t.live_bytes.saturating_sub(b);
+        }
+    }
+
     /// Biggest canvas side the GPU accepts (max 2D texture size).
     pub fn max_canvas_size(&self) -> u32 {
         self.device.limits().max_texture_dimension_2d
@@ -506,7 +494,7 @@ impl GpuState {
     pub fn lift_begin(&mut self, src: aurastudio_canvas::Rect, below: &[u8], above: Option<&[u8]>, layers: &[(&[u8], f32)]) -> bool {
         let aniso = if self.backend == Backend::OpenGl { 1 } else { 16 };
         let pipes = self.lift_pipes.get_or_insert_with(|| lift::Pipes::new(&self.device, aniso));
-        self.lift = lift::Lift::new(&self.device, &self.queue, pipes, &self.canvas, lift::Pieces { src, below, above, layers });
+        self.lift = lift::Lift::new(&self.device, &self.queue, pipes, &self.canvas, lift::Pieces { src, below, above, layers }, &mut self.uploads);
         self.lift.is_some()
     }
 
@@ -528,11 +516,52 @@ impl GpuState {
 
     pub fn lift_end(&mut self) {
         self.lift = None;
+        if let Some(q) = self.quality_later.take() { self.set_quality(q); }
+    }
+
+    /// How the canvas is drawn. The pixels are copied into a texture with
+    /// or without mipmaps (nothing to send again); during a transform, once
+    /// it ends.
+    pub fn set_quality(&mut self, quality: CanvasQuality) {
+        if self.lift.is_some() { self.quality_later = Some(quality); return; }
+        self.quality_later = None;
+        if quality == self.quality { return; }
+        self.quality = quality;
+        let (w, h) = (self.canvas.width, self.canvas.height);
+        let canvas = Canvas::new(&self.device, w, h, quality.mipmaps());
+        let mut enc = self.device.create_command_encoder(&CommandEncoderDescriptor { label: Some("quality") });
+        enc.copy_texture_to_texture(
+            ImageCopyTexture { texture: &self.canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            ImageCopyTexture { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+            Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(enc.finish()));
+        self.canvas = canvas;
+        self.mip.attach(&self.device, &self.canvas);
+        self.rebuild_bind_groups();
+    }
+
+    pub fn quality(&self) -> CanvasQuality { self.quality }
+
+    /// Above 100 %: canvas pixels blended (true) or sharp squares.
+    pub fn set_smooth_zoom_in(&mut self, on: bool) { self.smooth_zoom_in = on; }
+
+    /// Presentation in step with the screen (no tearing) or Immediate.
+    pub fn set_vsync(&mut self, on: bool) {
+        if on == self.vsync { return; }
+        self.vsync = on;
+        let mode = present_mode(&self.surface_caps, on);
+        if mode != self.config.present_mode {
+            self.config.present_mode = mode;
+            self.surface.configure(&self.device, &self.config);
+            log::info!("present mode {mode:?}");
+        }
     }
 
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
         self.lift = None;
-        self.canvas = Canvas::new(&self.device, width, height);
+        if let Some(q) = self.quality_later.take() { self.quality = q; }
+        self.canvas = Canvas::new(&self.device, width, height, self.quality.mipmaps());
         self.mip.attach(&self.device, &self.canvas);
         self.rebuild_bind_groups();
         // New canvas: show it whole.
@@ -734,9 +763,8 @@ impl GpuState {
     fn write_view_uniform(&mut self) {
         let (c, a) = (self.canvas_size(), self.viewport);
         self.view.update_fit(c, a);
-        let [m0, m1] = self.view.ndc_matrix(c, a);
         let cm = [if self.color_managed { 1.0 } else { 0.0 }, self.lut.size as f32, 0.0, 0.0];
-        let uniform = ViewUniform { m0, m1, canvas_size: [c.0 as f32, c.1 as f32], _pad: [0.0; 2], cm };
+        let uniform = display::view_uniform(&self.view, c, a, cm, self.smooth_zoom_in);
         self.queue.write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
@@ -747,21 +775,7 @@ impl GpuState {
         if x1 <= x0 || y1 <= y0 || x1 > self.canvas.width || y1 > self.canvas.height { return; }
         let w = x1 - x0;
         if rgba.len() != w as usize * (y1 - y0) as usize * 4 { return; }
-        self.queue.write_texture(
-            ImageCopyTexture {
-                texture:   &self.canvas.texture,
-                mip_level: 0,
-                origin:    Origin3d { x: x0, y: y0, z: 0 },
-                aspect:    TextureAspect::All,
-            },
-            rgba,
-            ImageDataLayout {
-                offset:         0,
-                bytes_per_row:  Some(w * 4),
-                rows_per_image: Some(y1 - y0),
-            },
-            Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
-        );
+        self.uploads.write(&self.device, &self.queue, &self.canvas.texture, (x0, y0), (w, y1 - y0), rgba);
         self.mip.mark(rect);
         if let Some(l) = &mut self.lift { l.uploaded(); }
     }
@@ -831,6 +845,10 @@ impl GpuState {
                     let probe = MEMORY_PROBE.get().filter(|_| delta.pos.is_none() && self.texture_costs.len() < 40);
                     let before = probe.map(|f| f());
                     self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
+                    if delta.pos.is_none() {
+                        let [w, h] = delta.image.size();
+                        self.note_made(*id, w as u64 * h as u64 * 4);
+                    }
                     if let (Some(f), Some(before)) = (probe, before) {
                         let name = self.egui_ctx.tex_manager().read().meta(*id).map_or_else(|| format!("{id:?}"), |m| m.name.clone());
                         let [w, h] = delta.image.size();
@@ -862,6 +880,7 @@ impl GpuState {
                 // all the same (this one's waits).
                 for id in &textures_free {
                     self.egui_renderer.free_texture(id);
+                    self.note_freed(*id);
                 }
                 self.last_ui = Some((tris, ppp));
                 return;
@@ -900,8 +919,10 @@ impl GpuState {
 
             let [vx, vy, vw, vh] = self.viewport;
             pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
-            pass.set_pipeline(&self.canvas_pipeline);
-            let bind = if self.view.zoom >= NEAREST_FROM_ZOOM { &self.nearest_bind_group } else { &self.view_bind_group };
+            let high = self.quality == CanvasQuality::High;
+            pass.set_pipeline(if high { &self.canvas_high } else { &self.canvas_pipeline });
+            let sharp = !high && !self.smooth_zoom_in && self.view.zoom >= NEAREST_FROM_ZOOM;
+            let bind = if sharp { &self.nearest_bind_group } else { &self.view_bind_group };
             pass.set_bind_group(0, bind, &[]);
             pass.draw(0..6, 0..1);
         }
@@ -958,10 +979,12 @@ impl GpuState {
         self.last_ui = Some((tris, ppp));
 
         self.queue.submit(std::iter::once(enc.finish()));
+        self.uploads.submitted();
         // (After the submit: wgpu refuses a submit using a texture already
         // destroyed.)
         for id in &textures_free {
             self.egui_renderer.free_texture(id);
+            self.note_freed(*id);
         }
         let suboptimal = output.suboptimal;
         output.present();

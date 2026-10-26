@@ -3,6 +3,63 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.16.0 — 2026-10-26
+
+**Canvas display quality (Preferences > Canvas & display)**
+- **High** (default): each screen pixel shows the exact average of the canvas
+  pixels under it, each weighted by the part of it covered, rotation included
+  (a new shader, `fs_high`). The canvas texture has no mipmaps any more: a
+  third less canvas memory (7.6 MB for 2000 × 3000), no blur between mipmap
+  levels, nothing rebuilt on the GPU after each stroke.
+- **Standard**: the mipmaps as before (old or weak graphics chips). The mip
+  chain is only allocated in this mode; switching copies the pixels into the
+  new texture (nothing is sent again).
+- Close up (above 100 %): canvas pixels are sharp squares with clean edges,
+  or blended ("Smooth zoom above 100 %").
+- The judge: tests render the real shader on a software GPU (Mesa's lavapipe)
+  and compare it with a slow exact CPU renderer in double precision at 33, 25,
+  12 and 5 %, tilted, close up and at 90°: within one step of 255 (rounding).
+  At 100 % upright the picture is the canvas, pixel for pixel. Without a GPU
+  adapter the shader tests say so and only the judge runs.
+
+**Stroke previews: resizing a docker no longer eats memory**
+- 0.15.2 painted a new preview, wrote a new file and made new textures for
+  every pixel of docker width; the memory they took was not given back
+  (Walid: 148 → 360 MB while resizing the Tools docker). Now:
+  - Previews are painted at a fixed ladder of widths (steps of 32 px, ~19 %
+    apart) and drawn centered in their row: a few pixels of resize change
+    nothing, and the disk cache serves them at any docker width.
+  - While a row's width keeps changing, nothing is painted or allocated: the
+    old strips stay (cut by the row if it got narrower) until the width has
+    stayed put for 150 ms.
+  - A page holds only the slots its size needs (strips drawn plus up to four)
+    and stays under 1 MiB once padded by the driver (Vulkan rounds every
+    texture under 8 MB up to a power of two). Tool options' single preview
+    takes one slot instead of a 1 MB page.
+  - The pages of a width no longer drawn go back as soon as they are empty.
+  - A strip hidden for a moment (docker moved, docked, tab switched) is kept
+    10 s.
+  - A preview is written to disk only once its row has asked nothing else for
+    2 s: a slider dragged writes one file, not one per step.
+- Fixed: a row whose waiting picture was dropped while it was off screen
+  stayed blank when scrolled back within a second.
+
+**GPU memory**
+- Frames are presented Immediate (two images) by default, Fifo with the new
+  V-Sync option; Mailbox (a possible third image) only with
+  `AURASTUDIO_PRESENT=mailbox`. 0.14.2 to 0.15.2 picked Mailbox first.
+- Uploads go through bands with a ceiling: once 4 MB wait for the GPU they are
+  submitted and waited for, so their staging memory is reused instead of new
+  driver blocks being taken (opening a 2000 × 3000 picture had 24 MB of staging
+  alive at once; starting a transform 48 MB).
+- Memory report: the canvas quality and present mode; interface textures made
+  and freed since the start, alive now and most at once; how often uploads
+  waited; on Windows, the process heap committed and in use (memory freed but
+  kept by the heap); the swapchain estimate counts 2 images (3 with Mailbox),
+  not always 3; previews: sizes held and pages made.
+- Not done (measured first, from the review): smaller Vulkan allocator blocks
+  (`MemoryHints::Manual`) would put the 30 MB canvas in a 64 MB block; left out.
+
 ## 0.15.2 — 2026-10-26
 
 **Stroke previews: fixed budget, working disk cache**

@@ -204,9 +204,15 @@ with its pixels; hiding a layer is not an undo step (Photoshop, CSP).
   group, drag, duplicate, delete, label, clip or mark them together.
   Dragging a layer (or a brush) to the edge of its list scrolls it.
 
-**View** — GPU zoom / pan / rotation, monitor ICC color management;
-mipmapped canvas (thin lines stay visible zoomed out; +33 % GPU memory for
-the canvas texture).
+**View** — GPU zoom / pan / rotation, monitor ICC color management.
+Canvas quality (Preferences > Canvas & display): **High** (default) shows
+in every screen pixel the exact average of the canvas pixels under it,
+rotation included (thin lines stay visible zoomed out, no mipmaps, nothing
+rebuilt after a stroke); **Standard** uses mipmaps (lighter on old graphics
+chips, +33 % GPU memory for the canvas texture). Close up, canvas pixels
+stay sharp squares, or are blended ("Smooth zoom above 100 %"). Frames are
+shown as soon as drawn (lowest pen latency), or in step with the screen
+("V-Sync").
 - High-density screens: 100 % follows the system's display scaling, so a
   picture has the same size on a 3K laptop and an HD monitor; moving the
   window to another monitor keeps it the same size; the hand, rotate and
@@ -275,7 +281,7 @@ Environment variables (for testing and comparisons):
 |---|---|
 | `RUST_LOG=info` (default) | log: GPU, pen backend, monitor profile, per-stroke timings |
 | `AURASTUDIO_BACKEND=dx12\|vulkan\|metal\|gl` | force a GPU backend |
-| `AURASTUDIO_PRESENT=mailbox\|immediate\|fifo` | force a present mode |
+| `AURASTUDIO_PRESENT=mailbox\|immediate\|fifo` | force a present mode (default: immediate, fifo with V-Sync) |
 | `AURASTUDIO_DISPLAY_ICC=<file.icc>` | use this monitor profile instead of the system's |
 | `AURASTUDIO_BRUSH_DIR=<folder>` | where imported brushes are kept |
 | `AURASTUDIO_DPI=<dpi>` | pretend the window's monitor has this DPI (96 = 100 %) |

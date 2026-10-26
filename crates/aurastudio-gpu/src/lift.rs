@@ -10,6 +10,7 @@ use wgpu::util::DeviceExt;
 use wgpu::*;
 
 use crate::mip::MipGen;
+use crate::upload::Uploads;
 
 /// Cells of the mesh each way.
 pub const GRID: u32 = 48;
@@ -179,13 +180,14 @@ pub struct Pieces<'a> {
 }
 
 impl Lift {
-    pub fn new(device: &Device, queue: &Queue, pipes: &Pipes, canvas: &Canvas, p: Pieces) -> Option<Self> {
+    /// `uploads`: the pixels go through it (bands, staging memory capped).
+    pub fn new(device: &Device, queue: &Queue, pipes: &Pipes, canvas: &Canvas, p: Pieces, uploads: &mut Uploads) -> Option<Self> {
         let Pieces { src, below, above, layers } = p;
         let (w, h) = (canvas.width, canvas.height);
         if below.len() != (w * h * 4) as usize || above.is_some_and(|a| a.len() != below.len()) { return None; }
         let (sw, sh) = (src.2 - src.0 + 2, src.3 - src.1 + 2);
-        let full = |data: &[u8]| {
-            let t = device.create_texture_with_data(queue, &TextureDescriptor {
+        let mut full = |data: &[u8]| {
+            let t = device.create_texture(&TextureDescriptor {
                 label: Some("lift_full"),
                 size: Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 mip_level_count: 1, sample_count: 1,
@@ -193,7 +195,8 @@ impl Lift {
                 format: Canvas::FORMAT,
                 usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
                 view_formats: &[],
-            }, util::TextureDataOrder::LayerMajor, data);
+            });
+            uploads.write(device, queue, &t, (0, 0), (w, h), data);
             let view = t.create_view(&TextureViewDescriptor::default());
             let bind = device.create_bind_group(&BindGroupDescriptor { label: Some("lift_full"), layout: &pipes.full_bgl, entries: &[BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&view) }] });
             (t, bind)
@@ -207,13 +210,8 @@ impl Lift {
         let mut sources = Vec::new();
         for &(px, opacity) in layers {
             if px.len() != (sw * sh * 4) as usize { return None; }
-            let c = Canvas::new(device, sw, sh);
-            queue.write_texture(
-                ImageCopyTexture { texture: &c.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-                px,
-                ImageDataLayout { offset: 0, bytes_per_row: Some(sw * 4), rows_per_image: Some(sh) },
-                Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
-            );
+            let c = Canvas::new(device, sw, sh, true);
+            uploads.write(device, queue, &c.texture, (0, 0), (sw, sh), px);
             match &mut mip { Some(m) => m.attach(device, &c), None => mip = Some(MipGen::new(device, &c)) }
             if let Some(m) = &mut mip { m.rebuild(&mut enc, &c); }
             let uniform = device.create_buffer_init(&util::BufferInitDescriptor {

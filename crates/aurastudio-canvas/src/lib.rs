@@ -77,16 +77,19 @@ pub struct Canvas {
 impl Canvas {
     pub const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
-    pub fn new(device: &Device, width: u32, height: u32) -> Self {
+    /// `mipmaps`: the whole chain down to 1 px (built by aurastudio-gpu;
+    /// a third more memory), else the pixels alone.
+    pub fn new(device: &Device, width: u32, height: u32, mipmaps: bool) -> Self {
         let texture = device.create_texture(&TextureDescriptor {
             label:           Some("canvas"),
             size:            Extent3d { width, height, depth_or_array_layers: 1 },
-            // Mipmaps (built by aurastudio-gpu): down to 1 px.
-            mip_level_count: 32 - width.max(height).max(1).leading_zeros(),
+            mip_level_count: if mipmaps { 32 - width.max(height).max(1).leading_zeros() } else { 1 },
             sample_count:    1,
             dimension:       TextureDimension::D2,
             format:          Self::FORMAT,
-            usage:           TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
+            // (COPY_SRC: copied whole into a new texture when the display
+            // quality changes.)
+            usage:           TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC | TextureUsages::RENDER_ATTACHMENT,
             view_formats:    &[],
         });
 
