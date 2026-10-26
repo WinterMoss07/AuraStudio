@@ -425,6 +425,19 @@ impl LayerStack {
         self.insert(Node::Folder(folder))
     }
 
+    /// A new animation folder in group `group` (the view of that group is
+    /// open), else outside any group, whatever the active node is in.
+    pub fn add_animation_folder_in(&mut self, name: &str, group: Option<u64>) -> u64 {
+        let id = self.add_animation_folder(name);
+        match (group, self.group_of(id)) {
+            (Some(g), now) if now != Some(g) => { self.move_node(id, g, crate::Place::Inside); }
+            (None, Some(g)) => { self.move_node(id, g, crate::Place::Above); }
+            _ => {}
+        }
+        self.set_active(id);
+        id
+    }
+
     /// Make frame `n` of animation folder `folder` with its template's
     /// cels; it becomes active. Returns the cel strokes go to.
     /// None if the folder isn't one, or `n` is taken or out of range.
@@ -1024,6 +1037,28 @@ mod group_tests {
         let b = s.add_animation_folder("B");
         let c = s.add_animation_folder("C");
         (s, a, b, c)
+    }
+
+    /// A new folder goes in the group only while the group is open; out of
+    /// it (or from the Layers docker) it is made outside, wherever the
+    /// active folder is.
+    #[test]
+    fn new_folders_leave_a_group_unless_it_is_open() {
+        let (mut s, a, b, _c) = doc();
+        let g = s.group_animation_folders(&[a, b], "Hero").unwrap();
+        s.set_active(a);
+        let out = s.add_animation_folder_in("Out", None);
+        assert_eq!(s.group_of(out), None);
+        assert!(s.columns(None).contains(&Column::Folder(out)));
+        s.set_active(a);
+        let inside = s.add_animation_folder_in("In", Some(g));
+        assert_eq!(s.group_of(inside), Some(g));
+        // Active in the open group, but the group isn't (view closed).
+        s.set_active(inside);
+        let again = s.add_animation_folder_in("Again", None);
+        assert_eq!(s.group_of(again), None);
+        assert_eq!(s.group_members(g).len(), 3);
+        s.check_animation().unwrap();
     }
 
     /// Animation folders go in a group where the topmost was: one entry in

@@ -14,11 +14,16 @@ pub struct Section {
     /// In the process's own memory (RAM), so counted against what the
     /// system says it holds; the GPU's is its own (VRAM, or shared).
     pub cpu:   bool,
+    /// Not parts of a whole: steps in time, each the growth since the last.
+    pub timeline: bool,
     pub lines: Vec<(String, u64)>,
 }
 
 impl Section {
-    pub fn new(title: impl Into<String>, cpu: bool) -> Self { Self { title: title.into(), cpu, lines: Vec::new() } }
+    pub fn new(title: impl Into<String>, cpu: bool) -> Self { Self { title: title.into(), cpu, timeline: false, lines: Vec::new() } }
+
+    /// A section of steps in time (growth by step), counted nowhere.
+    pub fn timeline(title: impl Into<String>) -> Self { Self { title: title.into(), cpu: false, timeline: true, lines: Vec::new() } }
 
     pub fn add(&mut self, name: impl Into<String>, bytes: u64) { self.lines.push((name.into(), bytes)); }
 
@@ -32,6 +37,9 @@ pub struct MemoryReport {
     /// Manager lists) and private bytes (committed, its own).
     pub working_set: Option<u64>,
     pub private:     Option<u64>,
+    /// What the app's own allocations hold now (Rust's heap), counted by
+    /// the allocator: separates its data from the driver's and the system's.
+    pub heap:        Option<u64>,
     pub sections:    Vec<Section>,
 }
 
@@ -42,11 +50,18 @@ impl MemoryReport {
     /// Bytes named in the sections of the process's own memory.
     pub fn accounted(&self) -> u64 { self.sections.iter().filter(|s| s.cpu).map(Section::total).sum() }
 
-    /// What the system holds that no line names (private bytes, else the
-    /// working set, minus the named RAM): where the next look goes.
+    /// Without a heap figure: what the system holds that no line names
+    /// (private bytes, else the working set, minus the named RAM); with it:
+    /// the heap that no line names.
     pub fn not_itemised(&self) -> Option<i64> {
-        let held = self.private.or(self.working_set)?;
+        let held = self.heap.or(self.private).or(self.working_set)?;
         Some(held as i64 - self.accounted() as i64)
+    }
+
+    /// Private bytes outside the Rust heap: the graphics driver, system
+    /// libraries, thread stacks.
+    pub fn outside_heap(&self) -> Option<i64> {
+        Some(self.private? as i64 - self.heap? as i64)
     }
 
     /// The report as text (copied, logged): one line per figure.
@@ -56,14 +71,21 @@ impl MemoryReport {
         s.push_str("Process (the system's figures)\n");
         if let Some(w) = self.working_set { line(&mut s, "working set (Task Manager: Memory)", w); }
         if let Some(p) = self.private { line(&mut s, "private bytes (committed)", p); }
+        if let Some(h) = self.heap { line(&mut s, "Rust heap (the app's own allocations)", h); }
         for sec in &self.sections {
-            s.push_str(&format!("\n{}{}\n", sec.title, if sec.cpu { "" } else { " (graphics memory)" }));
+            let tag = if sec.timeline { " (growth by step)" } else if sec.cpu { "" } else { " (graphics memory)" };
+            s.push_str(&format!("\n{}{tag}\n", sec.title));
             for (name, bytes) in &sec.lines { line(&mut s, name, *bytes); }
-            if sec.lines.len() > 1 { line(&mut s, "total", sec.total()); }
+            if sec.lines.len() > 1 && !sec.timeline { line(&mut s, "total", sec.total()); }
         }
         s.push_str(&format!("\nNamed in RAM: {}\n", mb(self.accounted())));
+        let signed = |d: i64| format!("{}{}", if d < 0 { "-" } else { "" }, mb(d.unsigned_abs()));
         if let Some(d) = self.not_itemised() {
-            s.push_str(&format!("Not itemised (system's figure minus named): {}{}\n", if d < 0 { "-" } else { "" }, mb(d.unsigned_abs())));
+            let what = if self.heap.is_some() { "Rust heap not itemised (heap minus named)" } else { "Not itemised (system's figure minus named)" };
+            s.push_str(&format!("{what}: {}\n", signed(d)));
+        }
+        if let Some(d) = self.outside_heap() {
+            s.push_str(&format!("Outside the Rust heap (private minus heap: driver, system libraries, stacks): {}\n", signed(d)));
         }
         s
     }
@@ -101,12 +123,17 @@ mod tests {
         ram.add("History", 20 << 20);
         let mut vram = Section::new("GPU", false);
         vram.add("canvas", 300 << 20);
-        let r = MemoryReport { working_set: Some(500 << 20), private: Some(400 << 20), sections: vec![ram, vram] };
+        let r = MemoryReport { working_set: Some(500 << 20), private: Some(400 << 20), heap: None, sections: vec![ram, vram] };
         // (The GPU's own memory is not RAM: not counted.)
         assert_eq!(r.accounted(), 120 << 20);
         assert_eq!(r.not_itemised(), Some(280 << 20));
         let t = r.text();
         assert!(t.contains("100.00 MB  Layer 1") && t.contains("graphics memory") && t.contains("Not itemised"), "{t}");
+        // With the heap counted: the gap is the heap's, the rest is outside it.
+        let with_heap = MemoryReport { heap: Some(150 << 20), ..r.clone() };
+        assert_eq!(with_heap.not_itemised(), Some(30 << 20));
+        assert_eq!(with_heap.outside_heap(), Some(250 << 20));
+        assert!(with_heap.text().contains("Outside the Rust heap"));
         // Named more than the system says: shown negative, not hidden.
         let over = MemoryReport { private: Some(10 << 20), sections: vec![{ let mut s = Section::new("x", true); s.add("a", 20 << 20); s }], ..Default::default() };
         assert_eq!(over.not_itemised(), Some(-(10 << 20)));

@@ -124,17 +124,64 @@ pub fn paint(ui: &Ui, icon: Icon, rect: Rect, size: f32, tint: Color32) {
         .paint_at(ui, Rect::from_center_size(rect.center(), vec2(size, size)));
 }
 
-/// A lock, unmistakable either way: locked is a closed lock on a filled
-/// orange chip; locked by a parent, the closed lock in orange alone;
-/// unlocked, an open lock, faint. `rect` is the hit box (about 22 px).
+/// `icon` with a thin stroke (its core): drawn over the icon, a soft
+/// inner glow. Made once per icon from the same SVG.
+fn core_source(icon: Icon) -> ImageSource<'static> {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<Vec<(Icon, ImageSource<'static>)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
+    let mut cache = cache.lock().unwrap();
+    if let Some(x) = cache.iter().find(|x| x.0 == icon) { return x.1.clone(); }
+    let src = match icon.source() {
+        ImageSource::Bytes { uri, bytes } => {
+            let text = String::from_utf8_lossy(bytes.as_ref()).into_owned();
+            let name = uri.rsplit('/').next().unwrap_or("icon.svg").to_owned();
+            let thin = thin_stroke(&text, 0.8);
+            let leaked: &'static [u8] = Box::leak(thin.into_bytes().into_boxed_slice());
+            ImageSource::Bytes { uri: format!("bytes://core/{name}").into(), bytes: egui::load::Bytes::Static(leaked) }
+        }
+        other => other,
+    };
+    cache.push((icon, src.clone()));
+    src
+}
+
+/// `svg` with its stroke-width set to `w`.
+fn thin_stroke(svg: &str, w: f32) -> String {
+    const KEY: &str = "stroke-width=\"";
+    match svg.find(KEY) {
+        Some(i) => {
+            let start = i + KEY.len();
+            let end = start + svg[start..].find('"').unwrap_or(0);
+            format!("{}{w}{}", &svg[..start], &svg[end..])
+        }
+        None => svg.to_owned(),
+    }
+}
+
+/// Draw `icon` in `color` with a soft inner glow: a lighter, thin core
+/// along its strokes. `glow` 0..1 (0.5: felt, not looked at).
+pub fn paint_glow(ui: &Ui, icon: Icon, rect: Rect, size: f32, color: Color32, glow: f32) {
+    paint(ui, icon, rect, size, color);
+    let lift = |c: u8| (c as f32 + (255.0 - c as f32) * 0.65) as u8;
+    let core = Color32::from_rgba_unmultiplied(lift(color.r()), lift(color.g()), lift(color.b()), (glow.clamp(0.0, 1.0) * 150.0 * color.a() as f32 / 255.0) as u8);
+    egui::Image::new(core_source(icon)).tint(core).paint_at(ui, Rect::from_center_size(rect.center(), vec2(size, size)));
+}
+
+/// A lock, unmistakable either way: locked is a closed sky-blue lock
+/// (the clipping chain's blue) with an inner glow and a faint filled
+/// body; locked by a parent, the same, dimmer; unlocked, an open lock,
+/// faint and without glow. `rect` is the hit box (about 22 px).
 pub fn paint_lock(ui: &Ui, rect: Rect, locked: bool, by_parent: bool, hovered: bool, on_accent: bool) {
     use crate::theme;
-    let p = ui.painter();
-    if locked {
-        p.rect_filled(rect.shrink2(vec2(2.0, 3.0)), 3.0, theme::LOCKED);
-        paint(ui, Icon::Lock, rect, 14.0, Color32::from_rgb(0x1d, 0x1d, 0x1f));
-    } else if by_parent {
-        paint(ui, Icon::Lock, rect, 14.0, theme::LOCKED);
+    if locked || by_parent {
+        let k = if locked { 1.0 } else { 0.6 };
+        // The body of the lock (lucide: x 3..21, y 11..22 of 24).
+        let u = 14.0 / 24.0;
+        let c = rect.center();
+        let body = Rect::from_min_max(c + vec2(-9.0 * u + 0.6, 0.6 - u), c + vec2(9.0 * u - 0.6, 10.0 * u - 0.6));
+        ui.painter().rect_filled(body, 1.5, theme::CLIP_BLUE.gamma_multiply(0.18 * k));
+        paint_glow(ui, Icon::Lock, rect, 14.0, theme::CLIP_BLUE.gamma_multiply(k), 0.55 * k);
     } else {
         let tint = if hovered { theme::TEXT_WEAK } else if on_accent { Color32::from_white_alpha(120) } else { theme::TEXT_WEAK.gamma_multiply(0.45) };
         paint(ui, Icon::LockOpen, rect, 14.0, tint);

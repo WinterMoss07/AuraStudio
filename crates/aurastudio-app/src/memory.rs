@@ -9,6 +9,74 @@ use aurastudio_gpu::GpuMemory;
 use aurastudio_layers::Node;
 use aurastudio_ui::{MemoryReport, MemorySection};
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+
+/// The global allocator: Rust's own, counting the bytes alive. Tells the
+/// app's data from the driver's and the system's in the report.
+pub struct Counting;
+
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+// SAFETY: every call goes to the system allocator unchanged; the counter
+// only follows the sizes.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        let p = System.alloc(l);
+        if !p.is_null() { LIVE.fetch_add(l.size(), Ordering::Relaxed); }
+        p
+    }
+    unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+        let p = System.alloc_zeroed(l);
+        if !p.is_null() { LIVE.fetch_add(l.size(), Ordering::Relaxed); }
+        p
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        System.dealloc(p, l);
+        LIVE.fetch_sub(l.size(), Ordering::Relaxed);
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
+        let q = System.realloc(p, l, new);
+        if !q.is_null() {
+            LIVE.fetch_add(new, Ordering::Relaxed);
+            LIVE.fetch_sub(l.size(), Ordering::Relaxed);
+        }
+        q
+    }
+}
+
+/// Bytes the app's allocations hold now.
+pub fn heap_bytes() -> u64 { LIVE.load(Ordering::Relaxed) as u64 }
+
+/// Memory at the steps of the start: (step, private bytes, heap bytes).
+static BOOT: Mutex<Vec<(&'static str, u64, u64)>> = Mutex::new(Vec::new());
+
+/// Note the memory now as step `name` (once per name).
+pub fn mark(name: &'static str) {
+    let mut b = BOOT.lock().unwrap();
+    if b.iter().any(|x| x.0 == name) { return; }
+    b.push((name, process_memory().1.unwrap_or(0), heap_bytes()));
+}
+
+/// The steps as a section: what each added to the private bytes, and to
+/// the heap.
+fn boot_section() -> MemorySection {
+    let b = BOOT.lock().unwrap();
+    let mut sec = MemorySection::timeline("Startup: private bytes added by each step");
+    let (mut prev_p, mut prev_h) = (0u64, 0u64);
+    for (i, (name, p, h)) in b.iter().enumerate() {
+        if i == 0 {
+            sec.add(format!("{name} (the whole start, heap {})", aurastudio_ui::mb(*h)), *p);
+        } else {
+            sec.add(format!("{name} (heap {}{})", if *h >= prev_h { "+" } else { "-" }, aurastudio_ui::mb(h.abs_diff(prev_h))), p.saturating_sub(prev_p));
+        }
+        prev_p = *p;
+        prev_h = *h;
+    }
+    sec
+}
+
 /// (working set, private bytes) of this process, as the system counts.
 #[cfg(windows)]
 pub fn process_memory() -> (Option<u64>, Option<u64>) {
@@ -78,7 +146,8 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>
     buffers.add("merged pieces waiting for the GPU", patches_bytes);
     sections.push(buffers);
     if let Some(g) = gpu { sections.extend(gpu_sections(g)); }
-    MemoryReport { working_set, private, sections }
+    sections.push(boot_section());
+    MemoryReport { working_set, private, heap: Some(heap_bytes()), sections }
 }
 
 /// Print `r` if AURASTUDIO_MEMLOG is set.

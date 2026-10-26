@@ -15,9 +15,13 @@ mod rescue;
 mod shapes;
 mod xform;
 
+#[global_allocator]
+static ALLOC: memory::Counting = memory::Counting;
+
 use winit::event_loop::{ControlFlow, DeviceEvents, EventLoop};
 
 fn main() {
+    memory::mark("program start");
     // Info level by default so the startup log (pen backend, GPU) shows in
     // the console without setting RUST_LOG.
     // wgpu_hal warnings are per-frame driver chatter (e.g. "Suboptimal
@@ -35,7 +39,9 @@ fn main() {
 
     // A crash keeps the work (rescue.rs).
     rescue::install(app::recovery_path());
+    memory::mark("event loop");
     let mut app = app::App::new(event_loop.create_proxy());
+    memory::mark("brushes, document, paint thread");
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| event_loop.run_app(&mut app)));
     match run {
         Ok(r) => { if let Err(e) = r { log::error!("event loop: {e}"); } }

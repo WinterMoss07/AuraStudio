@@ -116,10 +116,12 @@ pub fn new_folder(m: &mut Model, a: &mut Actions) {
 
 /// A new animation folder (Animation documents), the Cel template docker
 /// shown.
-pub fn new_animation_folder(m: &mut Model, a: &mut Actions) {
+/// `group`: the group the Animation panel has open, else it is made
+/// outside any group.
+pub fn new_animation_folder(m: &mut Model, a: &mut Actions, group: Option<u64>) {
     if m.doc_kind != aurastudio_document::Kind::Animation { return; }
     let n = m.layers.rows().iter().filter(|r| r.animation).count() + 1;
-    m.layers.add_animation_folder(&format!("Animation {n}"));
+    m.layers.add_animation_folder_in(&format!("Animation {n}"), group);
     a.recomposite = true;
     a.layer_edit = Some("New animation folder");
     a.show_docker = Some(super::Tab::CelTemplate);
@@ -131,7 +133,7 @@ pub fn special_folder_entries(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     use aurastudio_document::Kind;
     let anim = m.doc_kind == Kind::Animation;
     let b = ui.add_enabled(anim, egui::Button::new("Animation folder")).on_disabled_hover_text("Animation documents only");
-    if b.clicked() { new_animation_folder(m, a); ui.close_menu(); }
+    if b.clicked() { new_animation_folder(m, a, None); ui.close_menu(); }
     ui.add_enabled(false, egui::Button::new("Camera folder"))
         .on_disabled_hover_text(if anim { "Coming with the camera" } else { "Animation documents only" });
     ui.add_enabled(false, egui::Button::new("Comics folder"))
@@ -420,15 +422,20 @@ fn label_color(label: u8) -> Option<Color32> {
 struct LayerDrag(u64);
 
 /// Clipped layers' chain (sky blue).
-const CHAIN: Color32 = Color32::from_rgb(110, 200, 255);
+const CHAIN: Color32 = crate::theme::CLIP_BLUE;
 
 /// Two links of a chain, upright around `c`: half on the clipped row,
 /// half on the one under it.
 fn chain(p: &egui::Painter, c: egui::Pos2) {
     p.rect_filled(Rect::from_center_size(c, vec2(11.0, 21.0)), 2.5, Color32::from_black_alpha(150));
     let s = Stroke::new(1.7_f32, CHAIN);
+    // Inner glow: a faint fill and a lighter thin line just inside.
+    let core = Stroke::new(0.8_f32, Color32::from_rgba_unmultiplied(220, 244, 255, 90));
     for dy in [-4.5, 4.5] {
-        p.rect_stroke(Rect::from_center_size(c + vec2(0.0, dy), vec2(6.5, 10.5)), 2.0, s);
+        let link = Rect::from_center_size(c + vec2(0.0, dy), vec2(6.5, 10.5));
+        p.rect_filled(link, 2.0, CHAIN.gamma_multiply(0.16));
+        p.rect_stroke(link, 2.0, s);
+        p.rect_stroke(link.shrink(1.3), 1.0, core);
     }
 }
 

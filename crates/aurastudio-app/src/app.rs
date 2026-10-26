@@ -2460,6 +2460,7 @@ impl ApplicationHandler<AppEvent> for App {
             let due = self.last_frame.map_or(now, |t| t + interval);
             if now >= due {
                 self.render_frame();
+                crate::memory::mark("first frame drawn");
             } else {
                 self.deferred_frame = Some(self.deferred_frame.map_or(due, |t| t.min(due)));
             }
@@ -2488,6 +2489,7 @@ impl ApplicationHandler<AppEvent> for App {
         }
 
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        crate::memory::mark("window");
         let size   = {
             let d = self.doc.lock().unwrap();
             (d.layers.width, d.layers.height)
@@ -2513,6 +2515,7 @@ impl ApplicationHandler<AppEvent> for App {
                 return;
             }
         };
+        crate::memory::mark("graphics device");
         self.renderer = gpu.backend().name().to_string();
         log::info!("graphics: {}", self.renderer);
         gpu.clear_color = aurastudio_ui::theme::backdrop_rgb();
@@ -2544,6 +2547,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.refresh_dpi("startup");
         self.refresh_display_profile();
         self.refresh_home();
+        crate::memory::mark("settings and start screen");
         self.offer_recovery();
         if let Some(path) = self.open_arg.take() { self.open_path(&path); }
     }

@@ -258,7 +258,11 @@ pub fn icon_toggle(ui: &mut Ui, icon: Icon, tooltip: &str, enabled: bool, on: bo
         ui.painter().rect_filled(rect, 2.5, theme::WIDGET_HOVER);
     }
     let col = if !enabled { theme::TEXT_WEAK.gamma_multiply(0.45) } else if on { theme::TEXT } else { Color32::from_gray(0xc8) };
-    crate::icons::paint(ui, icon, rect, 14.0, col);
+    if icon == Icon::Clip && on && enabled {
+        crate::icons::paint_glow(ui, icon, rect, 14.0, theme::CLIP_BLUE, 0.55);
+    } else {
+        crate::icons::paint(ui, icon, rect, 14.0, col);
+    }
     resp
 }
 

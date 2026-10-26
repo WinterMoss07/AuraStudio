@@ -279,7 +279,7 @@ fn controls(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
         }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            if icon_button(ui, Icon::Film, "New animation folder", true) { crate::dockers::layers::new_animation_folder(m, a); }
+            if icon_button(ui, Icon::Film, "New animation folder", true) { crate::dockers::layers::new_animation_folder(m, a, st.group); }
             icon_button(ui, Icon::Camera, "New camera folder (coming)", false);
         });
         ui.horizontal(|ui| {
@@ -359,7 +359,10 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     if resp.hovered() {
         let (d, shift) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.shift));
         let along = if d.y != 0.0 { -d.y } else { -d.x };
-        if shift { st.scroll.y += along; } else { st.scroll.x += along; }
+        // Over the folders' headers the wheel goes through the folders,
+        // over the cells through time (Shift: the other way round).
+        let on_heads = ui.input(|i| i.pointer.hover_pos()).is_some_and(|q| layer_head.contains(q));
+        if shift != on_heads { st.scroll.y += along; } else { st.scroll.x += along; }
     }
     let span = if st.vertical { cells.height() } else { cells.width() };
     let across = if st.vertical { cells.width() } else { cells.height() };

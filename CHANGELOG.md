@@ -3,6 +3,24 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.14.4 — 2026-10-26
+
+**Fixes**
+- A new animation folder is made inside a group only while the Animation panel
+  has that group open; out of it (or from the Layers docker) it is made outside.
+- The mouse wheel over the folders' headers (timeline and X-sheet) goes through
+  the folders; over the cells it still goes through time. Shift swaps them.
+
+**Look**
+- Locks are the clipping chain's sky blue (no more orange chip); the closed lock,
+  the clipping chain and the Clip button have a soft inner glow.
+
+**Tools**
+- Memory report: the app's own heap is counted (allocator), so the gap is split
+  between "Rust heap not itemised" and "outside the Rust heap" (driver, system
+  libraries, stacks); the start is measured step by step (brushes, window,
+  graphics device, first frame).
+
 ## 0.14.3 — 2026-10-26
 
 **Animation: names and structure**

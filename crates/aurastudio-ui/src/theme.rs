@@ -24,7 +24,8 @@ pub const ACCENT:       Color32 = Color32::from_rgb(0x72, 0x5e, 0xea);
 /// 45 % of it over the panel gray.
 pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x49, 0x40, 0x80);
 /// A locked layer, folder or cel.
-pub const LOCKED:       Color32 = Color32::from_rgb(0xe0, 0x8f, 0x2e);
+/// Clipping chain and locks: one sky blue (with an inner glow).
+pub const CLIP_BLUE:    Color32 = Color32::from_rgb(110, 200, 255);
 /// Where a dragged item would land (CSP: a thin red line).
 pub const DROP:         Color32 = Color32::from_rgb(0xe5, 0x48, 0x4d);
 pub const TEXT:         Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
