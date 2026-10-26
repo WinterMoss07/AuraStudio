@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use aurastudio_canvas::{BlendMode, TILE};
 use aurastudio_document::{DocId, Document, History, Kind, SavedStep, DEFAULT_BUDGET};
 use aurastudio_filters::Filter;
-use aurastudio_layers::{Anim, FilterLayer, Folder, FolderBlend, FolderKind, Layer, LayerStack, Node, Props, SubCel, Tiles, LABELS, TILE_BYTES};
+use aurastudio_layers::{Anim, FilterLayer, Folder, FolderBlend, FolderKind, Layer, LayerStack, Node, Props, Cel, Tiles, LABELS, TILE_BYTES};
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 
@@ -83,6 +83,9 @@ enum NodeJson {
         /// A frame of one: its number.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         frame: Option<u32>,
+        /// Animation folders put together.
+        #[serde(default, skip_serializing_if = "is_false")]
+        group: bool,
     },
     Filter {
         id: u64, name: String, visible: bool, opacity: f32, locked: bool,
@@ -113,19 +116,21 @@ fn first_frame() -> u32 { 1 }
 
 fn is_first_frame(n: &u32) -> bool { *n == 1 }
 
-/// An animation folder's template and chosen sub-cel.
+/// An animation folder's template and chosen cel.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct AnimJson {
-    template: Vec<SubCelJson>,
-    #[serde(default)]
-    sub:      usize,
+    template: Vec<CelJson>,
+    #[serde(default, rename = "cel", alias = "sub")]
+    cel:      usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-struct SubCelJson {
+struct CelJson {
     name:    String,
     #[serde(default, skip_serializing_if = "is_false")]
     colo:    bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    reference: bool,
     #[serde(default = "yes")]
     visible: bool,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -138,14 +143,14 @@ fn yes() -> bool { true }
 
 impl AnimJson {
     fn of(a: &Anim) -> Self {
-        let template = a.template.iter().map(|t| SubCelJson { name: t.name.clone(), colo: t.colo, visible: t.visible, locked: t.locked, onion: t.onion }).collect();
-        Self { template, sub: a.sub }
+        let template = a.template.iter().map(|t| CelJson { name: t.name.clone(), colo: t.colo, reference: t.reference, visible: t.visible, locked: t.locked, onion: t.onion }).collect();
+        Self { template, cel: a.cel }
     }
 
     fn anim(self) -> Anim {
-        let template: Vec<SubCel> = self.template.into_iter().map(|t| SubCel { name: t.name, colo: t.colo, visible: t.visible, locked: t.locked, onion: t.onion }).collect();
-        let sub = self.sub.min(template.len().saturating_sub(1));
-        Anim { template, sub }
+        let template: Vec<Cel> = self.template.into_iter().map(|t| Cel { name: t.name, colo: t.colo, reference: t.reference, visible: t.visible, locked: t.locked, onion: t.onion }).collect();
+        let cel = self.cel.min(template.len().saturating_sub(1));
+        Anim { template, cel }
     }
 }
 
@@ -233,6 +238,7 @@ pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
                 props: PropsJson::of(f.props),
                 animation: f.anim().map(AnimJson::of),
                 frame: f.frame(),
+                group: f.kind == FolderKind::Group,
             },
             Node::Filter(f) => NodeJson::Filter {
                 id: f.id, name: f.name.clone(), visible: f.visible, opacity: f.opacity, locked: f.locked,
@@ -369,11 +375,12 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
                 }
                 Node::Layer(Layer { id, name, visible, opacity: opacity.clamp(0.0, 1.0), blend: blend_from(&blend), locked, props: props.props(), ..layer })
             }
-            NodeJson::Folder { id, name, visible, opacity, blend, locked, collapsed, children, props, animation, frame } => Node::Folder(Folder {
-                kind: match (animation, frame) {
-                    (Some(a), None) => FolderKind::Animation(a.anim()),
-                    (None, Some(n)) if (1..=aurastudio_layers::anim::MAX_FRAME).contains(&n) => FolderKind::Frame(n),
-                    (None, None) => FolderKind::Plain,
+            NodeJson::Folder { id, name, visible, opacity, blend, locked, collapsed, children, props, animation, frame, group } => Node::Folder(Folder {
+                kind: match (animation, frame, group) {
+                    (Some(a), None, false) => FolderKind::Animation(a.anim()),
+                    (None, Some(n), false) if (1..=aurastudio_layers::anim::MAX_FRAME).contains(&n) => FolderKind::Frame(n),
+                    (None, None, true) => FolderKind::Group,
+                    (None, None, false) => FolderKind::Plain,
                     _ => return Err("damaged file (a folder's animation)".into()),
                 },
                 id, name, visible, opacity: opacity.clamp(0.0, 1.0),
@@ -854,8 +861,8 @@ mod tests {
         assert!(read(buf, DocId(1), "x", 64).is_err());
     }
 
-    /// Animation folders come back: template, chosen sub-cel, frames with
-    /// their sub-cels and pixels, the current frame; such a file says
+    /// Animation folders come back: template, chosen cel, frames with
+    /// their cels and pixels, the current frame; such a file says
     /// version 4, others still 3.
     #[test]
     fn animation_folders_come_back() {
@@ -863,12 +870,12 @@ mod tests {
         doc.kind = Kind::Animation;
         assert_eq!(snapshot(&doc, None).json.version, PLAIN_VERSION);
         let a = doc.layers.add_animation_folder("Perso A");
-        doc.layers.add_sub(a, 1, SubCel { locked: true, ..SubCel::new("Layout", false) });
-        doc.layers.set_sub(a, 2);
+        doc.layers.add_cel(a, 1, Cel { locked: true, ..Cel::new("Layout", false) });
+        doc.layers.set_cel(a, 2);
         for n in [1, 4] {
             doc.layers.set_time(n);
-            let sub = doc.begin_paint().unwrap();
-            paint(&mut doc, sub, (n * 5, 5, n * 5 + 10, 20), [n as u8 * 40, 0, 0, 255]);
+            let cel = doc.begin_paint().unwrap();
+            paint(&mut doc, cel, (n * 5, 5, n * 5 + 10, 20), [n as u8 * 40, 0, 0, 255]);
         }
         doc.layers.set_time(3);
         doc.layers.check_animation().unwrap();
@@ -886,6 +893,55 @@ mod tests {
         describe(&doc.layers.root, &mut y);
         assert_eq!(x, y);
         assert_eq!(back.layers.composite_rect((0, 0, 64, 48)), doc.layers.composite_rect((0, 0, 64, 48)));
+    }
+
+    /// Groups (with the folders in them) and the cel marked as the
+    /// reference come back; a file from before, where the chosen cel was
+    /// called "sub", still opens on the same cel.
+    #[test]
+    fn groups_and_cel_references_come_back() {
+        let mut doc = Document::new(DocId(1), "g", 64, 48);
+        doc.kind = Kind::Animation;
+        let a = doc.layers.add_animation_folder("A");
+        let b = doc.layers.add_animation_folder("B");
+        let c = doc.layers.add_animation_folder("C");
+        let g = doc.layers.group_animation_folders(&[a, b], "Chars").unwrap();
+        // The reference moves to the Douga; the chosen cel is the Genga.
+        doc.layers.set_cel_reference(c, 2, true);
+        doc.layers.set_cel(c, 3);
+        doc.layers.check_animation().unwrap();
+        assert_eq!(doc.layers.group_of(a), Some(g));
+        let back = roundtrip(&doc).doc;
+        back.layers.check_animation().unwrap();
+        assert_eq!(back.layers.columns(None), doc.layers.columns(None));
+        assert_eq!(back.layers.group_members(g), doc.layers.group_members(g));
+        assert_eq!(back.layers.group_of(b), Some(g));
+        assert_eq!(back.layers.anim(c), doc.layers.anim(c));
+        assert!(back.layers.anim(c).unwrap().template[2].reference);
+        assert_eq!(back.layers.anim(c).unwrap().cel, 3);
+        // An older file: "sub" where "cel" is.
+        fn rename(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(o) => {
+                    if o.contains_key("template") {
+                        if let Some(x) = o.remove("cel") { o.insert("sub".into(), x); }
+                    }
+                    o.values_mut().for_each(rename);
+                }
+                serde_json::Value::Array(a) => a.iter_mut().for_each(rename),
+                _ => {}
+            }
+        }
+        let mut snap = snapshot(&doc, None);
+        let mut json = serde_json::to_value(&snap.json).unwrap();
+        rename(&mut json);
+        assert!(json.to_string().contains("\"sub\""));
+        snap.json = serde_json::from_value(json).unwrap();
+        let mut buf = io::Cursor::new(Vec::new());
+        write(&snap, &mut buf).unwrap();
+        buf.set_position(0);
+        let old = read(buf, DocId(3), "t", 16384).unwrap().doc;
+        assert_eq!(old.layers.anim(c).unwrap().cel, 3);
     }
 
     /// The document type comes back; files from before it open as

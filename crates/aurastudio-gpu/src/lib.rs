@@ -129,6 +129,74 @@ pub struct GpuState {
 
 pub use lift::GRID as LIFT_GRID;
 
+/// What the graphics side holds, itemised for the memory report (bytes).
+#[derive(Clone, Debug, Default)]
+pub struct GpuMemory {
+    /// The graphics API in use.
+    pub backend:     String,
+    /// Resources whose size is known from what they were made as; "~" in
+    /// the name: an estimate.
+    pub known:       Vec<(String, u64)>,
+    /// egui's textures (fonts, icons, thumbnails): name, bytes.
+    pub egui:        Vec<(String, u64)>,
+    /// The driver memory allocator's own count (Vulkan, DirectX 12): bytes
+    /// given to resources, and reserved from the device. None: the API
+    /// does not say.
+    pub allocated:   Option<u64>,
+    pub reserved:    Option<u64>,
+    /// The allocations it lists, biggest first.
+    pub allocations: Vec<(String, u64)>,
+}
+
+/// Bytes of a 2D RGBA8 texture of `w` x `h` with all its mip levels.
+fn mipped_bytes(w: u32, h: u32) -> u64 {
+    let (mut w, mut h, mut total) = (w.max(1) as u64, h.max(1) as u64, 0u64);
+    loop {
+        total += w * h * 4;
+        if w == 1 && h == 1 { return total; }
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+}
+
+impl GpuState {
+    /// Itemise what the GPU holds (for Window > Memory report).
+    pub fn memory(&self) -> GpuMemory {
+        let mut m = GpuMemory { backend: format!("{:?}", self.backend), ..Default::default() };
+        let (w, h) = (self.canvas.width, self.canvas.height);
+        m.known.push((format!("canvas texture {w}x{h} with mipmaps"), mipped_bytes(w, h)));
+        let lut = self.lut.size as u64;
+        m.known.push((format!("display lookup table {lut}^3"), lut * lut * lut * 8));
+        m.known.push((format!("~swapchain {}x{} (3 images)", self.config.width, self.config.height), self.config.width as u64 * self.config.height as u64 * 4 * 3));
+        let tex = self.egui_ctx.tex_manager();
+        let tex = tex.read();
+        for (_, meta) in tex.allocated() { m.egui.push((meta.name.clone(), meta.bytes_used() as u64)); }
+        m.egui.sort_by_key(|x| std::cmp::Reverse(x.1));
+        if let Some(r) = self.device.generate_allocator_report() {
+            m.allocated = Some(r.total_allocated_bytes);
+            m.reserved = Some(r.total_reserved_bytes);
+            m.allocations = r.allocations.into_iter().map(|a| (a.name, a.size)).collect();
+            m.allocations.sort_by_key(|x| std::cmp::Reverse(x.1));
+        }
+        m
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::mipped_bytes;
+
+    #[test]
+    fn mip_chain_is_a_third_bigger() {
+        assert_eq!(mipped_bytes(1, 1), 4);
+        assert_eq!(mipped_bytes(2, 2), 16 + 4);
+        assert_eq!(mipped_bytes(4, 2), 32 + 8 + 4);
+        let full = 4096u64 * 4096 * 4;
+        let all = mipped_bytes(4096, 4096);
+        assert!(all > full && all < full * 4 / 3 + 64, "{all}");
+    }
+}
+
 impl GpuState {
     /// `canvas_size`: initial canvas width and height in pixels. The
     /// graphics API `prefer`, else the next one that runs (Vulkan, DirectX

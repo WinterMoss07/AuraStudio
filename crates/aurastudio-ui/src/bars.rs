@@ -137,7 +137,7 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                 });
                 ui.menu_button("Window", |ui| {
                     // Each docker, checked when shown.
-                    for tab in Tab::ALL {
+                    for tab in Tab::ALL.into_iter().filter(|t| *t != Tab::CelTemplate) {
                         let mut on = dockers::is_shown(&state.dock, tab);
                         if ui.checkbox(&mut on, tab.title()).changed() { dockers::set_shown(&mut state.dock, tab, on); }
                     }
@@ -148,6 +148,12 @@ pub fn menu_bar(ctx: &egui::Context, state: &mut UiState, m: &mut Model, a: &mut
                     if ui.add_enabled(anim, egui::Checkbox::new(&mut on, "Animation (X-sheet / timeline)")).on_disabled_hover_text("Animation documents only").changed() {
                         state.anim.open = on;
                     }
+                    // (The Cel template goes with the timeline and the X-sheet.)
+                    let mut on = dockers::is_shown(&state.dock, Tab::CelTemplate);
+                    if ui.checkbox(&mut on, Tab::CelTemplate.title()).changed() { dockers::set_shown(&mut state.dock, Tab::CelTemplate, on); }
+                    ui.separator();
+                    ui.checkbox(&mut state.memory_open, "Memory report")
+                        .on_hover_text("Every megabyte the app holds, by name, to compare with Task Manager");
                     ui.separator();
                     if ui.button("Reset docks").clicked() {
                         state.dock = dockers::default_dock();

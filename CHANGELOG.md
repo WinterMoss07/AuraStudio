@@ -3,6 +3,53 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.14.3 — 2026-10-26
+
+**Animation: names and structure**
+- One vocabulary everywhere: Group → Folder → Frame → Cel ("sub-cel" is gone).
+- Groups gather animation folders (organisation only, no nesting): one column
+  in the timeline / X-sheet, a double click opens it (its folders alone, "Back"
+  to leave). Right click: "Group animation folders" (Animation), "Group layers
+  into folder" (Illustration). Folders are picked in the Animation panel and the
+  Layers docker (Ctrl / Shift), dragged to reorder, into a group, out of it (on
+  "Back"). The group / ungroup button of the Layers docker is gone.
+- New Animation documents start with an animation folder (default template:
+  Colo, Ink, Douga, Genga, top to bottom) above the locked Paper.
+- Every folder is made collapsed (layers, animation folders, groups, new frames).
+- Folders show "x frames - x cels" once; the cel count per frame is gone.
+
+**Cel template docker**
+- Drag and drop replaces the up / down arrows; the order is the Layers docker's.
+- A cel can be marked Reference (the Ink by default), for every frame.
+- Deleting a cel asks first when drawings would go: "Delete cel Ink: 14 frames,
+  11 contain a drawing", Cancel by default (Enter / Escape).
+- Window menu: the Cel template sits with the Animation panel.
+
+**Animation panel**
+- Frames are picked in one folder (click, Shift range, Ctrl add, a box on empty
+  cells) and moved together; Ctrl + drag copies; one undo step.
+- The Timeline / X-sheet switch is a labelled button with the circle-arrows icon.
+- Right click on a frame no longer opens a one-letter-wide menu that flickers
+  away (it read the pointer, now on the menu).
+- Locked and unlocked are told apart everywhere (orange filled lock).
+
+**Reference**
+- Greyed out on animation folders and frames (set on the Ink cel, in the
+  template). In Illustration a folder can be the reference: only its visible
+  pixels count, one reference per level.
+
+**Delete**
+- Suppr over the Layers docker or the Animation panel deletes the frames /
+  folders picked there; over the canvas it still clears the layer.
+- A frame or folder with a locked cel could not be deleted (the cels' locks of
+  "Apply to folder" counted); only its own locks count now.
+
+**Tools**
+- Window > Memory report: every megabyte named (tiles by layer, history,
+  selection, buffers, GPU textures, the driver's allocator) next to the system's
+  figures (working set, private bytes) and what no line names. AURASTUDIO_MEMLOG=1
+  prints it to the console.
+
 ## 0.14.2 — 2026-10-20
 
 **Look**

@@ -98,6 +98,9 @@ Geometry, Selection, Transform.
   (paper sizes; HD to 8K and the DCI 2K / 4K cinema sizes, flat and
   scope; manga B4 / A4 / B5 / B6 manuscripts at 600 dpi, US comic with
   bleed, BD album, webtoon), units px / mm / cm / in, orientation.
+- **Memory report** (Window > Memory report): every megabyte the app
+  holds, by name (tiles by layer, history, GPU textures, the driver's
+  allocator), beside the system's figures; Copy to paste it.
 - **Document types**: the tab a document is made from is its type
   (Illustration, Animation, Comics), kept in the file and shown in the
   menu bar. It turns features on or off, the interface stays the same:
@@ -110,12 +113,17 @@ Geometry, Selection, Transform.
   template inside it: genga, douga, ink, colo by default. One undo step
   takes the frame and its first stroke away together. A frame shows until
   the next one drawn (hold); before the first one, nothing. Strokes go to
-  the sub-cel chosen in the **Cel template** docker (the same one in every
+  the cel chosen in the **Cel template** docker (the same one in every
   frame); its eye and lock are the frame's, and **Apply to folder** gives
-  every frame (and those to come) these states. The template: add, remove,
-  move, rename (double click) a sub-cel, in every frame at once. The
-  layer list shows the folder and its frames (a click on a frame goes to
-  it), never the sub-cels. Nothing else goes into an animation folder;
+  every frame (and those to come) these states. The template (listed like
+  the Layers docker, each new cel on top): add, remove (with a question
+  when drawings would go), drag to move, rename (double click) a cel, mark
+  the reference one, in every frame at once. The layer list shows the
+  folder and its frames (a click on a frame goes to it), never the cels.
+  The vocabulary: **Group → Folder → Frame → Cel**. A **group** gathers
+  animation folders (organisation only, no nesting): right click >
+  Group animation folders; one column in the timeline, a double click
+  opens it. Nothing else goes into an animation folder;
   frames stay in theirs. `,` / `.`: previous / next frame. Camera and
   comics folders are listed, grayed out until they come.
 - **Animation panel** (Animation documents; Window > Animation): the
@@ -125,8 +133,9 @@ Geometry, Selection, Transform.
   rename), one cell per frame: a drawn frame is a filled cell, a hold a
   line until the next one; the current frame lit; lines every 6 frames
   and every second. A click goes to a frame (on a cell: that folder too),
-  a drag on the frame numbers or an empty cell scrubs. **Drag a drawn
-  frame** to move it, **Ctrl + drag** to copy it; onto a drawn frame, a
+  a drag on the frame numbers scrubs; a drag on empty cells draws a box
+  that picks frames (also Shift range, Ctrl add; one folder at a time). **Drag the frames
+  picked** to move them, **Ctrl + drag** to copy them; onto a drawn frame, a
   question: replace it, swap them (moves), or cancel (the default).
   **Insert / remove a frame** (buttons, or a right click on a cell): the
   next frames move one later / earlier and are renamed; delete a

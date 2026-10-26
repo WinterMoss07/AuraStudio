@@ -3,6 +3,7 @@
 
 pub mod theme;
 mod animation;
+mod memory;
 mod bars;
 mod stroke_preview;
 mod dock_layout;
@@ -26,6 +27,7 @@ pub use aurastudio_canvas::BlendMode;
 pub use dockers::Tab;
 pub use dockers::layers::LayerCmd;
 pub use filters::FilterAction;
+pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
 pub use tools::{Group, Loupe, Overlay, PickerOptions, SelectCmd, SelectOptions, LOUPE_SIDE, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
@@ -211,9 +213,15 @@ pub struct UiState {
     notice:        Notice,
     color:         dockers::color::ColorState,
     layers:        dockers::layers::LayersState,
+    /// Window > Memory report: shown, and the last measure (the app takes
+    /// one each second while it is shown).
+    memory_open:   bool,
+    memory:        Option<memory::MemoryReport>,
+    /// Where the pointer was in the last frame (the Delete key goes by it).
+    pointer:       Option<egui::Pos2>,
     tool_list:     dockers::tool_list::ToolListState,
-    /// Cel template docker: the sub-cel being renamed.
-    cel_rename:    Option<(usize, String, bool)>,
+    /// Cel template docker: the cel being renamed, a deletion asked.
+    cel:           dockers::cel_template::CelState,
     /// The Animation panel (X-sheet / timeline).
     pub anim:      animation::AnimPanel,
     /// The open filter dialog.
@@ -243,8 +251,11 @@ impl UiState {
             notice:        Notice::default(),
             color:         Default::default(),
             layers:        Default::default(),
+            memory_open:   false,
+            memory:        None,
+            pointer:       None,
             tool_list:     Default::default(),
-            cel_rename:    None,
+            cel:           Default::default(),
             anim:          Default::default(),
             filter:        None,
             prefs_open:    None,
@@ -278,8 +289,30 @@ impl UiState {
     }
 
     /// A dialog is waiting for an answer (the canvas ignores the pen).
+    /// The Delete key: over the Layers docker or the Animation panel it
+    /// deletes what is picked there (nodes, frames) at the next frame, and
+    /// this says true. False: the canvas's (clear the layer).
+    pub fn delete_key(&mut self) -> bool {
+        let Some(p) = self.pointer else { return false };
+        if self.anim.rect.is_some_and(|r| r.contains(p)) {
+            self.anim.delete_req = true;
+            true
+        } else if self.layers.rect.is_some_and(|r| r.contains(p)) {
+            self.layers.delete_req = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The memory report window is open: the app should measure.
+    pub fn memory_wanted(&self) -> bool { self.memory_open }
+
+    /// The latest measure, for the window.
+    pub fn set_memory(&mut self, r: MemoryReport) { self.memory = Some(r); }
+
     pub fn has_dialog(&self) -> bool {
-        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some() || self.select_dialog.is_some() || self.anim.is_asking()
+        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some() || self.select_dialog.is_some() || self.anim.is_asking() || self.cel.is_asking()
     }
 
     /// The layers chosen in the Layers docker (several with Ctrl / Shift;
@@ -346,6 +379,10 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
         state.theme_applied = true;
     }
     state.layers.refresh_thumbnails(ctx, model.layers);
+    // (Drawn again below if shown: the Delete key goes by where they are.)
+    state.pointer = ctx.pointer_latest_pos();
+    state.layers.rect = None;
+    state.anim.rect = None;
 
     bars::menu_bar(ctx, state, model, actions);
     bars::toolbar(ctx, &mut state.notice, model, actions);
@@ -373,7 +410,7 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
                 color:  &mut state.color,
                 layers: &mut state.layers,
                 tool_list: &mut state.tool_list,
-                cel_rename: &mut state.cel_rename,
+                cel: &mut state.cel,
                 notice: &mut state.notice,
                 m:      model,
                 a:      actions,
@@ -396,8 +433,10 @@ pub fn show(ctx: &egui::Context, state: &mut UiState, model: &mut Model, actions
     // The Animation panel (Animation documents): under the canvas or
     // beside the dockers.
     if state.anim.open && !model.home && model.doc_kind == aurastudio_document::Kind::Animation {
-        animation::panel(ctx, &mut state.anim, model, actions);
+        animation::panel(ctx, &mut state.anim, &mut state.layers, &mut state.notice, model, actions);
     }
+
+    memory::window(ctx, &mut state.memory_open, state.memory.as_ref());
 
     if let Some(card) = canvas_card(ctx, model) {
         if model.home {

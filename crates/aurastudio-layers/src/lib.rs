@@ -13,7 +13,7 @@ mod tree;
 use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
 use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
 
-pub use anim::{Anim, FolderKind, Onto, Shift, SubCel, Target};
+pub use anim::{Anim, Cel, Column, FolderKind, Onto, Shift, Target};
 pub use compose::Pick;
 pub use tree::TreeState;
 pub use fill::{flood, flood_with, similar_with, FillParams, Refer};
@@ -210,7 +210,9 @@ pub struct Row {
     pub below:     Option<u64>,
     /// An animation folder.
     pub animation: bool,
-    /// A frame of one (its number): one row, its sub-cels not listed.
+    /// A group of animation folders.
+    pub group:     bool,
+    /// A frame of one (its number): one row, its cels not listed.
     pub frame:     Option<u32>,
 }
 
@@ -426,7 +428,7 @@ impl LayerStack {
 
     pub fn active_id(&self) -> u64 { self.active }
 
-    /// Make `id` active (a sub-cel: its frame, a row of the list).
+    /// Make `id` active (a cel: its frame, a row of the list).
     pub fn set_active(&mut self, id: u64) {
         if self.path(id).is_none() { return; }
         self.active = match self.anim_of(id) { Some((_, Some(frame))) => frame, _ => id };
@@ -493,15 +495,25 @@ impl LayerStack {
 
     /// Where a new node goes: right above the active node in the same
     /// folder, or at the top inside the active folder.
-    fn insert_point(&mut self) -> (Path, usize) {
+    fn insert_point(&mut self, animation: bool) -> (Path, usize) {
         // Never into an animation folder (only its frames are there): right
         // above it.
         if let Some((folder, _)) = self.anim_of(self.active) {
             let path = self.path(folder).expect("folder exists");
             let (last, parent) = path.split_last().unwrap();
+            // Out of its group too, unless what comes is an animation
+            // folder (a group holds only those).
+            if !animation && self.in_group(folder) {
+                return (parent[..parent.len() - 1].to_vec(), parent[parent.len() - 1] + 1);
+            }
             return (parent.to_vec(), last + 1);
         }
         let path = self.path(self.active).expect("active node exists");
+        let active_group = matches!(self.active_node(), Node::Folder(f) if f.kind == FolderKind::Group);
+        if active_group && !animation {
+            let (last, parent) = path.split_last().unwrap();
+            return (parent.to_vec(), last + 1);
+        }
         if let Node::Folder(f) = self.active_node_mut() {
             f.collapsed = false;
             let len = f.children.len();
@@ -511,9 +523,24 @@ impl LayerStack {
         (parent.to_vec(), last + 1)
     }
 
+    /// `id` sits directly in a group.
+    pub fn in_group(&self, id: u64) -> bool {
+        let Some(path) = self.path(id) else { return false };
+        let mut nodes = &self.root;
+        let mut parent_is_group = false;
+        for (k, &i) in path.iter().enumerate() {
+            if k + 1 == path.len() { break; }
+            match &nodes[i] {
+                Node::Folder(f) => { parent_is_group = f.kind == FolderKind::Group; nodes = &f.children; }
+                _ => return false,
+            }
+        }
+        parent_is_group
+    }
+
     fn insert(&mut self, node: Node) -> u64 {
         let id = node.id();
-        let (parent, index) = self.insert_point();
+        let (parent, index) = self.insert_point(node.is_animation());
         siblings_mut(&mut self.root, &parent).insert(index, node);
         self.active = id;
         self.settle();
@@ -535,7 +562,8 @@ impl LayerStack {
             opacity: 1.0,
             blend: FolderBlend::PassThrough,
             locked: false,
-            collapsed: false,
+            // Folders start folded: a long list stays readable.
+            collapsed: true,
             children: Vec::new(),
             props: Props::default(),
             kind: FolderKind::Plain,
@@ -561,8 +589,8 @@ impl LayerStack {
     /// Put the active node into a new folder in its place (Ctrl+G), the
     /// folder active. Returns its id.
     pub fn group_active(&mut self, name: &str) -> u64 {
-        // (Frames stay in their animation folder.)
-        if self.is_anim_part(self.active) { return self.active; }
+        // (Frames stay in their animation folder, animation folders in their group.)
+        if self.is_anim_part(self.active) || self.in_group(self.active) { return self.active; }
         let path = self.path(self.active).expect("active node exists");
         let (last, parent) = path.split_last().unwrap();
         let siblings = siblings_mut(&mut self.root, parent);
@@ -570,7 +598,7 @@ impl LayerStack {
         let id = self.new_id();
         let folder = Folder {
             id, name: name.into(), visible: true, opacity: 1.0, blend: FolderBlend::PassThrough,
-            locked: false, collapsed: false, children: vec![node], props: Props::default(), kind: FolderKind::Plain,
+            locked: false, collapsed: true, children: vec![node], props: Props::default(), kind: FolderKind::Plain,
         };
         siblings_mut(&mut self.root, parent).insert(*last, Node::Folder(folder));
         self.active = id;
@@ -586,7 +614,7 @@ impl LayerStack {
         let (last, parent) = path.split_last().unwrap();
         let siblings = siblings_mut(&mut self.root, parent);
         // (An animation folder's frames only live in it.)
-        if !matches!(&siblings[*last], Node::Folder(f) if f.kind == FolderKind::Plain) { return false; }
+        if !matches!(&siblings[*last], Node::Folder(f) if matches!(f.kind, FolderKind::Plain | FolderKind::Group)) { return false; }
         let Node::Folder(f) = siblings.remove(*last) else { unreachable!() };
         let top = f.children.last().map(|n| n.id());
         for (k, child) in f.children.into_iter().enumerate() { siblings.insert(last + k, child); }
@@ -620,7 +648,7 @@ impl LayerStack {
     /// (onto or into one of them).
     pub fn move_nodes(&mut self, ids: &[u64], dragged: u64, target: u64, place: Place) -> bool {
         if ids.len() < 2 { return self.move_node(dragged, target, place); }
-        if ids.iter().any(|id| self.is_anim_part(*id)) || !self.can_land(target, place) { return false; }
+        if ids.iter().any(|id| self.is_anim_part(*id) || !self.can_land(*id, target, place)) { return false; }
         let tops = self.outermost(ids);
         let Some(to) = self.path(target) else { return false };
         if tops.iter().any(|&id| self.path(id).is_some_and(|p| to.starts_with(&p))) { return false; }
@@ -668,6 +696,8 @@ impl LayerStack {
     /// Mark `id` as its folder's reference (the other one there, if any,
     /// isn't any more), or unmark it.
     pub fn set_reference(&mut self, id: u64, on: bool) {
+        // (In an animation folder the Cel template decides: the Ink.)
+        if self.is_anim_part(id) || self.node(id).is_some_and(Node::is_animation) { return; }
         let Some(path) = self.path(id) else { return };
         let (last, parent) = path.split_last().unwrap();
         for (i, n) in siblings_mut(&mut self.root, parent).iter_mut().enumerate() {
@@ -777,12 +807,14 @@ impl LayerStack {
     /// Why the active node can't be deleted: locked (itself, a parent, or
     /// something inside a folder), or the last paint layer.
     pub fn removal_refused(&self) -> Option<&'static str> {
+        // (The locks of an animation folder's cels are phase locks of the
+        // cel template, not a protection of the frame.)
         fn any_locked(n: &Node) -> bool {
-            n.locked() || matches!(n, Node::Folder(f) if f.children.iter().any(any_locked))
+            n.locked() || matches!(n, Node::Folder(f) if f.frame().is_none() && f.children.iter().any(any_locked))
         }
         let node = self.active_node();
         if self.is_locked(self.active) || any_locked(node) { return Some("Locked: unlock it first"); }
-        if matches!(node, Node::Layer(_)) && self.is_anim_part(self.active) { return Some("Sub-cels follow the cel template"); }
+        if matches!(node, Node::Layer(_)) && self.is_anim_part(self.active) { return Some("Cels follow the cel template"); }
         let removed = match node { Node::Layer(_) => 1, Node::Folder(f) => count_layers(&f.children), Node::Filter(_) => 0 };
         (self.layer_count() == removed).then_some("Can't delete the last layer")
     }
@@ -863,7 +895,7 @@ impl LayerStack {
     /// Move node `id` next to `target` (drag and drop in the layer list),
     /// and make it active. False if it can't go there (into itself).
     pub fn move_node(&mut self, id: u64, target: u64, place: Place) -> bool {
-        if id == target || self.is_anim_part(id) || !self.can_land(target, place) { return false; }
+        if id == target || self.is_anim_part(id) || !self.can_land(id, target, place) { return false; }
         let (Some(from), Some(to)) = (self.path(id), self.path(target)) else { return false };
         // A folder can't go inside itself.
         if to.starts_with(&from) { return false; }
@@ -891,11 +923,24 @@ impl LayerStack {
         true
     }
 
-    /// A node may be dropped `place` of `target`: not among frames, not
-    /// into an animation folder.
-    fn can_land(&self, target: u64, place: Place) -> bool {
+    /// Where a node may land: see `can_land`.
+    pub fn can_drop(&self, id: u64, target: u64, place: Place) -> bool {
+        id != target && !self.is_anim_part(id) && self.can_land(id, target, place)
+    }
+
+    /// `id` may be dropped `place` of `target`: not among frames, not
+    /// into an animation folder; a group takes only animation folders, and
+    /// never goes into another group.
+    fn can_land(&self, id: u64, target: u64, place: Place) -> bool {
         if self.is_anim_part(target) { return false; }
-        !(place == Place::Inside && self.node(target).is_some_and(Node::is_animation))
+        if place == Place::Inside && self.node(target).is_some_and(Node::is_animation) { return false; }
+        // The folder that would hold it.
+        let into_group = match (place, self.node(target)) {
+            (Place::Inside, Some(Node::Folder(f))) => f.kind == FolderKind::Group,
+            _ => self.in_group(target),
+        };
+        let is_group = matches!(self.node(id), Some(Node::Folder(f)) if f.kind == FolderKind::Group);
+        !(into_group && (is_group || !self.node(id).is_some_and(Node::is_animation)))
     }
 
     /// Erase the active layer's content (Delete key). No-op on folders and
@@ -1098,7 +1143,8 @@ impl LayerStack {
                 let clipped = n.props().clip && nodes[..i].iter().any(|b| !b.props().clip);
                 out.push(Row { id: n.id(), depth, is_folder, collapsed, locked_by_parent: up.locked, clipped,
                                reference_by_parent: up.reference, draft_by_parent: up.draft,
-                               below: i.checked_sub(1).map(|b| nodes[b].id()), animation: n.is_animation(), frame });
+                               below: i.checked_sub(1).map(|b| nodes[b].id()), animation: n.is_animation(),
+                               group: matches!(n, Node::Folder(f) if f.kind == FolderKind::Group), frame });
                 if let Node::Folder(f) = n {
                     if !f.collapsed && frame.is_none() {
                         let p = f.props;
@@ -1426,6 +1472,26 @@ mod tests {
         stack.composite_rect((0, 0, 1, 1)).try_into().unwrap()
     }
 
+    /// Unfold folder `id` (new folders start folded).
+    pub(crate) fn open(s: &mut LayerStack, id: u64) {
+        if let Node::Folder(f) = s.node_mut(id).unwrap() { f.collapsed = false; }
+    }
+
+    #[test]
+    fn new_folders_start_folded() {
+        let mut s = LayerStack::new_document(8, 8);
+        let one = s.active_id();
+        let f = s.add_folder("F");
+        assert!(matches!(s.node(f).unwrap(), Node::Folder(x) if x.collapsed));
+        s.set_active(one);
+        let g = s.group_active("G");
+        assert!(matches!(s.node(g).unwrap(), Node::Folder(x) if x.collapsed));
+        let a = s.add_animation_folder("A");
+        assert!(matches!(s.node(a).unwrap(), Node::Folder(x) if x.collapsed));
+        s.make_frame(a, 1).unwrap();
+        assert!(matches!(s.node(a).unwrap(), Node::Folder(x) if x.collapsed), "a new frame leaves it folded");
+    }
+
     fn names_top_down(stack: &LayerStack) -> Vec<String> {
         stack.rows().iter().map(|r| format!("{}{}", "  ".repeat(r.depth), stack.node(r.id).unwrap().name())).collect()
     }
@@ -1723,6 +1789,7 @@ mod layer_tree_tests {
         // Clipped at the bottom of a folder: no base.
         s.set_active(b);
         let g = s.group_active("g");
+        super::tests::open(&mut s, g);
         assert_eq!(s.active_id(), g);
         assert!(s.node(g).unwrap().is_folder());
         assert!(!s.rows().iter().find(|r| r.id == b).unwrap().clipped);
@@ -1836,6 +1903,7 @@ mod layer_tree_tests {
         let names = |s: &LayerStack| s.rows().iter().map(|r| s.node(r.id).unwrap().name().to_owned()).collect::<Vec<_>>();
         // Two apart, grouped where the top one was, in order.
         let g = s.group_nodes(&[one, three], "g").unwrap();
+        super::tests::open(&mut s, g);
         assert_eq!(names(&s), ["g", "three", "Layer 1", "two", "Paper"]);
         assert_eq!(s.active_id(), g);
         // Dragged together under "two", in order; not into themselves.
@@ -1845,6 +1913,7 @@ mod layer_tree_tests {
         assert_eq!(s.active_id(), one);
         // A folder and what is inside it: the folder alone moves.
         let f = s.group_nodes(&[two], "f").unwrap();
+        super::tests::open(&mut s, f);
         assert!(s.move_nodes(&[f, two], f, 1, Place::Below));
         assert_eq!(names(&s), ["g", "three", "Layer 1", "Paper", "f", "two"]);
     }

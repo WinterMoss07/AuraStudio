@@ -293,7 +293,7 @@ impl Run {
         // The animation folder the active node is in (or is), and one of
         // its frames.
         let anim = d.layers.anim_of(d.layers.active_id()).map(|x| x.0);
-        let name = match r.below(35) {
+        let name = match r.below(41) {
             0 if !full => { let before: HashSet<u64> = ids.iter().copied().collect(); let id = d.layers.add_layer("L"); assert!(!before.contains(&id), "id reused"); "add layer" }
             1 if !full => { d.layers.add_folder("F"); "add folder" }
             2 if !full => { d.layers.add_filter_layer(random_filter(r)); "add filter layer" }
@@ -326,7 +326,7 @@ impl Run {
             17 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { n.props_mut().clip ^= true; } "clip" }
             18 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { n.props_mut().draft ^= true; } "draft" }
             19 => { let id = any(r); let on = !d.layers.node(id).unwrap().props().reference; d.layers.set_reference(id, on); "reference" }
-            // (Frames and sub-cels are named by the X-sheet and the template.)
+            // (Frames and cels are named by the X-sheet and the template.)
             20 => { let id = any(r); let named = !d.layers.is_anim_part(id); if let Some(n) = d.layers.node_mut(id) { n.props_mut().label = r.below(9) as u8; if named { *n.name_mut() = format!("n{}", r.below(99)); } } "label / name" }
             21 => { if let Node::Folder(f) = d.layers.active_node_mut() { f.collapsed ^= true; } "fold" }
             22 if !full => { d.layers.add_animation_folder("A"); "animation folder" }
@@ -336,18 +336,18 @@ impl Run {
                 None => "frame: no folder",
             },
             26 => match anim {
-                Some(f) => { let n = d.layers.anim(f).unwrap().template.len(); d.layers.set_sub(f, r.below(n as u64 + 1) as usize); "sub-cel chosen" }
-                None => "sub-cel: no folder",
+                Some(f) => { let n = d.layers.anim(f).unwrap().template.len(); d.layers.set_cel(f, r.below(n as u64 + 1) as usize); "cel chosen" }
+                None => "cel: no folder",
             },
             27 => match anim {
                 Some(f) => {
                     let n = d.layers.anim(f).unwrap().template.len();
                     let k = r.below(n as u64) as usize;
                     match r.below(4) {
-                        0 if !full => { d.layers.add_sub(f, r.below(n as u64 + 1) as usize, aurastudio_layers::SubCel::new(&format!("s{}", r.below(1000)), r.chance(0.2))); }
-                        1 => { d.layers.remove_sub(f, k); }
-                        2 => { let name = format!("s{}", r.below(1000)); if !d.layers.anim(f).unwrap().template.iter().any(|t| t.name == name) { d.layers.rename_sub(f, k, &name); } }
-                        _ => { d.layers.move_sub(f, k, r.below(n as u64) as usize); }
+                        0 if !full => { d.layers.add_cel(f, r.below(n as u64 + 1) as usize, aurastudio_layers::Cel::new(&format!("s{}", r.below(1000)), r.chance(0.2))); }
+                        1 => { d.layers.remove_cel(f, k); }
+                        2 => { let name = format!("s{}", r.below(1000)); if !d.layers.anim(f).unwrap().template.iter().any(|t| t.name == name) { d.layers.rename_cel(f, k, &name); } }
+                        _ => { d.layers.move_cel(f, k, r.below(n as u64) as usize); }
                     }
                     "template"
                 }
@@ -369,6 +369,55 @@ impl Run {
                 }
                 None => "x-sheet: no folder",
             },
+            35 if !full => { let some: Vec<u64> = ids.iter().copied().filter(|_| r.chance(0.4)).collect(); d.layers.group_animation_folders(&some, "Group"); "group animation folders" }
+            36 => match anim {
+                Some(f) => {
+                    let frames: Vec<u32> = (1..=12).filter(|_| r.chance(0.3)).collect();
+                    let delta = r.below(9) as i32 - 4;
+                    let onto = [aurastudio_layers::Onto::Replace, aurastudio_layers::Onto::Refuse][r.below(2) as usize];
+                    let copy = r.chance(0.3) && !full;
+                    d.layers.move_frames(f, &frames, delta, copy, onto);
+                    "move several frames"
+                }
+                None => "move frames: no folder",
+            },
+            37 => match anim {
+                Some(f) => { let n = d.layers.anim(f).unwrap().template.len(); d.layers.set_cel_reference(f, r.below(n as u64) as usize, r.chance(0.7)); "cel reference" }
+                None => "cel reference: no folder",
+            },
+            // Delete as the Layers docker and the timeline do: when nothing
+            // is said against it, it must work; when something is, the
+            // reason must be a true one.
+            38 | 39 => {
+                let id = any(r);
+                d.layers.set_active(id);
+                let id = d.layers.active_id();
+                let before = { let mut v = Vec::new(); all_nodes(&d.layers.root, &mut v); v.len() };
+                match d.layers.removal_refused() {
+                    None => {
+                        assert!(d.layers.remove_active(), "nothing against deleting {id}, yet it stayed");
+                        assert!(d.layers.node(id).is_none(), "{id} deleted, still there");
+                        let mut v = Vec::new();
+                        all_nodes(&d.layers.root, &mut v);
+                        assert!(v.len() < before, "deleting {id} removed nothing");
+                    }
+                    Some(why) => {
+                        fn plain_locked(n: &Node) -> bool {
+                            n.locked() || matches!(n, Node::Folder(f) if f.frame().is_none() && f.children.iter().any(plain_locked))
+                        }
+                        let node = d.layers.node(id).unwrap();
+                        let true_reason = match why {
+                            "Locked: unlock it first" => d.layers.is_locked(id) || plain_locked(node),
+                            "Cels follow the cel template" => matches!(node, Node::Layer(_)) && d.layers.is_anim_part(id),
+                            "Can't delete the last layer" => true,
+                            _ => false,
+                        };
+                        assert!(true_reason, "deleting {id} refused for a reason that isn't true: {why}");
+                        assert!(!d.layers.remove_active(), "refused ({why}) but deleted");
+                    }
+                }
+                "delete"
+            }
             28 => match d.layers.anim_of(d.layers.active_id()) {
                 Some((_, Some(frame))) => { d.layers.apply_to_folder(frame); "apply to folder" }
                 _ => "apply: no frame",

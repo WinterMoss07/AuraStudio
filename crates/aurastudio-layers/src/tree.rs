@@ -57,11 +57,11 @@ fn shape(n: &Node) -> Shape {
     Shape { id: n.id(), settings, visible: n.visible(), collapsed, children }
 }
 
-/// A folder's kind as undo keeps it: which sub-cel is chosen is not an
+/// A folder's kind as undo keeps it: which cel is chosen is not an
 /// edit (like the active layer).
 fn undone_kind(k: &FolderKind) -> FolderKind {
     let mut k = k.clone();
-    if let FolderKind::Animation(a) = &mut k { a.sub = 0; }
+    if let FolderKind::Animation(a) = &mut k { a.cel = 0; }
     k
 }
 
@@ -87,10 +87,10 @@ fn build(shapes: &[Shape], pool: &mut HashMap<u64, Node>, current: &HashMap<u64,
                 (l.name, l.opacity, l.blend, l.locked, l.props) = (name.clone(), *opacity, *blend, *locked, *props);
             }
             (Node::Folder(f), Settings::Folder { name, opacity, blend, locked, props, kind }) => {
-                // (The sub-cel chosen stays as it is now.)
+                // (The cel chosen stays as it is now.)
                 let mut kind = kind.clone();
                 if let FolderKind::Animation(a) = &mut kind {
-                    a.sub = f.anim().map_or(0, |now| now.sub).min(a.template.len().saturating_sub(1));
+                    a.cel = f.anim().map_or(0, |now| now.cel).min(a.template.len().saturating_sub(1));
                 }
                 (f.name, f.opacity, f.blend, f.locked, f.props, f.kind) = (name.clone(), *opacity, *blend, *locked, *props, kind);
                 if !keep { f.collapsed = s.collapsed; }
@@ -194,6 +194,7 @@ mod tests {
         let two = s.add_layer("two");
         let t0 = s.tree_state();
         let f = s.group_nodes(&[one, two], "Folder").unwrap();
+        if let Node::Folder(x) = s.node_mut(f).unwrap() { x.collapsed = false; }
         assert_eq!(names(&s), ["Folder", "two", "Layer 1", "Paper"]);
         let t1 = s.tree_state();
         let made = s.restore_tree(&t0, Vec::new());

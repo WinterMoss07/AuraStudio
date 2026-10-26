@@ -24,6 +24,7 @@ pub enum Icon {
     // Animation.
     Film, Minus, ArrowUp, ArrowDown, Camera, Comics,
     Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, XSheet, Timeline, InsertFrame, RemoveFrame,
+    SwitchView, Folders,
 }
 
 impl Icon {
@@ -110,6 +111,8 @@ impl Icon {
             Icon::Timeline   => svg!("../icons/rows-2.svg"),
             Icon::InsertFrame => svg!("../icons/between-horizontal-start.svg"),
             Icon::RemoveFrame => svg!("../icons/between-horizontal-end.svg"),
+            Icon::SwitchView => svg!("../icons/refresh-cw.svg"),
+            Icon::Folders    => svg!("../icons/folders.svg"),
         }
     }
 }
@@ -119,4 +122,21 @@ pub fn paint(ui: &Ui, icon: Icon, rect: Rect, size: f32, tint: Color32) {
     egui::Image::new(icon.source())
         .tint(tint)
         .paint_at(ui, Rect::from_center_size(rect.center(), vec2(size, size)));
+}
+
+/// A lock, unmistakable either way: locked is a closed lock on a filled
+/// orange chip; locked by a parent, the closed lock in orange alone;
+/// unlocked, an open lock, faint. `rect` is the hit box (about 22 px).
+pub fn paint_lock(ui: &Ui, rect: Rect, locked: bool, by_parent: bool, hovered: bool, on_accent: bool) {
+    use crate::theme;
+    let p = ui.painter();
+    if locked {
+        p.rect_filled(rect.shrink2(vec2(2.0, 3.0)), 3.0, theme::LOCKED);
+        paint(ui, Icon::Lock, rect, 14.0, Color32::from_rgb(0x1d, 0x1d, 0x1f));
+    } else if by_parent {
+        paint(ui, Icon::Lock, rect, 14.0, theme::LOCKED);
+    } else {
+        let tint = if hovered { theme::TEXT_WEAK } else if on_accent { Color32::from_white_alpha(120) } else { theme::TEXT_WEAK.gamma_multiply(0.45) };
+        paint(ui, Icon::LockOpen, rect, 14.0, tint);
+    }
 }

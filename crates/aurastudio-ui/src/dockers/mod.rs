@@ -84,7 +84,7 @@ pub struct Viewer<'s, 'a> {
     pub color:  &'s mut color::ColorState,
     pub layers: &'s mut layers::LayersState,
     pub tool_list: &'s mut tool_list::ToolListState,
-    pub cel_rename: &'s mut Option<(usize, String, bool)>,
+    pub cel: &'s mut cel_template::CelState,
     pub notice: &'s mut Notice,
     pub m:      &'s mut Model<'a>,
     pub a:      &'s mut Actions,
@@ -115,7 +115,7 @@ impl TabViewer for Viewer<'_, '_> {
             }
             Tab::Layers      => layers::show(ui, self.layers, self.notice, self.m, self.a),
             Tab::Canvas      => canvas::show(ui, self.m, self.a),
-            Tab::CelTemplate => cel_template::show(ui, self.cel_rename, self.m, self.a),
+            Tab::CelTemplate => cel_template::show(ui, self.cel, self.m, self.a),
         }).response.rect;
         // Body margins included.
         self.content.insert(*tab, content.height() + 16.0);

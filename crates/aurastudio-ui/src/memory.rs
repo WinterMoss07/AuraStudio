@@ -1,0 +1,115 @@
+//! The memory report: every megabyte the app holds, named, so what Task
+//! Manager shows can be matched against it. The app measures (it owns the
+//! document, the paint thread and the GPU); this holds the numbers, writes
+//! them out as text and shows them in a window (Window > Memory report).
+
+use egui::{RichText, ScrollArea};
+
+use crate::theme;
+
+/// One group of figures: bytes by name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Section {
+    pub title: String,
+    /// In the process's own memory (RAM), so counted against what the
+    /// system says it holds; the GPU's is its own (VRAM, or shared).
+    pub cpu:   bool,
+    pub lines: Vec<(String, u64)>,
+}
+
+impl Section {
+    pub fn new(title: impl Into<String>, cpu: bool) -> Self { Self { title: title.into(), cpu, lines: Vec::new() } }
+
+    pub fn add(&mut self, name: impl Into<String>, bytes: u64) { self.lines.push((name.into(), bytes)); }
+
+    pub fn total(&self) -> u64 { self.lines.iter().map(|l| l.1).sum() }
+}
+
+/// Everything measured at one moment.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MemoryReport {
+    /// What the system says the process holds: working set (what Task
+    /// Manager lists) and private bytes (committed, its own).
+    pub working_set: Option<u64>,
+    pub private:     Option<u64>,
+    pub sections:    Vec<Section>,
+}
+
+/// "123.45 MB".
+pub fn mb(bytes: u64) -> String { format!("{:.2} MB", bytes as f64 / (1u64 << 20) as f64) }
+
+impl MemoryReport {
+    /// Bytes named in the sections of the process's own memory.
+    pub fn accounted(&self) -> u64 { self.sections.iter().filter(|s| s.cpu).map(Section::total).sum() }
+
+    /// What the system holds that no line names (private bytes, else the
+    /// working set, minus the named RAM): where the next look goes.
+    pub fn not_itemised(&self) -> Option<i64> {
+        let held = self.private.or(self.working_set)?;
+        Some(held as i64 - self.accounted() as i64)
+    }
+
+    /// The report as text (copied, logged): one line per figure.
+    pub fn text(&self) -> String {
+        let mut s = String::new();
+        let line = |s: &mut String, name: &str, bytes: u64| s.push_str(&format!("  {:>12}  {name}\n", mb(bytes)));
+        s.push_str("Process (the system's figures)\n");
+        if let Some(w) = self.working_set { line(&mut s, "working set (Task Manager: Memory)", w); }
+        if let Some(p) = self.private { line(&mut s, "private bytes (committed)", p); }
+        for sec in &self.sections {
+            s.push_str(&format!("\n{}{}\n", sec.title, if sec.cpu { "" } else { " (graphics memory)" }));
+            for (name, bytes) in &sec.lines { line(&mut s, name, *bytes); }
+            if sec.lines.len() > 1 { line(&mut s, "total", sec.total()); }
+        }
+        s.push_str(&format!("\nNamed in RAM: {}\n", mb(self.accounted())));
+        if let Some(d) = self.not_itemised() {
+            s.push_str(&format!("Not itemised (system's figure minus named): {}{}\n", if d < 0 { "-" } else { "" }, mb(d.unsigned_abs())));
+        }
+        s
+    }
+}
+
+/// The report window: refreshed by the app while it is open.
+pub fn window(ctx: &egui::Context, open: &mut bool, report: Option<&MemoryReport>) {
+    let mut shown = *open;
+    egui::Window::new("Memory report").open(&mut shown).default_width(520.0).default_height(460.0).show(ctx, |ui| {
+        let Some(r) = report else {
+            ui.label(RichText::new("Measuring…").color(theme::TEXT_WEAK));
+            return;
+        };
+        let text = r.text();
+        ui.horizontal(|ui| {
+            if ui.button("Copy").on_hover_text("Copy the report as text").clicked() { ctx.copy_text(text.clone()); }
+            ui.label(RichText::new("Updated once a second.").small().color(theme::TEXT_WEAK));
+        });
+        ui.separator();
+        ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(&text).monospace().size(12.0)).extend());
+        });
+    });
+    *open = shown;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_gap_is_what_no_line_names() {
+        let mut ram = Section::new("Document", true);
+        ram.add("Layer 1", 100 << 20);
+        ram.add("History", 20 << 20);
+        let mut vram = Section::new("GPU", false);
+        vram.add("canvas", 300 << 20);
+        let r = MemoryReport { working_set: Some(500 << 20), private: Some(400 << 20), sections: vec![ram, vram] };
+        // (The GPU's own memory is not RAM: not counted.)
+        assert_eq!(r.accounted(), 120 << 20);
+        assert_eq!(r.not_itemised(), Some(280 << 20));
+        let t = r.text();
+        assert!(t.contains("100.00 MB  Layer 1") && t.contains("graphics memory") && t.contains("Not itemised"), "{t}");
+        // Named more than the system says: shown negative, not hidden.
+        let over = MemoryReport { private: Some(10 << 20), sections: vec![{ let mut s = Section::new("x", true); s.add("a", 20 << 20); s }], ..Default::default() };
+        assert_eq!(over.not_itemised(), Some(-(10 << 20)));
+        assert!(over.text().contains("-10.00 MB"));
+    }
+}

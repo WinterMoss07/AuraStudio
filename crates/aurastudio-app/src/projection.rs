@@ -30,6 +30,9 @@ impl Projection {
         if rect.0 < rect.2 && rect.1 < rect.3 { self.patches.push((rect, rgba)); }
     }
 
+    /// Bytes of the merged pieces waiting.
+    pub fn pending_bytes(&self) -> u64 { self.patches.iter().map(|p| p.1.len() as u64).sum() }
+
     pub fn take_patches(&mut self) -> Vec<(Rect, Vec<u8>)> {
         std::mem::take(&mut self.patches)
     }

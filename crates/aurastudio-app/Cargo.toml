@@ -35,3 +35,7 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
 # The .exe icon (Windows resource), see build.rs.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+# Memory report: the process's working set and private bytes.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

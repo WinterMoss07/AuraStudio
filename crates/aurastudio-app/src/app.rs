@@ -356,6 +356,8 @@ pub struct App {
     /// The next frame must run the UI. Frames that only move the outline
     /// or show new paint reuse the last UI (a GPU pass, no egui layout).
     ui_dirty:     bool,
+    /// When the memory report was last measured (it is shown).
+    memory_at:    Option<Instant>,
     /// The cursor was over the canvas at the last full UI frame.
     ui_saw_canvas: bool,
     /// What woke the app lately (logged when it keeps busy idle).
@@ -471,6 +473,7 @@ impl App {
             ui_blocked_since: None,
             redraw_wanted: false,
             ui_dirty:     true,
+            memory_at:    None,
             ui_saw_canvas: false,
             activity:     Activity::new(),
             repaint_at:   None,
@@ -1025,7 +1028,7 @@ impl App {
     fn paint_refusal(&self) -> Option<&'static str> {
         match self.doc.try_lock() {
             Ok(doc) if doc.layers.can_paint() => None,
-            Ok(doc) if doc.layers.anim_of(doc.layers.active_id()).is_some() => Some("This sub-cel or frame is locked"),
+            Ok(doc) if doc.layers.anim_of(doc.layers.active_id()).is_some() => Some("This cel or frame is locked"),
             Ok(doc) if doc.layers.active_node().is_folder() => Some("Select a layer to paint (a folder is selected)"),
             Ok(_) => Some("Layer is locked"),
             Err(_) => None,
@@ -1604,6 +1607,30 @@ impl App {
         self.render_frame();
     }
 
+    /// Window > Memory report open: measure once a second (the document
+    /// is skipped while the paint thread has it) and show it.
+    fn tick_memory(&mut self) {
+        if !self.ui.memory_wanted() {
+            self.memory_at = None;
+            return;
+        }
+        let now = Instant::now();
+        if self.memory_at.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) { return; }
+        let gpu = self.gpu.as_ref().map(GpuState::memory);
+        let pending = self.projection.try_lock().map_or(0, |p| p.pending_bytes());
+        let report = match self.doc.try_lock() {
+            Ok(d) => crate::memory::build(Some(&d), pending, gpu.as_ref()),
+            Err(_) => return,
+        };
+        crate::memory::log(&report);
+        self.ui.set_memory(report);
+        self.memory_at = Some(now);
+        self.ui_dirty = true;
+        self.redraw_wanted = true;
+        let next = now + Duration::from_secs(1);
+        self.repaint_at = Some(self.repaint_at.map_or(next, |t| t.min(next)));
+    }
+
     fn render_frame(&mut self) {
         self.update_outline();
         let preview = self.shape_preview();
@@ -1997,6 +2024,8 @@ impl App {
                 let mut doc = Document::new(id, &spec.name, spec.width, spec.height);
                 doc.dpi = spec.dpi;
                 doc.kind = spec.kind;
+                // An animation starts with its paper and an animation folder.
+                if spec.kind == aurastudio_document::Kind::Animation { doc.layers.start_animation(); }
                 log::info!("new document: {}, {} × {} px, {} dpi", spec.kind.name(), spec.width, spec.height, spec.dpi);
                 self.install(doc);
                 self.home = false;
@@ -2401,6 +2430,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.drain_stylus();
         self.check_autosave();
         self.tick_playback();
+        self.tick_memory();
         self.update_title();
         self.activity.wakes += 1;
         self.activity.report(self.is_drawing || self.nav.is_some());
@@ -2671,7 +2701,10 @@ impl App {
                     }
                     // The start screen has nothing to edit or move.
                     _ if self.home => {}
-                    Key::Named(NamedKey::Delete) if !key.repeat && !alt => self.clear_active_layer(),
+                    Key::Named(NamedKey::Delete) if !key.repeat && !alt => {
+                        // Over the Layers docker or the Animation panel: delete what is picked there.
+                        if !self.ui.delete_key() { self.clear_active_layer(); }
+                    }
                     // Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y (repeat when held); building an arc
                     // outline, Ctrl+Z takes back its last arc.
                     Key::Character(c) if ctrl && !shift && c.eq_ignore_ascii_case("z") && self.arc.active() => self.undo_arc(),

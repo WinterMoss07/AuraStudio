@@ -769,7 +769,7 @@ mod anim_tests {
         d.layers.check_animation().unwrap();
         d.redo().unwrap();
         assert_eq!(d.layers.frames(a).len(), 1);
-        let Some(Node::Layer(l)) = d.layers.node(sub) else { panic!("sub-cel back") };
+        let Some(Node::Layer(l)) = d.layers.node(sub) else { panic!("cel back") };
         assert_eq!(l.tiles.pixel(5, 5), [9, 9, 9, 255]);
         // Again on the same frame: a plain stroke step.
         assert_eq!(stroke(&mut d, [1, 1, 1, 255]), Some(sub));

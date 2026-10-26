@@ -126,7 +126,7 @@ impl Document {
         let (w, h) = (self.layers.width, self.layers.height);
         if x >= w || y >= h { return None; }
         // A folder has no pixels of its own: it looks at everything (a
-        // frame: its chosen sub-cel).
+        // frame: its chosen cel).
         let own = self.layers.layer_of_active();
         let active = own.unwrap_or(self.layers.active_id());
         let mut p = wand.fill;

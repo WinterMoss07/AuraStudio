@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use aurastudio_filters::{Filter, GROUPS};
-use aurastudio_layers::{FolderBlend, LayerStack, Node, Place, Row, LABELS};
+use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
 
 use crate::widgets::*;
@@ -34,8 +34,14 @@ pub struct LayersState {
     /// A filter layer's dialog to open (the docker can't reach it).
     pub(crate) edit_filter: Option<(u64, bool)>,
     /// The layers picked with Ctrl / Shift, the active one with them
-    /// (empty: only the active one).
-    selected: Vec<u64>,
+    /// (empty: only the active one). The Animation panel picks folders
+    /// here too.
+    pub(crate) selected: Vec<u64>,
+    /// Where the docker was drawn last (the Delete key acts here when the
+    /// pointer is).
+    pub(crate) rect: Option<egui::Rect>,
+    /// The Delete key was pressed over the docker: done at the next frame.
+    pub(crate) delete_req: bool,
 }
 
 impl LayersState {
@@ -179,7 +185,8 @@ pub fn duplicate(st: &mut LayersState, m: &mut Model, a: &mut Actions) {
 /// Layer commands with a shortcut (and a menu entry).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerCmd {
-    /// Put the selected nodes in a new folder (Ctrl+G).
+    /// Put the selected nodes in a new folder (Ctrl+G); animation folders
+    /// selected go in a group instead.
     Group,
     /// Take a folder's content out (Ctrl+Shift+G).
     Ungroup,
@@ -192,7 +199,7 @@ pub enum LayerCmd {
 impl LayerCmd {
     pub fn name(self) -> &'static str {
         match self {
-            LayerCmd::Group => "Group",
+            LayerCmd::Group => "Group layers into folder",
             LayerCmd::Ungroup => "Ungroup",
             LayerCmd::Clip => "Clip to layer below",
             LayerCmd::Reference => "Reference layer",
@@ -227,17 +234,44 @@ impl LayerCmd {
     }
     pub fn enabled(self, layers: &LayerStack) -> bool {
         match self {
-            LayerCmd::Ungroup => layers.active_node().is_folder(),
+            LayerCmd::Ungroup => matches!(layers.active_node(), Node::Folder(f) if matches!(f.kind, FolderKind::Plain | FolderKind::Group)),
+            // (In an animation folder the Cel template decides.)
+            LayerCmd::Reference => !holds_animation(layers, layers.active_id()),
             _ => true,
+        }
+    }
+
+    /// Why it is grayed out.
+    pub fn disabled_why(self) -> &'static str {
+        match self {
+            LayerCmd::Reference => "Set in the Cel template (the Ink cel, in every frame)",
+            _ => "Not here",
         }
     }
 }
 
-/// The folder button's command: ungroup a folder selected alone, else
-/// group what is selected.
-fn group_or_ungroup(st: &LayersState, layers: &LayerStack) -> LayerCmd {
-    let sel = st.selection(layers);
-    if sel.len() == 1 && layers.active_node().is_folder() { LayerCmd::Ungroup } else { LayerCmd::Group }
+/// `id` is an animation folder, a group, a frame or a cel: the Cel
+/// template and the timeline decide what happens there.
+fn holds_animation(layers: &LayerStack, id: u64) -> bool {
+    layers.anim_of(id).is_some() || matches!(layers.node(id), Some(Node::Folder(f)) if f.kind == FolderKind::Group)
+}
+
+/// The nodes `cmd` Group would put together are animation folders.
+fn groups_animation(layers: &LayerStack, sel: &[u64]) -> bool {
+    sel.iter().any(|id| layers.node(*id).is_some_and(Node::is_animation))
+}
+
+/// What Ctrl+G does with `sel`, as a menu entry says it.
+fn group_label(layers: &LayerStack, sel: &[u64]) -> &'static str {
+    if groups_animation(layers, sel) { "Group animation folders" } else { "Group layers into folder" }
+}
+
+/// What "Ungroup" frees, as a menu entry says it.
+fn ungroup_label(layers: &LayerStack) -> &'static str {
+    match layers.active_node() {
+        Node::Folder(f) if f.kind == FolderKind::Group => "Ungroup animation folders",
+        _ => "Ungroup folder",
+    }
 }
 
 pub fn apply(cmd: LayerCmd, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
@@ -245,6 +279,13 @@ pub fn apply(cmd: LayerCmd, st: &mut LayersState, m: &mut Model, a: &mut Actions
     let active = m.layers.active_id();
     match cmd {
         LayerCmd::Group => {
+            if groups_animation(m.layers, &sel) {
+                if m.layers.group_animation_folders(&sel, "Group").is_none() { return; }
+                a.layer_edit = Some("Group animation folders");
+                a.recomposite = true;
+                st.selected.clear();
+                return;
+            }
             if sel.len() > 1 { m.layers.group_nodes(&sel, "Folder"); } else { m.layers.group_active("Folder"); }
             st.selected.clear();
         }
@@ -286,8 +327,9 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     ui.menu_button("New filter layer", |ui| filter_layer_menu(ui, st, m, a));
     ui.menu_button("New special folder", |ui| special_folder_entries(ui, m, a));
     ui.separator();
-    for cmd in [LayerCmd::Group, LayerCmd::Ungroup] {
-        if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(cmd.name()).shortcut_text(cmd.shortcut())).clicked() {
+    let sel = st.selection(m.layers);
+    for (cmd, label) in [(LayerCmd::Group, group_label(m.layers, &sel)), (LayerCmd::Ungroup, ungroup_label(m.layers))] {
+        if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() {
             apply(cmd, st, m, a);
             ui.close_menu();
         }
@@ -295,7 +337,9 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     ui.separator();
     for cmd in [LayerCmd::Clip, LayerCmd::Reference, LayerCmd::Draft] {
         let label = format!("{} {}", if cmd.is_on(m.layers) { "✔" } else { "   " }, cmd.name());
-        if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() {
+        let on = ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut()))
+            .on_disabled_hover_text(cmd.disabled_why());
+        if on.clicked() {
             apply(cmd, st, m, a);
             ui.close_menu();
         }
@@ -410,19 +454,20 @@ fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Action
     if icon_button(ui, Icon::Duplicate, "Duplicate", true) { duplicate(st, m, a); }
 }
 
-/// Clip, reference, draft, then group / ungroup.
+/// Clip, reference, draft (grouping is in the right-click menu).
 fn mark_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     for (cmd, icon) in [(LayerCmd::Clip, Icon::Clip), (LayerCmd::Reference, Icon::Reference), (LayerCmd::Draft, Icon::Draft)] {
-        if icon_toggle(ui, icon, &cmd.tip(), true, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
+        let enabled = cmd.enabled(m.layers);
+        let tip = if enabled { cmd.tip() } else { format!("{}: {}", cmd.name(), cmd.disabled_why()) };
+        if icon_toggle(ui, icon, &tip, enabled, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
     }
-    let g = group_or_ungroup(st, m.layers);
-    let icon = if g == LayerCmd::Ungroup { Icon::Ungroup } else { Icon::Group };
-    if icon_toggle(ui, icon, &g.tip(), true, false).clicked() { apply(g, st, m, a); }
 }
 
 fn delete_button(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
-    let deletable = st.selected.len() > 1 || m.layers.removal_refused().is_none();
-    if icon_button(ui, Icon::Delete, "Delete", deletable) { delete_layer(st, notice, m, a); }
+    let why = m.layers.removal_refused();
+    let deletable = st.selected.len() > 1 || why.is_none();
+    let tip = match why { Some(w) if !deletable => format!("Delete: {w}"), _ => "Delete".to_owned() };
+    if icon_button(ui, Icon::Delete, &tip, deletable) { delete_layer(st, notice, m, a); }
 }
 
 /// Show only the layers of some color labels.
@@ -440,6 +485,8 @@ fn label_filter_button(ui: &mut Ui, st: &mut LayersState, m: &mut Model) {
 // --- Docker ---------------------------------------------------------------
 
 pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
+    st.rect = Some(ui.max_rect());
+    if std::mem::take(&mut st.delete_req) { delete_layer(st, notice, m, a); }
     if let Some(cmd) = st.pending.take() { apply(cmd, st, m, a); }
     // (Deleted meanwhile: an undo, a filter layer's Cancel.)
     st.selected.retain(|id| m.layers.node(*id).is_some());
@@ -481,10 +528,10 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     });
 
     // The actions in one row (CSP): new layer (its other kinds under the
-    // arrow), new folder, duplicate; the marks, then group; label filter
+    // arrow), new folder, duplicate; the marks; label filter
     // and delete on the right. Too narrow for one row: two, making and
     // deleting above, the marks below (nothing overlaps).
-    const ONE_ROW: f32 = 3.0 * 22.0 + 2.0 * 14.0 + 6.0 + 4.0 * 22.0 + 12.0 + 2.0 * 22.0;
+    const ONE_ROW: f32 = 3.0 * 22.0 + 2.0 * 14.0 + 6.0 + 3.0 * 22.0 + 12.0 + 2.0 * 22.0;
     if ui.available_width() >= ONE_ROW {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -542,9 +589,12 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 if st.label_filter != 0 && row.id != active && !m.layers.node(row.id).is_some_and(|n| shown(n, st.label_filter)) { continue; }
                 let (e, resp) = layer_row(ui, st, m, &row);
                 if let Some(e) = e { event = Some((row.id, e)); }
-                if let Some(d) = drop_target(ui, &resp, &row, &st.selected) { dropped = Some(d); }
+                if let Some(d) = drop_target(ui, &resp, &row, &st.selected, m.layers) { dropped = Some(d); }
                 resp.context_menu(|ui| {
-                    if let Some(c) = row_menu(ui, m, row.id) { menu_cmd = Some((row.id, c)); }
+                    // The right-clicked row's own selection, else it alone.
+                    let mut sel = st.selection(m.layers);
+                    if !sel.contains(&row.id) { sel = vec![row.id]; }
+                    if let Some(c) = row_menu(ui, m, row.id, &sel) { menu_cmd = Some((row.id, c)); }
                 });
                 rects.insert(row.id, resp.rect);
                 if let (true, Some(b)) = (row.clipped, row.below) { chains.push((row.id, b)); }
@@ -731,7 +781,7 @@ enum RowEvent { Select(egui::Modifiers), ToggleVisible, ToggleLock, ToggleCollap
 enum RowMenu { Cmd(LayerCmd), Label(u8), Rename, Duplicate, Delete, EditFilter }
 
 /// A row's right-click menu.
-fn row_menu(ui: &mut Ui, m: &Model, id: u64) -> Option<RowMenu> {
+fn row_menu(ui: &mut Ui, m: &Model, id: u64, sel: &[u64]) -> Option<RowMenu> {
     let node = m.layers.node(id)?;
     let p = node.props();
     let mut out = None;
@@ -745,20 +795,29 @@ fn row_menu(ui: &mut Ui, m: &Model, id: u64) -> Option<RowMenu> {
     ui.separator();
     if let Some(l) = label_swatches(ui, p.label) { out = Some(RowMenu::Label(l)); }
     ui.separator();
+    let inside = holds_animation(m.layers, id) && !node.is_animation();
     for (cmd, on) in [(LayerCmd::Clip, p.clip), (LayerCmd::Reference, p.reference), (LayerCmd::Draft, p.draft)] {
         let label = format!("{} {}", if on { "✔" } else { "   " }, cmd.name());
-        if ui.add(egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() { out = Some(RowMenu::Cmd(cmd)); }
+        // (An animation folder, a frame, a group: the Cel template decides.)
+        let allowed = cmd != LayerCmd::Reference || !(holds_animation(m.layers, id) || node.is_animation());
+        let b = ui.add_enabled(allowed, egui::Button::new(label).shortcut_text(cmd.shortcut())).on_disabled_hover_text(cmd.disabled_why());
+        if b.clicked() { out = Some(RowMenu::Cmd(cmd)); }
     }
     ui.separator();
-    if ui.add(egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
-    if node.is_folder() && ui.add(egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
+    // Frames and cels stay in their animation folder.
+    if !inside {
+        if ui.add(egui::Button::new(group_label(m.layers, sel)).shortcut_text("Ctrl+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
+        let ungroups = matches!(node, Node::Folder(f) if matches!(f.kind, FolderKind::Plain | FolderKind::Group));
+        let label = match node { Node::Folder(f) if f.kind == FolderKind::Group => "Ungroup animation folders", _ => "Ungroup folder" };
+        if ungroups && ui.add(egui::Button::new(label).shortcut_text("Ctrl+Shift+G")).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
+    }
     if out.is_some() { ui.close_menu(); }
     out
 }
 
 /// Drag and drop on a row: where the dragged layer would land (a line, or
 /// the folder outlined), and the move once released there.
-fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row, selected: &[u64]) -> Option<(u64, u64, Place)> {
+fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row, selected: &[u64], layers: &LayerStack) -> Option<(u64, u64, Place)> {
     let dragged = resp.dnd_hover_payload::<LayerDrag>()?;
     if dragged.0 == row.id { return None; }
     // (Several dragged together: not onto one of them.)
@@ -771,6 +830,8 @@ fn drop_target(ui: &Ui, resp: &egui::Response, row: &Row, selected: &[u64]) -> O
         (_, t) if t < 0.5 => Place::Above,
         _ => Place::Below,
     };
+    // Not where it can't go (among frames, into a group, a group into one).
+    if !layers.can_drop(dragged.0, row.id, place) { return None; }
     let p = ui.painter();
     let stroke = Stroke::new(2.0_f32, theme::DROP);
     match place {
@@ -802,8 +863,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     let active = m.layers.active_id() == row.id;
     let picked = !active && st.selected.contains(&row.id);
     let is_filter = matches!(node, Node::Filter(_));
-    let folder_size = match node { Node::Folder(f) if row.frame.is_none() && !row.animation => Some(count(&f.children)), _ => None };
-    let sub_cels = match node { Node::Folder(f) => f.children.len(), _ => 0 };
+    let folder_size = match node { Node::Folder(f) if row.frame.is_none() && !row.animation && !row.group => Some(count(&f.children)), _ => None };
     let label = label_color(props.label);
 
     let painter = ui.painter_at(rect);
@@ -840,17 +900,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
 
     // Lock, at the far right (Krita).
     let lock = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(22.0, 22.0));
-    let lock_col = if locked {
-        theme::TEXT
-    } else if row.locked_by_parent {
-        theme::TEXT_WEAK
-    } else if resp.hovered() {
-        theme::TEXT_WEAK.gamma_multiply(0.7)
-    } else {
-        if active { Color32::from_white_alpha(110) } else { theme::TEXT_WEAK.gamma_multiply(0.35) }
-    };
-    let lock_icon = if locked || row.locked_by_parent { Icon::Lock } else { Icon::LockOpen };
-    crate::icons::paint(ui, lock_icon, lock, 15.0, lock_col);
+    crate::icons::paint_lock(ui, lock, locked, row.locked_by_parent, resp.hovered(), active);
 
     // Marks before the lock: reference (lighthouse), draft (pencil); a
     // parent folder's shown fainter.
@@ -882,7 +932,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         let chevron = if row.collapsed { Icon::Collapsed } else { Icon::Expanded };
         crate::icons::paint(ui, chevron, toggle_rect, 13.0, theme::TEXT_WEAK);
         let b = Rect::from_center_size(pos2(toggle_rect.right() + 4.0 + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
-        let folder = if row.animation { Icon::Film } else if row.collapsed { Icon::Folder } else { Icon::FolderOpen };
+        let folder = if row.animation { Icon::Film } else if row.group { Icon::Folders } else if row.collapsed { Icon::Folder } else { Icon::FolderOpen };
         crate::icons::paint(ui, folder, b, 20.0, if active { theme::TEXT } else { label.unwrap_or(theme::TEXT_WEAK) });
         b
     } else if let Some(n) = row.frame {
@@ -922,9 +972,12 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     let text_x = icon_box.right() + 8.0;
     let name_rect = Rect::from_min_max(pos2(text_x, rect.center().y - 4.0), pos2(marks_left - 4.0, rect.center().y + 14.0));
     let frames = if row.animation { m.layers.frames(row.id).len() } else { 0 };
+    let template_cels = m.layers.anim(row.id).map_or(0, |t| t.template.len());
+    let members = if row.group { m.layers.group_members(row.id).len() } else { 0 };
     let info = match folder_size {
-        _ if row.animation => format!("Animation  ·  {frames} frame{}", if frames == 1 { "" } else { "s" }),
-        _ if row.frame.is_some() => format!("{sub_cels} sub-cels{}", if visible { "  ·  shown" } else { "" }),
+        _ if row.animation => format!("{frames} frame{} - {template_cels} cel{}", if frames == 1 { "" } else { "s" }, if template_cels == 1 { "" } else { "s" }),
+        _ if row.group => format!("{members} animation folder{}", if members == 1 { "" } else { "s" }),
+        _ if row.frame.is_some() => if visible { "shown".to_owned() } else { String::new() },
         Some(n) => format!("{:.0} %  {}  ·  {n} layer{}", opacity * 100.0, blend, if n == 1 { "" } else { "s" }),
         None if is_filter => format!("{:.0} %  Filter: {}", opacity * 100.0, blend),
         None => format!("{:.0} %  {}", opacity * 100.0, blend),
