@@ -299,6 +299,9 @@ pub struct LayerStack {
     time:        u32,
     /// Onion skin marks and the ghosts they show now (onion.rs).
     onion:       onion::OnionState,
+    /// Where the merge changed since `take_time_dirty` (sheets shown or
+    /// hidden by the time, ghosts).
+    time_dirty:  Option<Rect>,
 }
 
 /// Where a node sits: the path of indices from the root.
@@ -371,6 +374,7 @@ impl LayerStack {
             removed: Vec::new(),
             time: 1,
             onion: Default::default(),
+            time_dirty: None,
         }
     }
 
@@ -438,7 +442,7 @@ impl LayerStack {
         walk(&root, (width, height), &mut ids)?;
         if count_layers(&root) == 0 { return Err("no paint layer".into()); }
         let next_id = ids.iter().max().copied().unwrap_or(0) + 1;
-        let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id, removed: Vec::new(), time: 1, onion: Default::default() };
+        let mut s = Self { root, active: 0, width, height, stroke: StrokeBuffers::default(), next_id, removed: Vec::new(), time: 1, onion: Default::default(), time_dirty: None };
         s.active = if ids.contains(&active) { active } else { first_layer_id(&s.root).unwrap_or(0) };
         // (Files from 0.10.0 could mark several references in a folder.)
         s.one_reference_per_folder(s.active);

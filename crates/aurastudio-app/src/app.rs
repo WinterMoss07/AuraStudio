@@ -1973,7 +1973,7 @@ impl App {
             self.drop_play_cache();
         }
         // Another frame shown (no edit).
-        if actions.frame_changed && !actions.recomposite { self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))); }
+        if actions.frame_changed && !actions.recomposite { self.paint.send(Cmd::RecompositeTime(Arc::clone(&self.doc))); }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         match actions.play {
             Some(true) => self.start_playback(),
@@ -2024,9 +2024,9 @@ impl App {
             if doc.kind != aurastudio_document::Kind::Animation { return; }
             let t = (doc.layers.time() as i64 + d).max(1) as u32;
             if t == doc.layers.time() { return; }
-            doc.layers.set_time(t);
+            if !doc.layers.set_time(t) { drop(doc); self.request_redraw(); return; }
         }
-        self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc)));
+        self.paint.send(Cmd::RecompositeTime(Arc::clone(&self.doc)));
         self.request_redraw();
     }
 

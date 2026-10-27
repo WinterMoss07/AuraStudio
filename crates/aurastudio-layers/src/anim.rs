@@ -16,6 +16,8 @@
 //! The hierarchy has one level of each, never nested: Group (animation
 //! folders put together, for the timeline) → Folder → Sheet → Cel.
 
+use aurastudio_core::Rect;
+
 use crate::{first_layer_id, Folder, FolderBlend, Layer, LayerStack, Node, Props};
 
 /// What a folder is.
@@ -346,7 +348,7 @@ impl LayerStack {
     /// active node is a row of the layer list (a sheet, not one of its
     /// cels).
     pub(crate) fn settle(&mut self) -> bool {
-        fn walk(nodes: &mut [Node], time: u32, changed: &mut bool) {
+        fn walk(nodes: &mut [Node], time: u32, flipped: &mut Vec<u64>) {
             for n in nodes {
                 let Node::Folder(f) = n else { continue };
                 if f.anim().is_some() {
@@ -358,7 +360,7 @@ impl LayerStack {
                         let show = Some(k) == shown;
                         if c.visible() != show {
                             *c.visible_mut() = show;
-                            *changed = true;
+                            flipped.push(c.id());
                         }
                         // Named by rank in time: "Sheet 1", "Sheet 2"...
                         let rank = starts.partition_point(|x| *x < k) + 1;
@@ -367,18 +369,56 @@ impl LayerStack {
                         }
                     }
                 } else {
-                    walk(&mut f.children, time, changed);
+                    walk(&mut f.children, time, flipped);
                 }
             }
         }
         let ghosts = self.onion.ghosts.clone();
-        let mut changed = false;
-        walk(&mut self.root, self.time, &mut changed);
+        let mut flipped = Vec::new();
+        walk(&mut self.root, self.time, &mut flipped);
         self.prune_empty_groups();
         if let Some((_, Some(frame))) = self.anim_of(self.active) { self.active = frame; }
         self.update_onion();
-        changed || ghosts != self.onion.ghosts
+        let ghosts_changed = ghosts != self.onion.ghosts;
+        if flipped.is_empty() && !ghosts_changed { return false; }
+        if self.needs_general_merge() {
+            // Filters and clipping read around: all of it.
+            self.time_dirty = Some((0, 0, self.width, self.height));
+        } else {
+            let mut ids = flipped;
+            if ghosts_changed {
+                ids.extend(ghosts.iter().chain(&self.onion.ghosts).flat_map(|g| g.1.iter().map(|x| x.sheet)));
+            }
+            for id in ids {
+                if let Some(r) = self.extent(id) {
+                    self.time_dirty = Some(self.time_dirty.map_or(r, |d| aurastudio_core::union(d, r)));
+                }
+            }
+        }
+        true
     }
+
+    /// Where `id` (a layer, or the layers of a folder) can show pixels,
+    /// by tiles. None: nowhere.
+    fn extent(&self, id: u64) -> Option<Rect> {
+        fn of(n: &Node, (w, h): (u32, u32), out: &mut Option<Rect>) {
+            match n {
+                Node::Layer(l) => {
+                    let r = if l.tiles.fill()[3] > 0 { Some((0, 0, w, h)) } else { l.tiles.visible_bounds() };
+                    if let Some(r) = r { *out = Some(out.map_or(r, |o| aurastudio_core::union(o, r))); }
+                }
+                Node::Folder(f) => for c in &f.children { of(c, (w, h), out) },
+                Node::Filter(_) => {}
+            }
+        }
+        let mut out = None;
+        of(self.node(id)?, (self.width, self.height), &mut out);
+        out
+    }
+
+    /// The rectangle the merge changed in since the last call (what the
+    /// time moved: sheets shown or hidden, ghosts), None if nothing.
+    pub fn take_time_dirty(&mut self) -> Option<Rect> { self.time_dirty.take() }
 
     /// A group left without animation folders goes away (the active node
     /// moves to the first layer if it was that group).
@@ -904,6 +944,57 @@ mod tests {
         assert!(s.remove_active());
         assert!(s.sheets(a).is_empty());
         s.check_animation().unwrap();
+    }
+
+    /// Redoing only the rectangle the time changed gives the merge of the
+    /// new frame whole (the canvas of before, patched there).
+    #[test]
+    fn the_dirty_rect_of_time_is_enough() {
+        let (w, h) = (256u32, 128u32);
+        let mut s = LayerStack::new(w, h);
+        let a = s.add_animation_folder("A");
+        for (n, x, y) in [(1u32, 10u32, 10u32), (4, 200, 70), (7, 100, 10)] {
+            let cel = s.make_sheet(a, n).unwrap();
+            assert!(s.set_layer_rect(cel, (x, y, x + 10, y + 10), &[0, 0, 0, 255].repeat(100)));
+        }
+        let b = s.add_layer("Back");
+        assert!(s.set_layer_rect(b, (120, 100, 130, 110), &[0, 0, 255, 255].repeat(100)));
+        let full = |s: &LayerStack| s.composite_rect((0, 0, w, h));
+        let patch = |s: &mut LayerStack, canvas: &mut Vec<u8>, t: u32| {
+            s.set_time(t);
+            if let Some(r) = s.take_time_dirty() {
+                let px = s.composite_rect(r);
+                let rw = (r.2 - r.0) as usize;
+                for (i, row) in px.chunks_exact(rw * 4).enumerate() {
+                    let o = ((r.1 as usize + i) * w as usize + r.0 as usize) * 4;
+                    canvas[o..o + rw * 4].copy_from_slice(row);
+                }
+            }
+            assert!(*canvas == full(s), "frame {t}");
+        };
+        s.set_time(1);
+        s.take_time_dirty();
+        let mut canvas = full(&s);
+        for t in [2, 3, 4, 5, 7, 7, 1, 6, 4, 4, 1] { patch(&mut s, &mut canvas, t); }
+        // With the onion skin: ghosts of other sheets come and go.
+        let f1 = s.sheet_at(a, 1).unwrap();
+        s.set_active(f1);
+        s.set_onion(Onion { enabled: true, mobile: [(-1, None), (1, None)].into(), fixed: Default::default() });
+        s.take_time_dirty();
+        canvas = full(&s);
+        for t in [1, 2, 4, 5, 7, 6, 1, 7, 4] { patch(&mut s, &mut canvas, t); }
+    }
+
+    /// Time moving inside a held sheet leaves no dirty rect.
+    #[test]
+    fn a_held_sheet_leaves_nothing_dirty() {
+        let mut s = LayerStack::new(64, 64);
+        let a = s.add_animation_folder("A");
+        for n in [1, 4] { s.make_sheet(a, n).unwrap(); }
+        s.set_time(1);
+        s.take_time_dirty();
+        assert!(!s.set_time(3));
+        assert_eq!(s.take_time_dirty(), None);
     }
 
     /// The layer list shows a sheet as one row: its cels get no thumbnail.

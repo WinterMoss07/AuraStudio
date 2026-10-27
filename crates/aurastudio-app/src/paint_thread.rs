@@ -48,6 +48,9 @@ pub enum Cmd {
     /// a filter layer's values...). Only the latest of those waiting is
     /// done.
     Recomposite(SharedDoc),
+    /// Merge again only where the time changed the picture (sheets shown
+    /// or hidden, ghosts): the rectangle the document keeps.
+    RecompositeTime(SharedDoc),
     /// One pen sample.
     Sample(PenSample),
     End,
@@ -396,7 +399,11 @@ impl Worker {
                         self.doc = Some(doc);
                     }
                     Cmd::Recomposite(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_))) => {}
-                    Cmd::Recomposite(doc) => self.recomposite(doc),
+                    Cmd::Recomposite(doc) => self.recomposite(doc, false),
+                    // (What a later one will merge is enough: the rectangle
+                    // is kept in the document, and adds up meanwhile.)
+                    Cmd::RecompositeTime(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_) | Cmd::RecompositeTime(_))) => {}
+                    Cmd::RecompositeTime(doc) => self.recomposite(doc, true),
                     Cmd::PlayBuild { doc, gen } => self.play_build(doc, gen),
                     Cmd::Filter { doc, action } => {
                         use aurastudio_ui::FilterAction as F;
@@ -531,17 +538,24 @@ impl Worker {
 
     /// Merge the whole canvas again (filter layers make it slow: off the
     /// UI thread), by bands, the document locked for one at a time (the UI
-    /// runs between two), each shown as it comes.
-    fn recomposite(&mut self, doc: SharedDoc) {
+    /// runs between two), each shown as it comes. `time_only`: just where
+    /// the time changed the picture (nothing at all if nowhere).
+    fn recomposite(&mut self, doc: SharedDoc, time_only: bool) {
         let t = Instant::now();
         let (w, h, bands) = {
             let mut d = doc.lock().unwrap();
             d.layers.drop_stroke_cache();
             let (w, h) = (d.layers.width, d.layers.height);
-            (w, h, d.layers.merge_bands((0, 0, w, h), 128))
+            let dirty = d.layers.take_time_dirty();
+            let rect = if time_only {
+                dirty.map(|r| (r.0.min(w), r.1.min(h), r.2.min(w), r.3.min(h))).filter(|r| r.2 > r.0 && r.3 > r.1)
+            } else {
+                Some((0, 0, w, h))
+            };
+            (w, h, rect.map(|r| d.layers.merge_bands(r, 128)).unwrap_or_default())
         };
-        // (What was waiting to be shown is part of it.)
-        self.pending.clear();
+        // (What was waiting to be shown is part of a whole merge.)
+        if !time_only { self.pending.clear(); }
         for r in bands {
             let rgba = {
                 let d = doc.lock().unwrap();
@@ -559,7 +573,7 @@ impl Worker {
             let_ui_in();
         }
         self.doc = Some(doc);
-        log::debug!("recomposite {w}x{h}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        log::debug!("recomposite{} {w}x{h}: {:.0} ms", if time_only { " (time)" } else { "" }, t.elapsed().as_secs_f64() * 1000.0);
     }
 
     /// An undo / redo done: show what changed (a layer step: everything).
@@ -571,7 +585,7 @@ impl Worker {
         };
         if c.selection { events.push(Event::Selection); }
         if c.tree {
-            self.recomposite(doc);
+            self.recomposite(doc, false);
             // (The tree changed: any layer may look different.)
             events.push(Event::LayerChanged { layer_id: c.layer_id, rect: None });
             for (id, _) in c.more { events.push(Event::LayerChanged { layer_id: id, rect: None }); }
