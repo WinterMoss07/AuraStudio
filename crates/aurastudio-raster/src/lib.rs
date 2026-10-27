@@ -15,6 +15,8 @@ pub struct Tiles {
     height: u32,
     cols:   u32,
     rows:   u32,
+    /// Empty (not allocated) until the first tile is stored: one slot per
+    /// square of the canvas then (8 bytes each).
     tiles:  Vec<Option<Tile>>,
     /// Color of every pixel no tile covers.
     fill:   [u8; 4],
@@ -31,7 +33,7 @@ pub fn new_tile(fill: [u8; 4]) -> Tile {
 impl Tiles {
     pub fn new(width: u32, height: u32, fill: [u8; 4]) -> Self {
         let (cols, rows) = (width.div_ceil(TILE), height.div_ceil(TILE));
-        Self { width, height, cols, rows, tiles: (0..cols * rows).map(|_| None).collect(), fill }
+        Self { width, height, cols, rows, tiles: Vec::new(), fill }
     }
 
     /// From full RGBA rows (width × height × 4 bytes); squares that are all
@@ -63,7 +65,13 @@ impl Tiles {
     pub fn tile_mut(&mut self, tx: u32, ty: u32) -> &mut Tile {
         let i = self.index(tx, ty);
         let fill = self.fill;
-        self.tiles[i].get_or_insert_with(|| new_tile(fill))
+        self.table()[i].get_or_insert_with(|| new_tile(fill))
+    }
+
+    /// The slots of the tiles, made on first use.
+    fn table(&mut self) -> &mut Vec<Option<Tile>> {
+        if self.tiles.is_empty() { self.tiles.resize_with((self.cols * self.rows) as usize, || None); }
+        &mut self.tiles
     }
 
     /// Every stored tile: (tx, ty, pixels).
@@ -148,13 +156,14 @@ impl Tiles {
     pub fn set_tile(&mut self, tx: u32, ty: u32, tile: Option<Tile>) {
         if tx < self.cols && ty < self.rows {
             let i = self.index(tx, ty);
-            self.tiles[i] = tile;
+            if tile.is_none() && self.tiles.is_empty() { return; }
+            self.table()[i] = tile;
         }
     }
 
     /// Back to the fill color everywhere (frees every tile).
     pub fn clear(&mut self) {
-        for t in &mut self.tiles { *t = None; }
+        self.tiles = Vec::new();
     }
 
     /// One pixel (outside the canvas: the fill color).
@@ -287,6 +296,20 @@ mod tests {
         let t = Tiles::new(6071, 8598, [255, 255, 255, 0]);
         assert_eq!(t.stored(), 0);
         assert_eq!(t.pixel(100, 100), [255, 255, 255, 0]);
+    }
+
+    #[test]
+    fn an_empty_layer_has_no_table_either() {
+        let mut t = Tiles::new(4096, 4096, [0; 4]);
+        assert_eq!(t.tiles.capacity(), 0);
+        assert!(t.tile(3, 3).is_none() && t.iter().next().is_none() && t.content_bounds().is_none());
+        t.set_tile(1, 1, None);
+        assert_eq!(t.tiles.capacity(), 0, "dropping nothing makes nothing");
+        t.write_rect((70, 70, 71, 71), &[1, 2, 3, 255]);
+        assert_eq!(t.stored(), 1);
+        t.clear();
+        assert_eq!((t.stored(), t.tiles.capacity()), (0, 0), "cleared: the table goes too");
+        assert_eq!(t.pixel(70, 70), [0; 4]);
     }
 
     #[test]
