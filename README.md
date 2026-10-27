@@ -333,13 +333,16 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 
 | Crate | Role |
 |---|---|
-| `aurastudio-core` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
+| `aurastudio-core` | shared types, no dependencies: `Rect`, `TILE`, `PaintSurface`, blend modes |
+| `aurastudio-raster` | the tiles layers are stored in |
+| `aurastudio-selection` | selections (masks, polygons, ellipses, boolean modes) |
+| `aurastudio-transform` | free transform and mesh warp, resampling |
 | `aurastudio-forge` | Forge, the brush engine (`src/forge`), `.myb` reader |
 | `aurastudio-forge-library` | brush library: built-in presets, bundled MyPaint collection, import |
-| `aurastudio-layers` | layer tree, folders, lock, compositing, selections, transforms (resampling) |
+| `aurastudio-layers` | layer tree, folders, lock, compositing, fill, animation (sheets, onion skin, playback cache) |
 | `aurastudio-document` | documents, workspace, undo history, selection commands, the transform under way |
 | `aurastudio-color` | monitor ICC profile, sRGB → display transform (3D LUT) |
-| `aurastudio-gpu` | wgpu renderer: canvas, view transform, color LUT, brush outline, egui |
+| `aurastudio-gpu` | wgpu renderer: canvas texture, view transform, color LUT, brush outline, egui |
 | `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
 | `aurastudio-file` | `.aurs` format, image import / export |
 | `aurastudio-filters` | Filters: Photoshop's tones and colors, W3C Filter Effects blurs |

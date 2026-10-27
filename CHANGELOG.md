@@ -3,6 +3,19 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.19.1 — 2026-10-27
+
+Crates reorganized, no change in behavior.
+
+- `aurastudio-brush` is now `aurastudio-forge` and `aurastudio-brushes` is
+  `aurastudio-forge-library`.
+- `aurastudio-canvas` is now `aurastudio-core`: only shared types, no
+  dependencies. The wgpu `Canvas` texture moved to `aurastudio-gpu`.
+- New crates taken out of `aurastudio-layers`: `aurastudio-raster` (tiles),
+  `aurastudio-selection` and `aurastudio-transform`.
+- While recompositing by bands, the paint thread no longer sleeps between
+  two bands; it only lets the interface in when it is waiting.
+
 ## 0.19.0 — 2026-10-27
 
 Sheets, and a clearer onion strip.

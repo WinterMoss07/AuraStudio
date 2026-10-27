@@ -554,11 +554,12 @@ impl Worker {
             drop(p);
             (self.notify)(Event::Painted);
             // Room for the UI to take the document (a mutex isn't fair:
-            // locking again at once, this thread would get it first).
-            std::thread::sleep(Duration::from_micros(800));
+            // locking again at once, this thread would get it first), only
+            // when it is waiting: no fixed sleep per band.
+            let_ui_in();
         }
         self.doc = Some(doc);
-        log::info!("recomposite {w}x{h}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+        log::debug!("recomposite {w}x{h}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
     }
 
     /// An undo / redo done: show what changed (a layer step: everything).
