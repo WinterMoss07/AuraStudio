@@ -110,6 +110,7 @@ impl LayerStack {
     }
 
     /// The ghosts shown now (for the merge; empty when off).
+    #[cfg(test)]
     pub(crate) fn ghosts(&self) -> &[(u64, Vec<Ghost>)] { &self.onion.ghosts }
 
     /// The sheets the marks show now, for the active animation folder.
