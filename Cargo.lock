@@ -200,7 +200,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "arboard",
  "aurastudio-brush",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brush"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aurastudio-canvas",
  "png 0.18.1",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-brushes"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-canvas",
@@ -252,14 +252,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-canvas"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "wgpu",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "log",
  "moxcms 0.9.1",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-document"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-filters",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-document",
@@ -293,11 +293,11 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-filters"
-version = "0.18.0"
+version = "0.18.1"
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-layers",
@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-input"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "crossbeam-queue",
  "windows",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aurastudio-canvas",
  "aurastudio-filters",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "aurastudio-brush",
  "aurastudio-brushes",
@@ -1607,12 +1607,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lhash"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "744a4c881f502e98c2241d2e5f50040ac73b30194d64452bb6260393b53f0dc9"
-
-[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1698,15 +1692,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 dependencies = [
  "twox-hash",
-]
-
-[[package]]
-name = "mach-dxcompiler-rs"
-version = "0.1.6+2026.09.16-48d5a66.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "699d5b85d279d172f6ea742c6c47342fdd7c388872cea2e137e2c6721ef2e6d6"
-dependencies = [
- "lhash",
 ]
 
 [[package]]
@@ -3714,7 +3699,6 @@ dependencies = [
  "libc",
  "libloading",
  "log",
- "mach-dxcompiler-rs",
  "naga",
  "naga-types",
  "ndk-sys",

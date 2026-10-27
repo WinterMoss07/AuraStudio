@@ -19,8 +19,3 @@ half      = "2"
 
 [dev-dependencies]
 pollster = "0.3"
-
-# DXC (DirectX 12's modern shader compiler) built into the program: no
-# dxcompiler.dll to ship, no fallback to the old FXC.
-[target.'cfg(windows)'.dependencies]
-wgpu = { version = "30", features = ["static-dxc"] }

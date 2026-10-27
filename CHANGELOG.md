@@ -3,6 +3,13 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.18.1 — 2026-10-27
+
+- DirectX 12 compiles shaders with FXC again (as up to 0.17), or with DXC
+  when `dxcompiler.dll` sits next to the program. DXC built into the .exe
+  added about 25 MB for no gain you could feel with today's small shaders;
+  it comes back with the GPU filters and compositing effects.
+
 ## 0.18.0 — 2026-10-26
 
 The interface and graphics libraries brought up to date: egui 0.30 → 0.36,

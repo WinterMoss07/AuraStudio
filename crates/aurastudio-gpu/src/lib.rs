@@ -197,13 +197,20 @@ static STEPS_T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::
 static ADAPTER_INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static SHADER_COMPILER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
-/// DirectX 12's shader compiler: DXC built into the program (new, fast;
-/// wgpu's static-dxc on Windows), FXC where it is missing. Other APIs:
-/// their own.
+/// DirectX 12's shader compiler: FXC (built into Windows; enough for our
+/// small shaders), or DXC when Microsoft's dxcompiler.dll sits next to the
+/// program. (DXC built in, wgpu's `static-dxc`, adds ~25 MB to the .exe:
+/// for when GPU filters and compositing effects bring big shaders.)
+/// Other APIs: their own.
 fn shader_compiler(b: Backend) -> (Dx12Compiler, &'static str) {
     match b {
-        Backend::DirectX12 if cfg!(all(windows, not(target_arch = "aarch64"), target_env = "msvc")) => (Dx12Compiler::StaticDxc, "DXC (built in)"),
-        Backend::DirectX12 => (Dx12Compiler::Fxc, "FXC"),
+        Backend::DirectX12 => {
+            let dll = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("dxcompiler.dll"))).filter(|p| p.is_file());
+            match dll {
+                Some(p) => (Dx12Compiler::DynamicDxc { dxc_path: p.to_string_lossy().into_owned() }, "DXC (dxcompiler.dll next to the program)"),
+                None => (Dx12Compiler::Fxc, "FXC (put dxcompiler.dll next to the program for DXC)"),
+            }
+        }
         Backend::Vulkan => (Dx12Compiler::Fxc, "SPIR-V (Vulkan driver)"),
         Backend::Metal => (Dx12Compiler::Fxc, "Metal"),
         Backend::OpenGl => (Dx12Compiler::Fxc, "GLSL (OpenGL driver)"),
