@@ -282,12 +282,15 @@ impl LayerStack {
 
     /// Go to frame `n`: every animation folder shows its sheet there. A
     /// sheet or cel chosen moves to its folder's sheet shown there.
-    pub fn set_time(&mut self, n: u32) {
+    /// True if what the merge shows may have changed (a sheet shown or
+    /// hidden, other ghosts): false when nothing visible moves (no
+    /// animation folder, a sheet held), and the canvas stays as it is.
+    pub fn set_time(&mut self, n: u32) -> bool {
         self.time = n.clamp(1, MAX_FRAME);
         if let Some((folder, Some(_))) = self.anim_of(self.active) {
             self.active = self.exposed(folder).unwrap_or(folder);
         }
-        self.settle();
+        self.settle()
     }
 
     /// The animation folder `id` is in or is, and the sheet it is or is
@@ -342,8 +345,8 @@ impl LayerStack {
     /// shows only its sheet of now, its sheets named in time order; the
     /// active node is a row of the layer list (a sheet, not one of its
     /// cels).
-    pub(crate) fn settle(&mut self) {
-        fn walk(nodes: &mut [Node], time: u32) {
+    pub(crate) fn settle(&mut self) -> bool {
+        fn walk(nodes: &mut [Node], time: u32, changed: &mut bool) {
             for n in nodes {
                 let Node::Folder(f) = n else { continue };
                 if f.anim().is_some() {
@@ -352,7 +355,11 @@ impl LayerStack {
                     let shown = starts.iter().copied().filter(|k| *k <= time).max();
                     for c in &mut f.children {
                         let Some(k) = c.sheet_start() else { continue };
-                        *c.visible_mut() = Some(k) == shown;
+                        let show = Some(k) == shown;
+                        if c.visible() != show {
+                            *c.visible_mut() = show;
+                            *changed = true;
+                        }
                         // Named by rank in time: "Sheet 1", "Sheet 2"...
                         let rank = starts.partition_point(|x| *x < k) + 1;
                         if c.name().strip_prefix("Sheet ").and_then(|r| r.parse::<usize>().ok()) != Some(rank) {
@@ -360,14 +367,17 @@ impl LayerStack {
                         }
                     }
                 } else {
-                    walk(&mut f.children, time);
+                    walk(&mut f.children, time, changed);
                 }
             }
         }
-        walk(&mut self.root, self.time);
+        let ghosts = self.onion.ghosts.clone();
+        let mut changed = false;
+        walk(&mut self.root, self.time, &mut changed);
         self.prune_empty_groups();
         if let Some((_, Some(frame))) = self.anim_of(self.active) { self.active = frame; }
         self.update_onion();
+        changed || ghosts != self.onion.ghosts
     }
 
     /// A group left without animation folders goes away (the active node
@@ -814,6 +824,7 @@ impl LayerStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onion::{Onion, OnionLook};
     use crate::Place;
 
     fn names(s: &LayerStack, frame: u64) -> Vec<String> {
@@ -893,6 +904,40 @@ mod tests {
         assert!(s.remove_active());
         assert!(s.sheets(a).is_empty());
         s.check_animation().unwrap();
+    }
+
+    /// Going to another frame says whether the merge may differ: not with
+    /// no animation folder, nor inside a held sheet.
+    #[test]
+    fn time_reports_when_the_merge_changes() {
+        let mut s = LayerStack::new_document(32, 32);
+        assert!(!s.set_time(5), "no animation folder: the canvas stays");
+        let a = s.add_animation_folder("A");
+        for n in [1, 4] { s.set_time(n); s.make_sheet(a, n).unwrap(); }
+        assert!(s.set_time(1), "sheet 4 hidden, sheet 1 shown");
+        assert!(!s.set_time(2) && !s.set_time(3), "sheet 1 held");
+        assert!(s.set_time(4));
+        assert!(!s.set_time(9), "sheet 4 held");
+        assert!(s.set_time(1));
+        assert!(!s.set_time(1), "same frame");
+    }
+
+    /// Ghosts that change with the frame count too, even when the sheet
+    /// shown stays the same (marks in frames).
+    #[test]
+    fn time_reports_changed_ghosts() {
+        let mut s = LayerStack::new_document(32, 32);
+        let a = s.add_animation_folder("A");
+        for n in [1, 4] { s.set_time(n); s.make_sheet(a, n).unwrap(); }
+        let f4 = s.sheet_at(a, 4).unwrap();
+        s.set_active(f4);
+        s.set_onion_look(OnionLook { by_frames: true, ..OnionLook::default() });
+        s.set_onion(Onion { enabled: true, mobile: [(-1, None)].into(), fixed: Default::default() });
+        s.set_time(4);
+        assert!(!s.ghosts()[0].1.is_empty(), "frame 3 shows sheet 1");
+        assert!(s.set_time(5), "frame 4 is the current sheet: no ghost any more");
+        assert!(s.ghosts().iter().all(|g| g.1.is_empty()));
+        assert!(!s.set_time(6), "nothing moves");
     }
 
     /// Template edits go to every sheet; a locked cel isn't painted,

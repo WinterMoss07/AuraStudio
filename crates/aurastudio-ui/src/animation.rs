@@ -258,8 +258,7 @@ fn contents(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut 
 fn go(m: &mut Model, a: &mut Actions, n: u32) {
     let n = n.max(1);
     if m.layers.time() != n {
-        m.layers.set_time(n);
-        a.frame_changed = true;
+        a.frame_changed |= m.layers.set_time(n);
     }
 }
 

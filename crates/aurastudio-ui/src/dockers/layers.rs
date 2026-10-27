@@ -747,7 +747,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 select(st, m, id, mods, &shown_ids);
                 // A sheet chosen: go to the frame it is exposed from.
                 if let Some(n) = m.layers.node(id).and_then(Node::sheet_start) {
-                    if m.layers.time() != n { m.layers.set_time(n); a.frame_changed = true; }
+                    if m.layers.time() != n { a.frame_changed |= m.layers.set_time(n); }
                 }
             }
             RowEvent::ToggleVisible => {
