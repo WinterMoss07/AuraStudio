@@ -316,7 +316,7 @@ mod tests {
         let mut s = LayerStack::new(w, h);
         let folder = s.add_animation_folder("A");
         for (n, x, c) in [(1u32, 4u32, [180u8, 20, 20]), (2, 40, [20, 20, 180])] {
-            let cel = s.make_frame(folder, n).unwrap();
+            let cel = s.make_sheet(folder, n).unwrap();
             let px: Vec<u8> = (0..30 * 30).flat_map(|i| if i % 5 < 3 { [c[0], c[1], c[2], (i % 251) as u8] } else { [0, 0, 0, 0] }).collect();
             s.set_layer_rect(cel, (x, 20, x + 30, 50), &px);
         }

@@ -3,6 +3,38 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.19.0 — 2026-10-27
+
+Sheets, and a clearer onion strip.
+
+**Sheets**
+- The drawings of an animation folder are now called sheets: Group ›
+  Folder › Sheet › Cel. Frames are the time; a sheet is exposed from a
+  frame and holds until the next one ("Sheet 3 at frame 12"). Sheets are
+  named by their order in time (Sheet 1, Sheet 2...) and renamed when
+  they move; the X-sheet, the timeline, the Layers docker, the Cel
+  template, the menus and the undo steps say sheet where they said frame.
+- Files: sheets are saved as such (format 5); files from before open as
+  they were (their "Frame N" names become "Sheet N" by order). Animation
+  files saved now do not open in older versions.
+
+**Onion skin**
+- Preferences > Animation: marks count sheets (−1: the sheet before,
+  however long it holds; Krita, Clip Studio) or frames (−1: the frame
+  before; a sheet already shown is not shown twice; OpenToonz). A mark
+  keeps its number when switching.
+- The strip is a little taller; the switch spans it at the current frame,
+  half the "before" color, half the "after" one (from the preferences),
+  faint when the onion skin is off. Dragging the switch moves through
+  time.
+- Hovering the strip shows in yellow where a click would put (or take
+  off) a mark.
+- Fixed marks are blue (they are neither before nor after).
+
+**Timeline**
+- The shading, the lines and the numbers follow one beat: every 6 frames
+  at 24 fps (12, 48...), every 5 at 25, 30 or 60 fps.
+
 ## 0.18.1 — 2026-10-27
 
 - DirectX 12 compiles shaders with FXC again (as up to 0.17), or with DXC

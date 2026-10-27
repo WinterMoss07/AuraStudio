@@ -1,10 +1,12 @@
-//! Onion skin, OpenToonz's way: marks on the timeline say which drawings
+//! Onion skin, OpenToonz's way: marks on the timeline say which sheets
 //! of the active animation folder show, faded and tinted, behind its
-//! current drawing. Mobile marks count drawings from the current one
-//! (−1: the drawing before, whatever its hold), fixed marks are frames
-//! (their drawing stays shown wherever the current frame is). Each mark
-//! has its opacity, or the automatic fade by distance (OpenToonz's paper
-//! thickness). Drawings before are tinted with one color, after with the
+//! current sheet. Mobile marks count from the current one, in sheets
+//! (−1: the sheet before, whatever its hold; Krita, Clip Studio) or in
+//! frames (−1: the frame before, OpenToonz; a sheet already shown, the
+//! current one included, is not shown twice). Fixed marks are frames
+//! (their sheet stays shown wherever the current frame is). Each mark has
+//! its opacity, or the automatic fade by distance (OpenToonz's paper
+//! thickness). Sheets before are tinted with one color, after with the
 //! other: OpenToonz's correction, `rgb + (1 − opacity) × tint`.
 
 use std::collections::BTreeMap;
@@ -16,7 +18,8 @@ use crate::{LayerStack, Node};
 pub struct Onion {
     /// Shown (the marks stay when off).
     pub enabled: bool,
-    /// Drawings from the current one (never 0) → opacity, None: automatic.
+    /// Offsets from the current sheet or frame (never 0) → opacity,
+    /// None: automatic.
     pub mobile:  BTreeMap<i32, Option<f32>>,
     /// Frames → opacity, None: automatic.
     pub fixed:   BTreeMap<u32, Option<f32>>,
@@ -27,17 +30,19 @@ pub struct Onion {
 pub struct OnionLook {
     pub before:    [u8; 3],
     pub after:     [u8; 3],
-    /// 0..100: how fast the drawings fade with distance (OpenToonz's
+    /// 0..100: how fast the sheets fade with distance (OpenToonz's
     /// paper thickness, 50 by default).
     pub thickness: u8,
+    /// Mobile marks count frames (OpenToonz), not sheets.
+    pub by_frames: bool,
 }
 
 impl Default for OnionLook {
-    fn default() -> Self { Self { before: [255, 0, 0], after: [0, 255, 0], thickness: 50 } }
+    fn default() -> Self { Self { before: [255, 0, 0], after: [0, 255, 0], thickness: 50, by_frames: false } }
 }
 
 impl OnionLook {
-    /// Automatic opacity of a drawing `d` drawings away (OpenToonz's
+    /// Automatic opacity of a sheet `d` sheets away (OpenToonz's
     /// getOnionSkinFade: 0.35 + d × step, at most 0.95 faded).
     pub fn fade(&self, d: u32) -> f32 {
         // OpenToonz's table: 0 → 0, 10 → 0.05, 50 → 0.12, 90 → 0.3, 100 → 0.6.
@@ -48,10 +53,10 @@ impl OnionLook {
     }
 }
 
-/// One drawing shown as a ghost: its frame folder, tint and opacity.
+/// One sheet shown as a ghost: its id, tint and opacity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ghost {
-    pub frame:   u64,
+    pub sheet:   u64,
     pub tint:    [f32; 3],
     pub opacity: f32,
 }
@@ -104,36 +109,51 @@ impl LayerStack {
     /// The ghosts shown now (for the merge; empty when off).
     pub fn ghosts(&self) -> &[(u64, Vec<Ghost>)] { &self.onion.ghosts }
 
-    /// The drawings the marks show now, for the active animation folder.
+    /// The sheets the marks show now, for the active animation folder.
     pub(crate) fn update_onion(&mut self) {
         self.onion.ghosts.clear();
         let o = &self.onion;
         if !o.marks.enabled || o.paused { return; }
         let Some((folder, _)) = self.anim_of(self.active) else { return };
         if !self.node(folder).is_some_and(Node::visible) { return; }
-        let frames = self.frames(folder);
-        let Some(cur) = frames.iter().rposition(|f| f.0 <= self.time) else {
-            // Before the first drawing: nothing current, nothing to compare.
+        let sheets = self.sheets(folder);
+        let Some(cur) = sheets.iter().rposition(|f| f.0 <= self.time) else {
+            // Before the first sheet: nothing current, nothing to compare.
             return;
         };
         let look = o.look;
         let color = |c: [u8; 3]| c.map(|v| v as f32 / 255.0);
         let mut shown: Vec<(u32, Ghost)> = Vec::new();
-        let add = |i: usize, opacity: Option<f32>, shown: &mut Vec<(u32, Ghost)>| {
-            if i == cur || shown.iter().any(|g| g.1.frame == frames[i].1) { return; }
-            let d = i.abs_diff(cur) as u32;
+        let add = |i: usize, d: u32, opacity: Option<f32>, shown: &mut Vec<(u32, Ghost)>| {
+            if i == cur || shown.iter().any(|g| g.1.sheet == sheets[i].1) { return; }
             let tint = color(if i < cur { look.before } else { look.after });
             let opacity = opacity.map_or_else(|| look.fade(d), |v| v.clamp(0.0, 1.0));
-            if opacity > 0.0 { shown.push((d, Ghost { frame: frames[i].1, tint, opacity })); }
+            if opacity > 0.0 { shown.push((d, Ghost { sheet: sheets[i].1, tint, opacity })); }
         };
-        for (&off, &op) in &o.marks.mobile {
-            let i = cur as i64 + off as i64;
-            if off != 0 && (0..frames.len() as i64).contains(&i) { add(i as usize, op, &mut shown); }
+        if look.by_frames {
+            // The sheet each frame shows; the distance counts the sheets
+            // shown on that side, nearest first (OpenToonz).
+            let (mut back, mut front) = (0, 0);
+            let mut marks: Vec<(i32, Option<f32>)> = o.marks.mobile.iter().map(|(k, v)| (*k, *v)).collect();
+            marks.sort_by_key(|m| m.0.unsigned_abs());
+            for (off, op) in marks {
+                let t = self.time as i64 + off as i64;
+                if off == 0 || t < 1 { continue; }
+                let Some(i) = sheets.iter().rposition(|x| x.0 as i64 <= t) else { continue };
+                if i == cur || shown.iter().any(|g| g.1.sheet == sheets[i].1) { continue; }
+                let d = if off < 0 { back += 1; back } else { front += 1; front };
+                add(i, d, op, &mut shown);
+            }
+        } else {
+            for (&off, &op) in &o.marks.mobile {
+                let i = cur as i64 + off as i64;
+                if off != 0 && (0..sheets.len() as i64).contains(&i) { add(i as usize, off.unsigned_abs(), op, &mut shown); }
+            }
         }
         for (&f, &op) in &o.marks.fixed {
-            if let Some(i) = frames.iter().rposition(|x| x.0 <= f) { add(i, op, &mut shown); }
+            if let Some(i) = sheets.iter().rposition(|x| x.0 <= f) { add(i, i.abs_diff(cur) as u32, op, &mut shown); }
         }
-        // Far ones first: nearer drawings over them.
+        // Far ones first: nearer sheets over them.
         shown.sort_by_key(|g| std::cmp::Reverse(g.0));
         self.onion.ghosts = vec![(folder, shown.into_iter().map(|g| g.1).collect())];
     }
@@ -158,11 +178,11 @@ mod tests {
         let mut s = LayerStack::new(80, 30);
         let folder = s.add_animation_folder("A");
         for (n, x) in [(1u32, 10u32), (4, 30), (6, 50)] {
-            let cel = s.make_frame(folder, n).unwrap();
+            let cel = s.make_sheet(folder, n).unwrap();
             assert!(s.set_layer_rect(cel, (x, 10, x + 10, 20), &[0, 0, 0, 255].repeat(100)));
         }
         s.set_time(5);
-        let f4 = s.frame_at(folder, 4).unwrap();
+        let f4 = s.sheet_at(folder, 4).unwrap();
         s.set_active(f4);
         (s, folder)
     }
@@ -189,13 +209,29 @@ mod tests {
     }
 
     #[test]
+    fn by_frames_a_mark_is_a_frame_and_a_sheet_shows_once() {
+        let (mut s, _) = scene();
+        s.set_onion_look(OnionLook { by_frames: true, ..OnionLook::default() });
+        // Frame 4 (−1) shows the current sheet: nothing; frame 3 (−2) and
+        // frame 2 (−3) both show sheet 1: once, as the nearest before.
+        s.set_onion(Onion { enabled: true, mobile: [(-1, None), (-2, None), (-3, None), (1, None)].into(), fixed: Default::default() });
+        assert_eq!(s.ghosts()[0].1.len(), 2);
+        assert_eq!(px(&s, 15), [183, 120, 120, 255], "sheet 1 at the first distance");
+        assert_eq!(px(&s, 55), [120, 183, 120, 255], "frame 6: sheet 3");
+        // Counting sheets, −1 is sheet 1 itself.
+        s.set_onion_look(OnionLook::default());
+        s.set_onion(Onion { enabled: true, mobile: [(-1, None)].into(), fixed: Default::default() });
+        assert_eq!(px(&s, 15), [183, 120, 120, 255]);
+    }
+
+    #[test]
     fn a_fixed_mark_stays_and_a_mark_s_opacity_wins() {
         let (mut s, folder) = scene();
         s.set_onion(Onion { enabled: true, mobile: Default::default(), fixed: [(2, Some(1.0))].into() });
         // Frame 2 holds the drawing of 1: shown at full opacity, no tint.
         assert_eq!(px(&s, 15), [0, 0, 0, 255]);
         s.set_time(7);
-        let f6 = s.frame_at(folder, 6).unwrap();
+        let f6 = s.sheet_at(folder, 6).unwrap();
         s.set_active(f6);
         assert_eq!(px(&s, 15), [0, 0, 0, 255], "still there from another frame");
         // Off: gone, marks kept.

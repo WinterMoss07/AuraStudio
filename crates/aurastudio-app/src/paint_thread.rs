@@ -252,14 +252,14 @@ impl Worker {
         (self.notify)(Event::PlayPlan { gen, plan: plan.clone().map(Box::new) });
         self.play = plan.map(|plan| {
             let mut keys: VecDeque<PlayKey> = (0..plan.statics()).map(PlayKey::Static).collect();
-            // The drawings in the order they come from the current frame.
+            // The sheets in the order they come from the current frame.
             let mut drawings: Vec<(u32, u64)> = plan.parts.iter().flat_map(|p| match p {
-                PlayPart::Anim { frames, .. } => frames.clone(),
+                PlayPart::Anim { sheets, .. } => sheets.clone(),
                 PlayPart::Static(_) => Vec::new(),
             }).collect();
-            // (A held frame counts from the drawing it shows.)
+            // (A held frame counts from the sheet it shows.)
             let start = plan.parts.iter().filter_map(|p| match p {
-                PlayPart::Anim { frames, .. } => frames.iter().rev().find(|f| f.0 <= time).map(|f| f.0),
+                PlayPart::Anim { sheets, .. } => sheets.iter().rev().find(|f| f.0 <= time).map(|f| f.0),
                 PlayPart::Static(_) => None,
             }).min().unwrap_or(1);
             drawings.sort_by_key(|&(n, _)| (n < start, n));
@@ -645,11 +645,11 @@ impl Worker {
         self.stroke_rect = None;
         self.stats = Stats::default();
         self.size = (doc.layers.width, doc.layers.height);
-        // (In an animation folder: maybe a new frame, made here.)
+        // (In an animation folder: maybe a new sheet, made here.)
         let target = doc.begin_paint();
         self.layer = target.unwrap_or(0);
         self.active = target.is_some() && doc.layers.begin_stroke(self.layer);
-        if !self.active { doc.drop_new_frame(); }
+        if !self.active { doc.drop_new_sheet(); }
         self.reshow(doc);
         if !self.active { return false; }
 
@@ -689,7 +689,7 @@ impl Worker {
         rect
     }
 
-    /// A frame was made or taken back: the whole canvas merges again.
+    /// A sheet was made or taken back: the whole canvas merges again.
     fn reshow(&mut self, doc: &mut Document) {
         if doc.take_reshown() { add_rect(&mut self.pending, (0, 0, doc.layers.width, doc.layers.height)); }
     }
@@ -702,8 +702,8 @@ impl Worker {
         // Also after an aborted stroke (layer deleted / canvas resized):
         // whatever was painted before is still recorded for undo.
         if !std::mem::take(&mut self.sampled) {
-            // (A frame made for nothing goes.)
-            doc.drop_new_frame();
+            // (A sheet made for nothing goes.)
+            doc.drop_new_sheet();
             self.reshow(doc);
             return None;
         }
@@ -731,7 +731,7 @@ impl Worker {
                 self.stats.paint.count, self.stats.paint, self.stats.max_queue,
                 t0.elapsed().as_secs_f64() * 1000.0, doc.history().bytes() / 1024);
         } else {
-            doc.drop_new_frame();
+            doc.drop_new_sheet();
         }
         self.reshow(doc);
         // The stroke buffers are freed until the next stroke.

@@ -1,9 +1,9 @@
 //! Cel template docker: the cels of the animation folder chosen (or of
-//! its frame shown), listed top to bottom as the Layers docker lists a
+//! its sheet shown), listed top to bottom as the Layers docker lists a
 //! stack: each new cel stacks above the last. The radio picks the cel
-//! strokes go to (in every frame); eye and lock are the frame's; the
-//! lighthouse marks the reference of every frame (the Ink: what the Colo's
-//! fill reads); Apply to folder gives every frame (and the frames to come)
+//! strokes go to (in every sheet); eye and lock are the sheet's; the
+//! lighthouse marks the reference of every sheet (the Ink: what the Colo's
+//! fill reads); Apply to folder gives every sheet (and the sheets to come)
 //! those states. Below, the template itself: add, remove, drag to reorder,
 //! rename (double click).
 
@@ -35,13 +35,13 @@ impl CelState {
 /// A row being dragged (egui drag and drop payload): its rank.
 struct CelDrag(usize);
 
-/// The frame whose cels are shown: the active one, else the one the
+/// The sheet whose cels are shown: the active one, else the one the
 /// folder shows now.
-fn shown_frame(layers: &LayerStack, folder: u64, frame: Option<u64>) -> Option<u64> {
-    frame.or_else(|| layers.exposed(folder))
+fn shown_sheet(layers: &LayerStack, folder: u64, sheet: Option<u64>) -> Option<u64> {
+    sheet.or_else(|| layers.exposed(folder))
 }
 
-/// Cel layer ids of `frame`, top to bottom.
+/// Cel layer ids of sheet `frame`, top to bottom.
 fn cels_of(layers: &LayerStack, frame: u64) -> Vec<u64> {
     match layers.node(frame) {
         Some(Node::Folder(f)) => f.children.iter().rev().map(Node::id).collect(),
@@ -51,19 +51,20 @@ fn cels_of(layers: &LayerStack, frame: u64) -> Vec<u64> {
 
 pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
     let Some((folder, frame)) = m.layers.anim_of(m.layers.active_id()) else {
-        ui.label(RichText::new("Select an animation folder or one of its frames.").color(theme::TEXT_WEAK));
+        ui.label(RichText::new("Select an animation folder or one of its sheets.").color(theme::TEXT_WEAK));
         return;
     };
     let Some(anim) = m.layers.anim(folder).cloned() else { return };
     let time = m.layers.time();
-    let shown = shown_frame(m.layers, folder, frame);
+    let shown = shown_sheet(m.layers, folder, frame);
     let folder_name = m.layers.node(folder).map_or(String::new(), |n| n.name().to_owned());
 
-    // Where we are: the frame drawn now, a hold, or nothing yet.
-    let state = match (m.layers.frame_at(folder, time), shown.and_then(|f| m.layers.node(f)).and_then(Node::frame)) {
-        (Some(_), _) => format!("Frame {time}"),
-        (None, Some(k)) => format!("Frame {time}: holds Frame {k}, drawing makes Frame {time}"),
-        (None, None) => format!("Frame {time}: empty, drawing makes it"),
+    // Where we are: a sheet exposed from now, a hold, or nothing yet.
+    let name = |id: u64| m.layers.node(id).map_or(String::new(), |n| n.name().to_owned());
+    let state = match (m.layers.sheet_at(folder, time), m.layers.exposed(folder)) {
+        (Some(s), _) => format!("Frame {time}: {}", name(s)),
+        (None, Some(s)) => format!("Frame {time}: {} held, drawing makes a new sheet", name(s)),
+        (None, None) => format!("Frame {time}: empty, drawing makes a sheet"),
     };
     ui.label(RichText::new(&folder_name).strong());
     ui.label(RichText::new(state).small().color(theme::TEXT_WEAK));
@@ -169,7 +170,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
 
     ui.add_space(4.0);
     let apply = ui.add_enabled(shown.is_some(), egui::Button::new("Apply to folder"))
-        .on_hover_text("Every frame (and the frames to come) gets these eyes and locks");
+        .on_hover_text("Every sheet (and the sheets to come) gets these eyes and locks");
     if apply.clicked() {
         if let Some(f) = shown {
             m.layers.apply_to_folder(f);
@@ -191,8 +192,8 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
             a.recomposite = true;
             a.layer_edit = Some("Add cel");
         }
-        if icon_button(ui, Icon::Minus, "Remove this cel (in every frame)", n > 1) {
-            // Frames drawn on it: ask first (it goes from all of them).
+        if icon_button(ui, Icon::Minus, "Remove this cel (in every sheet)", n > 1) {
+            // Sheets drawn on it: ask first (it goes from all of them).
             if m.layers.cel_content(folder, r).1 > 0 {
                 st.ask = Some((folder, r));
             } else {
@@ -206,21 +207,21 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
     ask_dialog(ui.ctx(), st, m, a);
 }
 
-/// Deleting a cel takes it from every frame of the folder: say how many
+/// Deleting a cel takes it from every sheet of the folder: say how many
 /// have a drawing on it. Cancel is the default (Enter, Escape).
 fn ask_dialog(ctx: &egui::Context, st: &mut CelState, m: &mut Model, a: &mut Actions) {
     let Some((folder, r)) = st.ask else { return };
     // (Gone meanwhile: an undo, another document.)
     let Some(name) = m.layers.anim(folder).and_then(|t| t.template.get(r)).map(|c| c.name.clone()) else { st.ask = None; return };
-    let (frames, drawn) = m.layers.cel_content(folder, r);
+    let (sheets, drawn) = m.layers.cel_content(folder, r);
     let mut delete = false;
     let mut cancel = false;
     egui::Modal::new(egui::Id::new("cel_delete")).show(ctx, |ui| {
         ui.set_width(340.0);
         ui.label(RichText::new(format!("Delete cel {name}?")).strong());
         ui.add_space(4.0);
-        ui.label(format!("{frames} frame{}, {drawn} contain{} a drawing on it.", super::layers::plural(frames), if drawn == 1 { "s" } else { "" }));
-        ui.label(RichText::new("It goes from every frame of this folder, not just this one.").color(theme::TEXT_WEAK));
+        ui.label(format!("{sheets} sheet{}, {drawn} contain{} a drawing on it.", super::layers::plural(sheets), if drawn == 1 { "s" } else { "" }));
+        ui.label(RichText::new("It goes from every sheet of this folder, not just this one.").color(theme::TEXT_WEAK));
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Delete cel").clicked() { delete = true; }
@@ -242,8 +243,8 @@ fn ask_dialog(ctx: &egui::Context, st: &mut CelState, m: &mut Model, a: &mut Act
     }
 }
 
-/// No frame drawn yet: eye and lock are the template's (what frames
-/// start with).
+/// No sheet yet: eye and lock are the template's (what sheets start
+/// with).
 fn set_template_state(layers: &mut LayerStack, folder: u64, r: usize, visible: Option<bool>, locked: Option<bool>) {
     let Some(Node::Folder(f)) = layers.node_mut(folder) else { return };
     let aurastudio_layers::FolderKind::Animation(a) = &mut f.kind else { return };

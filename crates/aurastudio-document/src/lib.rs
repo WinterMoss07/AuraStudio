@@ -80,10 +80,10 @@ pub struct Document {
     /// The layer tree as the history last saw it: a different one is a
     /// layer step to record (`record_tree`).
     tree:       aurastudio_layers::TreeState,
-    /// A frame was made for the stroke under way: the history's serial
+    /// A sheet was made for the stroke under way: the history's serial
     /// right after (its first stroke joins it as one undo step).
-    new_frame:  Option<u64>,
-    /// A frame was made or taken back: the whole canvas shows another
+    new_sheet:  Option<u64>,
+    /// A sheet was made or taken back: the whole canvas shows another
     /// drawing (`take_reshown`).
     reshown:    bool,
 }
@@ -113,7 +113,7 @@ impl Document {
     /// saved.
     pub fn from_parts(id: DocId, name: &str, layers: LayerStack, history: History) -> Self {
         let tree = layers.tree_state();
-        Self { id, name: name.to_owned(), kind: Kind::default(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None, transform: None, filter: None, tree, new_frame: None, reshown: false }
+        Self { id, name: name.to_owned(), kind: Kind::default(), layers, history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None, transform: None, filter: None, tree, new_sheet: None, reshown: false }
     }
 
     /// Something changed (the layer panel edits the stack directly and
@@ -143,37 +143,37 @@ impl Document {
     }
 
     /// The layer a stroke or a fill goes to. In an animation folder with
-    /// no frame drawn at the current frame, the frame is made first (one
+    /// no sheet exposed from the current frame, a sheet is made first (one
     /// undo step with what is painted: `push_painted`). None: nothing to
     /// paint on.
     pub fn begin_paint(&mut self) -> Option<u64> {
-        self.new_frame = None;
+        self.new_sheet = None;
         match self.layers.paint_target()? {
             Target::Layer(id) => Some(id),
-            Target::NewFrame { folder, frame } => {
+            Target::NewSheet { folder, frame } => {
                 self.record_tree("Layers");
-                let id = self.layers.make_frame(folder, frame)?;
-                self.record_tree("New frame");
-                self.new_frame = Some(self.history.serial());
+                let id = self.layers.make_sheet(folder, frame)?;
+                self.record_tree("New sheet");
+                self.new_sheet = Some(self.history.serial());
                 self.reshown = true;
                 Some(id)
             }
         }
     }
 
-    /// Record what was painted; with the frame just made for it, as one
-    /// step (undone, the frame goes too).
+    /// Record what was painted; with the sheet just made for it, as one
+    /// step (undone, the sheet goes too).
     fn push_painted(&mut self, label: &'static str, layer_id: u64, rect: Rect, before: &[u8]) {
-        let join = self.new_frame.take() == Some(self.history.serial());
+        let join = self.new_sheet.take() == Some(self.history.serial());
         let s0 = self.history.serial();
         self.history.push(label, layer_id, rect, before);
         if join && self.history.serial() == s0 + 1 { self.history.join_last(label); }
     }
 
-    /// Nothing was painted after all: the frame made for it goes (no undo
+    /// Nothing was painted after all: the sheet made for it goes (no undo
     /// step left). True if one was taken away.
-    pub fn drop_new_frame(&mut self) -> bool {
-        let Some(s) = self.new_frame.take() else { return false };
+    pub fn drop_new_sheet(&mut self) -> bool {
+        let Some(s) = self.new_sheet.take() else { return false };
         if s != self.history.serial() { return false; }
         let gone = self.history.undo(&mut self.layers, &mut self.selection).is_some();
         self.history.forget_redo();
@@ -183,7 +183,7 @@ impl Document {
         gone
     }
 
-    /// Since the last call, a frame was made or taken back (the whole
+    /// Since the last call, a sheet was made or taken back (the whole
     /// canvas is to merge again).
     pub fn take_reshown(&mut self) -> bool { std::mem::take(&mut self.reshown) }
 
@@ -217,7 +217,7 @@ impl Document {
             let rect = self.layers.fill_area(id, &area, color, self.selection.as_ref())?;
             Some((before, rect))
         })();
-        let Some((before, rect)) = done else { self.drop_new_frame(); return None };
+        let Some((before, rect)) = done else { self.drop_new_sheet(); return None };
         self.record_tree("Layers");
         self.push_painted("Fill", id, rect, &before);
         self.touch();
@@ -749,11 +749,11 @@ mod anim_tests {
         Some(id)
     }
 
-    /// The first stroke on an empty frame makes "Frame N": one undo step
+    /// The first stroke on an empty frame makes a sheet: one undo step
     /// takes both away, redo brings both back; a stroke on it after is a
     /// step of its own.
     #[test]
-    fn a_new_frame_and_its_stroke_are_one_step() {
+    fn a_new_sheet_and_its_stroke_are_one_step() {
         let mut d = Document::new(DocId(1), "a", 32, 32);
         let a = d.layers.add_animation_folder("A");
         d.record_tree("Layers");
@@ -761,43 +761,43 @@ mod anim_tests {
         d.layers.set_time(3);
         let sub = stroke(&mut d, [9, 9, 9, 255]).unwrap();
         assert!(d.take_reshown());
-        assert_eq!(d.layers.frames(a).len(), 1);
+        assert_eq!(d.layers.sheets(a).len(), 1);
         assert_eq!(d.history().undo_len(), steps + 1, "one step");
         assert_eq!(d.history().undo_label(), Some("Brush stroke"));
         d.undo().unwrap();
-        assert!(d.layers.frames(a).is_empty(), "the frame went with it");
+        assert!(d.layers.sheets(a).is_empty(), "the sheet went with it");
         d.layers.check_animation().unwrap();
         d.redo().unwrap();
-        assert_eq!(d.layers.frames(a).len(), 1);
+        assert_eq!(d.layers.sheets(a).len(), 1);
         let Some(Node::Layer(l)) = d.layers.node(sub) else { panic!("cel back") };
         assert_eq!(l.tiles.pixel(5, 5), [9, 9, 9, 255]);
         // Again on the same frame: a plain stroke step.
         assert_eq!(stroke(&mut d, [1, 1, 1, 255]), Some(sub));
         assert_eq!(d.history().undo_len(), steps + 2);
         d.undo().unwrap();
-        assert_eq!(d.layers.frames(a).len(), 1);
+        assert_eq!(d.layers.sheets(a).len(), 1);
         d.layers.check_animation().unwrap();
     }
 
-    /// A frame made for a stroke that painted nothing goes, leaving no
+    /// A sheet made for a stroke that painted nothing goes, leaving no
     /// undo step.
     #[test]
-    fn a_frame_for_nothing_goes() {
+    fn a_sheet_for_nothing_goes() {
         let mut d = Document::new(DocId(1), "a", 32, 32);
         let a = d.layers.add_animation_folder("A");
         d.record_tree("Layers");
         let steps = d.history().undo_len();
         assert!(d.begin_paint().is_some());
-        assert_eq!(d.layers.frames(a).len(), 1);
-        assert!(d.drop_new_frame());
-        assert!(d.layers.frames(a).is_empty());
+        assert_eq!(d.layers.sheets(a).len(), 1);
+        assert!(d.drop_new_sheet());
+        assert!(d.layers.sheets(a).is_empty());
         assert_eq!(d.history().undo_len(), steps);
         assert_eq!(d.history().redo_len(), 0);
         assert_eq!(d.layers.active_id(), a);
         d.layers.check_animation().unwrap();
         // A fill that fills nothing (outside the canvas) neither.
         assert!(d.fill(500, 500, [0, 0, 0, 255], FillParams::default()).is_none());
-        assert!(d.layers.frames(a).is_empty());
+        assert!(d.layers.sheets(a).is_empty());
         assert_eq!(d.history().undo_len(), steps);
     }
 }

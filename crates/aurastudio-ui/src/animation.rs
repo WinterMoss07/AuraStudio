@@ -1,20 +1,21 @@
 //! The Animation panel: the X-sheet (vertical, beside the dockers) or the
 //! timeline (horizontal, under the canvas): the same grid of animation
-//! folders × frames, turned (OpenToonz's orientations). A drawn frame is a
-//! filled cell, a hold a line until the next one. On top: new folders, the
+//! folders × frames, turned (OpenToonz's orientations). A sheet is a
+//! filled cell at the frame it is exposed from, its hold a line until the
+//! next one. On top: new folders, the
 //! playback bar, timing edits, the orientation.
 //!
 //! Groups (organisation only) show once; a double click opens one: the grid
 //! then lists its folders alone, until "Back". Folders are picked like
 //! layers (Ctrl / Shift, shared with the Layers docker), dragged to reorder,
-//! into a group, or out of it (onto "Back"). Frames are picked in one folder
+//! into a group, or out of it (onto "Back"). Sheets are picked in one folder
 //! (click, Shift range, Ctrl add, a box on empty cells) and moved together.
 //!
 //! Everything is laid out on two axes: the frame axis (time) and the
 //! layer axis (one folder per column / row); `Grid` maps them to the
 //! screen either way.
 
-use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use aurastudio_layers::{Column, FolderKind, LayerStack, Node, Onto, Place, Shift};
 
@@ -31,19 +32,29 @@ const XSHEET: Sizes = Sizes { layer: 96.0, frame: 20.0, layer_head: 64.0, frame_
 const TIMELINE: Sizes = Sizes { layer: 34.0, frame: 22.0, layer_head: 190.0, frame_head: 24.0 + ONION };
 
 /// The onion skin strip along the frame header (OpenToonz): fixed marks
-/// on the outer lane, mobile ones on the inner lane.
-const ONION: f32 = 20.0;
+/// on the outer lane, mobile ones on the inner lane, the switch across
+/// both at the current frame.
+const ONION: f32 = 22.0;
+
+/// Fixed onion marks: blue (OpenToonz), neither before nor after.
+const ONION_FIXED: Color32 = Color32::from_rgb(40, 170, 255);
+/// Where a click in the onion strip would put a mark (OpenToonz).
+const ONION_HINT: Color32 = Color32::from_rgb(255, 230, 0);
+
+/// The timeline's beat: shading and numbers every 6 frames at 24 fps (12,
+/// 48...), every 5 at 25, 30, 60.
+fn beat(fps: u32) -> u32 { if fps.is_multiple_of(5) { 5 } else { 6 } }
 
 /// Least width of a context menu (it never shrinks to a letter a line).
 const MENU_W: f32 = 200.0;
 
-/// Frames dragged: the folder, the frames, where the grabbed one was and is.
+/// Sheets dragged: the folder, their frames, where the grabbed one was and is.
 struct Drag { folder: u64, frames: Vec<u32>, from: u32, to: u32 }
 
 /// A folder (or group) header dragged, and where it would land.
 struct ColDrag { id: u64, target: Option<(u64, Place)>, exit: bool }
 
-/// A move / copy onto drawn frames, waiting for the answer.
+/// A move / copy onto other sheets, waiting for the answer.
 #[derive(Clone)]
 struct Ask { folder: u64, frames: Vec<u32>, delta: i32, copy: bool }
 
@@ -52,8 +63,8 @@ struct Ask { folder: u64, frames: Vec<u32>, delta: i32, copy: bool }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Menu { Cell(Column, u32), Head(Column), Onion(OnionMark) }
 
-/// An onion skin mark: mobile (drawings from the current one) or fixed
-/// (a frame).
+/// An onion skin mark: mobile (sheets or frames from the current one) or
+/// fixed (a frame).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum OnionMark { Mobile(i32), Fixed(u32) }
 
@@ -73,7 +84,8 @@ pub struct AnimPanel {
     followed:     u32,
     /// The group opened (its folders alone are listed).
     group:        Option<u64>,
-    /// Frames picked, all in one folder; the one a Shift range starts at.
+    /// Sheets picked (their frames), all in one folder; the one a Shift
+    /// range starts at.
     picked:       Vec<u32>,
     picked_in:    Option<u64>,
     anchor:       Option<u32>,
@@ -181,12 +193,13 @@ fn folder_color(layers: &LayerStack, id: u64) -> Color32 {
     }
 }
 
-/// The frames a column shows: a folder's own, a group's together.
-fn column_frames(layers: &LayerStack, col: Column) -> Vec<(u32, Option<u64>)> {
+/// The sheets a column shows (frame, id): a folder's own, a group's
+/// together.
+fn column_sheets(layers: &LayerStack, col: Column) -> Vec<(u32, Option<u64>)> {
     match col {
-        Column::Folder(f) => layers.frames(f).into_iter().map(|(n, id)| (n, Some(id))).collect(),
+        Column::Folder(f) => layers.sheets(f).into_iter().map(|(n, id)| (n, Some(id))).collect(),
         Column::Group(g) => {
-            let mut v: Vec<(u32, Option<u64>)> = layers.group_members(g).into_iter().flat_map(|f| layers.frames(f)).map(|(n, _)| (n, None)).collect();
+            let mut v: Vec<(u32, Option<u64>)> = layers.group_members(g).into_iter().flat_map(|f| layers.sheets(f)).map(|(n, _)| (n, None)).collect();
             v.sort_unstable();
             v.dedup_by_key(|x| x.0);
             v
@@ -194,7 +207,7 @@ fn column_frames(layers: &LayerStack, col: Column) -> Vec<(u32, Option<u64>)> {
     }
 }
 
-/// "12 frames - 4 cels" for a folder, "3 folders" for a group.
+/// "12 sheets - 4 cels" for a folder, "3 folders" for a group.
 fn info(layers: &LayerStack, col: Column) -> String {
     match col {
         Column::Folder(f) => anim_info(layers, f),
@@ -205,7 +218,7 @@ fn info(layers: &LayerStack, col: Column) -> String {
     }
 }
 
-/// The animation folders `ls` has picked (the frames and cels chosen count
+/// The animation folders `ls` has picked (the sheets and cels chosen count
 /// for their folder), once each, groups as they are.
 fn picked_folders(ls: &LayersState, layers: &LayerStack) -> Vec<u64> {
     let mut v: Vec<u64> = Vec::new();
@@ -301,12 +314,12 @@ fn controls(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
             let (icon, tip) = if m.playing { (Icon::Pause, "Pause") } else { (Icon::Play, "Play") };
             if icon_toggle(ui, icon, tip, true, m.playing).clicked() { a.play = Some(!m.playing); }
             if icon_button(ui, Icon::StepForward, "Next frame (.)", true) { a.play = Some(false); go(m, a, t + 1); }
-            if icon_button(ui, Icon::SkipForward, "Last frame drawn", true) { a.play = Some(false); go(m, a, last); }
+            if icon_button(ui, Icon::SkipForward, "Last sheet", true) { a.play = Some(false); go(m, a, last); }
             if icon_toggle(ui, Icon::Repeat, "Loop", true, *m.looping).clicked() { *m.looping ^= true; }
         });
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(m.fps).range(1..=120).suffix(" fps").speed(0.2)).on_hover_text("Frames per second");
-            ui.label(RichText::new(format!("{t} / {last}")).color(theme::TEXT)).on_hover_text("Current frame / last frame drawn");
+            ui.label(RichText::new(format!("{t} / {last}")).color(theme::TEXT)).on_hover_text("Current frame / frame of the last sheet");
         });
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -338,20 +351,20 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     // to bottom = top to bottom (Krita, CSP).
     let mut cols = m.layers.columns(st.group);
     if !st.vertical { cols.reverse(); }
-    // (Frames gone with an undo, a delete: the picked ones too.)
+    // (Sheets gone with an undo, a delete: the picked ones too.)
     if let Some(f) = st.picked_in {
-        st.picked.retain(|n| m.layers.frame_at(f, *n).is_some());
+        st.picked.retain(|n| m.layers.sheet_at(f, *n).is_some());
         if st.picked.is_empty() { st.picked_in = None; }
     }
 
-    // The Delete key: the picked frames, else the folders picked.
+    // The Delete key: the picked sheets, else the folders picked.
     if std::mem::take(&mut st.delete_req) {
         match st.picked_in {
             Some(f) if !st.picked.is_empty() => {
                 let mut any = false;
-                for n in std::mem::take(&mut st.picked) { any |= m.layers.delete_frame(f, n); }
+                for n in std::mem::take(&mut st.picked) { any |= m.layers.delete_sheet(f, n); }
                 st.picked_in = None;
-                if any { done(a, "Delete frames"); }
+                if any { done(a, "Delete sheets"); }
             }
             _ => delete_layer(ls, notice, m, a),
         }
@@ -405,6 +418,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     let g = Grid { vertical: st.vertical, cells, layer: s.layer, frame: s.frame, scroll: st.scroll };
     let (f0, f1) = g.frames_shown();
     let fps = (*m.fps).max(1);
+    let k = beat(fps);
 
     let p = ui.painter_at(area);
     p.rect_filled(area, 2.0, theme::DESK);
@@ -414,14 +428,14 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     let active_folder = m.layers.anim_of(active).map(|x| x.0);
     let is_picked = |id: u64| ls.selected.contains(&id) || Some(id) == active_folder || id == active;
     for (c, &col) in cols.iter().enumerate() {
-        let frames = column_frames(m.layers, col);
+        let frames = column_sheets(m.layers, col);
         let color = folder_color(m.layers, col.id());
         let visible = m.layers.node(col.id()).is_some_and(Node::visible);
         let dim = if visible { 1.0 } else { 0.45 };
         for f in f0..=f1 {
             let r = g.cell(c, f);
-            // Every 6 frames, the shade changes (the half seconds at 12).
-            let bg = if f == t { theme::WIDGET_HOVER } else if ((f - 1) / 6) % 2 == 0 { theme::WIDGET } else { theme::SURFACE };
+            // Every beat, the shade changes.
+            let bg = if f == t { theme::WIDGET_HOVER } else if ((f - 1) / k).is_multiple_of(2) { theme::WIDGET } else { theme::SURFACE };
             cp.rect_filled(r.shrink(0.5), 0.0, bg);
             let drawn = frames.iter().any(|x| x.0 == f);
             let held = !drawn && frames.iter().any(|x| x.0 < f);
@@ -445,9 +459,9 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             cp.rect_stroke(r0.union(r1), 0.0, Stroke::new(1.0_f32, theme::ACCENT), egui::StrokeKind::Middle);
         }
     }
-    // Second (fps) and half-second lines across the cells.
+    // Beat and second (fps) lines across the cells.
     for f in f0..=f1 + 1 {
-        if (f - 1) % 6 != 0 { continue; }
+        if (f - 1) % k != 0 { continue; }
         let r = g.cell(0, f);
         let strong = (f - 1) % fps == 0;
         let w = Stroke::new(if strong { 1.5_f32 } else { 1.0 }, if strong { theme::TEXT_WEAK } else { theme::BORDER });
@@ -481,15 +495,16 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         cp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme::ACCENT), egui::StrokeKind::Middle);
     }
 
-    // Frame header: the numbers (every one; on the timeline every 5th),
+    // Frame header: the numbers (every one; on the timeline on each beat),
     // the current frame lit.
-    draw_onion(&p, &g, m, onion, fixed_lane, mobile_lane, f0, f1, t);
+    let hint = if st.drag.is_none() && st.onion_drag.is_none() && !st.scrubbing { resp.hover_pos().filter(|q| onion.contains(*q)) } else { None };
+    draw_onion(&p, &g, m, OnionLanes { all: onion, fixed: fixed_lane, mobile: mobile_lane }, f0, f1, t, hint);
     let hp = p.with_clip_rect(frame_head);
     hp.rect_filled(frame_head, 0.0, theme::SURFACE);
     for f in f0..=f1 {
         let r = g.frame_head(frame_head, f);
         if f == t { hp.rect_filled(r, 2.0, theme::ACCENT); }
-        let label = g.vertical || f == t || f % 5 == 0 || f == 1;
+        let label = g.vertical || f == t || f % k == 0;
         if label {
             hp.text(r.center(), Align2::CENTER_CENTER, f.to_string(), FontId::proportional(10.5), if f == t { Color32::WHITE } else { theme::TEXT_WEAK });
         }
@@ -587,7 +602,10 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     if resp.drag_started() {
         // (Where the button went down: the pointer may have left the cell.)
         if let Some(q) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
-            if onion.contains(q) {
+            if onion.contains(q) && g.frame_at(q) == t {
+                // The switch dragged: through time (OpenToonz).
+                st.scrubbing = true;
+            } else if onion.contains(q) {
                 // Each mark crossed takes the state the first one got.
                 let fixed = fixed_lane.contains(q);
                 let f = g.frame_at(q);
@@ -595,8 +613,8 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             } else if in_cells(q) {
                 let (c, f) = (g.col_at(q), g.frame_at(q));
                 match cols.get(c) {
-                    Some(&Column::Folder(folder)) if m.layers.frame_at(folder, f).is_some() => {
-                        // The frames dragged: those picked, if it is one of them.
+                    Some(&Column::Folder(folder)) if m.layers.sheet_at(folder, f).is_some() => {
+                        // The sheets dragged: those picked, if it is one of them.
                         pick_unless_picked(st, folder, f);
                         st.drag = Some(Drag { folder, frames: st.picked.clone(), from: f, to: f });
                     }
@@ -654,24 +672,24 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             let copy = mods.command;
             let delta = d.to as i32 - d.from as i32;
             if delta != 0 {
-                // Landing on a drawn frame that stays: ask first.
+                // Landing on a sheet that stays: ask first.
                 let clash = d.frames.iter().any(|n| {
                     let t = *n as i64 + delta as i64;
-                    t >= 1 && m.layers.frame_at(d.folder, t as u32).is_some() && (copy || !d.frames.contains(&(t as u32)))
+                    t >= 1 && m.layers.sheet_at(d.folder, t as u32).is_some() && (copy || !d.frames.contains(&(t as u32)))
                 });
                 if clash {
                     st.ask = Some(Ask { folder: d.folder, frames: d.frames, delta, copy });
-                } else if m.layers.move_frames(d.folder, &d.frames, delta, copy, Onto::Refuse) {
+                } else if m.layers.move_sheets(d.folder, &d.frames, delta, copy, Onto::Refuse) {
                     after_move(st, m, a, d.folder, &d.frames, delta, copy);
                 }
             }
         }
         if let Some(o) = st.boxsel.take() {
-            // The drawn frames of the folder the box began in, within its frames.
+            // The sheets of the folder the box began in, within its frames.
             if let (Some(q), Some(Column::Folder(folder))) = (resp.interact_pointer_pos(), cols.get(g.col_at(o)).copied()) {
                 let (a0, a1) = (g.frame_at(o), g.frame_at(q));
                 let (lo, hi) = (a0.min(a1), a0.max(a1));
-                let mut hit: Vec<u32> = m.layers.frames(folder).into_iter().map(|x| x.0).filter(|n| (lo..=hi).contains(n)).collect();
+                let mut hit: Vec<u32> = m.layers.sheets(folder).into_iter().map(|x| x.0).filter(|n| (lo..=hi).contains(n)).collect();
                 if mods.command && st.picked_in == Some(folder) { hit.extend(st.picked.iter().copied()); hit.sort_unstable(); hit.dedup(); }
                 st.picked_in = (!hit.is_empty()).then_some(folder);
                 st.anchor = hit.first().copied();
@@ -696,8 +714,8 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         if let Some(q) = resp.interact_pointer_pos() {
             if onion.contains(q) {
                 let f = g.frame_at(q);
-                if mobile_lane.contains(q) && f == t {
-                    // The current frame's mark: the onion skin on or off.
+                if f == t {
+                    // The switch: the onion skin on or off.
                     let mut o = m.layers.onion().clone();
                     o.enabled = !o.enabled;
                     if o.enabled && o.mobile.is_empty() && o.fixed.is_empty() { o.mobile = [(-1, None), (-2, None), (-3, None)].into(); }
@@ -710,7 +728,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                 a.play = Some(false);
                 match cols.get(c).copied() {
                     Some(Column::Folder(folder)) => {
-                        pick_frame(st, m.layers, folder, f, mods);
+                        pick_sheet(st, m.layers, folder, f, mods);
                         choose(m, folder, f);
                     }
                     Some(Column::Group(gr)) => {
@@ -765,11 +783,11 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         }
     });
     if resp.secondary_clicked() {
-        // A folder (or frame) right clicked is picked alone, unless it is
+        // A folder (or sheet) right clicked is picked alone, unless it is
         // among the picks.
         match hit {
             Some(Menu::Head(col)) if !ls.selection(m.layers).contains(&col.id()) => { ls.selected.clear(); choose(m, col.id(), t); }
-            Some(Menu::Cell(Column::Folder(folder), f)) if m.layers.frame_at(folder, f).is_some() => pick_unless_picked(st, folder, f),
+            Some(Menu::Cell(Column::Folder(folder), f)) if m.layers.sheet_at(folder, f).is_some() => pick_unless_picked(st, folder, f),
             _ => {}
         }
     }
@@ -795,21 +813,43 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
 /// shown now (None before the first one, or outside animation folders).
 fn onion_drawings(m: &Model) -> Option<(Vec<(u32, u64)>, usize)> {
     let (folder, _) = m.layers.anim_of(m.layers.active_id())?;
-    let frames = m.layers.frames(folder);
+    let frames = m.layers.sheets(folder);
     let t = m.layers.time();
     let cur = frames.iter().rposition(|f| f.0 <= t)?;
     Some((frames, cur))
 }
 
-/// The mark the onion strip has at frame `f` (of that lane), if any. On
-/// the mobile lane, a frame stands for the drawing it shows.
+/// The mobile mark a frame of the mobile lane stands for: frames from
+/// the current one, or (counting sheets) the sheets from the current one
+/// to the sheet that frame shows. None: the current one, or nothing there.
+fn mobile_off(m: &Model, f: u32) -> Option<i32> {
+    let off = if m.layers.onion_look().by_frames {
+        f as i64 - m.layers.time() as i64
+    } else {
+        let (sheets, cur) = onion_drawings(m)?;
+        sheets.iter().rposition(|x| x.0 <= f)? as i64 - cur as i64
+    };
+    (off != 0).then_some(off as i32)
+}
+
+/// Where mobile mark `off` sits on the lane: that frame, or the frame
+/// the sheet it shows is exposed from.
+fn mobile_frame(m: &Model, off: i32) -> Option<u32> {
+    if m.layers.onion_look().by_frames {
+        let f = m.layers.time() as i64 + off as i64;
+        return (f >= 1).then_some(f as u32);
+    }
+    let (sheets, cur) = onion_drawings(m)?;
+    let i = cur as i64 + off as i64;
+    (0..sheets.len() as i64).contains(&i).then(|| sheets[i as usize].0)
+}
+
+/// The mark the onion strip has at frame `f` (of that lane), if any.
 fn onion_mark_at(m: &Model, fixed: bool, f: u32) -> Option<OnionMark> {
     let o = m.layers.onion();
     if fixed { return o.fixed.contains_key(&f).then_some(OnionMark::Fixed(f)); }
-    let (frames, cur) = onion_drawings(m)?;
-    let i = frames.iter().rposition(|x| x.0 <= f)?;
-    let off = i as i32 - cur as i32;
-    (off != 0 && o.mobile.contains_key(&off)).then_some(OnionMark::Mobile(off))
+    let off = mobile_off(m, f)?;
+    o.mobile.contains_key(&off).then_some(OnionMark::Mobile(off))
 }
 
 /// New marks for the document: the merge shows them, the file keeps
@@ -822,7 +862,7 @@ fn onion_set(m: &mut Model, a: &mut Actions, o: aurastudio_layers::onion::Onion)
 
 /// Turn the mark of frame `f` on its lane on or off (`to`: that state;
 /// None: the other one). Returns the state it got (None: nothing there,
-/// the current drawing or its hold). Turning a mark on turns the onion
+/// the current sheet or its hold). Turning a mark on turns the onion
 /// skin on.
 fn onion_toggle(m: &mut Model, a: &mut Actions, fixed: bool, f: u32, to: Option<bool>) -> Option<bool> {
     let mut o = m.layers.onion().clone();
@@ -831,10 +871,7 @@ fn onion_toggle(m: &mut Model, a: &mut Actions, fixed: bool, f: u32, to: Option<
         if on { o.fixed.entry(f).or_insert(None); } else { o.fixed.remove(&f); }
         on
     } else {
-        let (frames, cur) = onion_drawings(m)?;
-        let i = frames.iter().rposition(|x| x.0 <= f)?;
-        let off = i as i32 - cur as i32;
-        if off == 0 { return None; }
+        let off = mobile_off(m, f)?;
         let on = to.unwrap_or(!(o.enabled && o.mobile.contains_key(&off)));
         if on { o.mobile.entry(off).or_insert(None); } else { o.mobile.remove(&off); }
         on
@@ -852,9 +889,10 @@ fn onion_menu(ui: &mut Ui, m: &mut Model, a: &mut Actions, mark: OnionMark) {
         OnionMark::Fixed(f) => o.fixed.get_mut(&f),
     };
     let Some(slot) = slot else { ui.close(); return };
+    let unit = if m.layers.onion_look().by_frames { "Frame" } else { "Sheet" };
     ui.label(RichText::new(match mark {
-        OnionMark::Mobile(off) if off < 0 => format!("Drawing {} before", -off),
-        OnionMark::Mobile(off) => format!("Drawing {off} after"),
+        OnionMark::Mobile(off) if off < 0 => format!("{unit} {} before", -off),
+        OnionMark::Mobile(off) => format!("{unit} {off} after"),
         OnionMark::Fixed(f) => format!("Frame {f}, always shown"),
     }).strong());
     let look = m.layers.onion_look();
@@ -878,13 +916,18 @@ fn onion_menu(ui: &mut Ui, m: &mut Model, a: &mut Actions, mark: OnionMark) {
     onion_set(m, a, o);
 }
 
-/// The onion strip: the lanes, the marks as dots (red before, green
-/// after, darker with an opacity of their own), the current frame's
-/// switch, a line over the mobile range.
+/// The onion strip's rects: all of it, the fixed lane, the mobile lane.
+struct OnionLanes { all: Rect, fixed: Rect, mobile: Rect }
+
+/// The onion strip: the marks as dots (mobile: the before / after colors;
+/// fixed: blue; darker with an opacity of their own), a line over the
+/// mobile range, the switch across the strip at the current frame (half
+/// before, half after; faint when off), and in yellow where a click would
+/// put a mark (OpenToonz).
 #[allow(clippy::too_many_arguments)]
-fn draw_onion(p: &egui::Painter, g: &Grid, m: &Model, onion: Rect, fixed_lane: Rect, mobile_lane: Rect, f0: u32, f1: u32, t: u32) {
-    let op = p.with_clip_rect(onion);
-    op.rect_filled(onion, 0.0, theme::DESK);
+fn draw_onion(p: &egui::Painter, g: &Grid, m: &Model, lanes: OnionLanes, f0: u32, f1: u32, t: u32, hint: Option<Pos2>) {
+    let op = p.with_clip_rect(lanes.all);
+    op.rect_filled(lanes.all, 0.0, theme::DESK);
     let o = m.layers.onion();
     let look = m.layers.onion_look();
     let col = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
@@ -895,33 +938,43 @@ fn draw_onion(p: &egui::Painter, g: &Grid, m: &Model, onion: Rect, fixed_lane: R
         let fill = if own { c.gamma_multiply(0.55) } else { c };
         op.circle(r.center(), 3.6, dim(fill), Stroke::new(1.0_f32, dim(Color32::from_black_alpha(160))));
     };
-    // Mobile marks, at the drawings they stand for.
-    if let Some((frames, cur)) = onion_drawings(m) {
-        let (mut lo, mut hi) = (t, t);
-        for (&off, op_v) in &o.mobile {
-            let i = cur as i64 + off as i64;
-            if !(0..frames.len() as i64).contains(&i) { continue; }
-            let n = frames[i as usize].0;
-            lo = lo.min(n);
-            hi = hi.max(n);
-            if (f0..=f1).contains(&n) { dot(mobile_lane, n, if off < 0 { before } else { after }, op_v.is_some()); }
-        }
-        if lo < hi {
-            let (a0, a1) = (g.frame_head(mobile_lane, lo).center(), g.frame_head(mobile_lane, hi).center());
-            op.line_segment([a0, a1], Stroke::new(1.0_f32, dim(theme::TEXT_WEAK)));
-        }
+    // The hint: the lane and frame under the pointer (not on the switch).
+    let hint = hint.map(|q| (lanes.fixed.contains(q), g.frame_at(q))).filter(|h| h.1 != t);
+    // (Counting sheets, a frame of the mobile lane marks the sheet it shows.)
+    let hint_at = hint.and_then(|(fixed, f)| if fixed { Some((true, f)) } else { mobile_off(m, f).and_then(|off| mobile_frame(m, off)).map(|n| (false, n)) });
+    // Mobile marks.
+    let (mut lo, mut hi) = (t, t);
+    for (&off, op_v) in &o.mobile {
+        let Some(n) = mobile_frame(m, off) else { continue };
+        lo = lo.min(n);
+        hi = hi.max(n);
+        if (f0..=f1).contains(&n) && hint_at != Some((false, n)) { dot(lanes.mobile, n, if off < 0 { before } else { after }, op_v.is_some()); }
+    }
+    if lo < hi {
+        let (a0, a1) = (g.frame_head(lanes.mobile, lo).center(), g.frame_head(lanes.mobile, hi).center());
+        op.line_segment([a0, a1], Stroke::new(1.0_f32, dim(theme::TEXT_WEAK)));
     }
     // Fixed marks.
     for (&f, op_v) in &o.fixed {
-        if (f0..=f1).contains(&f) { dot(fixed_lane, f, if f < t { before } else if f > t { after } else { theme::TEXT }, op_v.is_some()); }
+        if (f0..=f1).contains(&f) && f != t && hint_at != Some((true, f)) { dot(lanes.fixed, f, ONION_FIXED, op_v.is_some()); }
     }
-    // The switch on the current frame.
-    let r = g.frame_head(mobile_lane, t);
-    if o.enabled {
-        op.circle(r.center(), 5.0, theme::ACCENT, Stroke::new(1.2_f32, Color32::WHITE));
+    if let Some((fixed, n)) = hint_at {
+        let r = g.frame_head(if fixed { lanes.fixed } else { lanes.mobile }, n);
+        op.circle(r.center(), 3.6, ONION_HINT, Stroke::new(1.0_f32, Color32::from_black_alpha(160)));
+    }
+    // The switch: across the strip, half the before color (the side of
+    // the earlier frames), half the after one.
+    let r = g.frame_head(lanes.all, t).shrink(1.5);
+    let (a, b) = if g.vertical {
+        (Rect::from_min_max(r.min, pos2(r.right(), r.center().y)), Rect::from_min_max(pos2(r.left(), r.center().y), r.max))
     } else {
-        op.circle_stroke(r.center(), 5.0, Stroke::new(1.2_f32, theme::TEXT_WEAK));
-    }
+        (Rect::from_min_max(r.min, pos2(r.center().x, r.bottom())), Rect::from_min_max(pos2(r.center().x, r.top()), r.max))
+    };
+    let (ra, rb) = if g.vertical { (CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 }) }
+        else { (CornerRadius { nw: 3, sw: 3, ne: 0, se: 0 }, CornerRadius { nw: 0, sw: 0, ne: 3, se: 3 }) };
+    op.rect_filled(a, ra, dim(before));
+    op.rect_filled(b, rb, dim(after));
+    op.rect_stroke(r, 3.0, Stroke::new(1.0_f32, dim(Color32::from_black_alpha(170))), egui::StrokeKind::Middle);
 }
 
 /// The folders a header drag carries: those picked, if it is one of them.
@@ -930,16 +983,17 @@ fn drag_ids(ls: &LayersState, layers: &LayerStack, dragged: u64) -> Vec<u64> {
     if picked.len() > 1 && picked.contains(&dragged) { picked } else { vec![dragged] }
 }
 
-/// Frames moved or copied: the picks follow, the time goes to the grabbed one.
+/// Sheets moved or copied: the picks follow, the time goes to the grabbed one.
 fn after_move(st: &mut AnimPanel, m: &mut Model, a: &mut Actions, folder: u64, frames: &[u32], delta: i32, copy: bool) {
-    done(a, if copy { "Copy frames" } else { "Move frames" });
+    done(a, if copy { "Copy sheets" } else { "Move sheets" });
     st.picked = frames.iter().map(|n| (*n as i64 + delta as i64).max(1) as u32).collect();
     st.picked.sort_unstable();
     st.picked_in = Some(folder);
     if let Some(&last) = frames.last() { go(m, a, (last as i64 + delta as i64).max(1) as u32); }
 }
 
-/// Frame `f` of `folder` picked alone, unless it is among the picks.
+/// The sheet at frame `f` of `folder` picked alone, unless it is among
+/// the picks.
 fn pick_unless_picked(st: &mut AnimPanel, folder: u64, f: u32) {
     if !(st.picked_in == Some(folder) && st.picked.contains(&f)) {
         st.picked = vec![f];
@@ -947,10 +1001,11 @@ fn pick_unless_picked(st: &mut AnimPanel, folder: u64, f: u32) {
     }
 }
 
-/// A click on frame `f` of `folder`: it alone, Shift to a range from the
+/// A click on the sheet at frame `f` of `folder`: it alone, Shift to a
+/// range from the
 /// anchor, Ctrl adds / takes it off. An empty cell lets go.
-fn pick_frame(st: &mut AnimPanel, layers: &LayerStack, folder: u64, f: u32, mods: egui::Modifiers) {
-    let drawn = layers.frame_at(folder, f).is_some();
+fn pick_sheet(st: &mut AnimPanel, layers: &LayerStack, folder: u64, f: u32, mods: egui::Modifiers) {
+    let drawn = layers.sheet_at(folder, f).is_some();
     if st.picked_in != Some(folder) { st.picked.clear(); st.anchor = None; }
     if !drawn {
         if !mods.command && !mods.shift { st.picked.clear(); st.picked_in = None; }
@@ -960,7 +1015,7 @@ fn pick_frame(st: &mut AnimPanel, layers: &LayerStack, folder: u64, f: u32, mods
     if mods.shift {
         let a0 = st.anchor.unwrap_or(f);
         let (lo, hi) = (a0.min(f), a0.max(f));
-        st.picked = layers.frames(folder).into_iter().map(|x| x.0).filter(|n| (lo..=hi).contains(n)).collect();
+        st.picked = layers.sheets(folder).into_iter().map(|x| x.0).filter(|n| (lo..=hi).contains(n)).collect();
     } else if mods.command {
         if let Some(i) = st.picked.iter().position(|n| *n == f) { st.picked.remove(i); } else { st.picked.push(f); st.picked.sort_unstable(); }
         st.anchor = Some(f);
@@ -991,18 +1046,18 @@ fn pick_folder(ls: &mut LayersState, m: &mut Model, cols: &[Column], id: u64, t:
     }
 }
 
-/// The folder of a column, if it is one (the frames picked belong to it).
+/// The folder of a column, if it is one (the sheets picked belong to it).
 fn col_folder(col: Column) -> Option<u64> {
     match col { Column::Folder(f) => Some(f), Column::Group(_) => None }
 }
 
-/// The menu on a cell: timing edits there, the frames picked.
+/// The menu on a cell: timing edits there, the sheets picked.
 fn cell_menu(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions, col: Column, f: u32) {
     let Column::Folder(folder) = col else {
         if ui.button("Open group").clicked() { st.group = Some(col.id()); st.scroll = Vec2::ZERO; ui.close(); }
         return;
     };
-    let drawn = m.layers.frame_at(folder, f).is_some();
+    let drawn = m.layers.sheet_at(folder, f).is_some();
     if ui.button(format!("Insert a frame at {f}")).clicked() {
         if m.layers.shift_frames(folder, f, Shift::Insert) { done(a, "Insert frame"); }
         ui.close();
@@ -1012,12 +1067,12 @@ fn cell_menu(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions, co
         ui.close();
     }
     let n = if st.picked_in == Some(folder) { st.picked.len() } else { 0 };
-    let label = if n > 1 { format!("Delete the {n} frames picked") } else { format!("Delete the drawing of frame {f}") };
-    if ui.add_enabled(drawn, egui::Button::new(label)).on_hover_text("The frame before holds on").clicked() {
+    let label = if n > 1 { format!("Delete the {n} sheets picked") } else { format!("Delete the sheet of frame {f}") };
+    if ui.add_enabled(drawn, egui::Button::new(label)).on_hover_text("The sheet before holds on").clicked() {
         let list: Vec<u32> = if n > 1 { st.picked.clone() } else { vec![f] };
         let mut any = false;
-        for x in list { any |= m.layers.delete_frame(folder, x); }
-        if any { done(a, if n > 1 { "Delete frames" } else { "Delete frame" }); }
+        for x in list { any |= m.layers.delete_sheet(folder, x); }
+        if any { done(a, if n > 1 { "Delete sheets" } else { "Delete sheet" }); }
         st.picked.clear();
         st.picked_in = None;
         ui.close();
@@ -1065,14 +1120,14 @@ fn head_menu(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut
     }
 }
 
-/// Folder `folder` chosen at frame `f`: its frame there, else the one it
-/// shows, else the folder (strokes then make a frame).
+/// Folder `folder` chosen at frame `f`: its sheet exposed there, else the
+/// folder (strokes then make a sheet).
 fn choose(m: &mut Model, folder: u64, f: u32) {
-    let target = m.layers.frame_at(folder, f).unwrap_or(folder);
+    let target = m.layers.sheet_at(folder, f).unwrap_or(folder);
     m.layers.set_active(target);
 }
 
-/// Frames moved or copied onto drawn ones: replace them, swap them (moves
+/// Sheets moved or copied onto other ones: replace them, swap them (moves
 /// only), or not (the default: it is usually a slip).
 fn ask_dialog(ctx: &egui::Context, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
     let Some(Ask { folder, frames, delta, copy }) = st.ask.clone() else { return };
@@ -1080,9 +1135,9 @@ fn ask_dialog(ctx: &egui::Context, st: &mut AnimPanel, m: &mut Model, a: &mut Ac
     let mut answer = None;
     egui::Modal::new(egui::Id::new("anim_onto")).show(ctx, |ui| {
         ui.set_width(340.0);
-        ui.label(RichText::new(format!("Some frames of {name} are already drawn")).strong());
+        ui.label(RichText::new(format!("Some sheets of {name} are in the way")).strong());
         ui.add_space(4.0);
-        ui.label(format!("{} {} frame{} onto them:", if copy { "Copy" } else { "Move" }, frames.len(), plural(frames.len())));
+        ui.label(format!("{} {} sheet{} onto them:", if copy { "Copy" } else { "Move" }, frames.len(), plural(frames.len())));
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Replace them").clicked() { answer = Some(Onto::Replace); }
@@ -1097,7 +1152,7 @@ fn ask_dialog(ctx: &egui::Context, st: &mut AnimPanel, m: &mut Model, a: &mut Ac
     if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter)) { answer = answer.or(Some(Onto::Refuse)); }
     let Some(onto) = answer else { return };
     st.ask = None;
-    if onto != Onto::Refuse && m.layers.move_frames(folder, &frames, delta, copy, onto) {
+    if onto != Onto::Refuse && m.layers.move_sheets(folder, &frames, delta, copy, onto) {
         after_move(st, m, a, folder, &frames, delta, copy);
     }
 }
@@ -1119,6 +1174,12 @@ mod tests {
         // Another right click moves it.
         open_menu(&mut menu, true, Some(Menu::Head(Column::Group(2))));
         assert_eq!(menu, Some(Menu::Head(Column::Group(2))));
+    }
+
+    #[test]
+    fn the_beat_follows_the_frame_rate() {
+        assert_eq!([12, 24, 48].map(beat), [6, 6, 6]);
+        assert_eq!([25, 30, 60, 15].map(beat), [5, 5, 5, 5]);
     }
 
     #[test]

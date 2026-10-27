@@ -291,7 +291,7 @@ impl Run {
         let any = |r: &mut Rng| ids[r.below(ids.len() as u64) as usize];
         let full = ids.len() >= MAX_NODES;
         // The animation folder the active node is in (or is), and one of
-        // its frames.
+        // its sheets.
         let anim = d.layers.anim_of(d.layers.active_id()).map(|x| x.0);
         let name = match r.below(43) {
             0 if !full => { let before: HashSet<u64> = ids.iter().copied().collect(); let id = d.layers.add_layer("L"); assert!(!before.contains(&id), "id reused"); "add layer" }
@@ -310,8 +310,8 @@ impl Run {
             9 if !full => { let some: Vec<u64> = ids.iter().copied().filter(|_| r.chance(0.3)).collect(); d.layers.group_nodes(&some, "G"); "group several" }
             10 => { d.layers.ungroup_active(); "ungroup" }
             11 | 12 => { let id = any(r); d.layers.set_active(id); "select" }
-            // (A frame has no eye: the current frame decides.)
-            13 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { if n.frame().is_none() { *n.visible_mut() ^= true; } } "visibility" }
+            // (A sheet has no eye: the current frame decides.)
+            13 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { if n.sheet_start().is_none() { *n.visible_mut() ^= true; } } "visibility" }
             14 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { *n.locked_mut() ^= true; } "lock" }
             15 => { let v = if r.chance(0.2) { 0.0 } else { r.f() }; *d.layers.active_node_mut().opacity_mut() = v; "opacity" }
             16 => {
@@ -326,14 +326,14 @@ impl Run {
             17 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { n.props_mut().clip ^= true; } "clip" }
             18 => { let id = any(r); if let Some(n) = d.layers.node_mut(id) { n.props_mut().draft ^= true; } "draft" }
             19 => { let id = any(r); let on = !d.layers.node(id).unwrap().props().reference; d.layers.set_reference(id, on); "reference" }
-            // (Frames and cels are named by the X-sheet and the template.)
+            // (Sheets are named by their rank in time, cels by the template.)
             20 => { let id = any(r); let named = !d.layers.is_anim_part(id); if let Some(n) = d.layers.node_mut(id) { n.props_mut().label = r.below(9) as u8; if named { *n.name_mut() = format!("n{}", r.below(99)); } } "label / name" }
             21 => { if let Node::Folder(f) = d.layers.active_node_mut() { f.collapsed ^= true; } "fold" }
             22 if !full => { d.layers.add_animation_folder("A"); "animation folder" }
             23 | 24 => { let t = 1 + r.below(12) as u32; d.layers.set_time(t); "time" }
             25 if !full => match anim {
-                Some(f) => { let n = 1 + r.below(12) as u32; d.layers.make_frame(f, n); "frame" }
-                None => "frame: no folder",
+                Some(f) => { let n = 1 + r.below(12) as u32; d.layers.make_sheet(f, n); "sheet" }
+                None => "sheet: no folder",
             },
             26 => match anim {
                 Some(f) => { let n = d.layers.anim(f).unwrap().template.len(); d.layers.set_cel(f, r.below(n as u64 + 1) as usize); "cel chosen" }
@@ -353,18 +353,18 @@ impl Run {
                 }
                 None => "template: no folder",
             },
-            // The X-sheet: move / copy (onto a drawn frame: replace, swap
+            // The X-sheet: move / copy (onto a sheet: replace, swap
             // or not), insert / remove, delete.
             31..=33 => match anim {
                 Some(f) => {
                     let (from, to) = (1 + r.below(12) as u32, 1 + r.below(12) as u32);
                     let onto = [aurastudio_layers::Onto::Replace, aurastudio_layers::Onto::Swap, aurastudio_layers::Onto::Refuse][r.below(3) as usize];
                     match r.below(5) {
-                        0 => { d.layers.move_frame(f, from, to, onto); "move frame" }
-                        1 if !full => { d.layers.copy_frame(f, from, to, onto); "copy frame" }
+                        0 => { d.layers.move_sheet(f, from, to, onto); "move sheet" }
+                        1 if !full => { d.layers.copy_sheet(f, from, to, onto); "copy sheet" }
                         2 => { d.layers.shift_frames(f, from, aurastudio_layers::Shift::Insert); "insert frame" }
                         3 => { d.layers.shift_frames(f, from, aurastudio_layers::Shift::Remove); "remove frame" }
-                        _ => { d.layers.delete_frame(f, from); "delete frame" }
+                        _ => { d.layers.delete_sheet(f, from); "delete sheet" }
                     }
                 }
                 None => "x-sheet: no folder",
@@ -376,10 +376,10 @@ impl Run {
                     let delta = r.below(9) as i32 - 4;
                     let onto = [aurastudio_layers::Onto::Replace, aurastudio_layers::Onto::Refuse][r.below(2) as usize];
                     let copy = r.chance(0.3) && !full;
-                    d.layers.move_frames(f, &frames, delta, copy, onto);
-                    "move several frames"
+                    d.layers.move_sheets(f, &frames, delta, copy, onto);
+                    "move several sheets"
                 }
-                None => "move frames: no folder",
+                None => "move sheets: no folder",
             },
             37 => match anim {
                 Some(f) => { let n = d.layers.anim(f).unwrap().template.len(); d.layers.set_cel_reference(f, r.below(n as u64) as usize, r.chance(0.7)); "cel reference" }
@@ -403,7 +403,7 @@ impl Run {
                     }
                     Some(why) => {
                         fn plain_locked(n: &Node) -> bool {
-                            n.locked() || matches!(n, Node::Folder(f) if f.frame().is_none() && f.children.iter().any(plain_locked))
+                            n.locked() || matches!(n, Node::Folder(f) if f.sheet_start().is_none() && f.children.iter().any(plain_locked))
                         }
                         let node = d.layers.node(id).unwrap();
                         let true_reason = match why {
@@ -420,7 +420,7 @@ impl Run {
             }
             28 => match d.layers.anim_of(d.layers.active_id()) {
                 Some((_, Some(frame))) => { d.layers.apply_to_folder(frame); "apply to folder" }
-                _ => "apply: no frame",
+                _ => "apply: no sheet",
             },
             29 => {
                 // Onion skin marks: on or off, mobile and fixed, own
@@ -433,18 +433,18 @@ impl Run {
                 o.mobile.remove(&0);
                 d.layers.set_onion(o);
                 if r.chance(0.3) {
-                    d.layers.set_onion_look(aurastudio_layers::onion::OnionLook { before: [r.below(256) as u8, 0, 90], after: [10, r.below(256) as u8, 0], thickness: r.below(101) as u8 });
+                    d.layers.set_onion_look(aurastudio_layers::onion::OnionLook { before: [r.below(256) as u8, 0, 90], after: [10, r.below(256) as u8, 0], thickness: r.below(101) as u8, by_frames: r.chance(0.5) });
                 }
                 if r.chance(0.2) { d.layers.pause_onion(r.chance(0.5)); }
                 "onion skin"
             }
             _ => match anim {
                 Some(f) => {
-                    let frames = d.layers.frames(f);
+                    let frames = d.layers.sheets(f);
                     if let Some(&(n, id)) = frames.get(r.below(frames.len() as u64 + 1) as usize) { d.layers.set_active(id); d.layers.set_time(n); }
-                    "frame chosen"
+                    "sheet chosen"
                 }
-                None => "frame chosen: no folder",
+                None => "sheet chosen: no folder",
             },
         };
         // Recorded as the app does once the edit is over, or later with

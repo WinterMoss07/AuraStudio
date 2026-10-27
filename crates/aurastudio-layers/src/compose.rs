@@ -234,7 +234,7 @@ pub(crate) type Ghosts<'a> = &'a [(u64, Vec<Ghost>)];
 /// drawing merged on its own, tinted, faded.
 fn ghost_block(f: &crate::Folder, gh: &[Ghost], b: &mut Block, scale: f32, pick: Pick) {
     for gst in gh {
-        let Some(Node::Folder(frame)) = f.children.iter().find(|c| c.id() == gst.frame) else { continue };
+        let Some(Node::Folder(frame)) = f.children.iter().find(|c| c.id() == gst.sheet) else { continue };
         let mut t = Block::new(b.rect, [0.0; 4]);
         let mut stop = false;
         compose(&frame.children, &mut t, 1.0, pick, &[], false, None, &mut stop);

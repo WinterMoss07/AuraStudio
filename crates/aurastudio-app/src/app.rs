@@ -713,7 +713,8 @@ impl App {
     /// The onion skin's colors and fade from the preferences, on the
     /// document (shown again if they changed).
     fn apply_onion_look(&mut self) {
-        let look = aurastudio_layers::onion::OnionLook { before: self.prefs.onion_before, after: self.prefs.onion_after, thickness: self.prefs.onion_thickness };
+        let p = &self.prefs;
+        let look = aurastudio_layers::onion::OnionLook { before: p.onion_before, after: p.onion_after, thickness: p.onion_thickness, by_frames: p.onion_by_frames };
         let Ok(mut d) = self.doc.try_lock() else { return };
         if d.layers.onion_look() == look { return; }
         d.layers.set_onion_look(look);
@@ -1058,7 +1059,7 @@ impl App {
     fn paint_refusal(&self) -> Option<&'static str> {
         match self.doc.try_lock() {
             Ok(doc) if doc.layers.can_paint() => None,
-            Ok(doc) if doc.layers.anim_of(doc.layers.active_id()).is_some() => Some("This cel or frame is locked"),
+            Ok(doc) if doc.layers.anim_of(doc.layers.active_id()).is_some() => Some("This cel or sheet is locked"),
             Ok(doc) if doc.layers.active_node().is_folder() => Some("Select a layer to paint (a folder is selected)"),
             Ok(_) => Some("Layer is locked"),
             Err(_) => None,

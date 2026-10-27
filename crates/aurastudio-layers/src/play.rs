@@ -1,7 +1,7 @@
 //! What animation playback needs to show any frame without merging the
 //! stack again: the stack cut into parts in order, each animation folder a
 //! part of its own, the layers between them merged once into static parts;
-//! every drawing (frame folder) merged once on its own. All of it kept as
+//! every sheet merged once on its own. All of it kept as
 //! 16 px tiles where something shows: one alpha byte per pixel when a tile
 //! has a single color (line art), RGBA otherwise. The GPU draws the parts
 //! of a frame over white, as the screen merge does.
@@ -60,8 +60,8 @@ pub enum PlayPart {
     /// The layers between two animation folders (index into the static
     /// parts).
     Static(usize),
-    /// An animation folder: its frames (number, frame folder id).
-    Anim { folder: u64, frames: Vec<(u32, u64)> },
+    /// An animation folder: its sheets (frame exposed from, sheet id).
+    Anim { folder: u64, sheets: Vec<(u32, u64)> },
 }
 
 /// How a stack is played from the cache.
@@ -81,7 +81,7 @@ impl PlayPlan {
     /// The drawing each animation part shows at frame `t` (None: none yet).
     pub fn shown_at(&self, t: u32) -> Vec<Option<u64>> {
         self.parts.iter().filter_map(|p| match p {
-            PlayPart::Anim { frames, .. } => Some(frames.iter().rev().find(|f| f.0 <= t).map(|f| f.1)),
+            PlayPart::Anim { sheets, .. } => Some(sheets.iter().rev().find(|f| f.0 <= t).map(|f| f.1)),
             PlayPart::Static(_) => None,
         }).collect()
     }
@@ -91,7 +91,7 @@ impl PlayPlan {
     /// Every drawing of the plan.
     pub fn drawings(&self) -> Vec<u64> {
         self.parts.iter().flat_map(|p| match p {
-            PlayPart::Anim { frames, .. } => frames.iter().map(|f| f.1).collect(),
+            PlayPart::Anim { sheets, .. } => sheets.iter().map(|f| f.1).collect(),
             PlayPart::Static(_) => Vec::new(),
         }).collect()
     }
@@ -149,7 +149,7 @@ impl LayerStack {
             if !anim { run.push(id); continue; }
             if !self.node(id).is_some_and(Node::visible) { continue; }
             if !run.is_empty() { parts.push(PlayPart::Static(statics.len())); statics.push(std::mem::take(&mut run)); }
-            parts.push(PlayPart::Anim { folder: id, frames: self.frames(id) });
+            parts.push(PlayPart::Anim { folder: id, sheets: self.sheets(id) });
         }
         if !run.is_empty() { parts.push(PlayPart::Static(statics.len())); statics.push(run); }
         Some(PlayPlan { width: self.width, height: self.height, parts, statics, units: all.into_iter().map(|u| u.0).collect() })
@@ -173,7 +173,7 @@ impl LayerStack {
         tiles
     }
 
-    /// Drawing `frame` (a frame folder of the plan) on its own, with its
+    /// Sheet `frame` (a sheet of the plan) on its own, with its
     /// folder's opacity.
     pub fn play_drawing(&mut self, plan: &PlayPlan, frame: u64) -> PlayTiles {
         let Some((folder, _)) = self.anim_of(frame) else { return PlayTiles::default() };
@@ -224,7 +224,7 @@ impl LayerStack {
     }
 
     /// The merge of `rect` (grown to whole tiles) with only the units
-    /// `keep` takes visible (and, in `show`'s folder, only its frame),
+    /// `keep` takes visible (and, in `show`'s folder, only its sheet),
     /// over transparency, as tiles. Visibility is put back after.
     fn merge_only(&mut self, plan: &PlayPlan, keep: impl Fn(u64) -> bool, show: Option<(u64, u64)>, rect: Rect) -> PlayTiles {
         let mut saved: Vec<(u64, bool)> = Vec::new();
@@ -237,7 +237,7 @@ impl LayerStack {
         if let Some((folder, frame)) = show {
             if let Some(Node::Folder(f)) = self.node_mut(folder) {
                 for c in &mut f.children {
-                    if matches!(c, Node::Folder(cf) if matches!(cf.kind, FolderKind::Frame(_))) {
+                    if matches!(c, Node::Folder(cf) if matches!(cf.kind, FolderKind::Sheet(_))) {
                         saved.push((c.id(), c.visible()));
                         *c.visible_mut() = c.id() == frame;
                     }
@@ -306,8 +306,8 @@ mod tests {
     fn scene() -> (LayerStack, u64, [u64; 2]) {
         let mut s = LayerStack::new(70, 50);
         let folder = s.add_animation_folder("A");
-        let c1 = s.make_frame(folder, 1).unwrap();
-        let c2 = s.make_frame(folder, 3).unwrap();
+        let c1 = s.make_sheet(folder, 1).unwrap();
+        let c2 = s.make_sheet(folder, 3).unwrap();
         let frame = |s: &LayerStack, cel: u64| s.anim_of(cel).unwrap().1.unwrap();
         let (f1, f2) = (frame(&s, c1), frame(&s, c2));
         for (cel, x, c) in [(c1, 5u32, [200u8, 0, 0]), (c2, 30, [0, 0, 200])] {
@@ -325,7 +325,7 @@ mod tests {
         let (mut s, folder, _) = scene();
         let plan = s.play_plan().expect("a plain scene plays");
         assert_eq!(plan.parts.len(), 3, "paper, the folder, the layer over it");
-        assert!(matches!(&plan.parts[1], PlayPart::Anim { folder: f, frames } if *f == folder && frames.len() == 2));
+        assert!(matches!(&plan.parts[1], PlayPart::Anim { folder: f, sheets } if *f == folder && sheets.len() == 2));
         for t in 1..=4 {
             s.set_time(t);
             let merged = s.composite_pick((0, 0, 70, 50), Pick::ALL, false);

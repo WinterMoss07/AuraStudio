@@ -83,7 +83,7 @@ pub struct Prefs {
     /// (0: never).
     pub autosave_minutes: u32,
     // Animation.
-    /// Onion skin colors: drawings before, after the current one.
+    /// Onion skin colors: sheets before, after the current one.
     pub onion_before:     [u8; 3],
     pub onion_after:      [u8; 3],
     /// How fast the onion skin fades with distance (OpenToonz's paper
@@ -91,6 +91,9 @@ pub struct Prefs {
     pub onion_thickness:  u8,
     /// The onion skin shows during playback too.
     pub onion_playback:   bool,
+    /// The onion skin's mobile marks count frames (OpenToonz), not sheets
+    /// (Krita, Clip Studio).
+    pub onion_by_frames:  bool,
 }
 
 impl Default for Prefs {
@@ -101,7 +104,7 @@ impl Default for Prefs {
             canvas_quality: CanvasQuality::High, smooth_zoom_in: false, vsync: false,
             brush_outline: true, debounce_ms: 20,
             autosave_minutes: 5,
-            onion_before: [255, 0, 0], onion_after: [0, 255, 0], onion_thickness: 50, onion_playback: false,
+            onion_before: [255, 0, 0], onion_after: [0, 255, 0], onion_thickness: 50, onion_playback: false, onion_by_frames: false,
         }
     }
 }
@@ -136,6 +139,7 @@ impl Prefs {
                 "onion_after" => if let Some(c) = parse_rgb(v) { p.onion_after = c },
                 "onion_thickness" => if let Ok(v) = v.parse::<u8>() { p.onion_thickness = v.min(100) },
                 "onion_playback" => p.onion_playback = v == "true",
+                "onion_by" => p.onion_by_frames = v == "frames",
                 _ => {}
             }
         }
@@ -144,12 +148,13 @@ impl Prefs {
 
     pub fn to_text(&self) -> String {
         format!(
-            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\n",
+            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\nonion_by={}\n",
             self.ui_scale, self.brush_previews, self.open_maximized, self.hidpi_scaling, self.color_managed,
             self.perceptual, self.renderer.key(),
             if self.canvas_quality == CanvasQuality::Standard { "standard" } else { "high" }, self.smooth_zoom_in, self.vsync,
             self.brush_outline, self.debounce_ms, self.autosave_minutes,
             hex(self.onion_before), hex(self.onion_after), self.onion_thickness, self.onion_playback,
+            if self.onion_by_frames { "frames" } else { "sheets" },
         )
     }
 }
@@ -307,7 +312,13 @@ fn brushes(ui: &mut Ui, p: &mut Prefs) {
 fn animation(ui: &mut Ui, p: &mut Prefs) {
     title(ui, "Onion skin");
     ui.horizontal(|ui| {
-        ui.label("Drawings before");
+        ui.label("Marks count");
+        ui.radio_value(&mut p.onion_by_frames, false, "Sheets");
+        ui.radio_value(&mut p.onion_by_frames, true, "Frames");
+    });
+    note(ui, "Sheets: −1 is the sheet before, however long it holds (Krita, Clip Studio). Frames: −1 is the frame before; a sheet already shown is not shown twice (OpenToonz).");
+    ui.horizontal(|ui| {
+        ui.label("Sheets before");
         ui.color_edit_button_srgb(&mut p.onion_before);
         ui.add_space(12.0);
         ui.label("after");
@@ -317,7 +328,7 @@ fn animation(ui: &mut Ui, p: &mut Prefs) {
         ui.label("Paper thickness");
         ui.add(egui::Slider::new(&mut p.onion_thickness, 0..=100));
     });
-    note(ui, "How fast the drawings fade the farther they are (OpenToonz's paper thickness).");
+    note(ui, "How fast the sheets fade the farther they are (OpenToonz's paper thickness).");
     ui.checkbox(&mut p.onion_playback, "Show the onion skin during playback");
     note(ui, "Off: playback shows the animation alone (and plays from the GPU).");
 }
@@ -340,7 +351,7 @@ mod tests {
     fn prefs_round_trip_and_old_files_read() {
         let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl,
             canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true,
-            onion_before: [12, 200, 255], onion_after: [250, 128, 0], onion_thickness: 73, onion_playback: true, ..Prefs::default() };
+            onion_before: [12, 200, 255], onion_after: [250, 128, 0], onion_thickness: 73, onion_playback: true, onion_by_frames: true, ..Prefs::default() };
         assert_eq!(Prefs::from_text(&p.to_text()), p);
         // A 0.7 settings file.
         let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");

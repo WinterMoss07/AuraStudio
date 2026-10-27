@@ -18,8 +18,9 @@ pub const EXTENSION: &str = "aurs";
 /// Version written in new files; files from a newer version are refused.
 /// 2: layers saved as tiles. 3: filter layers, labels, clipping,
 /// reference and draft marks. 4: animation folders (written only when
-/// there is one: other files stay readable by older versions).
-pub const FORMAT_VERSION: u32 = 4;
+/// there is one: other files stay readable by older versions). 5: their
+/// drawings saved as sheets ("sheet", was "frame"; 4 still read).
+pub const FORMAT_VERSION: u32 = 5;
 const PLAIN_VERSION: u32 = 3;
 /// Undo steps kept in a saved file (the newest ones).
 pub const SAVED_UNDO_STEPS: usize = 50;
@@ -94,9 +95,10 @@ enum NodeJson {
         /// An animation folder: its template.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         animation: Option<AnimJson>,
-        /// A frame of one: its number.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        frame: Option<u32>,
+        /// A sheet of one: the frame it is exposed from (written "frame"
+        /// before 0.19).
+        #[serde(default, alias = "frame", skip_serializing_if = "Option::is_none")]
+        sheet: Option<u32>,
         /// Animation folders put together.
         #[serde(default, skip_serializing_if = "is_false")]
         group: bool,
@@ -251,7 +253,7 @@ pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
                 children: walk(&f.children, blobs),
                 props: PropsJson::of(f.props),
                 animation: f.anim().map(AnimJson::of),
-                frame: f.frame(),
+                sheet: f.sheet_start(),
                 group: f.kind == FolderKind::Group,
             },
             Node::Filter(f) => NodeJson::Filter {
@@ -398,10 +400,10 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
                 }
                 Node::Layer(Layer { id, name, visible, opacity: opacity.clamp(0.0, 1.0), blend: blend_from(&blend), locked, props: props.props(), ..layer })
             }
-            NodeJson::Folder { id, name, visible, opacity, blend, locked, collapsed, children, props, animation, frame, group } => Node::Folder(Folder {
-                kind: match (animation, frame, group) {
+            NodeJson::Folder { id, name, visible, opacity, blend, locked, collapsed, children, props, animation, sheet, group } => Node::Folder(Folder {
+                kind: match (animation, sheet, group) {
                     (Some(a), None, false) => FolderKind::Animation(a.anim()),
-                    (None, Some(n), false) if (1..=aurastudio_layers::anim::MAX_FRAME).contains(&n) => FolderKind::Frame(n),
+                    (None, Some(n), false) if (1..=aurastudio_layers::anim::MAX_FRAME).contains(&n) => FolderKind::Sheet(n),
                     (None, None, true) => FolderKind::Group,
                     (None, None, false) => FolderKind::Plain,
                     _ => return Err("damaged file (a folder's animation)".into()),
@@ -931,9 +933,9 @@ mod tests {
         assert!(read(buf, DocId(1), "x", 64).is_err());
     }
 
-    /// Animation folders come back: template, chosen cel, frames with
+    /// Animation folders come back: template, chosen cel, sheets with
     /// their cels and pixels, the current frame; such a file says
-    /// version 4, others still 3.
+    /// version 5, others still 3.
     #[test]
     fn animation_folders_come_back() {
         let mut doc = Document::new(DocId(1), "a", 64, 48);
@@ -956,7 +958,7 @@ mod tests {
         back.layers.check_animation().unwrap();
         assert_eq!(back.layers.time(), 3);
         assert_eq!(back.layers.anim(a), doc.layers.anim(a));
-        assert_eq!(back.layers.frames(a), doc.layers.frames(a));
+        assert_eq!(back.layers.sheets(a), doc.layers.sheets(a));
         assert_eq!(back.layers.active_id(), doc.layers.active_id());
         assert_eq!(back.layers.onion(), doc.layers.onion(), "the onion skin's marks");
         let mut x = Vec::new();
@@ -965,6 +967,32 @@ mod tests {
         describe(&doc.layers.root, &mut y);
         assert_eq!(x, y);
         assert_eq!(back.layers.composite_rect((0, 0, 64, 48)), doc.layers.composite_rect((0, 0, 64, 48)));
+        // A file from before 0.19: sheets written "frame", named "Frame N".
+        fn old(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(o) => {
+                    if let Some(x) = o.remove("sheet") {
+                        o.insert("name".into(), format!("Frame {x}").into());
+                        o.insert("frame".into(), x);
+                    }
+                    o.values_mut().for_each(old);
+                }
+                serde_json::Value::Array(a) => a.iter_mut().for_each(old),
+                _ => {}
+            }
+        }
+        let mut snap = snapshot(&doc, None);
+        let mut json = serde_json::to_value(&snap.json).unwrap();
+        old(&mut json);
+        assert!(json.to_string().contains("\"Frame 4\""));
+        snap.json = serde_json::from_value(json).unwrap();
+        let mut buf = io::Cursor::new(Vec::new());
+        write(&snap, &mut buf).unwrap();
+        buf.set_position(0);
+        let back = read(buf, DocId(4), "t", 16384).unwrap().doc;
+        back.layers.check_animation().unwrap();
+        assert_eq!(back.layers.sheets(a), doc.layers.sheets(a));
+        assert_eq!(back.layers.node(back.layers.sheets(a)[1].1).unwrap().name(), "Sheet 2");
     }
 
     /// Groups (with the folders in them) and the cel marked as the
@@ -998,6 +1026,7 @@ mod tests {
                     if o.contains_key("template") {
                         if let Some(x) = o.remove("cel") { o.insert("sub".into(), x); }
                     }
+
                     o.values_mut().for_each(rename);
                 }
                 serde_json::Value::Array(a) => a.iter_mut().for_each(rename),
@@ -1014,6 +1043,7 @@ mod tests {
         buf.set_position(0);
         let old = read(buf, DocId(3), "t", 16384).unwrap().doc;
         assert_eq!(old.layers.anim(c).unwrap().cel, 3);
+
     }
 
     /// The document type comes back; files from before it open as

@@ -1,16 +1,20 @@
 //! Animation folders. One folder per element (a character, smoke...),
-//! one child per drawn frame ("Frame N", its place in time), each frame
+//! one child per sheet (a drawing: "Sheet 1", "Sheet 2"... in time
+//! order), each sheet exposed from a frame (its place in time) and
 //! holding the cels of the folder's cel template (genga, douga, ink,
-//! colo...) as paint layers. Only one frame of a folder shows at a time:
-//! the last one drawn at or before the current frame (a hold), carried by
-//! the frames' visibility so that every merge stays as it is.
+//! colo...) as paint layers. Only one sheet of a folder shows at a time:
+//! the last one exposed at or before the current frame (a hold), carried
+//! by the sheets' visibility so that every merge stays as it is.
 //!
-//! The template is the same for every frame of a folder: locks, cel
-//! choice and (later) the onion skin go by a cel's rank, so a douga is
-//! never shown or painted among gengas.
+//! Frames are the time (the timeline's columns, the X-sheet's rows);
+//! sheets are the drawings exposed on them.
+//!
+//! The template is the same for every sheet of a folder: locks, cel
+//! choice and the onion skin go by a cel's rank, so a douga is never
+//! shown or painted among gengas.
 //!
 //! The hierarchy has one level of each, never nested: Group (animation
-//! folders put together, for the timeline) → Folder → Frame → Cel.
+//! folders put together, for the timeline) → Folder → Sheet → Cel.
 
 use crate::{first_layer_id, Folder, FolderBlend, Layer, LayerStack, Node, Props};
 
@@ -19,11 +23,11 @@ use crate::{first_layer_id, Folder, FolderBlend, Layer, LayerStack, Node, Props}
 pub enum FolderKind {
     #[default]
     Plain,
-    /// An animation folder: its frames follow `Anim`'s template.
+    /// An animation folder: its sheets follow `Anim`'s template.
     Animation(Anim),
-    /// One frame of an animation folder (its number, from 1): its
-    /// children are the cels, bottom to top.
-    Frame(u32),
+    /// One sheet of an animation folder, exposed from that frame (from
+    /// 1): its children are the cels, bottom to top.
+    Sheet(u32),
     /// Animation folders put together (one entry in the timeline). Holds
     /// only animation folders, and is never inside another group.
     Group,
@@ -34,17 +38,17 @@ pub enum FolderKind {
 pub struct Anim {
     /// Top to bottom, as listed.
     pub template: Vec<Cel>,
-    /// Rank (in `template`) of the cel strokes go to, in every frame.
+    /// Rank (in `template`) of the cel strokes go to, in every sheet.
     pub cel:      usize,
 }
 
-/// One cel of a template: its name, and what a new frame starts with.
+/// One cel of a template: its name, and what a new sheet starts with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cel {
     pub name:    String,
     /// The coloring cel (palette colors, later).
     pub colo:    bool,
-    /// The reference of its frame (what the Colo's fill reads): Ink.
+    /// The reference of its sheet (what the Colo's fill reads): Ink.
     pub reference: bool,
     pub visible: bool,
     pub locked:  bool,
@@ -78,11 +82,12 @@ impl Default for Anim {
 pub enum Target {
     /// This paint layer.
     Layer(u64),
-    /// A frame to make first: this animation folder has none at `frame`.
-    NewFrame { folder: u64, frame: u32 },
+    /// A sheet to make first: this animation folder has none exposed
+    /// from `frame`.
+    NewSheet { folder: u64, frame: u32 },
 }
 
-/// What a frame moved or copied onto a drawn one does.
+/// What a sheet moved or copied onto another one does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Onto { Replace, Swap, Refuse }
 
@@ -115,7 +120,7 @@ impl LayerStack {
         fn walk(nodes: &[Node], ids: &[u64], out: &mut Vec<u64>) {
             for n in nodes.iter().rev() {
                 if n.is_animation() && ids.contains(&n.id()) { out.push(n.id()); }
-                else if let Node::Folder(f) = n { if f.frame().is_none() { walk(&f.children, ids, out); } }
+                else if let Node::Folder(f) = n { if f.sheet_start().is_none() { walk(&f.children, ids, out); } }
             }
         }
         walk(&self.root, ids, &mut folders);
@@ -156,7 +161,7 @@ impl LayerStack {
                     FolderKind::Group => out.push(Column::Group(f.id)),
                     FolderKind::Animation(_) => out.push(Column::Folder(f.id)),
                     FolderKind::Plain => walk(&f.children, out),
-                    FolderKind::Frame(_) => {}
+                    FolderKind::Sheet(_) => {}
                 }
             }
         }
@@ -200,32 +205,33 @@ impl LayerStack {
         self.add_animation_folder("Animation 1");
     }
 
-    /// Where a moved frame set can go: `frames` of `folder` shifted by
-    /// `delta`, kept in order; false if any would leave 1..=MAX_FRAME or
-    /// land on a drawn frame that is not itself moving (`onto` decides).
-    pub fn move_frames(&mut self, folder: u64, frames: &[u32], delta: i32, copy: bool, onto: Onto) -> bool {
+    /// Move (or copy) the sheets of `folder` exposed from `frames` by
+    /// `delta` frames, kept in order; false if any would leave
+    /// 1..=MAX_FRAME, or land on a sheet that is not itself moving and
+    /// `onto` refuses.
+    pub fn move_sheets(&mut self, folder: u64, frames: &[u32], delta: i32, copy: bool, onto: Onto) -> bool {
         if delta == 0 || frames.is_empty() { return false; }
-        let mut from: Vec<u32> = frames.iter().copied().filter(|n| self.frame_at(folder, *n).is_some()).collect();
+        let mut from: Vec<u32> = frames.iter().copied().filter(|n| self.sheet_at(folder, *n).is_some()).collect();
         from.sort_unstable();
         from.dedup();
         if from.is_empty() { return false; }
         let to = |n: u32| n as i64 + delta as i64;
         if from.iter().any(|n| !(1..=MAX_FRAME as i64).contains(&to(*n))) { return false; }
-        // Landing on a drawn frame that stays where it is.
-        let clash = from.iter().any(|n| { let t = to(*n) as u32; self.frame_at(folder, t).is_some() && (copy || !from.contains(&t)) });
+        // Landing on a sheet that stays where it is.
+        let clash = from.iter().any(|n| { let t = to(*n) as u32; self.sheet_at(folder, t).is_some() && (copy || !from.contains(&t)) });
         if clash && onto == Onto::Refuse { return false; }
-        // Moved far end first so no frame lands on one still to move.
+        // Moved far end first so no sheet lands on one still to move.
         let order: Vec<u32> = if delta > 0 { from.iter().rev().copied().collect() } else { from.clone() };
         let mut any = false;
         for n in order {
             let t = to(n) as u32;
-            any |= if copy { self.copy_frame(folder, n, t, Onto::Replace) } else { self.move_frame(folder, n, t, Onto::Replace) };
+            any |= if copy { self.copy_sheet(folder, n, t, Onto::Replace) } else { self.move_sheet(folder, n, t, Onto::Replace) };
         }
         any
     }
 }
 
-/// A frame node without the ids of its children changed (to clone it
+/// A sheet node without the ids of its children changed (to clone it
 /// while the stack is borrowed).
 fn clone_shallow(n: &Node) -> Node {
     match n {
@@ -252,8 +258,8 @@ impl Folder {
         match &self.kind { FolderKind::Animation(a) => Some(a), _ => None }
     }
 
-    pub fn frame(&self) -> Option<u32> {
-        match self.kind { FolderKind::Frame(n) => Some(n), _ => None }
+    pub fn sheet_start(&self) -> Option<u32> {
+        match self.kind { FolderKind::Sheet(n) => Some(n), _ => None }
     }
 }
 
@@ -261,9 +267,9 @@ impl Node {
     /// It is an animation folder.
     pub fn is_animation(&self) -> bool { matches!(self, Node::Folder(f) if f.anim().is_some()) }
 
-    /// Its frame number, if it is a frame.
-    pub fn frame(&self) -> Option<u32> {
-        match self { Node::Folder(f) => f.frame(), _ => None }
+    /// The frame it is exposed from, if it is a sheet.
+    pub fn sheet_start(&self) -> Option<u32> {
+        match self { Node::Folder(f) => f.sheet_start(), _ => None }
     }
 }
 
@@ -274,8 +280,8 @@ impl LayerStack {
     /// The current frame (from 1).
     pub fn time(&self) -> u32 { self.time }
 
-    /// Go to frame `n`: every animation folder shows its frame there. A
-    /// frame or cel chosen moves to its folder's frame shown there.
+    /// Go to frame `n`: every animation folder shows its sheet there. A
+    /// sheet or cel chosen moves to its folder's sheet shown there.
     pub fn set_time(&mut self, n: u32) {
         self.time = n.clamp(1, MAX_FRAME);
         if let Some((folder, Some(_))) = self.anim_of(self.active) {
@@ -284,7 +290,7 @@ impl LayerStack {
         self.settle();
     }
 
-    /// The animation folder `id` is in or is, and the frame it is or is
+    /// The animation folder `id` is in or is, and the sheet it is or is
     /// in (None: it is the folder itself).
     pub fn anim_of(&self, id: u64) -> Option<(u64, Option<u64>)> {
         let path = self.path(id)?;
@@ -293,29 +299,30 @@ impl LayerStack {
         for &i in &path {
             let n = &nodes[i];
             if n.is_animation() { found = Some((n.id(), None)); }
-            if let (Some((f, None)), Some(_)) = (found, n.frame()) { found = Some((f, Some(n.id()))); }
+            if let (Some((f, None)), Some(_)) = (found, n.sheet_start()) { found = Some((f, Some(n.id()))); }
             match n { Node::Folder(f) => nodes = &f.children, _ => break }
         }
         found
     }
 
-    /// The frames of animation folder `folder`: (number, id), in order.
-    pub fn frames(&self, folder: u64) -> Vec<(u32, u64)> {
+    /// The sheets of animation folder `folder`: (frame exposed from, id),
+    /// in time order.
+    pub fn sheets(&self, folder: u64) -> Vec<(u32, u64)> {
         let Some(Node::Folder(f)) = self.node(folder) else { return Vec::new() };
-        let mut v: Vec<(u32, u64)> = f.children.iter().filter_map(|c| Some((c.frame()?, c.id()))).collect();
+        let mut v: Vec<(u32, u64)> = f.children.iter().filter_map(|c| Some((c.sheet_start()?, c.id()))).collect();
         v.sort_unstable();
         v
     }
 
-    /// The frame of `folder` drawn at number `n`.
-    pub fn frame_at(&self, folder: u64, n: u32) -> Option<u64> {
-        self.frames(folder).into_iter().find(|f| f.0 == n).map(|f| f.1)
+    /// The sheet of `folder` exposed from frame `n`.
+    pub fn sheet_at(&self, folder: u64, n: u32) -> Option<u64> {
+        self.sheets(folder).into_iter().find(|f| f.0 == n).map(|f| f.1)
     }
 
-    /// The frame `folder` shows now: the last one at or before the
-    /// current frame (None before its first one).
+    /// The sheet `folder` shows now: the last one exposed at or before
+    /// the current frame (None before its first one).
     pub fn exposed(&self, folder: u64) -> Option<u64> {
-        self.frames(folder).into_iter().rev().find(|f| f.0 <= self.time).map(|f| f.1)
+        self.sheets(folder).into_iter().rev().find(|f| f.0 <= self.time).map(|f| f.1)
     }
 
     /// The template of the animation folder `id` is in (or is).
@@ -332,16 +339,25 @@ impl LayerStack {
     }
 
     /// After any change of the tree or of the time: each animation folder
-    /// shows only its frame of now; the active node is a row of the layer
-    /// list (a frame, not one of its cels).
+    /// shows only its sheet of now, its sheets named in time order; the
+    /// active node is a row of the layer list (a sheet, not one of its
+    /// cels).
     pub(crate) fn settle(&mut self) {
         fn walk(nodes: &mut [Node], time: u32) {
             for n in nodes {
                 let Node::Folder(f) = n else { continue };
                 if f.anim().is_some() {
-                    let shown = f.children.iter().filter_map(Node::frame).filter(|k| *k <= time).max();
+                    let mut starts: Vec<u32> = f.children.iter().filter_map(Node::sheet_start).collect();
+                    starts.sort_unstable();
+                    let shown = starts.iter().copied().filter(|k| *k <= time).max();
                     for c in &mut f.children {
-                        if let Some(k) = c.frame() { *c.visible_mut() = Some(k) == shown; }
+                        let Some(k) = c.sheet_start() else { continue };
+                        *c.visible_mut() = Some(k) == shown;
+                        // Named by rank in time: "Sheet 1", "Sheet 2"...
+                        let rank = starts.partition_point(|x| *x < k) + 1;
+                        if c.name().strip_prefix("Sheet ").and_then(|r| r.parse::<usize>().ok()) != Some(rank) {
+                            *c.name_mut() = format!("Sheet {rank}");
+                        }
                     }
                 } else {
                     walk(&mut f.children, time);
@@ -359,7 +375,7 @@ impl LayerStack {
     fn prune_empty_groups(&mut self) {
         fn walk(nodes: &mut Vec<Node>) {
             for n in nodes.iter_mut() {
-                if let Node::Folder(f) = n { if f.frame().is_none() { walk(&mut f.children); } }
+                if let Node::Folder(f) = n { if f.sheet_start().is_none() { walk(&mut f.children); } }
             }
             nodes.retain(|n| !matches!(n, Node::Folder(f) if f.kind == FolderKind::Group && f.children.is_empty()));
         }
@@ -369,8 +385,8 @@ impl LayerStack {
 
     /// Where a stroke on the active node goes, or None if it can't be
     /// painted (a folder, a filter layer, locked). In an animation folder:
-    /// its frame drawn at the current frame, else a new one there (also
-    /// over a held frame), on the folder's cel.
+    /// its sheet exposed from the current frame, else a new one there
+    /// (also over a held sheet), on the folder's cel.
     pub fn paint_target(&self) -> Option<Target> {
         let a = self.active;
         match self.anim_of(a) {
@@ -378,35 +394,35 @@ impl LayerStack {
             Some((folder, _)) => {
                 let anim = self.anim(folder)?;
                 let rank = anim.cel.min(anim.template.len().checked_sub(1)?);
-                match self.frame_at(folder, self.time) {
+                match self.sheet_at(folder, self.time) {
                     Some(frame) => {
                         let Some(Node::Folder(f)) = self.node(frame) else { return None };
                         let cel = f.children.get(child_of(f.children.len(), rank))?.id();
                         (!self.is_locked(cel)).then_some(Target::Layer(cel))
                     }
                     None => (!self.is_locked(folder) && !anim.template[rank].locked)
-                        .then_some(Target::NewFrame { folder, frame: self.time }),
+                        .then_some(Target::NewSheet { folder, frame: self.time }),
                 }
             }
         }
     }
 
     /// The paint layer edits (clear, filters, transform...) go to: the
-    /// active layer, or the cel of the frame drawn now. None: nothing
-    /// to edit there (a frame not drawn yet, a folder, locked).
+    /// active layer, or the cel of the sheet exposed from now. None:
+    /// nothing to edit there (no sheet yet, a folder, locked).
     pub fn paint_id(&self) -> Option<u64> {
-        match self.paint_target()? { Target::Layer(id) => Some(id), Target::NewFrame { .. } => None }
+        match self.paint_target()? { Target::Layer(id) => Some(id), Target::NewSheet { .. } => None }
     }
 
     /// The paint layer the active row stands for, to read from (copy, the
-    /// wand): a layer, a frame's chosen cel, or for an animation folder
-    /// the one of the frame it shows. Locks and time don't matter.
+    /// wand): a layer, a sheet's chosen cel, or for an animation folder
+    /// the one of the sheet it shows. Locks and time don't matter.
     pub fn layer_of_active(&self) -> Option<u64> {
         let a = self.active;
         let frame = match self.node(a)? {
             Node::Layer(_) => return Some(a),
             n if n.is_animation() => self.exposed(a)?,
-            n if n.frame().is_some() => a,
+            n if n.sheet_start().is_some() => a,
             _ => return None,
         };
         let rank = self.anim(frame)?.cel;
@@ -439,11 +455,12 @@ impl LayerStack {
         id
     }
 
-    /// Make frame `n` of animation folder `folder` with its template's
+    /// Make a sheet of animation folder `folder` exposed from frame `n`,
+    /// with its template's
     /// cels; it becomes active. Returns the cel strokes go to.
     /// None if the folder isn't one, or `n` is taken or out of range.
-    pub fn make_frame(&mut self, folder: u64, n: u32) -> Option<u64> {
-        if !(1..=MAX_FRAME).contains(&n) || self.frame_at(folder, n).is_some() { return None; }
+    pub fn make_sheet(&mut self, folder: u64, n: u32) -> Option<u64> {
+        if !(1..=MAX_FRAME).contains(&n) || self.sheet_at(folder, n).is_some() { return None; }
         let anim = self.anim(folder)?.clone();
         if self.anim_of(folder)? != (folder, None) || anim.template.is_empty() { return None; }
         let frame = self.new_id();
@@ -459,12 +476,12 @@ impl LayerStack {
         }
         let target = cels[child_of(cels.len(), anim.cel.min(cels.len() - 1))].id();
         let node = Node::Folder(Folder {
-            id: frame, name: format!("Frame {n}"), visible: true, opacity: 1.0, blend: FolderBlend::PassThrough,
-            locked: false, collapsed: true, children: cels, props: Props::default(), kind: FolderKind::Frame(n),
+            id: frame, name: String::new(), visible: true, opacity: 1.0, blend: FolderBlend::PassThrough,
+            locked: false, collapsed: true, children: cels, props: Props::default(), kind: FolderKind::Sheet(n),
         });
         let Some(Node::Folder(f)) = self.node_mut(folder) else { return None };
-        // Kept from the last frame (bottom) to the first (top of the list).
-        let at = f.children.iter().position(|c| c.frame().is_some_and(|k| k < n)).unwrap_or(f.children.len());
+        // Kept from the last sheet (bottom) to the first (top of the list).
+        let at = f.children.iter().position(|c| c.sheet_start().is_some_and(|k| k < n)).unwrap_or(f.children.len());
         f.children.insert(at, node);
         self.active = frame;
         self.settle();
@@ -478,16 +495,16 @@ impl LayerStack {
         }
     }
 
-    /// Every frame of `folder`, mutably (its cels bottom to top).
-    fn each_frame(&mut self, folder: u64, mut f: impl FnMut(&mut Vec<Node>)) {
+    /// Every sheet of `folder`, mutably (its cels bottom to top).
+    fn each_sheet(&mut self, folder: u64, mut f: impl FnMut(&mut Vec<Node>)) {
         let Some(Node::Folder(fo)) = self.node_mut(folder) else { return };
         for c in &mut fo.children {
-            if let Node::Folder(fr) = c { if fr.frame().is_some() { f(&mut fr.children); } }
+            if let Node::Folder(fr) = c { if fr.sheet_start().is_some() { f(&mut fr.children); } }
         }
     }
 
     /// Add cel `cel` to the template at rank `at` (top to bottom), and
-    /// to every frame.
+    /// to every sheet.
     pub fn add_cel(&mut self, folder: u64, at: usize, cel: Cel) {
         let (w, h) = (self.width, self.height);
         let Some(a) = self.anim_mut(folder) else { return };
@@ -496,10 +513,10 @@ impl LayerStack {
         a.template.insert(at, cel.clone());
         if a.cel >= at && len > 0 { a.cel += 1; }
         let mut ids = Vec::new();
-        self.each_frame(folder, |_| ids.push(()));
+        self.each_sheet(folder, |_| ids.push(()));
         let new_ids: Vec<u64> = ids.iter().map(|_| self.new_id()).collect();
         let mut k = 0;
-        self.each_frame(folder, |children| {
+        self.each_sheet(folder, |children| {
             let mut l = Layer::new(w, h, false);
             l.id = new_ids[k];
             k += 1;
@@ -511,7 +528,7 @@ impl LayerStack {
         self.settle();
     }
 
-    /// Make cel rank `at` the reference of every frame (the one that was
+    /// Make cel rank `at` the reference of every sheet (the one that was
     /// isn't any more), or none. Only the Colo reads it: the fill and the
     /// gap close look at the reference's lines.
     pub fn set_cel_reference(&mut self, folder: u64, at: usize, on: bool) {
@@ -522,7 +539,7 @@ impl LayerStack {
             if r == at { c.reference = on; } else if on { c.reference = false; }
         }
         let flags: Vec<bool> = a.template.iter().map(|c| c.reference).collect();
-        self.each_frame(folder, |children| {
+        self.each_sheet(folder, |children| {
             if children.len() != len { return; }
             for (r, f) in flags.iter().enumerate() {
                 children[child_of(len, r)].props_mut().reference = *f;
@@ -530,7 +547,7 @@ impl LayerStack {
         });
     }
 
-    /// What deleting cel rank `at` would take away: the frames it is in,
+    /// What deleting cel rank `at` would take away: the sheets it is in,
     /// and how many of them have something drawn on it.
     pub fn cel_content(&self, folder: u64, at: usize) -> (usize, usize) {
         let Some(Node::Folder(f)) = self.node(folder) else { return (0, 0) };
@@ -538,7 +555,7 @@ impl LayerStack {
         let (mut frames, mut drawn) = (0, 0);
         for c in &f.children {
             let Node::Folder(fr) = c else { continue };
-            if fr.frame().is_none() || fr.children.len() != len { continue; }
+            if fr.sheet_start().is_none() || fr.children.len() != len { continue; }
             frames += 1;
             if let Node::Layer(l) = &fr.children[child_of(len, at.min(len - 1))] {
                 if l.tiles.visible_bounds().is_some() { drawn += 1; }
@@ -547,7 +564,7 @@ impl LayerStack {
         (frames, drawn)
     }
 
-    /// Take cel rank `at` out of the template and of every frame (the
+    /// Take cel rank `at` out of the template and of every sheet (the
     /// history keeps their pixels). Not the last one.
     pub fn remove_cel(&mut self, folder: u64, at: usize) -> bool {
         let Some(a) = self.anim_mut(folder) else { return false };
@@ -556,7 +573,7 @@ impl LayerStack {
         a.template.remove(at);
         if a.cel > at || a.cel >= len - 1 { a.cel = a.cel.saturating_sub(1); }
         let mut gone = Vec::new();
-        self.each_frame(folder, |children| {
+        self.each_sheet(folder, |children| {
             if children.len() == len { gone.push(children.remove(child_of(len, at))); }
         });
         self.removed.extend(gone);
@@ -564,19 +581,19 @@ impl LayerStack {
         true
     }
 
-    /// Rename cel rank `at`, in the template and every frame.
+    /// Rename cel rank `at`, in the template and every sheet.
     pub fn rename_cel(&mut self, folder: u64, at: usize, name: &str) {
         let Some(a) = self.anim_mut(folder) else { return };
         let len = a.template.len();
         let Some(s) = a.template.get_mut(at) else { return };
         s.name = name.into();
-        self.each_frame(folder, |children| {
+        self.each_sheet(folder, |children| {
             if let Some(c) = children.get_mut(child_of(len, at)) { *c.name_mut() = name.into(); }
         });
     }
 
     /// Move cel rank `from` to rank `to`, in the template and every
-    /// frame (the chosen cel stays the same one).
+    /// sheet (the chosen cel stays the same one).
     pub fn move_cel(&mut self, folder: u64, from: usize, to: usize) {
         let Some(a) = self.anim_mut(folder) else { return };
         let len = a.template.len();
@@ -585,7 +602,7 @@ impl LayerStack {
         let s = a.template.remove(from);
         a.template.insert(to, s);
         a.cel = a.template.iter().position(|s| s.name == chosen).unwrap_or(0);
-        self.each_frame(folder, |children| {
+        self.each_sheet(folder, |children| {
             if children.len() != len { return; }
             let c = children.remove(child_of(len, from));
             children.insert(child_of(len, to), c);
@@ -593,8 +610,8 @@ impl LayerStack {
         self.settle();
     }
 
-    /// Give every frame of `frame`'s folder (and the template, for the
-    /// frames to come) the visibility and locks of `frame`'s cels.
+    /// Give every sheet of `sheet`'s folder (and the template, for the
+    /// sheets to come) the visibility and locks of `sheet`'s cels.
     pub fn apply_to_folder(&mut self, frame: u64) {
         let Some((folder, Some(_))) = self.anim_of(frame) else { return };
         let Some(Node::Folder(f)) = self.node(frame) else { return };
@@ -605,7 +622,7 @@ impl LayerStack {
         for (r, s) in a.template.iter_mut().enumerate() {
             (s.visible, s.locked) = states[child_of(len, r)];
         }
-        self.each_frame(folder, |children| {
+        self.each_sheet(folder, |children| {
             if children.len() != len { return; }
             for (c, (v, l)) in children.iter_mut().zip(&states) {
                 *c.visible_mut() = *v;
@@ -618,7 +635,7 @@ impl LayerStack {
     pub fn animation_folders(&self) -> Vec<u64> {
         fn walk(nodes: &[Node], out: &mut Vec<u64>) {
             for n in nodes {
-                if n.is_animation() { out.push(n.id()); } else if let Node::Folder(f) = n { if f.frame().is_none() { walk(&f.children, out); } }
+                if n.is_animation() { out.push(n.id()); } else if let Node::Folder(f) = n { if f.sheet_start().is_none() { walk(&f.children, out); } }
             }
         }
         let mut v = Vec::new();
@@ -626,36 +643,35 @@ impl LayerStack {
         v
     }
 
-    /// The last frame drawn in any animation folder (1 if none): where the
-    /// scene ends.
+    /// The last frame a sheet is exposed from, in any animation folder (1
+    /// if none): where the scene ends.
     pub fn last_frame(&self) -> u32 {
-        self.animation_folders().iter().filter_map(|f| self.frames(*f).last().map(|x| x.0)).max().unwrap_or(1)
+        self.animation_folders().iter().filter_map(|f| self.sheets(*f).last().map(|x| x.0)).max().unwrap_or(1)
     }
 
-    /// Renumber frame `id` to `n` (its name follows), keeping the folder's
-    /// frames in order.
+    /// Expose sheets from other frames (`moves`: id, frame), keeping the
+    /// folder's sheets in time order (their names follow, at the settle).
     fn renumber(&mut self, folder: u64, moves: &[(u64, u32)]) {
         let Some(Node::Folder(f)) = self.node_mut(folder) else { return };
         for c in &mut f.children {
             let Node::Folder(fr) = c else { continue };
             if let Some(&(_, n)) = moves.iter().find(|m| m.0 == fr.id) {
-                fr.kind = FolderKind::Frame(n);
-                fr.name = format!("Frame {n}");
+                fr.kind = FolderKind::Sheet(n);
             }
         }
-        // Last frame at the bottom, first at the top of the list.
-        f.children.sort_by_key(|c| std::cmp::Reverse(c.frame().unwrap_or(0)));
+        // Last sheet at the bottom, first at the top of the list.
+        f.children.sort_by_key(|c| std::cmp::Reverse(c.sheet_start().unwrap_or(0)));
     }
 
-    /// Move the frame drawn at `from` to `to` (the X-sheet's drag). A
-    /// frame already at `to`: `Replace` takes it away (kept for undo),
+    /// Move the sheet exposed from `from` to `to` (the X-sheet's drag). A
+    /// sheet already at `to`: `Replace` takes it away (kept for undo),
     /// `Swap` puts it at `from`; `Refuse` changes nothing. True if moved.
-    pub fn move_frame(&mut self, folder: u64, from: u32, to: u32, onto: Onto) -> bool {
+    pub fn move_sheet(&mut self, folder: u64, from: u32, to: u32, onto: Onto) -> bool {
         if from == to || !(1..=MAX_FRAME).contains(&to) { return false; }
-        let Some(src) = self.frame_at(folder, from) else { return false };
-        match (self.frame_at(folder, to), onto) {
+        let Some(src) = self.sheet_at(folder, from) else { return false };
+        match (self.sheet_at(folder, to), onto) {
             (Some(_), Onto::Refuse) => return false,
-            (Some(dst), Onto::Replace) => { self.take_frame(dst); self.renumber(folder, &[(src, to)]); }
+            (Some(dst), Onto::Replace) => { self.take_sheet(dst); self.renumber(folder, &[(src, to)]); }
             (Some(dst), Onto::Swap) => self.renumber(folder, &[(src, to), (dst, from)]),
             (None, _) => self.renumber(folder, &[(src, to)]),
         }
@@ -664,15 +680,15 @@ impl LayerStack {
         true
     }
 
-    /// A copy of the frame drawn at `from` (its cels and pixels), at
-    /// `to` (Ctrl + drag); `onto` as for `move_frame`, Swap meaning
+    /// A copy of the sheet exposed from `from` (its cels and pixels), at
+    /// `to` (Ctrl + drag); `onto` as for `move_sheet`, Swap meaning
     /// Replace. True if copied.
-    pub fn copy_frame(&mut self, folder: u64, from: u32, to: u32, onto: Onto) -> bool {
+    pub fn copy_sheet(&mut self, folder: u64, from: u32, to: u32, onto: Onto) -> bool {
         if from == to || !(1..=MAX_FRAME).contains(&to) { return false; }
-        let Some(src) = self.frame_at(folder, from) else { return false };
-        if let Some(dst) = self.frame_at(folder, to) {
+        let Some(src) = self.sheet_at(folder, from) else { return false };
+        if let Some(dst) = self.sheet_at(folder, to) {
             if onto == Onto::Refuse { return false; }
-            self.take_frame(dst);
+            self.take_sheet(dst);
         }
         let Some(original) = self.node(src) else { return false };
         let original = clone_shallow(original);
@@ -688,15 +704,15 @@ impl LayerStack {
         true
     }
 
-    /// Frame `id` may go: a paint layer stays in the document.
+    /// Sheet `id` may go: a paint layer stays in the document.
     fn can_take(&self, id: u64) -> bool {
         let Some(Node::Folder(f)) = self.node(id) else { return false };
         self.layer_count() > crate::count_layers(&f.children)
     }
 
-    /// Take frame `id` out (kept for undo); active, it gives way to its
+    /// Take sheet `id` out (kept for undo); active, it gives way to its
     /// folder.
-    fn take_frame(&mut self, id: u64) {
+    fn take_sheet(&mut self, id: u64) {
         let folder = self.anim_of(id).map(|x| x.0);
         let Some(path) = self.path(id) else { return };
         let (last, parent) = path.split_last().unwrap();
@@ -705,31 +721,31 @@ impl LayerStack {
         if self.path(self.active).is_none() { if let Some(f) = folder { self.active = f; } }
     }
 
-    /// Delete the frame drawn at `n` (the one before then holds on).
-    pub fn delete_frame(&mut self, folder: u64, n: u32) -> bool {
-        let Some(id) = self.frame_at(folder, n) else { return false };
+    /// Delete the sheet exposed from `n` (the one before then holds on).
+    pub fn delete_sheet(&mut self, folder: u64, n: u32) -> bool {
+        let Some(id) = self.sheet_at(folder, n) else { return false };
         if self.is_locked(id) || !self.can_take(id) { return false; }
-        self.take_frame(id);
+        self.take_sheet(id);
         if self.anim_of(self.active).is_none_or(|(f, _)| f == folder) { self.active = self.exposed(folder).unwrap_or(folder); }
         self.settle();
         true
     }
 
-    /// Timing: `Insert` pushes the frames from `at` one later (the frame
-    /// before holds one more); `Remove` takes the frame drawn at `at` away
-    /// (if any) and brings the following ones one earlier. Frames are
-    /// renamed. False if nothing changed.
+    /// Timing: `Insert` pushes the sheets exposed from `at` on one frame
+    /// later (the sheet before holds one more); `Remove` takes the sheet
+    /// exposed from `at` away (if any) and brings the following ones one
+    /// frame earlier. False if nothing changed.
     pub fn shift_frames(&mut self, folder: u64, at: u32, edit: Shift) -> bool {
-        let frames = self.frames(folder);
+        let frames = self.sheets(folder);
         let moves: Vec<(u64, u32)> = match edit {
             Shift::Insert => {
                 if frames.last().is_some_and(|f| f.0 >= MAX_FRAME) { return false; }
                 frames.iter().filter(|f| f.0 >= at).map(|f| (f.1, f.0 + 1)).collect()
             }
             Shift::Remove => {
-                if let Some(id) = self.frame_at(folder, at) {
+                if let Some(id) = self.sheet_at(folder, at) {
                     if self.is_locked(id) || !self.can_take(id) { return false; }
-                    self.take_frame(id);
+                    self.take_sheet(id);
                 }
                 frames.iter().filter(|f| f.0 > at).map(|f| (f.1, f.0 - 1)).collect()
             }
@@ -741,40 +757,43 @@ impl LayerStack {
         changed
     }
 
-    /// `id` is a frame or a cel: it stays where it is (the X-sheet
-    /// moves frames; the template decides the cels).
+    /// `id` is a sheet or a cel: it stays where it is (the X-sheet
+    /// moves sheets; the template decides the cels).
     pub fn is_anim_part(&self, id: u64) -> bool {
         matches!(self.anim_of(id), Some((_, Some(_))))
     }
 
-    /// Check the animation folders: only frames in them, numbers unique,
-    /// every frame with its template's cels (in order, by name), the
-    /// frame of now shown. Err: what is wrong (tests, fuzz).
+    /// Check the animation folders: only sheets in them, one per frame,
+    /// named in time order, every sheet with its template's cels (in
+    /// order, by name), the sheet of now shown. Err: what is wrong
+    /// (tests, fuzz).
     pub fn check_animation(&self) -> Result<(), String> {
         fn walk(s: &LayerStack, nodes: &[Node], in_anim: bool, in_group: bool) -> Result<(), String> {
             for n in nodes {
                 if in_group && !n.is_animation() { return Err(format!("node {} in a group is no animation folder", n.id())); }
-                if n.frame().is_some() != in_anim { return Err(format!("node {} {} an animation folder", n.id(), if in_anim { "in" } else { "a frame outside" })); }
+                if n.sheet_start().is_some() != in_anim { return Err(format!("node {} {} an animation folder", n.id(), if in_anim { "in" } else { "a sheet outside" })); }
                 let Node::Folder(f) = n else { continue };
                 if let Some(a) = f.anim() {
                     if a.template.is_empty() || a.cel >= a.template.len() { return Err(format!("folder {}: template", f.id)); }
                     let mut seen = std::collections::HashSet::new();
                     for c in &f.children {
-                        let Node::Folder(fr) = c else { return Err(format!("folder {}: a layer among frames", f.id)) };
-                        let k = fr.frame().ok_or("a folder among frames")?;
-                        if !seen.insert(k) { return Err(format!("folder {}: frame {k} twice", f.id)); }
+                        let Node::Folder(fr) = c else { return Err(format!("folder {}: a layer among sheets", f.id)) };
+                        let k = fr.sheet_start().ok_or("a folder among sheets")?;
+                        if !seen.insert(k) { return Err(format!("folder {}: two sheets at frame {k}", f.id)); }
+                        let rank = s.sheets(f.id).iter().position(|x| x.1 == fr.id).map_or(0, |i| i + 1);
+                        if fr.name != format!("Sheet {rank}") { return Err(format!("sheet at {k} named {:?}, rank {rank}", fr.name)); }
                         let names: Vec<&str> = fr.children.iter().rev().map(Node::name).collect();
                         let want: Vec<&str> = a.template.iter().map(|t| t.name.as_str()).collect();
                         if names != want || !fr.children.iter().all(|c| matches!(c, Node::Layer(_))) {
-                            return Err(format!("frame {k}: cels {names:?}, template {want:?}"));
+                            return Err(format!("sheet at {k}: cels {names:?}, template {want:?}"));
                         }
                         let marks: Vec<bool> = fr.children.iter().rev().map(|c| c.props().reference).collect();
                         let want_marks: Vec<bool> = a.template.iter().map(|t| t.reference).collect();
-                        if marks != want_marks { return Err(format!("frame {k}: reference marks {marks:?}, template {want_marks:?}")); }
-                        let shown = s.frames(f.id).into_iter().rev().find(|x| x.0 <= s.time).map(|x| x.1);
-                        if c.visible() != (shown == Some(c.id())) { return Err(format!("frame {k}: shown {} at {}", c.visible(), s.time)); }
+                        if marks != want_marks { return Err(format!("sheet at {k}: reference marks {marks:?}, template {want_marks:?}")); }
+                        let shown = s.sheets(f.id).into_iter().rev().find(|x| x.0 <= s.time).map(|x| x.1);
+                        if c.visible() != (shown == Some(c.id())) { return Err(format!("sheet at {k}: shown {} at {}", c.visible(), s.time)); }
                     }
-                } else if f.frame().is_none() {
+                } else if f.sheet_start().is_none() {
                     if f.kind == FolderKind::Group {
                         if in_group { return Err(format!("group {} in a group", f.id)); }
                         if f.children.is_empty() { return Err(format!("group {} is empty", f.id)); }
@@ -802,58 +821,58 @@ mod tests {
         f.children.iter().rev().map(|c| c.name().to_owned()).collect()
     }
 
-    /// A folder made, frames drawn at 1 and 5: each with the template's
+    /// A folder made, sheets exposed from 1 and 5: each with the template's
     /// cels; 1 held until 5; nothing before; the active stays a row.
     #[test]
-    fn frames_follow_the_template_and_hold() {
+    fn sheets_follow_the_template_and_hold() {
         let mut s = LayerStack::new_document(64, 64);
         let a = s.add_animation_folder("Perso A");
-        assert_eq!(s.paint_target(), Some(Target::NewFrame { folder: a, frame: 1 }));
+        assert_eq!(s.paint_target(), Some(Target::NewSheet { folder: a, frame: 1 }));
         assert_eq!(s.paint_id(), None);
-        let cel = s.make_frame(a, 1).unwrap();
+        let cel = s.make_sheet(a, 1).unwrap();
         let f1 = s.active_id();
-        assert_eq!(s.node(f1).unwrap().name(), "Frame 1");
+        assert_eq!(s.node(f1).unwrap().name(), "Sheet 1");
         assert_eq!(names(&s, f1), ["Colo", "Ink", "Douga", "Genga"]);
         assert_eq!(s.node(cel).unwrap().name(), "Genga");
         assert_eq!(s.paint_target(), Some(Target::Layer(cel)));
-        // A cel made active: its frame is.
+        // A cel made active: its sheet is.
         s.set_active(cel);
         assert_eq!(s.active_id(), f1);
         s.set_time(5);
         assert_eq!(s.exposed(a), Some(f1), "held");
-        assert_eq!(s.paint_target(), Some(Target::NewFrame { folder: a, frame: 5 }), "a new frame over a hold");
+        assert_eq!(s.paint_target(), Some(Target::NewSheet { folder: a, frame: 5 }), "a new sheet over a hold");
         s.set_cel(a, 2);
-        let douga = s.make_frame(a, 5).unwrap();
+        let douga = s.make_sheet(a, 5).unwrap();
         assert_eq!(s.node(douga).unwrap().name(), "Douga");
         let f5 = s.active_id();
         assert!(s.node(f5).unwrap().visible() && !s.node(f1).unwrap().visible());
         for t in [1, 4] { s.set_time(t); assert_eq!(s.exposed(a), Some(f1)); }
         s.set_time(9);
         assert_eq!(s.exposed(a), Some(f5));
-        assert_eq!(s.frames(a), vec![(1, f1), (5, f5)]);
-        // In the list: the folder, then Frame 1, Frame 5; no cels.
+        assert_eq!(s.sheets(a), vec![(1, f1), (5, f5)]);
+        // In the list: the folder, then Sheet 1, Sheet 2; no cels.
         if let Some(Node::Folder(f)) = s.node_mut(a) { f.collapsed = false; }
         let rows = s.rows();
         let at = rows.iter().position(|r| r.id == a).unwrap();
         assert!(rows[at].animation);
-        assert_eq!((rows[at + 1].frame, rows[at + 2].frame), (Some(1), Some(5)));
+        assert_eq!((rows[at + 1].sheet, rows[at + 2].sheet), (Some(1), Some(5)));
         assert!(rows.iter().all(|r| r.id != douga));
         s.check_animation().unwrap();
         // Taken twice: no.
-        assert!(s.make_frame(a, 5).is_none());
+        assert!(s.make_sheet(a, 5).is_none());
     }
 
-    /// Nothing else goes into an animation folder; frames and cels
+    /// Nothing else goes into an animation folder; sheets and cels
     /// can't be moved, grouped, duplicated (cels deleted) from the
     /// layer list.
     #[test]
-    fn frames_stay_in_their_folder() {
+    fn sheets_stay_in_their_folder() {
         let mut s = LayerStack::new_document(32, 32);
         let ink = s.active_id();
         let a = s.add_animation_folder("A");
-        s.make_frame(a, 1).unwrap();
+        s.make_sheet(a, 1).unwrap();
         let f1 = s.active_id();
-        // A new layer with a frame active: above the folder, outside.
+        // A new layer with a sheet active: above the folder, outside.
         let l = s.add_layer("L");
         assert!(s.anim_of(l).is_none());
         assert!(!s.move_node(ink, a, Place::Inside));
@@ -865,24 +884,24 @@ mod tests {
         assert_eq!(s.group_active("G"), f1);
         assert_eq!(s.duplicate_active(), f1);
         s.move_active(true);
-        assert_eq!(s.frames(a), vec![(1, f1)]);
+        assert_eq!(s.sheets(a), vec![(1, f1)]);
         s.set_active(a);
         assert!(!s.ungroup_active());
         s.check_animation().unwrap();
-        // The frame may be deleted; then the folder is empty.
+        // The sheet may be deleted; then the folder is empty.
         s.set_active(f1);
         assert!(s.remove_active());
-        assert!(s.frames(a).is_empty());
+        assert!(s.sheets(a).is_empty());
         s.check_animation().unwrap();
     }
 
-    /// Template edits go to every frame; a locked cel isn't painted,
-    /// nor made by a new frame; apply to folder copies one frame's states.
+    /// Template edits go to every sheet; a locked cel isn't painted,
+    /// nor made by a new sheet; apply to folder copies one sheet's states.
     #[test]
-    fn template_edits_reach_every_frame() {
+    fn template_edits_reach_every_sheet() {
         let mut s = LayerStack::new_document(32, 32);
         let a = s.add_animation_folder("A");
-        let f: Vec<u64> = (1..=3).map(|n| { s.set_time(n * 2); s.make_frame(a, n * 2).unwrap(); s.active_id() }).collect();
+        let f: Vec<u64> = (1..=3).map(|n| { s.set_time(n * 2); s.make_sheet(a, n * 2).unwrap(); s.active_id() }).collect();
         s.set_cel(a, 0);
         s.add_cel(a, 1, Cel::new("Layout", false));
         s.rename_cel(a, 0, "Key");
@@ -893,7 +912,7 @@ mod tests {
         for &fr in &f { assert_eq!(names(&s, fr), ["Genga", "Key", "Ink", "Douga"]); }
         assert_eq!(s.take_removed().len(), 3, "kept for undo");
         s.check_animation().unwrap();
-        // Lock "Key" in frame 2, apply to the folder.
+        // Lock "Key" in the sheet at 2, apply to the folder.
         let key = |s: &LayerStack, fr: u64| { let Some(Node::Folder(x)) = s.node(fr) else { panic!() }; x.children[2].id() };
         let k = key(&s, f[0]);
         *s.node_mut(k).unwrap().locked_mut() = true;
@@ -904,30 +923,30 @@ mod tests {
         s.set_cel(a, 1);
         assert_eq!(s.paint_target(), None, "locked");
         s.set_time(7);
-        assert_eq!(s.paint_target(), None, "a new frame would start locked");
+        assert_eq!(s.paint_target(), None, "a new sheet would start locked");
         s.set_cel(a, 2);
-        assert!(matches!(s.paint_target(), Some(Target::NewFrame { frame: 7, .. })));
+        assert!(matches!(s.paint_target(), Some(Target::NewSheet { frame: 7, .. })));
         // The last cel can't go.
         for _ in 0..3 { assert!(s.remove_cel(a, 0)); }
         assert!(!s.remove_cel(a, 0));
         s.check_animation().unwrap();
     }
 
-    /// Undo of the layer tree brings frames back with their cels and
+    /// Undo of the layer tree brings sheets back with their cels and
     /// shows the right one; the cel chosen is not undone.
     #[test]
-    fn tree_undo_keeps_frames_whole() {
+    fn tree_undo_keeps_sheets_whole() {
         let mut s = LayerStack::new_document(32, 32);
         let a = s.add_animation_folder("A");
         let before = s.tree_state();
-        s.make_frame(a, 1).unwrap();
+        s.make_sheet(a, 1).unwrap();
         s.set_cel(a, 2);
         let after = s.tree_state();
         assert_ne!(before, after);
         let kept = s.restore_tree(&before, Vec::new());
-        assert!(s.frames(a).is_empty());
+        assert!(s.sheets(a).is_empty());
         s.restore_tree(&after, kept);
-        assert_eq!(s.frames(a).len(), 1);
+        assert_eq!(s.sheets(a).len(), 1);
         assert_eq!(s.anim(a).unwrap().cel, 2);
         s.check_animation().unwrap();
         // Choosing a cel is no edit.
@@ -941,67 +960,68 @@ mod tests {
 mod timing_tests {
     use super::*;
 
-    /// Folder with frames drawn at `ns`, each marked by a pixel of value n.
+    /// Folder with sheets exposed from `ns`, each marked by a pixel of value n.
     fn folder_with(ns: &[u32]) -> (LayerStack, u64) {
         let mut s = LayerStack::new_document(8, 8);
         let a = s.add_animation_folder("A");
         for &n in ns {
-            let cel = s.make_frame(a, n).unwrap();
+            let cel = s.make_sheet(a, n).unwrap();
             s.set_layer_rect(cel, (0, 0, 1, 1), &[n as u8, 0, 0, 255]);
         }
         (s, a)
     }
 
-    /// The frame numbers, and the mark each frame carries.
+    /// The frames the sheets are exposed from, and the mark each sheet
+    /// carries (sheets named by rank).
     fn marks(s: &LayerStack, a: u64) -> Vec<(u32, u8)> {
-        s.frames(a).into_iter().map(|(n, id)| {
+        s.sheets(a).into_iter().enumerate().map(|(i, (n, id))| {
             let Some(Node::Folder(f)) = s.node(id) else { panic!() };
-            assert_eq!(f.name, format!("Frame {n}"));
+            assert_eq!(f.name, format!("Sheet {}", i + 1));
             let mark = f.children.iter().find_map(|c| match c { Node::Layer(l) => Some(l.tiles.pixel(0, 0)[0]).filter(|v| *v != 255), _ => None }).unwrap_or(0);
             (n, mark)
         }).collect()
     }
 
     #[test]
-    fn moving_a_frame() {
+    fn moving_a_sheet() {
         let (mut s, a) = folder_with(&[1, 3, 5]);
-        assert!(s.move_frame(a, 3, 4, Onto::Refuse), "onto an empty frame: no question");
+        assert!(s.move_sheet(a, 3, 4, Onto::Refuse), "onto an empty frame: no question");
         assert_eq!(marks(&s, a), vec![(1, 1), (4, 3), (5, 5)]);
-        assert!(!s.move_frame(a, 4, 5, Onto::Refuse));
-        assert!(s.move_frame(a, 4, 5, Onto::Swap));
+        assert!(!s.move_sheet(a, 4, 5, Onto::Refuse));
+        assert!(s.move_sheet(a, 4, 5, Onto::Swap));
         assert_eq!(marks(&s, a), vec![(1, 1), (4, 5), (5, 3)]);
-        assert!(s.move_frame(a, 1, 4, Onto::Replace));
+        assert!(s.move_sheet(a, 1, 4, Onto::Replace));
         assert_eq!(marks(&s, a), vec![(4, 1), (5, 3)]);
         assert_eq!(s.take_removed().len(), 1, "the replaced one kept for undo");
         s.check_animation().unwrap();
     }
 
     #[test]
-    fn copying_a_frame() {
+    fn copying_a_sheet() {
         let (mut s, a) = folder_with(&[1, 2]);
-        assert!(s.copy_frame(a, 1, 6, Onto::Refuse));
+        assert!(s.copy_sheet(a, 1, 6, Onto::Refuse));
         assert_eq!(marks(&s, a), vec![(1, 1), (2, 2), (6, 1)]);
-        assert!(!s.copy_frame(a, 2, 6, Onto::Refuse));
-        assert!(s.copy_frame(a, 2, 6, Onto::Replace));
+        assert!(!s.copy_sheet(a, 2, 6, Onto::Refuse));
+        assert!(s.copy_sheet(a, 2, 6, Onto::Replace));
         assert_eq!(marks(&s, a), vec![(1, 1), (2, 2), (6, 2)]);
         // A copy: painting it leaves the original as it was.
-        let six = s.frame_at(a, 6).unwrap();
+        let six = s.sheet_at(a, 6).unwrap();
         let Some(Node::Folder(f)) = s.node(six) else { panic!() };
         let cel = f.children.last().unwrap().id();
         s.set_layer_rect(cel, (0, 0, 1, 1), &[99, 0, 0, 255]);
         assert_eq!(marks(&s, a)[1], (2, 2));
-        // A reference frame's copy isn't a second reference.
-        let one = s.frame_at(a, 1).unwrap();
+        // A reference sheet's copy isn't a second reference.
+        let one = s.sheet_at(a, 1).unwrap();
         s.node_mut(one).unwrap().props_mut().reference = true;
-        assert!(s.copy_frame(a, 1, 8, Onto::Refuse));
+        assert!(s.copy_sheet(a, 1, 8, Onto::Refuse));
         let Some(Node::Folder(f)) = s.node(a) else { panic!() };
         assert_eq!(f.children.iter().filter(|n| n.props().reference).count(), 1);
         s.check_animation().unwrap();
     }
 
-    /// Frames 1 to 10 drawn, insert at 2: the new gap is 2 (the frame 1
+    /// Sheets at frames 1 to 10, insert at 2: the new gap is 2 (the sheet at 1
     /// holds there), the old 2 to 10 are 3 to 11; remove at 2 brings them
-    /// back; remove where a frame is drawn deletes it.
+    /// back; remove where a sheet is exposed from deletes it.
     #[test]
     fn inserting_and_removing_frames() {
         let ns: Vec<u32> = (1..=10).collect();
@@ -1011,7 +1031,7 @@ mod timing_tests {
         assert_eq!(m[0], (1, 1));
         assert_eq!(m[1..], (3..=11).map(|n| (n, (n - 1) as u8)).collect::<Vec<_>>()[..]);
         s.set_time(2);
-        assert_eq!(s.exposed(a), s.frame_at(a, 1), "the gap holds frame 1");
+        assert_eq!(s.exposed(a), s.sheet_at(a, 1), "the gap holds the sheet of frame 1");
         assert!(s.shift_frames(a, 2, Shift::Remove));
         assert_eq!(marks(&s, a), (1..=10).map(|n| (n, n as u8)).collect::<Vec<_>>());
         assert!(s.shift_frames(a, 5, Shift::Remove));
@@ -1020,7 +1040,7 @@ mod timing_tests {
         assert!(!s.shift_frames(a, 50, Shift::Insert), "nothing after it");
         s.check_animation().unwrap();
         assert_eq!(s.last_frame(), 9);
-        assert!(s.delete_frame(a, 9));
+        assert!(s.delete_sheet(a, 9));
         assert_eq!(s.last_frame(), 8);
         s.check_animation().unwrap();
     }
@@ -1129,14 +1149,14 @@ mod group_tests {
         s.check_animation().unwrap();
     }
 
-    /// The cel locks of a frame are phase locks (Apply to folder), not a
-    /// protection of the frame: a frame or a folder is deleted anyway.
+    /// The cel locks of a sheet are phase locks (Apply to folder), not a
+    /// protection of the sheet: a sheet or a folder is deleted anyway.
     #[test]
-    fn locked_cels_do_not_keep_a_frame_or_a_folder() {
+    fn locked_cels_do_not_keep_a_sheet_or_a_folder() {
         let (mut s, a, ..) = doc();
-        for n in 1..=3 { s.set_time(n); s.make_frame(a, n).unwrap(); }
-        let f1 = s.frame_at(a, 1).unwrap();
-        // Genga unlocked, every other cel locked, in every frame.
+        for n in 1..=3 { s.set_time(n); s.make_sheet(a, n).unwrap(); }
+        let f1 = s.sheet_at(a, 1).unwrap();
+        // Genga unlocked, every other cel locked, in every sheet.
         let Some(Node::Folder(fr)) = s.node(f1) else { panic!() };
         let ids: Vec<u64> = fr.children.iter().map(Node::id).collect();
         for (k, id) in ids.iter().enumerate() { *s.node_mut(*id).unwrap().locked_mut() = k != 0; }
@@ -1144,7 +1164,7 @@ mod group_tests {
         s.set_active(f1);
         assert_eq!(s.removal_refused(), None);
         assert!(s.remove_active());
-        assert_eq!(s.frames(a).len(), 2);
+        assert_eq!(s.sheets(a).len(), 2);
         // The folder with its locked cels too.
         s.set_active(a);
         assert_eq!(s.removal_refused(), None);
@@ -1158,63 +1178,63 @@ mod group_tests {
         s.check_animation().unwrap();
     }
 
-    /// Deleting a cel takes it from every frame: the docker asks first
+    /// Deleting a cel takes it from every sheet: the docker asks first
     /// when some of them have a drawing.
     #[test]
     fn a_cel_counts_what_deleting_it_would_take() {
         let (mut s, a, ..) = doc();
-        for n in 1..=3 { s.set_time(n); s.make_frame(a, n).unwrap(); }
+        for n in 1..=3 { s.set_time(n); s.make_sheet(a, n).unwrap(); }
         assert_eq!(s.cel_content(a, 1), (3, 0), "nothing drawn: no question");
-        let ink_of = |s: &LayerStack, n: u32| { let Some(Node::Folder(f)) = s.node(s.frame_at(a, n).unwrap()) else { panic!() }; f.children[2].id() };
+        let ink_of = |s: &LayerStack, n: u32| { let Some(Node::Folder(f)) = s.node(s.sheet_at(a, n).unwrap()) else { panic!() }; f.children[2].id() };
         s.set_layer_rect(ink_of(&s, 1), (0, 0, 1, 1), &[9, 0, 0, 255]);
         s.set_layer_rect(ink_of(&s, 3), (0, 0, 1, 1), &[9, 0, 0, 255]);
         assert_eq!(s.cel_content(a, 1), (3, 2));
         assert_eq!(s.cel_content(a, 0), (3, 0));
     }
 
-    /// The reference of a frame is its Ink cel, set by the template for
-    /// every frame, and moved or cleared there, never by hand.
+    /// The reference of a sheet is its Ink cel, set by the template for
+    /// every sheet, and moved or cleared there, never by hand.
     #[test]
-    fn the_ink_cel_is_the_reference_of_every_frame() {
+    fn the_ink_cel_is_the_reference_of_every_sheet() {
         let (mut s, a, ..) = doc();
         let marks = |s: &LayerStack, n: u32| -> Vec<(String, bool)> {
-            let Some(Node::Folder(f)) = s.node(s.frame_at(a, n).unwrap()) else { panic!() };
+            let Some(Node::Folder(f)) = s.node(s.sheet_at(a, n).unwrap()) else { panic!() };
             f.children.iter().rev().map(|c| (c.name().to_owned(), c.props().reference)).collect()
         };
-        for n in [1, 4] { s.set_time(n); s.make_frame(a, n).unwrap(); }
+        for n in [1, 4] { s.set_time(n); s.make_sheet(a, n).unwrap(); }
         for n in [1, 4] { assert_eq!(marks(&s, n)[1], ("Ink".to_owned(), true)); assert_eq!(marks(&s, n).iter().filter(|m| m.1).count(), 1); }
-        // The Colo's fill looks at the Ink of its frame.
-        let Some(Node::Folder(f)) = s.node(s.frame_at(a, 4).unwrap()) else { panic!() };
+        // The Colo's fill looks at the Ink of its sheet.
+        let Some(Node::Folder(f)) = s.node(s.sheet_at(a, 4).unwrap()) else { panic!() };
         let (colo, ink) = (f.children[3].id(), f.children[2].id());
         assert_eq!(s.reference_for(colo), Some(ink));
-        // Another cel as the reference: the mark moves, in every frame.
+        // Another cel as the reference: the mark moves, in every sheet.
         s.set_cel_reference(a, 2, true);
         for n in [1, 4] { assert_eq!(marks(&s, n)[2], ("Douga".to_owned(), true)); assert_eq!(marks(&s, n).iter().filter(|m| m.1).count(), 1); }
         s.set_cel_reference(a, 2, false);
         for n in [1, 4] { assert!(marks(&s, n).iter().all(|m| !m.1)); }
-        // A new frame and a new cel follow the template.
+        // A new sheet and a new cel follow the template.
         s.set_cel_reference(a, 1, true);
         s.set_time(8);
-        s.make_frame(a, 8).unwrap();
+        s.make_sheet(a, 8).unwrap();
         assert_eq!(marks(&s, 8)[1], ("Ink".to_owned(), true));
         s.add_cel(a, 0, Cel { reference: true, ..Cel::new("Lines", false) });
         for n in [1, 4, 8] { assert_eq!(marks(&s, n)[0], ("Lines".to_owned(), true)); assert_eq!(marks(&s, n).iter().filter(|m| m.1).count(), 1); }
         s.check_animation().unwrap();
     }
 
-    /// Several frames move together, in order, as one set.
+    /// Several sheets move together, in order, as one set.
     #[test]
-    fn several_frames_move_together() {
+    fn several_sheets_move_together() {
         let (mut s, a, ..) = doc();
-        for n in [1, 2, 3, 6] { s.set_time(n); s.make_frame(a, n).unwrap(); }
-        let ns = |s: &LayerStack| s.frames(a).iter().map(|f| f.0).collect::<Vec<_>>();
-        assert!(s.move_frames(a, &[1, 2, 3], 1, false, Onto::Refuse), "frame 4 is free: the set shifts");
+        for n in [1, 2, 3, 6] { s.set_time(n); s.make_sheet(a, n).unwrap(); }
+        let ns = |s: &LayerStack| s.sheets(a).iter().map(|f| f.0).collect::<Vec<_>>();
+        assert!(s.move_sheets(a, &[1, 2, 3], 1, false, Onto::Refuse), "frame 4 is free: the set shifts");
         assert_eq!(ns(&s), vec![2, 3, 4, 6]);
-        assert!(!s.move_frames(a, &[4], 2, false, Onto::Refuse), "onto frame 6");
-        assert!(!s.move_frames(a, &[2, 3], -2, false, Onto::Refuse), "before frame 1");
-        assert!(s.move_frames(a, &[3, 4], 2, false, Onto::Replace), "replaces 6");
+        assert!(!s.move_sheets(a, &[4], 2, false, Onto::Refuse), "onto frame 6");
+        assert!(!s.move_sheets(a, &[2, 3], -2, false, Onto::Refuse), "before frame 1");
+        assert!(s.move_sheets(a, &[3, 4], 2, false, Onto::Replace), "replaces 6");
         assert_eq!(ns(&s), vec![2, 5, 6]);
-        assert!(s.move_frames(a, &[2, 5], 10, true, Onto::Refuse), "a copy");
+        assert!(s.move_sheets(a, &[2, 5], 10, true, Onto::Refuse), "a copy");
         assert_eq!(ns(&s), vec![2, 5, 6, 12, 15]);
         s.check_animation().unwrap();
     }
@@ -1232,7 +1252,7 @@ mod group_tests {
         assert!(s.is_locked(rows[1].id));
         assert!(matches!(s.node(rows[0].id), Some(Node::Folder(f)) if f.collapsed));
         assert_eq!(s.active_id(), rows[0].id);
-        assert_eq!(s.paint_target(), Some(Target::NewFrame { folder: rows[0].id, frame: 1 }));
+        assert_eq!(s.paint_target(), Some(Target::NewSheet { folder: rows[0].id, frame: 1 }));
         s.check_animation().unwrap();
     }
 }

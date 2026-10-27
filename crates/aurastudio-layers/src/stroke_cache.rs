@@ -21,7 +21,7 @@ pub(crate) struct StrokeCache {
 }
 
 /// What the merge draws, in order: a node, or the onion skin's ghosts of
-/// an animation folder (drawn before its frames).
+/// an animation folder (drawn before its sheets).
 #[derive(Clone, Copy)]
 enum Item<'a> {
     Node(&'a Node, f32),

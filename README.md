@@ -111,42 +111,53 @@ Geometry, Selection, Transform.
   elsewhere). Files from before it open as Illustration.
 - **Animation folders** (Animation documents; the arrow beside the
   New folder button, or Layer > New special folder): one folder per
-  element (a character, smoke...). Drawing on a frame of it with nothing
-  drawn makes **Frame N** (N: the current frame), with the folder's cel
-  template inside it: genga, douga, ink, colo by default. One undo step
-  takes the frame and its first stroke away together. A frame shows until
-  the next one drawn (hold); before the first one, nothing. Strokes go to
-  the cel chosen in the **Cel template** docker (the same one in every
-  frame); its eye and lock are the frame's, and **Apply to folder** gives
-  every frame (and those to come) these states. The template (listed like
-  the Layers docker, each new cel on top): add, remove (with a question
-  when drawings would go), drag to move, rename (double click) a cel, mark
-  the reference one, in every frame at once. The layer list shows the
-  folder and its frames (a click on a frame goes to it), never the cels.
-  The vocabulary: **Group → Folder → Frame → Cel**. A **group** gathers
+  element (a character, smoke...). Its drawings are **sheets**; frames are
+  the time. Drawing on a frame with no sheet there makes a sheet exposed
+  from that frame, with the folder's cel template inside it: genga,
+  douga, ink, colo by default. One undo step takes the sheet and its
+  first stroke away together. A sheet shows until the next one (hold);
+  before the first one, nothing. Sheets are named by their order in time
+  (Sheet 1, Sheet 2...: "Sheet 3 at frame 12"). Strokes go to the cel
+  chosen in the **Cel template** docker (the same one in every sheet);
+  its eye and lock are the sheet's, and **Apply to folder** gives every
+  sheet (and those to come) these states. The template (listed like the
+  Layers docker, each new cel on top): add, remove (with a question when
+  drawings would go), drag to move, rename (double click) a cel, mark the
+  reference one, in every sheet at once. The layer list shows the folder
+  and its sheets (a click on a sheet goes to its frame), never the cels.
+  The vocabulary: **Group → Folder → Sheet → Cel**. A **group** gathers
   animation folders (organisation only, no nesting): right click >
   Group animation folders; one column in the timeline, a double click
-  opens it. Nothing else goes into an animation folder;
-  frames stay in theirs. `,` / `.`: previous / next frame. Camera and
-  comics folders are listed, grayed out until they come.
+  opens it. Nothing else goes into an animation folder; sheets stay in
+  theirs. `,` / `.`: previous / next frame. Camera and comics folders are
+  listed, grayed out until they come.
 - **Animation panel** (Animation documents; Window > Animation): the
   **timeline** under the canvas, or turned into the **X-sheet** beside the
   dockers (one button; the same grid, as OpenToonz's orientations). One
   row / column per animation folder (name, eye, lock; double click to
-  rename), one cell per frame: a drawn frame is a filled cell, a hold a
-  line until the next one; the current frame lit; lines every 6 frames
-  and every second. A click goes to a frame (on a cell: that folder too),
-  a drag on the frame numbers scrubs; a drag on empty cells draws a box
-  that picks frames (also Shift range, Ctrl add; one folder at a time). **Drag the frames
-  picked** to move them, **Ctrl + drag** to copy them; onto a drawn frame, a
-  question: replace it, swap them (moves), or cancel (the default).
-  **Insert / remove a frame** (buttons, or a right click on a cell): the
-  next frames move one later / earlier and are renamed; delete a
-  drawing (the one before holds on). The bar: new animation folder,
-  first / previous / **play-pause** / next / last frame, loop, fps,
-  current / last frame. Playback keeps time (frames are skipped if the
-  merge can't keep up), from the current frame, looping over the frames
-  drawn.
+  rename), one cell per frame: a sheet is a filled cell at the frame it
+  is exposed from, a hold a line until the next one; the current frame
+  lit; shading, lines and numbers on the beat (every 6 frames at 24 fps,
+  every 5 at 25, 30, 60) and a line every second. A click goes to a frame
+  (on a cell: that folder too), a drag on the frame numbers scrubs; a drag
+  on empty cells draws a box that picks sheets (also Shift range, Ctrl
+  add; one folder at a time). **Drag the sheets picked** to move them,
+  **Ctrl + drag** to copy them; onto another sheet, a question: replace
+  it, swap them (moves), or cancel (the default). **Insert / remove a
+  frame** (buttons, or a right click on a cell): the next sheets move one
+  frame later / earlier; delete a sheet (the one before holds on). The
+  bar: new animation folder, first / previous / **play-pause** / next /
+  last frame, loop, fps, current frame / frame of the last sheet.
+  Playback keeps time (frames are skipped if the merge can't keep up),
+  from the current frame, looping.
+- **Onion skin** (the strip above the frame numbers, OpenToonz's way): the
+  switch at the current frame (half the "before" color, half the "after"
+  one) turns it on or off, and drags through time; the inner lane holds
+  mobile marks (sheets or frames from the current one, Preferences >
+  Animation), the outer lane fixed marks (blue: a frame whose sheet stays
+  shown). Click a mark to set or remove it (yellow: where a click would
+  go), drag to set several, right click for its opacity. Sheets before
+  are tinted with one color, after with the other, fading with distance.
 - **Window** menu: every docker with a check mark, to hide it or show it
   again (beside its usual partner, else in a new dock at the bottom);
   Reset docks.
