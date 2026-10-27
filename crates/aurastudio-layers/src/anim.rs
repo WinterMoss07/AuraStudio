@@ -985,6 +985,58 @@ mod tests {
         for t in [1, 2, 4, 5, 7, 6, 1, 7, 4] { patch(&mut s, &mut canvas, t); }
     }
 
+    /// Many scenes: sheets that overlap (soft pixels, several colors), any
+    /// marks, in sheets or frames: patching the dirty rect always gives the
+    /// merge of the new frame whole.
+    #[test]
+    fn the_dirty_rect_of_time_is_enough_whatever_the_scene() {
+        let (w, h) = (192u32, 128u32);
+        let mut seed = 0x9E3779B97F4A7C15u64;
+        let mut rnd = move |n: u64| { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed % n };
+        for scene in 0..12 {
+            let mut s = LayerStack::new(w, h);
+            let a = s.add_animation_folder("A");
+            let starts: Vec<u32> = { let mut v: Vec<u32> = (0..2 + rnd(5)).map(|_| 1 + rnd(14) as u32).collect(); v.sort_unstable(); v.dedup(); v };
+            for &n in &starts {
+                let cel = s.make_sheet(a, n).unwrap();
+                for _ in 0..1 + rnd(3) {
+                    let (x, y) = (rnd(150) as u32, rnd(90) as u32);
+                    let (rw, rh) = (4 + rnd(30) as u32, 4 + rnd(30) as u32);
+                    let c = [rnd(256) as u8, rnd(256) as u8, rnd(256) as u8, 40 + rnd(216) as u8];
+                    let px: Vec<u8> = c.repeat((rw * rh) as usize);
+                    let c = [c[0], c[1], c[2], c[3]];
+                    let _ = c;
+                    assert!(s.set_layer_rect(cel, (x, y, x + rw, y + rh), &px));
+                }
+            }
+            let by_frames = rnd(2) == 0;
+            s.set_onion_look(OnionLook { by_frames, ..OnionLook::default() });
+            let mut mobile = std::collections::BTreeMap::new();
+            for off in [-3, -2, -1, 1, 2, 3] { if rnd(2) == 0 { mobile.insert(off, if rnd(3) == 0 { Some(0.5) } else { None }); } }
+            let mut fixed = std::collections::BTreeMap::new();
+            if rnd(3) == 0 { fixed.insert(1 + rnd(14) as u32, None); }
+            let first = s.sheet_at(a, starts[0]).unwrap();
+            s.set_active(first);
+            s.set_onion(Onion { enabled: rnd(5) != 0, mobile, fixed });
+            s.set_time(1);
+            s.take_time_dirty();
+            let mut canvas = s.composite_rect((0, 0, w, h));
+            for _ in 0..30 {
+                let t = 1 + rnd(16) as u32;
+                s.set_time(t);
+                if let Some(r) = s.take_time_dirty() {
+                    let px = s.composite_rect(r);
+                    let rw = (r.2 - r.0) as usize;
+                    for (i, row) in px.chunks_exact(rw * 4).enumerate() {
+                        let o = ((r.1 as usize + i) * w as usize + r.0 as usize) * 4;
+                        canvas[o..o + rw * 4].copy_from_slice(row);
+                    }
+                }
+                assert!(canvas == s.composite_rect((0, 0, w, h)), "scene {scene}, frame {t}");
+            }
+        }
+    }
+
     /// Time moving inside a held sheet leaves no dirty rect.
     #[test]
     fn a_held_sheet_leaves_nothing_dirty() {
