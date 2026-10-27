@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 use aurastudio_forge::{Brush, PenSample};
 use aurastudio_forge_library::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
-use aurastudio_layers::{FillParams, Node, Selection};
+use aurastudio_layers::{FillParams, Node};
+use aurastudio_selection::{Selection};
 
 use crate::fuzz::{merge_all_in_bands, rss_mb, Rng};
 use crate::paint_thread::{Cmd, PaintThread};
@@ -434,7 +435,7 @@ fn painter_session() {
             // picture, a lasso, a feathered ellipse, grow / shrink, invert.
             100..=105 => {
                 use aurastudio_document::{SelectOp, Shape, Wand};
-                use aurastudio_layers::SelectMode;
+                use aurastudio_selection::SelectMode;
                 let mode = [SelectMode::Replace, SelectMode::Replace, SelectMode::Add, SelectMode::Subtract][s.r.below(4) as usize];
                 let (x, y) = (start.0.clamp(0.0, size.0 as f32 - 1.0) as u32, start.1.clamp(0.0, size.1 as f32 - 1.0) as u32);
                 let k = s.k;
@@ -460,7 +461,7 @@ fn painter_session() {
             // Transform the layer (or what is selected): a drag of 30 to 90
             // previews, then the final quality, then kept.
             106..=109 => {
-                use aurastudio_layers::transform::{corners, Interp, Warp};
+                use aurastudio_transform::{corners, Interp, Warp};
                 use crate::paint_thread::TransformAction as T;
                 let ids = vec![s.doc.lock().unwrap().layers.active_id()];
                 let steps = 30 + s.r.below(60);

@@ -18,8 +18,9 @@ use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
 use aurastudio_document::{Document, SelectOp, Shape, SharedDoc, Wand, Workspace};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
-use aurastudio_layers::{FillParams, SelectMode, Segment};
-use aurastudio_layers::transform::Interp;
+use aurastudio_layers::{FillParams};
+use aurastudio_selection::{SelectMode, Segment};
+use aurastudio_transform::Interp;
 use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Loupe, Model, Overlay, PickerOptions, Prefs, SelectCmd, SelectOptions, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformOptions, TransformOverlay, UiState, ViewCmd};
 
 use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
@@ -178,8 +179,8 @@ pub enum AppEvent {
 
 /// The GPU preview's mesh for `warp` (lift.rs): a grid over the source
 /// and the transparent pixel around it, canvas x, y and texture u, v.
-fn lift_mesh(warp: &aurastudio_layers::transform::Warp, src: aurastudio_core::Rect) -> Option<Vec<[f32; 4]>> {
-    use aurastudio_layers::transform::Homography;
+fn lift_mesh(warp: &aurastudio_transform::Warp, src: aurastudio_core::Rect) -> Option<Vec<[f32; 4]>> {
+    use aurastudio_transform::Homography;
     let h = Homography::square_to_quad(warp.quad)?;
     let n = aurastudio_gpu::LIFT_GRID;
     let (sw, sh) = ((src.2 - src.0) as f64, (src.3 - src.1) as f64);
@@ -1927,7 +1928,7 @@ impl App {
         if let (TransformMode::Warp, Some(xf)) = (self.transform_opts.mode, &mut self.xf) {
             if xf.warp.mesh.is_none() {
                 let n = self.transform_opts.grid.clamp(1, 8) as usize;
-                xf.warp.mesh = Some(aurastudio_layers::transform::Mesh::new(n, n));
+                xf.warp.mesh = Some(aurastudio_transform::Mesh::new(n, n));
                 want_frame = true;
             }
         }

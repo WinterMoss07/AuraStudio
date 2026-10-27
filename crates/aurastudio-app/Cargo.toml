@@ -19,6 +19,8 @@ log               = "0.4"
 raw-window-handle = "0.6"
 egui = "0.36"
 aurastudio-layers = { path = "../aurastudio-layers" }
+aurastudio-transform = { path = "../aurastudio-transform" }
+aurastudio-selection = { path = "../aurastudio-selection" }
 aurastudio-document = { path = "../aurastudio-document" }
 aurastudio-file = { path = "../aurastudio-file" }
 aurastudio-filters = { path = "../aurastudio-filters" }

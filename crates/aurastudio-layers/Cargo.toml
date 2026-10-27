@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-raster = { path = "../aurastudio-raster" }
+aurastudio-selection = { path = "../aurastudio-selection" }
 aurastudio-filters = { path = "../aurastudio-filters" }

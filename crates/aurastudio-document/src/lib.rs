@@ -8,7 +8,8 @@ mod transform;
 use std::sync::{Arc, Mutex};
 
 use aurastudio_core::Rect;
-use aurastudio_layers::{FillParams, LayerStack, Selection, Target};
+use aurastudio_layers::{FillParams, LayerStack, Target};
+use aurastudio_selection::{Selection};
 
 pub use history::{History, SavedStep, DEFAULT_BUDGET};
 pub use select::{SelectOp, Shape, Wand};
@@ -708,7 +709,7 @@ mod tests {
         let mut d = Document::new(DocId(1), "t", 64, 64);
         let id = d.layers.active_id();
         assert!(d.layers.set_layer_rect(id, (0, 0, 64, 64), &[9u8, 8, 7, 255].repeat(64 * 64)));
-        d.selection = aurastudio_layers::Selection::polygon(64, 64, &[(10.0, 10.0), (30.0, 10.0), (10.0, 30.0)], false);
+        d.selection = aurastudio_selection::Selection::polygon(64, 64, &[(10.0, 10.0), (30.0, 10.0), (10.0, 30.0)], false);
         let clip = d.copy().unwrap();
         assert_eq!((clip.x, clip.y, clip.width, clip.height), (10, 10, 19, 19));
         let (new, r) = d.paste(&clip).unwrap();

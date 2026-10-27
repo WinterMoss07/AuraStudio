@@ -86,8 +86,8 @@ pub enum TransformAction {
     Begin(Vec<u64>),
     /// Show it (the latest waiting only); the number comes back in
     /// TransformShown once it is on the projection.
-    Preview(aurastudio_layers::transform::Warp, aurastudio_layers::transform::Interp, u64),
-    Apply(aurastudio_layers::transform::Warp, aurastudio_layers::transform::Interp),
+    Preview(aurastudio_transform::Warp, aurastudio_transform::Interp, u64),
+    Apply(aurastudio_transform::Warp, aurastudio_transform::Interp),
     Cancel,
 }
 
@@ -162,7 +162,7 @@ impl Drop for PaintThread {
 /// region of the reference layers around it (all the other layers when
 /// none is marked), as the fill tool finds it. None (free): started on a
 /// line, off the canvas, or nothing around.
-fn stay_inside(doc: &Document, layer: u64, x: f32, y: f32, p: aurastudio_layers::FillParams) -> Option<aurastudio_layers::Selection> {
+fn stay_inside(doc: &Document, layer: u64, x: f32, y: f32, p: aurastudio_layers::FillParams) -> Option<aurastudio_selection::Selection> {
     use aurastudio_layers::Pick;
     let (w, h) = (doc.layers.width, doc.layers.height);
     if !(x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32) { return None; }
@@ -177,7 +177,7 @@ fn stay_inside(doc: &Document, layer: u64, x: f32, y: f32, p: aurastudio_layers:
     let area = aurastudio_layers::flood_with(&doc.layers, layer, x, y, p, doc.selection.as_ref(), Some(pick))?;
     log::info!("stay inside the lines: area {:?} found in {:.0} ms ({})", area.bbox, t.elapsed().as_secs_f64() * 1000.0,
         if refs { "its reference layer" } else { "all the other layers" });
-    aurastudio_layers::Selection::from_area(w, h, &area)
+    aurastudio_selection::Selection::from_predicate(w, h, area.bbox, |x, y| area.contains(x, y))
 }
 
 struct Worker {
@@ -207,7 +207,7 @@ struct Worker {
     /// finds the area; then the area (None: free, the stroke started on a
     /// line).
     limit_params: Option<aurastudio_layers::FillParams>,
-    limit:    Option<aurastudio_layers::Selection>,
+    limit:    Option<aurastudio_selection::Selection>,
     stats:    Stats,
     /// Playback tiles still to make.
     play:     Option<PlayJob>,
@@ -971,7 +971,7 @@ mod tests {
     #[test]
     fn selection_limits_strokes_fill_and_clear() {
         let (doc, id) = doc_with_layer();
-        doc.lock().unwrap().selection = aurastudio_layers::Selection::rect(64, 64, (0, 0, 30, 64));
+        doc.lock().unwrap().selection = aurastudio_selection::Selection::rect(64, 64, (0, 0, 30, 64));
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         stroke(&pt, &doc, 20.0);
         drop(pt);
@@ -985,7 +985,7 @@ mod tests {
         assert_eq!(pixel(&doc, id, 50, 50)[3], 0);
         assert_eq!(pixel(&doc, id, 20, 20), [0, 0, 0, 255], "the fill went over the line");
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
-        doc.lock().unwrap().selection = aurastudio_layers::Selection::rect(64, 64, (0, 0, 10, 64));
+        doc.lock().unwrap().selection = aurastudio_selection::Selection::rect(64, 64, (0, 0, 10, 64));
         pt.send(Cmd::Clear(Arc::clone(&doc)));
         pt.send(Cmd::Undo(Arc::clone(&doc)));
         pt.send(Cmd::Redo(Arc::clone(&doc)));

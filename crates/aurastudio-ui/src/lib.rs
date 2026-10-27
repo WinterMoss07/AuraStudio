@@ -94,7 +94,7 @@ pub struct Model<'a> {
     /// The graphics API drawing the window (Preferences).
     pub renderer:           &'a str,
     /// The selection, if any (what a filter changes).
-    pub selection:          Option<&'a aurastudio_layers::Selection>,
+    pub selection:          Option<&'a aurastudio_selection::Selection>,
     /// Drawn over the canvas, placed with `to_points` (canvas pixel ->
     /// egui point).
     pub overlay:            Overlay<'a>,

@@ -4,8 +4,9 @@
 //! step, the selection moved along) or cancelled.
 
 use aurastudio_core::Rect;
-use aurastudio_layers::transform::{render, Interp, Source, Warp};
-use aurastudio_layers::{Node, Selection};
+use aurastudio_transform::{render, Interp, Source, Warp};
+use aurastudio_layers::{Node};
+use aurastudio_selection::{Selection};
 use aurastudio_raster::Tiles;
 
 use crate::Document;
@@ -217,8 +218,8 @@ impl Document {
             render(src, warp, interp, dest, &mut px);
             let mask: Vec<u8> = px.chunks_exact(4).map(|p| p[3]).collect();
             // (What was selected outside the moved part stays.)
-            let rest = Selection::combine(Some(old), Selection::rect(w, h, s.src), aurastudio_layers::SelectMode::Subtract);
-            Selection::combine(rest.as_ref(), Selection::from_mask(w, h, dest, &mask), aurastudio_layers::SelectMode::Add)
+            let rest = Selection::combine(Some(old), Selection::rect(w, h, s.src), aurastudio_selection::SelectMode::Subtract);
+            Selection::combine(rest.as_ref(), Selection::from_mask(w, h, dest, &mask), aurastudio_selection::SelectMode::Add)
         });
         self.record_tree("Layers");
         let sel_step = match moved {
@@ -245,7 +246,7 @@ impl Document {
 mod tests {
     use super::*;
     use crate::DocId;
-    use aurastudio_layers::transform::corners;
+    use aurastudio_transform::corners;
 
     fn px(d: &Document, id: u64, x: u32, y: u32) -> [u8; 4] {
         let Some(Node::Layer(l)) = d.layers.node(id) else { panic!() };

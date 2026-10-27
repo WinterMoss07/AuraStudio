@@ -213,6 +213,8 @@ dependencies = [
  "aurastudio-gpu",
  "aurastudio-input",
  "aurastudio-layers",
+ "aurastudio-selection",
+ "aurastudio-transform",
  "aurastudio-ui",
  "dirs",
  "egui",
@@ -249,6 +251,8 @@ dependencies = [
  "aurastudio-filters",
  "aurastudio-layers",
  "aurastudio-raster",
+ "aurastudio-selection",
+ "aurastudio-transform",
  "lz4_flex",
 ]
 
@@ -326,10 +330,26 @@ dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
  "aurastudio-raster",
+ "aurastudio-selection",
 ]
 
 [[package]]
 name = "aurastudio-raster"
+version = "0.19.0"
+dependencies = [
+ "aurastudio-core",
+]
+
+[[package]]
+name = "aurastudio-selection"
+version = "0.19.0"
+dependencies = [
+ "aurastudio-core",
+ "aurastudio-raster",
+]
+
+[[package]]
+name = "aurastudio-transform"
 version = "0.19.0"
 dependencies = [
  "aurastudio-core",
@@ -346,6 +366,8 @@ dependencies = [
  "aurastudio-forge-library",
  "aurastudio-layers",
  "aurastudio-raster",
+ "aurastudio-selection",
+ "aurastudio-transform",
  "egui",
  "egui_dock",
  "egui_extras",

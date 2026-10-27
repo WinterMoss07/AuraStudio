@@ -6,10 +6,8 @@ mod compose;
 pub mod fill;
 pub mod onion;
 pub mod play;
-mod selection;
 mod stroke_cache;
 
-pub mod transform;
 mod tree;
 
 use aurastudio_core::blend::{blend_over, unit_to_u8, Premul};
@@ -19,8 +17,8 @@ pub use anim::{Anim, Cel, Column, FolderKind, Onto, Shift, Target};
 pub use compose::Pick;
 pub use tree::TreeState;
 pub use fill::{flood, flood_with, similar_with, FillParams, Refer};
-pub use selection::{Mode as SelectMode, Segment, Selection};
-use aurastudio_raster::{new_tile, Tile, Tiles, TILE_BYTES};
+use aurastudio_selection::Selection;
+use aurastudio_raster::{new_tile, Tile, Tiles};
 
 /// Straight-alpha "over": `src` painted on `dst`.
 fn over(dst: &mut [u8], src: [u8; 4]) {
@@ -1915,7 +1913,7 @@ mod layer_tree_tests {
         let a = flood(&s, color, 5, 5, FillParams { refer: Refer::References, skip_drafts: false, ..p }, None).unwrap();
         assert!(a.contains(20, 5) && !a.contains(40, 5));
         // A brush limit: the area on the line art, as a selection.
-        let sel = Selection::from_area(64, 64, &a).unwrap();
+        let sel = Selection::from_predicate(64, 64, a.bbox, |x, y| a.contains(x, y)).unwrap();
         assert!(sel.contains(5, 5) && !sel.contains(40, 5));
     }
 

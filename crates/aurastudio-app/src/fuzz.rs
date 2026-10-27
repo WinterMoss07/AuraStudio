@@ -22,7 +22,8 @@ use aurastudio_forge::{Brush, PenSample};
 use aurastudio_forge_library::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_gpu::CanvasView;
-use aurastudio_layers::{FillParams, Selection};
+use aurastudio_layers::{FillParams};
+use aurastudio_selection::{Selection};
 use aurastudio_ui::{Actions, BlendMode, Model, Overlay, SelectCmd, SelectOptions, ShapeOptions, Tool, TransformInfo, TransformOptions, UiState, ViewCmd};
 use egui::{pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 

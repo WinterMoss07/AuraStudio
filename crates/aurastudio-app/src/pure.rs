@@ -27,8 +27,9 @@ use aurastudio_forge_library::Library;
 use aurastudio_core::{BlendMode, Rect};
 use aurastudio_document::{DocId, Document, SelectOp, Shape, SharedDoc, Wand};
 use aurastudio_filters::{Filter, GROUPS};
-use aurastudio_layers::transform::{self, Warp};
-use aurastudio_layers::{FillParams, FolderBlend, LayerStack, Node, Pick, Place, Refer, SelectMode, Selection};
+use aurastudio_transform::{self as transform, Warp};
+use aurastudio_layers::{FillParams, FolderBlend, LayerStack, Node, Pick, Place, Refer};
+use aurastudio_selection::{SelectMode, Selection};
 
 use crate::fuzz::{rss_mb, Rng};
 use crate::paint_thread::{Cmd, PaintThread};

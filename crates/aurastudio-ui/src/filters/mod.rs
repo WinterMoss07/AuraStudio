@@ -250,7 +250,8 @@ pub fn apply_layer_edit(id: u64, edit: LayerEdit, m: &mut Model, a: &mut Actions
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurastudio_layers::{LayerStack, Selection};
+    use aurastudio_layers::{LayerStack};
+    use aurastudio_selection::{Selection};
 
     fn layers() -> LayerStack {
         let mut l = LayerStack::new_document(300, 200);

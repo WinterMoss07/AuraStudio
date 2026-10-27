@@ -8,6 +8,8 @@ use aurastudio_core::{Rect, TILE};
 const T: usize = TILE as usize;
 const TN: usize = T * T;
 
+pub use self::Mode as SelectMode;
+
 /// How a new selection meets the one there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -255,9 +257,10 @@ impl Selection {
         Self::polygon(width, height, &pts, aa)
     }
 
-    /// The pixels of a fill area (the brushes' "stay inside the lines").
-    pub fn from_area(width: u32, height: u32, area: &crate::fill::Area) -> Option<Self> {
-        let b = area.bbox;
+    /// The pixels for which `inside` holds within `bbox` (the brushes'
+    /// "stay inside the lines": a fill area).
+    pub fn from_predicate(width: u32, height: u32, bbox: Rect, inside: impl Fn(u32, u32) -> bool) -> Option<Self> {
+        let b = bbox;
         let (x1, y1) = (b.2.min(width), b.3.min(height));
         if x1 <= b.0 || y1 <= b.1 { return None; }
         let r = (b.0, b.1, x1, y1);
@@ -265,7 +268,7 @@ impl Selection {
         let mut i = 0;
         for y in b.1..y1 {
             for x in b.0..x1 {
-                if area.contains(x, y) { mask[i] = 255; }
+                if inside(x, y) { mask[i] = 255; }
                 i += 1;
             }
         }
@@ -274,7 +277,7 @@ impl Selection {
 
     /// The opaque pixels of a layer, by their alpha (Krita's "select
     /// opaque").
-    pub fn from_alpha(tiles: &crate::Tiles) -> Option<Self> {
+    pub fn from_alpha(tiles: &aurastudio_raster::Tiles) -> Option<Self> {
         let (w, h) = (tiles.width(), tiles.height());
         let r = if tiles.fill()[3] > 0 { (0, 0, w, h) } else { tiles.visible_bounds()? };
         let px = tiles.read_rect(r);

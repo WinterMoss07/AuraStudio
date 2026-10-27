@@ -1,0 +1,7 @@
+[package]
+name = "aurastudio-transform"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+aurastudio-core = { path = "../aurastudio-core" }

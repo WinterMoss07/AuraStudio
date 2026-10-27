@@ -2,7 +2,8 @@
 //! undo step.
 
 use aurastudio_core::Rect;
-use aurastudio_layers::{FillParams, Node, Refer, SelectMode, Selection};
+use aurastudio_layers::{FillParams, Node, Refer};
+use aurastudio_selection::{SelectMode, Selection};
 
 use crate::Document;
 
@@ -140,7 +141,7 @@ impl Document {
         } else {
             aurastudio_layers::similar_with(&self.layers, layer, x, y, p, pick)?
         };
-        let mut s = Selection::from_area(w, h, &area)?;
+        let mut s = Selection::from_predicate(w, h, area.bbox, |x, y| area.contains(x, y))?;
         if aa { s = s.antialiased()?; }
         if grow > 0 { s = s.grown(grow as f32)?; }
         Some(s)

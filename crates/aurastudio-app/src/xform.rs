@@ -3,7 +3,7 @@
 //! approach), the warp grid, the numbers in the options.
 
 use aurastudio_core::Rect;
-use aurastudio_layers::transform::{keep_convex, Homography, Mesh, Warp};
+use aurastudio_transform::{keep_convex, Homography, Mesh, Warp};
 use aurastudio_ui::{TransformMode, TransformNumbers};
 
 pub type P = [f64; 2];
@@ -401,7 +401,7 @@ impl Xform {
 
     /// The source's corners (for tests).
     #[cfg(test)]
-    pub fn source_corners(&self) -> [P; 4] { aurastudio_layers::transform::corners(self.src) }
+    pub fn source_corners(&self) -> [P; 4] { aurastudio_transform::corners(self.src) }
 }
 
 #[cfg(test)]
@@ -458,7 +458,7 @@ mod tests {
         // Ctrl+corner: distort, never folding over.
         x.press(Hit::Corner(2), x.warp.quad[2]);
         x.drag_to([0.0, -500.0], Mods { ctrl: true, ..Default::default() }, TransformMode::Free, true);
-        assert!(aurastudio_layers::transform::convex(&x.warp.quad));
+        assert!(aurastudio_transform::convex(&x.warp.quad));
         assert!(x.numbers().is_none());
         x.release();
         x.reset();

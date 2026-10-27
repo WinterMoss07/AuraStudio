@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-layers = { path = "../aurastudio-layers" }
+aurastudio-transform = { path = "../aurastudio-transform" }
+aurastudio-selection = { path = "../aurastudio-selection" }
 aurastudio-raster = { path = "../aurastudio-raster" }
 aurastudio-filters = { path = "../aurastudio-filters" }
 lz4_flex          = "0.14"
