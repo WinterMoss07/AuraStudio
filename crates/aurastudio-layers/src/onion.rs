@@ -7,7 +7,10 @@
 //! (their sheet stays shown wherever the current frame is). Each mark has
 //! its opacity, or the automatic fade by distance (OpenToonz's paper
 //! thickness). Sheets before are tinted with one color, after with the
-//! other: OpenToonz's correction, `rgb + (1 − opacity) × tint`.
+//! other, as OpenToonz does for raster images (quickPut's colorScale):
+//! `1 − (1 − rgb)(1 − tint)` per channel, so black ink takes the tint
+//! exactly and white stays white, then the opacity as the alpha. (Its
+//! vector images add `(1 − opacity) × tint` instead: washed out.)
 
 use std::collections::BTreeMap;
 
@@ -77,11 +80,11 @@ pub(crate) fn ghosts_of(g: &[(u64, Vec<Ghost>)], id: u64) -> Option<&[Ghost]> {
     g.iter().find(|x| x.0 == id).map(|x| &x.1[..]).filter(|v| !v.is_empty())
 }
 
-/// `cs` tinted for ghost `g` (straight color, 0..1).
+/// `cs` tinted for ghost `g` (straight color, 0..1): OpenToonz's raster
+/// colorScale, `1 − (1 − c)(1 − tint)`.
 #[inline]
 pub(crate) fn tinted(cs: [f32; 3], g: &Ghost) -> [f32; 3] {
-    let k = 1.0 - g.opacity;
-    [(cs[0] + k * g.tint[0]).min(1.0), (cs[1] + k * g.tint[1]).min(1.0), (cs[2] + k * g.tint[2]).min(1.0)]
+    [1.0 - (1.0 - cs[0]) * (1.0 - g.tint[0]), 1.0 - (1.0 - cs[1]) * (1.0 - g.tint[1]), 1.0 - (1.0 - cs[2]) * (1.0 - g.tint[2])]
 }
 
 impl LayerStack {
@@ -194,13 +197,13 @@ mod tests {
         let (mut s, _) = scene();
         assert_eq!(px(&s, 15), [255; 4], "no onion: only the current drawing");
         s.set_onion(Onion { enabled: true, mobile: [(-1, None), (1, None)].into(), fixed: Default::default() });
-        // The drawing before (frame 1), red: black + (1 − 0.53) × red, at
-        // 53 % over white.
+        // The drawing before (frame 1), red: black ink takes the tint
+        // whole (1 − (1 − 0) (1 − red)), at 53 % over white.
         let before = px(&s, 15);
-        assert_eq!(before, [183, 120, 120, 255]);
+        assert_eq!(before, [255, 120, 120, 255]);
         // After (frame 6): green.
         let after = px(&s, 55);
-        assert_eq!(after, [120, 183, 120, 255]);
+        assert_eq!(after, [120, 255, 120, 255]);
         // The current drawing on top, untouched.
         assert_eq!(px(&s, 35), [0, 0, 0, 255]);
         // Not in what is exported or picked.
@@ -216,24 +219,25 @@ mod tests {
         // frame 2 (−3) both show sheet 1: once, as the nearest before.
         s.set_onion(Onion { enabled: true, mobile: [(-1, None), (-2, None), (-3, None), (1, None)].into(), fixed: Default::default() });
         assert_eq!(s.ghosts()[0].1.len(), 2);
-        assert_eq!(px(&s, 15), [183, 120, 120, 255], "sheet 1 at the first distance");
-        assert_eq!(px(&s, 55), [120, 183, 120, 255], "frame 6: sheet 3");
+        assert_eq!(px(&s, 15), [255, 120, 120, 255], "sheet 1 at the first distance");
+        assert_eq!(px(&s, 55), [120, 255, 120, 255], "frame 6: sheet 3");
         // Counting sheets, −1 is sheet 1 itself.
         s.set_onion_look(OnionLook::default());
         s.set_onion(Onion { enabled: true, mobile: [(-1, None)].into(), fixed: Default::default() });
-        assert_eq!(px(&s, 15), [183, 120, 120, 255]);
+        assert_eq!(px(&s, 15), [255, 120, 120, 255]);
     }
 
     #[test]
     fn a_fixed_mark_stays_and_a_mark_s_opacity_wins() {
         let (mut s, folder) = scene();
         s.set_onion(Onion { enabled: true, mobile: Default::default(), fixed: [(2, Some(1.0))].into() });
-        // Frame 2 holds the drawing of 1: shown at full opacity, no tint.
-        assert_eq!(px(&s, 15), [0, 0, 0, 255]);
+        // Frame 2 holds the drawing of 1: shown at full opacity, in the
+        // tint of before (black ink takes it whole).
+        assert_eq!(px(&s, 15), [255, 0, 0, 255]);
         s.set_time(7);
         let f6 = s.sheet_at(folder, 6).unwrap();
         s.set_active(f6);
-        assert_eq!(px(&s, 15), [0, 0, 0, 255], "still there from another frame");
+        assert_eq!(px(&s, 15), [255, 0, 0, 255], "still there from another frame");
         // Off: gone, marks kept.
         let mut o = s.onion().clone();
         o.enabled = false;
