@@ -187,7 +187,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let fix = |v: f32| -> u32 { (v * FIX15_ONE as f32) as u32 };
 
     // The passes of process_op (mypaint-tiled-surface.c) on one tile.
-    let blend = |tile: &mut TilePixels, mask_entries: &[(usize, usize, u32)]| {
+    let blend = |tile: &mut TilePixels, mask_entries: &[Mask]| {
         if paint < 1.0 {
             if normal_f != 0.0 {
                 let opacity = fix(normal_f * opaque_f * (1.0 - paint));
@@ -258,14 +258,14 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     };
 
     let tiles: Vec<(i32, i32)> = (ty0..=ty1).flat_map(|ty| (tx0..=tx1).map(move |tx| (tx, ty))).collect();
-    let mask_of = |entries: &mut Vec<(usize, usize, u32)>, (tx, ty): (i32, i32)| {
+    let mask_of = |entries: &mut Vec<Mask>, (tx, ty): (i32, i32)| {
         let xl = dab.x - (tx * TILE_SIZE as i32) as f32;
         let yl = dab.y - (ty * TILE_SIZE as i32) as f32;
         collect_dab_mask(entries, xl, yl, radius, hardness, aspect, cs, sn, r_aa_start);
     };
     // (Kept from dab to dab: no allocation per dab.)
     thread_local! {
-        static MASKS: std::cell::RefCell<Vec<Vec<(usize, usize, u32)>>> = const { std::cell::RefCell::new(Vec::new()) };
+        static MASKS: std::cell::RefCell<Vec<Vec<Mask>>> = const { std::cell::RefCell::new(Vec::new()) };
     }
     let mut masks = MASKS.with(|m| std::mem::take(&mut *m.borrow_mut()));
     let mut painted = false;
@@ -275,9 +275,9 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
         // blended in order. The same pixels as one by one.
         if masks.len() < tiles.len() { masks.resize_with(tiles.len(), Vec::new); }
         let per = tiles.len().div_ceil(threads);
-        std::thread::scope(|sc| {
+        rayon::scope(|sc| {
             for (chunk, out) in tiles.chunks(per).zip(masks.chunks_mut(per)) {
-                sc.spawn(move || for (t, m) in chunk.iter().zip(out.iter_mut()) { mask_of(m, *t) });
+                sc.spawn(move |_| for (t, m) in chunk.iter().zip(out.iter_mut()) { mask_of(m, *t) });
             }
         });
         for (&(tx, ty), m) in tiles.iter().zip(&masks) {
@@ -305,14 +305,14 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
 fn mask_threads(tiles: usize) -> usize {
     const TILES_PER_THREAD: usize = 12;
     if tiles < 2 * TILES_PER_THREAD { return 1; }
-    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8);
+    let cores = rayon::current_num_threads().min(8);
     (tiles / TILES_PER_THREAD).clamp(1, cores)
 }
 
 /// The dab's mask on one tile (render_dab_mask): non-zero fix15 entries.
 #[allow(clippy::too_many_arguments)]
 fn collect_dab_mask(
-    entries: &mut Vec<(usize, usize, u32)>,
+    entries: &mut Vec<Mask>,
     xl: f32,
     yl: f32,
     radius: f32,
@@ -333,7 +333,15 @@ fn collect_dab_mask(
     }
     let inv_r2 = 1.0 / (radius * radius);
     for yp in y0..=y1 {
-        for xp in x0..=x1 {
+        // Only the pixels of the row near the ellipse (the others are
+        // outside: mask 0), each still computed as libmypaint does.
+        let (xa, xb) = if r_aa_start >= 0.0 { (x0, x1) } else {
+            match row_span(yp, xl, yl, radius, aspect, cs, sn) {
+                Some((a, b)) => (a.max(x0), b.min(x1)),
+                None => continue,
+            }
+        };
+        for xp in xa..=xb {
             let rr = if r_aa_start >= 0.0 {
                 rr_at_aa(
                     xp as f32, yp as f32, xl, yl, aspect, cs, sn, inv_r2, r_aa_start,
@@ -344,17 +352,41 @@ fn collect_dab_mask(
             let opa = if rr > 1.0 { 0.0 } else { opa_at(rr, hardness) };
             let mask = (opa * FIX15_ONE as f32) as u32;
             if mask != 0 {
-                entries.push((xp as usize, yp as usize, mask));
+                entries.push((xp as u8, yp as u8, mask as u16));
             }
         }
     }
 }
 
+/// The pixels of row `yp` (tile coordinates) that may be inside the
+/// ellipse of `radius` centred on (`xl`, `yl`), as `rr_at` measures it:
+/// first and last column, with a margin of more than a pixel so that
+/// float rounding never leaves one out. None: the row misses it.
+fn row_span(yp: i32, xl: f32, yl: f32, radius: f32, aspect: f32, cs: f32, sn: f32) -> Option<(i32, i32)> {
+    // rr · r² = A·xx² + B·xx + C, xx the pixel centre's offset in x.
+    let (a2, cs, sn) = ((aspect as f64).powi(2), cs as f64, sn as f64);
+    let dy = yp as f64 + 0.5 - yl as f64;
+    let qa = a2 * sn * sn + cs * cs;
+    let qb = 2.0 * dy * sn * cs * (1.0 - a2);
+    let r = radius as f64 + 2.0;
+    let qc = dy * dy * (a2 * cs * cs + sn * sn) - r * r;
+    let disc = qb * qb - 4.0 * qa * qc;
+    if disc < 0.0 { return None; }
+    let root = disc.sqrt();
+    let lo = (-qb - root) / (2.0 * qa) - 0.5 + xl as f64;
+    let hi = (-qb + root) / (2.0 * qa) - 0.5 + xl as f64;
+    Some((lo.floor() as i32 - 1, hi.ceil() as i32 + 1))
+}
+
+/// One pixel of a dab's mask on a tile: column, row, coverage (fix15,
+/// at most 1.0 = 32768).
+type Mask = (u8, u8, u16);
+
 /// `draw_dab_pixels_BlendMode_Normal` — premultiplied source-over in fix15
 /// integers, libmypaint's exact truncation points.
 fn blend_normal(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -362,6 +394,7 @@ fn blend_normal(
 ) {
     const ONE: u32 = FIX15_ONE;
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let opa_a = mask * opacity / ONE;
         let opa_b = ONE - opa_a;
         let p = &mut tile[ly][lx];
@@ -377,7 +410,7 @@ fn blend_normal(
 /// destination keeps the un-scaled coverage, so `color_a < 1` erases.
 fn blend_normal_and_eraser(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -386,6 +419,7 @@ fn blend_normal_and_eraser(
 ) {
     const ONE: u32 = FIX15_ONE;
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let mut opa_a = mask * opacity / ONE;
         let opa_b = ONE - opa_a;
         opa_a = opa_a * color_a / ONE;
@@ -401,7 +435,7 @@ fn blend_normal_and_eraser(
 /// destination alpha; dst alpha is left untouched.
 fn blend_lock_alpha(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -409,6 +443,7 @@ fn blend_lock_alpha(
 ) {
     const ONE: u32 = FIX15_ONE;
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let mut opa_a = mask * opacity / ONE;
         let opa_b = ONE - opa_a;
         let p = &mut tile[ly][lx];
@@ -424,7 +459,7 @@ fn blend_lock_alpha(
 /// lock-alpha (min opacity 150 like Normal_Paint).
 fn blend_lock_alpha_paint(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -441,6 +476,7 @@ fn blend_lock_alpha_paint(
     // (The brush color's logs, once per dab.)
     let log_a = fastlog2_all(&spec_a);
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let mut opa_a = mask * opacity / ONE;
         let opa_b = ONE - opa_a;
         let p = &mut tile[ly][lx];
@@ -474,7 +510,7 @@ fn blend_lock_alpha_paint(
 /// brush's hue and chroma.
 fn blend_color(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -482,6 +518,7 @@ fn blend_color(
 ) {
     const ONE: u32 = FIX15_ONE;
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let p = &mut tile[ly][lx];
         let a = p[3] as u32;
         // Straight color (0 where alpha is 0, as C).
@@ -558,12 +595,13 @@ fn set_rgb16_lum_from_rgb16(
 /// canvas under the dab toward `posterize_num` levels.
 fn blend_posterize(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     opacity: u32,
     posterize_num: u32,
 ) {
     const ONE: u32 = FIX15_ONE;
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let p = &mut tile[ly][lx];
         let r = p[0] as f32 / ONE as f32;
         let g = p[1] as f32 / ONE as f32;
@@ -584,7 +622,7 @@ fn blend_posterize(
 /// source-over for non-smudging paint dabs (min opacity 150/2^15).
 fn blend_normal_paint(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -602,6 +640,7 @@ fn blend_normal_paint(
     // (The brush color's logs, once per dab.)
     let log_a = fastlog2_all(&spec_a);
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let opa_a = mask * opacity / ONE;
         let opa_b = ONE - opa_a;
         let p = &mut tile[ly][lx];
@@ -637,7 +676,7 @@ fn blend_normal_paint(
 /// `spectral_blend_factor(canvas alpha)`; no minimum opacity.
 fn blend_normal_and_eraser_paint(
     tile: &mut TilePixels,
-    entries: &[(usize, usize, u32)],
+    entries: &[Mask],
     src_r: u32,
     src_g: u32,
     src_b: u32,
@@ -654,6 +693,7 @@ fn blend_normal_and_eraser_paint(
     // (The brush color's logs, once per dab.)
     let log_a = fastlog2_all(&spec_a);
     for &(lx, ly, mask) in entries {
+        let (lx, ly, mask) = (lx as usize, ly as usize, mask as u32);
         let opa_a = mask * opacity / ONE;
         let opa_b = ONE - opa_a;
         let opa_a2 = opa_a * color_a / ONE;

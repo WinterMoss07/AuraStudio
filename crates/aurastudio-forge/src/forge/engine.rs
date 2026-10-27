@@ -401,9 +401,10 @@ fn from_fix15(p: [u16; 4]) -> [u8; 4] {
     if a8 == 0 {
         return [255, 255, 255, 0];
     }
-    // (v * 255 + a / 2) / a by one reciprocal: exact (see the test).
-    let inv = 1.0 / a as f64;
-    let c = |v: u16| (((v as u32 * 255 + a / 2) as f64 * inv + 1e-9) as u32).min(255) as u8;
+    // (v * 255 + a / 2) / a by one integer reciprocal: exact for these
+    // numerators (below 2^23; see the test).
+    let m = (1u64 << 40) / a as u64 + 1;
+    let c = |v: u16| ((((v as u32 * 255 + a / 2) as u64 * m) >> 40) as u32).min(255) as u8;
     [c(p[0]), c(p[1]), c(p[2]), a8]
 }
 
@@ -422,20 +423,18 @@ fn write_back<S: PaintSurface>(tiles: &HashMap<(i32, i32), Box<TilePixels>>, dir
     }).collect();
     let convert = |(tile, r): &Job| -> Vec<u8> {
         let (tx0, ty0) = (r.0.div_euclid(TS) * TS, r.1.div_euclid(TS) * TS);
-        let mut out = Vec::with_capacity(((r.2 - r.0) * (r.3 - r.1) * 4) as usize);
-        for y in r.1..r.3 {
-            for &v in &tile[(y - ty0) as usize][(r.0 - tx0) as usize..(r.2 - tx0) as usize] { out.extend_from_slice(&from_fix15(v)); }
+        let w = (r.2 - r.0) as usize;
+        let mut out = vec![0u8; w * (r.3 - r.1) as usize * 4];
+        for (y, dst) in (r.1..r.3).zip(out.chunks_exact_mut(w * 4)) {
+            let src = &tile[(y - ty0) as usize][(r.0 - tx0) as usize..(r.2 - tx0) as usize];
+            for (d, &v) in dst.chunks_exact_mut(4).zip(src) { d.copy_from_slice(&from_fix15(v)); }
         }
         out
     };
     let pixels: usize = jobs.iter().map(|(_, r)| ((r.2 - r.0) * (r.3 - r.1)) as usize).sum();
-    let threads = if pixels < 128 * 1024 { 1 } else { std::thread::available_parallelism().map_or(1, std::num::NonZero::get).min(8).min(jobs.len()) };
-    let converted: Vec<Vec<u8>> = if threads > 1 {
-        let per = jobs.len().div_ceil(threads);
-        std::thread::scope(|sc| {
-            let parts: Vec<_> = jobs.chunks(per).map(|c| sc.spawn(move || c.iter().map(convert).collect::<Vec<_>>())).collect();
-            parts.into_iter().flat_map(|p| p.join().expect("conversion thread")).collect()
-        })
+    let converted: Vec<Vec<u8>> = if pixels >= 128 * 1024 && jobs.len() > 1 {
+        use rayon::prelude::*;
+        jobs.par_iter().map(convert).collect()
     } else {
         jobs.iter().map(convert).collect()
     };

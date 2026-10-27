@@ -1186,6 +1186,45 @@ mod tests {
         }
     }
 
+    /// Big brushes: time per pen sample of the engine and of the merge
+    /// shown, first sample and worst, per brush and size.
+    /// cargo test --release -p aurastudio -- --ignored big_brush --nocapture
+    #[test]
+    #[ignore]
+    fn big_brush_benchmark() {
+        let lib = aurastudio_forge_library::Library::load(None);
+        for name in ["Round pen", "Liner", "Digital brush", "Oil", "Blender"] {
+            let forge = lib.presets.iter().find(|p| p.name == name).unwrap().brush.clone();
+            for radius in [50.0f32, 200.0, 400.0] {
+                // BIG_BRUSH=Oil:400 runs that one only (to profile it).
+                if let Ok(only) = std::env::var("BIG_BRUSH") { if only != format!("{name}:{radius}") { continue; } }
+                let mut d = Document::new(DocId(1), "b", 2000, 3000);
+                let id = d.layers.add_layer("ink");
+                assert!(d.layers.begin_stroke(id));
+                let mut brush = Brush::new();
+                brush.radius = radius;
+                let mut e = Forge::new((*forge).clone());
+                e.sync_from(&brush);
+                e.begin_stroke();
+                let (mut paint, mut merge) = (Vec::new(), Vec::new());
+                for i in 0..120 {
+                    let t = i as f32 / 120.0;
+                    let p = PenSample::new(300.0 + i as f32 * 10.0, 1500.0 + (t * 9.0).sin() * 500.0, 0.4 + 0.6 * (t * 7.0).sin().abs(), i as f64 * 0.005);
+                    let t0 = Instant::now();
+                    let r = { let mut s = d.layers.layer_surface(id).unwrap(); e.stroke_to(&mut s, p) };
+                    paint.push(t0.elapsed().as_secs_f64() * 1000.0);
+                    let t1 = Instant::now();
+                    if let Some(r) = r { let _ = d.layers.composite_rect_stroke(r); }
+                    merge.push(t1.elapsed().as_secs_f64() * 1000.0);
+                }
+                let st = |v: &[f64]| (v[0], v.iter().sum::<f64>() / v.len() as f64, v.iter().cloned().fold(0.0, f64::max));
+                let (p0, pa, pm) = st(&paint);
+                let (m0, ma, mm) = st(&merge);
+                println!("{name:>14} {:>4} px | paint first {p0:6.1} avg {pa:5.2} max {pm:6.1} | merge first {m0:6.1} avg {ma:5.2} max {mm:6.1} ms", radius * 2.0);
+            }
+        }
+    }
+
     /// GUI side of the benchmark: copy the finished rectangles (stands for the
     /// GPU upload, which copies them into wgpu's staging memory).
     fn gui_show_painted(projection: &SharedProjection, screen: &mut [u8]) {
