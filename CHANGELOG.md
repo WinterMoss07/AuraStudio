@@ -12,7 +12,9 @@ Crates reorganized, no change in behavior.
 - `aurastudio-canvas` is now `aurastudio-core`: only shared types, no
   dependencies. The wgpu `Canvas` texture moved to `aurastudio-gpu`.
 - New crates taken out of `aurastudio-layers`: `aurastudio-raster` (tiles),
-  `aurastudio-selection` and `aurastudio-transform`.
+  `aurastudio-selection` and `aurastudio-transform`, and `aurastudio-animation`
+  (the playback cache; the sheet editing stays with the tree it keeps whole).
+  A test checks the crate graph.
 - While recompositing by bands, the paint thread no longer sleeps between
   two bands; it only lets the interface in when it is waiting.
 
