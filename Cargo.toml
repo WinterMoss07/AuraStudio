@@ -15,6 +15,7 @@ members = [
     "crates/aurastudio-ui",
     "crates/aurastudio-file",
     "crates/aurastudio-filters",
+    "crates/aurastudio-arch",
     "crates/aurastudio-app",
 ]
 

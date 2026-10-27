@@ -231,6 +231,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-arch"
+version = "0.19.1"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aurastudio-color"
 version = "0.19.1"
 dependencies = [

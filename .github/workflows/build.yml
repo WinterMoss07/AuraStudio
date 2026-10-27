@@ -50,6 +50,12 @@ jobs:
             libvulkan-dev mesa-vulkan-drivers \
             libudev-dev
 
+      # The rules between the crates (crates/aurastudio-arch): quick, on one
+      # system only.
+      - name: Crate rules
+        if: runner.os == 'Linux'
+        run: cargo test -p aurastudio-arch
+
       # The "ci" profile (Cargo.toml): optimized like release, with thin
       # LTO, much faster to build.
       # The first compiler errors also go up as annotations (readable from
