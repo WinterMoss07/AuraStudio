@@ -115,7 +115,7 @@ impl LayersState {
             self.ppp = ppp;
         }
         let max = ((THUMB * ppp).round() as u32).max(8);
-        let ids = layers.layer_ids();
+        let ids = layers.listed_layer_ids();
         let alive: HashSet<u64> = ids.iter().copied().collect();
         let gone: Vec<u64> = self.thumbs.keys().filter(|id| !alive.contains(id)).copied().collect();
         for id in gone {

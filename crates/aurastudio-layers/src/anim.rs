@@ -906,6 +906,17 @@ mod tests {
         s.check_animation().unwrap();
     }
 
+    /// The layer list shows a sheet as one row: its cels get no thumbnail.
+    #[test]
+    fn the_list_has_no_cels_of_sheets() {
+        let mut s = LayerStack::new_document(32, 32);
+        let before = s.listed_layer_ids();
+        let a = s.add_animation_folder("A");
+        for n in 1..=3 { s.set_time(n); s.make_sheet(a, n).unwrap(); }
+        assert_eq!(s.listed_layer_ids(), before, "sheets add nothing");
+        assert!(s.layer_ids().len() > before.len(), "the cels are layers all the same");
+    }
+
     /// Going to another frame says whether the merge may differ: not with
     /// no animation folder, nor inside a held sheet.
     #[test]

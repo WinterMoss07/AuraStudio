@@ -1153,6 +1153,23 @@ impl LayerStack {
         v
     }
 
+    /// The paint layers the layer list can show: all but the cels inside
+    /// sheets (a sheet is one row; its cels never get one).
+    pub fn listed_layer_ids(&self) -> Vec<u64> {
+        fn walk(nodes: &[Node], out: &mut Vec<u64>) {
+            for n in nodes {
+                match n {
+                    Node::Layer(l) => out.push(l.id),
+                    Node::Folder(f) if f.sheet_start().is_none() => walk(&f.children, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut v = Vec::new();
+        walk(&self.root, &mut v);
+        v
+    }
+
     /// Rows of the layer list, top to bottom, skipping collapsed content.
     pub fn rows(&self) -> Vec<Row> {
         #[derive(Clone, Copy)]
