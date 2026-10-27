@@ -1,3 +1,4 @@
+mod canvas;
 mod display;
 mod lift;
 mod mip;
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use wgpu::*;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
-use aurastudio_canvas::Canvas;
+pub use canvas::Canvas;
 
 /// Standard quality: from this zoom up, canvas pixels are shown as sharp
 /// squares (nearest sampling) instead of being blurred, like Krita / CSP
@@ -567,7 +568,7 @@ impl GpuState {
 
     /// A transform began: its live preview's pieces (see lift.rs). False
     /// if they don't fit the canvas.
-    pub fn lift_begin(&mut self, src: aurastudio_canvas::Rect, below: &[u8], above: Option<&[u8]>, layers: &[(&[u8], f32)]) -> bool {
+    pub fn lift_begin(&mut self, src: aurastudio_core::Rect, below: &[u8], above: Option<&[u8]>, layers: &[(&[u8], f32)]) -> bool {
         let aniso = if self.backend == Backend::OpenGl { 1 } else { 16 };
         let pipes = self.lift_pipes.get_or_insert_with(|| lift::Pipes::new(&self.device, aniso));
         self.lift = lift::Lift::new(&self.device, &self.queue, pipes, &self.canvas, lift::Pieces { src, below, above, layers }, &mut self.uploads);
@@ -575,7 +576,7 @@ impl GpuState {
     }
 
     /// The live preview for the transform of `src`, ready.
-    pub fn lift_ready(&self, src: aurastudio_canvas::Rect) -> bool {
+    pub fn lift_ready(&self, src: aurastudio_core::Rect) -> bool {
         self.lift.as_ref().is_some_and(|l| l.src == src)
     }
 
@@ -899,7 +900,7 @@ impl GpuState {
 
     /// Copy merged pixels (`rgba`: the rows of `rect`, tightly packed) to
     /// the canvas texture.
-    pub fn upload(&mut self, rect: aurastudio_canvas::Rect, rgba: &[u8]) {
+    pub fn upload(&mut self, rect: aurastudio_core::Rect, rgba: &[u8]) {
         let (x0, y0, x1, y1) = rect;
         if x1 <= x0 || y1 <= y0 || x1 > self.canvas.width || y1 > self.canvas.height { return; }
         let w = x1 - x0;

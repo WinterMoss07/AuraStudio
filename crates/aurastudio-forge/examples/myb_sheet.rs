@@ -4,7 +4,7 @@
 // Usage: cargo run --release -p aurastudio-forge --example myb_sheet -- out.png a.myb b.myb ...
 use aurastudio_forge::{parse_myb, Brush, Forge};
 
-use aurastudio_canvas::FlatSurface as S;
+use aurastudio_core::FlatSurface as S;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

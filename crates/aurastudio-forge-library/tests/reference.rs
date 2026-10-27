@@ -11,7 +11,7 @@
 
 use aurastudio_forge::{Brush, Forge, PenSample};
 use aurastudio_forge_library::Library;
-use aurastudio_canvas::FlatSurface;
+use aurastudio_core::FlatSurface;
 
 const W: u32 = 260;
 const H: u32 = 140;

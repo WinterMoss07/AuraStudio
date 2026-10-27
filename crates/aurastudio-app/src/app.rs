@@ -155,7 +155,7 @@ pub enum AppEvent {
     Painted,
     /// A layer's pixels changed for good (stroke done, undo, clear), where
     /// (None: anywhere).
-    LayerChanged(u64, Option<aurastudio_canvas::Rect>),
+    LayerChanged(u64, Option<aurastudio_core::Rect>),
     /// A message for the options bar.
     Notice(String),
     /// A start screen thumbnail was decoded.
@@ -165,7 +165,7 @@ pub enum AppEvent {
     /// The selection changed.
     Selection,
     /// A transform began on the paint thread: what moves, or why not.
-    TransformStarted(Result<aurastudio_canvas::Rect, &'static str>),
+    TransformStarted(Result<aurastudio_core::Rect, &'static str>),
     /// Its live preview's pieces.
     TransformLift(Box<aurastudio_document::Lift>),
     /// Transform preview n is on the projection.
@@ -178,7 +178,7 @@ pub enum AppEvent {
 
 /// The GPU preview's mesh for `warp` (lift.rs): a grid over the source
 /// and the transparent pixel around it, canvas x, y and texture u, v.
-fn lift_mesh(warp: &aurastudio_layers::transform::Warp, src: aurastudio_canvas::Rect) -> Option<Vec<[f32; 4]>> {
+fn lift_mesh(warp: &aurastudio_layers::transform::Warp, src: aurastudio_core::Rect) -> Option<Vec<[f32; 4]>> {
     use aurastudio_layers::transform::Homography;
     let h = Homography::square_to_quad(warp.quad)?;
     let n = aurastudio_gpu::LIFT_GRID;

@@ -866,7 +866,7 @@ mod tests {
     fn the_cache_key_is_stable_across_builds() {
         let mut p = preset();
         p.definition_hash = 0x1234_5678_9abc_def0;
-        let b = Brush { color: [0, 0, 0], opacity: 1.0, radius: 12.5, blend: aurastudio_canvas::BlendMode::Normal, hardness: 0.5, erase: false };
+        let b = Brush { color: [0, 0, 0], opacity: 1.0, radius: 12.5, blend: aurastudio_core::BlendMode::Normal, hardness: 0.5, erase: false };
         let k = key_of(&Stroke { preset: &p, settings: &b, shape: Shape::S, mode: Mode::List }, 560, 88, 2.0);
         assert_eq!(k, PINNED_KEY, "{k:#018x}");
     }

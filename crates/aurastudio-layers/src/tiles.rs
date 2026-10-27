@@ -1,7 +1,7 @@
 //! Tiled pixels: only the tiles that differ from the layer's fill color
 //! exist (an empty layer costs nothing).
 
-use aurastudio_canvas::{Rect, TILE};
+use aurastudio_core::{Rect, TILE};
 
 /// Bytes of one tile: TILE × TILE RGBA pixels. Edge tiles have the same
 /// size; their part past the canvas is never read.
@@ -93,7 +93,7 @@ impl Tiles {
         for (tx, ty, t) in self.iter() {
             let r = (tx * TILE, ty * TILE, ((tx + 1) * TILE).min(self.width), ((ty + 1) * TILE).min(self.height));
             if !keep(t, r) { continue; }
-            b = Some(b.map_or(r, |b| aurastudio_canvas::union(b, r)));
+            b = Some(b.map_or(r, |b| aurastudio_core::union(b, r)));
         }
         b
     }

@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
 
-use aurastudio_canvas::FlatSurface as S;
+use aurastudio_core::FlatSurface as S;
 
 fn main() {
     let (w, h) = (2048u32, 2048u32);

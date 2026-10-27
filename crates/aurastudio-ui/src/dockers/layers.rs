@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use aurastudio_canvas::Rect as PxRect;
+use aurastudio_core::Rect as PxRect;
 use aurastudio_filters::GROUPS;
 use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
@@ -77,7 +77,7 @@ impl LayersState {
         let merged = match self.dirty.get(&id) {
             // Two changes: the union, and anywhere if either was anywhere.
             Some((_, old)) => match (old, rect) {
-                (Some(a), Some(b)) => Some(aurastudio_canvas::union(*a, b)),
+                (Some(a), Some(b)) => Some(aurastudio_core::union(*a, b)),
                 _ => None,
             },
             None => rect,

@@ -4,7 +4,7 @@
 //! Krita's averaged opacity (no "beads"). Shape: opaque to radius ×
 //! hardness, then a smoothstep.
 
-use aurastudio_canvas::{blend::unit_to_u8, tile_run, BlendMode, PaintSurface, Rect};
+use aurastudio_core::{blend::unit_to_u8, tile_run, BlendMode, PaintSurface, Rect};
 
 use crate::forge::raster::{changed_span, erase_pixels, min_u8, round_small, write_pixels, CHUNK, IOTA};
 use crate::forge::Dab;
@@ -140,7 +140,7 @@ impl Wash {
 
 #[cfg(test)]
 mod tests {
-    use aurastudio_canvas::FlatSurface as T;
+    use aurastudio_core::FlatSurface as T;
 
     use crate::{Brush, Forge, ForgeBrush, PenSample};
 

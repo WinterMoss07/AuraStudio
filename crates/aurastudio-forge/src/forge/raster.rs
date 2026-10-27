@@ -2,7 +2,7 @@
 //! first the new coverage of a whole chunk (plain arithmetic the compiler
 //! vectorizes), then the layer pixels only where it changed.
 
-use aurastudio_canvas::{blend::paint_pixel_u8, BlendMode};
+use aurastudio_core::{blend::paint_pixel_u8, BlendMode};
 
 /// Pixels per chunk of a row.
 pub const CHUNK: usize = 64;

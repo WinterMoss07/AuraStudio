@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 
 /// Above this many pending rectangles, they are merged into one: cheaper
 /// than issuing hundreds of tiny uploads.
@@ -62,7 +62,7 @@ pub fn add_rect(list: &mut Vec<Rect>, r: Rect) {
     }
 }
 
-pub use aurastudio_canvas::union;
+pub use aurastudio_core::union;
 
 fn area(r: Rect) -> u64 {
     (r.2 - r.0) as u64 * (r.3 - r.1) as u64

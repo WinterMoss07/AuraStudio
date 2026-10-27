@@ -12,8 +12,8 @@ mod tiles;
 pub mod transform;
 mod tree;
 
-use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
-use aurastudio_canvas::{BlendMode, PaintSurface, Rect, TILE};
+use aurastudio_core::blend::{blend_over, unit_to_u8, Premul};
+use aurastudio_core::{BlendMode, PaintSurface, Rect, TILE};
 
 pub use anim::{Anim, Cel, Column, FolderKind, Onto, Shift, Target};
 pub use compose::Pick;

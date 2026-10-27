@@ -310,7 +310,7 @@ mod tests {
     /// The real shader's picture of `img` in a `sw` × `sh` frame.
     fn shader_picture(g: &Gpu, img: &[u8], (w, h): (u32, u32), view: &CanvasView, (sw, sh): (u32, u32), high: bool) -> Vec<u8> {
         let (device, queue) = (&g.device, &g.queue);
-        let canvas = aurastudio_canvas::Canvas::new(device, w, h, !high);
+        let canvas = crate::Canvas::new(device, w, h, !high);
         queue.write_texture(
             TexelCopyTextureInfo { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
             img,

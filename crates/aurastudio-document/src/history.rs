@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 use aurastudio_layers::{LayerStack, Node, Selection, TreeState};
 
 use crate::Change;

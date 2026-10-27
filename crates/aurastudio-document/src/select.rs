@@ -1,7 +1,7 @@
 //! Selection commands (the selection tools and the Select menu), each one
 //! undo step.
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 use aurastudio_layers::{FillParams, Node, Refer, SelectMode, Selection};
 
 use crate::Document;

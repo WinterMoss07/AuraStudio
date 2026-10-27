@@ -2,7 +2,7 @@
 //! quad (Photoshop's gestures in the box's own frame, PhotoCraft's
 //! approach), the warp grid, the numbers in the options.
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 use aurastudio_layers::transform::{keep_convex, Homography, Mesh, Warp};
 use aurastudio_ui::{TransformMode, TransformNumbers};
 

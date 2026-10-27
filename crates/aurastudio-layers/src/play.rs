@@ -11,7 +11,7 @@
 //! isolated folder that holds no animation folder may blend inside), and
 //! no isolated folder below 100 % around an animation folder.
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 
 use crate::anim::FolderKind;
 use crate::compose::Pick;
@@ -182,7 +182,7 @@ impl LayerStack {
         if let Some(Node::Folder(f)) = self.node(frame) {
             for c in f.children.iter().filter(|c| c.visible()) {
                 if let Node::Layer(l) = c {
-                    if let Some(b) = l.tiles.visible_bounds() { area = Some(area.map_or(b, |a| aurastudio_canvas::union(a, b))); }
+                    if let Some(b) = l.tiles.visible_bounds() { area = Some(area.map_or(b, |a| aurastudio_core::union(a, b))); }
                 }
             }
         }

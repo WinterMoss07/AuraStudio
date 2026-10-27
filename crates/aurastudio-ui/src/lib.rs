@@ -26,7 +26,7 @@ use aurastudio_layers::{FillParams, LayerStack};
 use egui::Frame;
 use egui_dock::{DockArea, DockState};
 
-pub use aurastudio_canvas::BlendMode;
+pub use aurastudio_core::BlendMode;
 pub use dockers::Tab;
 pub use dockers::layers::LayerCmd;
 pub use filters::FilterAction;
@@ -332,7 +332,7 @@ impl UiState {
     }
 
     /// The pixels of this layer changed, inside `rect` (None: anywhere): rebuild its thumbnail.
-    pub fn invalidate_thumbnail(&mut self, layer_id: u64, rect: Option<aurastudio_canvas::Rect>) {
+    pub fn invalidate_thumbnail(&mut self, layer_id: u64, rect: Option<aurastudio_core::Rect>) {
         self.layers.invalidate(layer_id, rect);
     }
 

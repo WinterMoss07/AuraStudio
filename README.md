@@ -333,7 +333,7 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 
 | Crate | Role |
 |---|---|
-| `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
+| `aurastudio-core` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
 | `aurastudio-forge` | Forge, the brush engine (`src/forge`), `.myb` reader |
 | `aurastudio-forge-library` | brush library: built-in presets, bundled MyPaint collection, import |
 | `aurastudio-layers` | layer tree, folders, lock, compositing, selections, transforms (resampling) |

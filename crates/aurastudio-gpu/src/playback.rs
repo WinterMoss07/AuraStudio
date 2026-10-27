@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use aurastudio_canvas::Canvas;
+use crate::Canvas;
 use aurastudio_layers::play::{PlayPart, PlayPlan, PlayTile, PlayTiles, PLAY_TILE};
 use wgpu::util::DeviceExt;
 use wgpu::*;

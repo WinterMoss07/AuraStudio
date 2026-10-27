@@ -6,7 +6,7 @@ build = "build.rs"
 
 [dependencies]
 aurastudio-forge  = { path = "../aurastudio-forge" }
-aurastudio-canvas = { path = "../aurastudio-canvas" }
+aurastudio-core = { path = "../aurastudio-core" }
 dirs = "7"
 log  = "0.4"
 

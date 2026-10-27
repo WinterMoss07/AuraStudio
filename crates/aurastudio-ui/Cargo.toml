@@ -7,7 +7,7 @@ edition = "2021"
 lz4_flex = "0.14"
 aurastudio-forge  = { path = "../aurastudio-forge" }
 aurastudio-forge-library = { path = "../aurastudio-forge-library" }
-aurastudio-canvas = { path = "../aurastudio-canvas" }
+aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-layers = { path = "../aurastudio-layers" }
 aurastudio-document = { path = "../aurastudio-document" }
 aurastudio-filters = { path = "../aurastudio-filters" }

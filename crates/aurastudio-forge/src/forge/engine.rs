@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use aurastudio_canvas::{BlendMode, PaintSurface, Rect};
+use aurastudio_core::{BlendMode, PaintSurface, Rect};
 
 use crate::forge::color::rgb_to_hsv;
 use crate::forge::tile::{TilePixels, TILE_SIZE};
@@ -41,7 +41,7 @@ impl PenSample {
 const ONE: u32 = 1 << 15;
 const TS: i32 = TILE_SIZE as i32;
 // libmypaint's tiles are the layer's tiles.
-const _: () = assert!(TILE_SIZE as u32 == aurastudio_canvas::TILE);
+const _: () = assert!(TILE_SIZE as u32 == aurastudio_core::TILE);
 
 /// Settings by which a brush works on the paint already on the layer.
 const PAINT_SETTINGS: [BrushSetting; 5] = [BrushSetting::Smudge, BrushSetting::Eraser, BrushSetting::Posterize, BrushSetting::Colorize, BrushSetting::LockAlpha];
@@ -378,7 +378,7 @@ fn lerp(a: &PenSample, b: &PenSample, t: f32) -> PenSample {
 
 fn merge(acc: &mut Option<Rect>, r: Option<Rect>) {
     let Some(r) = r else { return };
-    *acc = Some(acc.map_or(r, |d| aurastudio_canvas::union(d, r)));
+    *acc = Some(acc.map_or(r, |d| aurastudio_core::union(d, r)));
 }
 
 /// Straight 8-bit RGBA -> premultiplied fix15.
@@ -458,7 +458,7 @@ mod tests {
     const W: u32 = 256;
     const H: u32 = 128;
 
-    use aurastudio_canvas::FlatSurface as S;
+    use aurastudio_core::FlatSurface as S;
 
     fn surface(rgba: [u8; 4]) -> S {
         S::new(W, H, rgba)

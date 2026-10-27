@@ -6,7 +6,7 @@
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use aurastudio_canvas::{BlendMode, TILE};
+use aurastudio_core::{BlendMode, TILE};
 use aurastudio_document::{DocId, Document, History, Kind, SavedStep, DEFAULT_BUDGET};
 use aurastudio_filters::Filter;
 use aurastudio_layers::{Anim, FilterLayer, Folder, FolderBlend, FolderKind, Layer, LayerStack, Node, Props, Cel, Tiles, LABELS, TILE_BYTES};
@@ -647,7 +647,7 @@ fn downscale(rgba: &[u8], w: u32, h: u32, max: u32) -> (u32, u32, Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurastudio_canvas::PaintSurface;
+    use aurastudio_core::PaintSurface;
 
     fn paint(doc: &mut Document, id: u64, rect: (u32, u32, u32, u32), rgba: [u8; 4]) {
         assert!(doc.layers.begin_stroke(id));

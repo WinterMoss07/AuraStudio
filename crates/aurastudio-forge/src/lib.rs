@@ -1,4 +1,4 @@
-use aurastudio_canvas::BlendMode;
+use aurastudio_core::BlendMode;
 
 pub mod forge;
 pub use forge::{Forge, ForgeBrush, PenSample};

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/aurastudio-canvas",
+    "crates/aurastudio-core",
     "crates/aurastudio-forge",
     "crates/aurastudio-forge-library",
     "crates/aurastudio-layers",

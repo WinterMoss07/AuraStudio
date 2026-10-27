@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use aurastudio_canvas::BlendMode;
+use aurastudio_core::BlendMode;
 
 use crate::{first_layer_id, FolderBlend, FolderKind, LayerStack, Node, Props};
 

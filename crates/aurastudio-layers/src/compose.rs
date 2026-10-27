@@ -6,8 +6,8 @@
 //! clipped nodes over it are merged on their own, then blended down with
 //! the base's mode and opacity. A hidden base hides them.
 
-use aurastudio_canvas::blend::{blend_over, unit_to_u8, Premul};
-use aurastudio_canvas::{BlendMode, Rect};
+use aurastudio_core::blend::{blend_over, unit_to_u8, Premul};
+use aurastudio_core::{BlendMode, Rect};
 
 use crate::onion::{ghosts_of, tinted, Ghost};
 use crate::{FolderBlend, LayerStack, Node};

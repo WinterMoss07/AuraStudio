@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aurastudio_canvas::{Rect, TILE};
+use aurastudio_core::{Rect, TILE};
 
 const T: usize = TILE as usize;
 const TN: usize = T * T;

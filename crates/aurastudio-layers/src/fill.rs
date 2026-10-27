@@ -2,7 +2,7 @@
 //! merge (drafts left out), the reference or the layer itself, tile by
 //! tile as the fill goes.
 
-use aurastudio_canvas::{Rect, TILE};
+use aurastudio_core::{Rect, TILE};
 
 use crate::{LayerStack, Node, Pick, Selection};
 

@@ -4,7 +4,7 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-aurastudio-canvas = { path = "../aurastudio-canvas" }
+aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-layers = { path = "../aurastudio-layers" }
 # OpenGL too ("angle" turns the GL backend on where it is off by
 # default: WGL on Windows), the fallback when Vulkan is missing.

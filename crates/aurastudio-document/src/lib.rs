@@ -7,7 +7,7 @@ mod transform;
 
 use std::sync::{Arc, Mutex};
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 use aurastudio_layers::{FillParams, LayerStack, Selection, Target};
 
 pub use history::{History, SavedStep, DEFAULT_BUDGET};
@@ -471,7 +471,7 @@ impl Workspace {
 mod tests {
     use super::*;
     use aurastudio_layers::Node;
-    use aurastudio_canvas::PaintSurface;
+    use aurastudio_core::PaintSurface;
 
     fn paint(doc: &mut Document, id: u64, rect: Rect, rgba: [u8; 4]) {
         // Simulates a stroke: snapshot, change pixels, commit.
@@ -742,7 +742,7 @@ mod anim_tests {
         d.layers.layer_surface(id).unwrap();
         let r = (2, 2, 12, 12);
         assert!(d.layers.begin_stroke(id));
-        { let mut s = d.layers.layer_surface(id).unwrap(); aurastudio_canvas::PaintSurface::prepare(&mut s, r); }
+        { let mut s = d.layers.layer_surface(id).unwrap(); aurastudio_core::PaintSurface::prepare(&mut s, r); }
         d.layers.set_layer_rect(id, r, &rgba.repeat(100));
         d.commit_stroke(id, r);
         d.layers.end_stroke();

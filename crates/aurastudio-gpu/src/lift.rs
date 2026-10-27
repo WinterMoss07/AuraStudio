@@ -5,7 +5,8 @@
 //! so the view, the mipmaps and the color management work as for paint.
 //! The paint thread then sends the exact result, which takes its place.
 
-use aurastudio_canvas::{Canvas, Rect};
+use crate::Canvas;
+use aurastudio_core::Rect;
 use wgpu::util::DeviceExt;
 use wgpu::*;
 
@@ -271,7 +272,7 @@ impl Lift {
         let c = |v: f32, max: u32| (v.max(0.0) as u32).min(max);
         let a = (c(b[0].floor() - 2.0, self.size.0), c(b[1].floor() - 2.0, self.size.1), c(b[2].ceil() + 2.0, self.size.0), c(b[3].ceil() + 2.0, self.size.1));
         if a.0 < a.2 && a.1 < a.3 {
-            self.total = Some(self.total.map_or(a, |t| aurastudio_canvas::union(t, a)));
+            self.total = Some(self.total.map_or(a, |t| aurastudio_core::union(t, a)));
             self.shown = Some((a, nearest));
             self.dirty = true;
         }

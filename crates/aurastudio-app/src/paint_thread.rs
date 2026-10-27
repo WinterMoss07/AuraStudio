@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 use aurastudio_document::{Document, SharedDoc};
 use aurastudio_gpu::PlayKey;
 use aurastudio_layers::play::{PlayPart, PlayPlan, PlayTiles};
@@ -1182,7 +1182,7 @@ mod tests {
 
     /// Copy a merged piece into a canvas-sized RGBA buffer (what the GPU
     /// upload does with the texture).
-    fn blit(screen: &mut [u8], width: u32, r: aurastudio_canvas::Rect, rgba: &[u8]) {
+    fn blit(screen: &mut [u8], width: u32, r: aurastudio_core::Rect, rgba: &[u8]) {
         let rw = (r.2 - r.0) as usize * 4;
         for (y, row) in (r.1..r.3).zip(rgba.chunks_exact(rw)) {
             let a = (y as usize * width as usize + r.0 as usize) * 4;

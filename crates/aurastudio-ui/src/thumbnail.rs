@@ -2,7 +2,7 @@
 //! thin line shows as a faint line instead of vanishing or flickering
 //! (picking one pixel in N does that).
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 use aurastudio_layers::Tiles;
 
 /// Size of a thumbnail of a `w` × `h` layer that fits `max` pixels on its

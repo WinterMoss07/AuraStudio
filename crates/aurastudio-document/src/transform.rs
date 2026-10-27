@@ -3,7 +3,7 @@
 //! pixels, else all of them), shown transformed until applied (one undo
 //! step, the selection moved along) or cancelled.
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 use aurastudio_layers::transform::{render, Interp, Source, Warp};
 use aurastudio_layers::{Node, Selection, Tiles};
 
@@ -70,7 +70,7 @@ struct Target {
 fn union(a: Rect, b: Rect) -> Rect {
     if a.2 <= a.0 || a.3 <= a.1 { return b; }
     if b.2 <= b.0 || b.3 <= b.1 { return a; }
-    aurastudio_canvas::union(a, b)
+    aurastudio_core::union(a, b)
 }
 
 fn intersect(a: Rect, b: Rect) -> Option<Rect> {

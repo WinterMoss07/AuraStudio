@@ -4,5 +4,5 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-aurastudio-canvas = { path = "../aurastudio-canvas" }
+aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-filters = { path = "../aurastudio-filters" }

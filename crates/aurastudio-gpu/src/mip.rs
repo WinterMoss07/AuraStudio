@@ -1,7 +1,8 @@
 //! Canvas mipmaps (thin lines stay visible zoomed out), rebuilt on the GPU
 //! only where the canvas changed; 2×2 averages of the stored values.
 
-use aurastudio_canvas::{Canvas, Rect};
+use crate::Canvas;
+use aurastudio_core::Rect;
 use wgpu::*;
 
 pub struct MipGen {
@@ -102,7 +103,7 @@ impl MipGen {
     pub fn mark(&mut self, rect: Rect) {
         // A few rectangles are enough; past that, one box around them.
         if self.dirty.len() >= 16 {
-            let all = self.dirty.iter().fold(rect, |a, r| aurastudio_canvas::union(a, *r));
+            let all = self.dirty.iter().fold(rect, |a, r| aurastudio_core::union(a, *r));
             self.dirty.clear();
             self.dirty.push(all);
         } else {

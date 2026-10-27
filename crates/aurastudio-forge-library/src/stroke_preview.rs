@@ -6,7 +6,7 @@
 
 use aurastudio_forge::forge::{BrushSetting, Spacing};
 use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
-use aurastudio_canvas::FlatSurface;
+use aurastudio_core::FlatSurface;
 
 /// Bump when `render` or the brush engine changes how a preview looks:
 /// previews kept on disk under another version are not used.

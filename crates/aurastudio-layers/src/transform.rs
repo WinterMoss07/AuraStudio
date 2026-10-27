@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use aurastudio_canvas::Rect;
+use aurastudio_core::Rect;
 
 /// 3×3 projective matrix, row-major: `[x', y', w'] = H · [x, y, 1]`.
 #[derive(Clone, Copy, Debug, PartialEq)]

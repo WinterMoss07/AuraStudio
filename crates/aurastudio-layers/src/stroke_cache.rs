@@ -2,7 +2,7 @@
 //! are kept per tile (Krita), three blends per pixel instead of every
 //! layer. Over it, only normal blending can be pre-merged.
 
-use aurastudio_canvas::{Rect, TILE};
+use aurastudio_core::{Rect, TILE};
 
 use crate::compose::Ghosts;
 use crate::onion::{ghosts_of, Ghost};

@@ -1,7 +1,6 @@
 [package]
-name = "aurastudio-canvas"
+name = "aurastudio-core"
 version.workspace = true
 edition = "2021"
 
 [dependencies]
-wgpu = "30"

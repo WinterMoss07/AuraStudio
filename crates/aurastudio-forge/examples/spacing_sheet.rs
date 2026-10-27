@@ -6,7 +6,7 @@ use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
 const W: u32 = 1400;
 const H: u32 = 1300;
 
-use aurastudio_canvas::FlatSurface as S;
+use aurastudio_core::FlatSurface as S;
 
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "spacing.png".into());
