@@ -200,7 +200,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "arboard",
  "aurastudio-animation",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-animation"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-layers",
@@ -244,14 +244,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-arch"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "log",
  "moxcms 0.9.1",
@@ -260,11 +260,11 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-core"
-version = "0.19.1"
+version = "0.19.2"
 
 [[package]]
 name = "aurastudio-document"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-document",
@@ -293,11 +293,11 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-filters"
-version = "0.19.1"
+version = "0.19.2"
 
 [[package]]
 name = "aurastudio-forge"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "png 0.18.1",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-forge-library"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-forge",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-animation",
  "aurastudio-core",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-input"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "crossbeam-queue",
  "windows",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-raster"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "lz4_flex",
@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-selection"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-raster",
@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-tools"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-input",
@@ -376,14 +376,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-transform"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
 ]
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "aurastudio-core",
  "aurastudio-document",
@@ -391,10 +391,7 @@ dependencies = [
  "aurastudio-forge",
  "aurastudio-forge-library",
  "aurastudio-layers",
- "aurastudio-raster",
- "aurastudio-selection",
  "aurastudio-tools",
- "aurastudio-transform",
  "egui",
  "egui_dock",
  "egui_extras",

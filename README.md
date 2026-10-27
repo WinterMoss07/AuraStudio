@@ -334,20 +334,23 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 | Crate | Role |
 |---|---|
 | `aurastudio-core` | shared types, no dependencies: `Rect`, `TILE`, `PaintSurface`, blend modes |
-| `aurastudio-raster` | the tiles layers are stored in |
+| `aurastudio-raster` | the tiles layers are stored in, and their bytes in a file |
 | `aurastudio-selection` | selections (masks, polygons, ellipses, boolean modes) |
 | `aurastudio-transform` | free transform and mesh warp, resampling |
+| `aurastudio-tools` | what tools do with the pen, apart from the window: shapes, multi-arc, transform box |
 | `aurastudio-forge` | Forge, the brush engine (`src/forge`), `.myb` reader |
 | `aurastudio-forge-library` | brush library: built-in presets, bundled MyPaint collection, import |
-| `aurastudio-layers` | layer tree, folders, lock, compositing, fill, animation (sheets, onion skin, playback cache) |
-| `aurastudio-document` | documents, workspace, undo history, selection commands, the transform under way |
+| `aurastudio-layers` | layer tree, folders, lock, compositing, fill, sheets and onion skin |
+| `aurastudio-animation` | animation tools on the stack: playback cache |
+| `aurastudio-document` | documents, undo history, selection commands, the transform under way, `Edit` (every change the interface can make to the layers) |
 | `aurastudio-color` | monitor ICC profile, sRGB → display transform (3D LUT) |
-| `aurastudio-gpu` | wgpu renderer: canvas texture, view transform, color LUT, brush outline, egui |
-| `aurastudio-input` | Windows pen input (WinTab, Windows Ink) |
+| `aurastudio-gpu` | wgpu renderer of the canvas: texture, view transform, color LUT, brush outline, playback; no window system, no interface |
+| `aurastudio-input` | Windows pen input (WinTab, Windows Ink), mouse bounce filter |
 | `aurastudio-file` | `.aurs` format, image import / export |
 | `aurastudio-filters` | Filters: Photoshop's tones and colors, W3C Filter Effects blurs |
-| `aurastudio-ui` | egui interface: bars, toolbox, one file per docker, theme, widgets |
-| `aurastudio-app` | the application: event loop, paint thread, projection |
+| `aurastudio-ui` | egui interface: bars, toolbox, one file per docker, theme, widgets; reads the layers, changes them with `Edit`s |
+| `aurastudio-app` | the application: event loop, window (egui over the canvas), paint thread, projection |
+| `aurastudio-arch` | tests of the crate rules (who depends on whom, who touches single tiles, edits only through `Edit`) |
 
 Data crates (layers, brushes, document…) know nothing about the UI.
 See `NOTICE.md` for third-party code and assets.

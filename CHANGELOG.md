@@ -3,6 +3,38 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.19.2 — 2026-10-27
+
+Big brushes faster; crates with fewer ties between them. Nothing else
+changes in what you see.
+
+**Big brushes**
+- A MyPaint dab is now computed only on its own pixels (it was computed
+  on the whole square around it), and the threads that share a big dab
+  are kept from dab to dab instead of being started for each one. Same
+  pixels as before. Oil at 800 px: 4.7 → 2.4 ms per pen sample on
+  average, worst sample 23.7 → 11 ms (measured on 2 cores; more cores
+  gain more).
+
+**Crates**
+- `aurastudio-animation`: the playback cache, out of `aurastudio-layers`.
+- `aurastudio-tools`: shapes, the multi-arc and the transform box, out
+  of the application; the mouse bounce filter went to
+  `aurastudio-input`.
+- `aurastudio-gpu` draws the canvas only: the interface (egui) and the
+  window system (winit) meet it in the application (`window.rs`).
+- Single tiles stay inside `aurastudio-raster` and `aurastudio-layers`
+  (the `.aurs` tile packing moved to `raster`, same bytes), so the way
+  tiles are stored can change without the other crates.
+- The interface changes the layers only with `Edit`s
+  (`aurastudio-document`): every change it can make is one named
+  operation of the layer stack, testable without the interface.
+- The brush library is told where the brush folder is
+  (`AURASTUDIO_BRUSH_DIR` still works).
+- `aurastudio-arch` tests these rules: who depends on whom, who handles
+  single tiles, the GPU crate free of window and interface, edits only
+  through `Edit`.
+
 ## 0.19.1 — 2026-10-27
 
 Crates reorganized, no change in behavior.
@@ -12,9 +44,7 @@ Crates reorganized, no change in behavior.
 - `aurastudio-canvas` is now `aurastudio-core`: only shared types, no
   dependencies. The wgpu `Canvas` texture moved to `aurastudio-gpu`.
 - New crates taken out of `aurastudio-layers`: `aurastudio-raster` (tiles),
-  `aurastudio-selection` and `aurastudio-transform`, and `aurastudio-animation`
-  (the playback cache; the sheet editing stays with the tree it keeps whole).
-  A test checks the crate graph.
+  `aurastudio-selection` and `aurastudio-transform`.
 - While recompositing by bands, the paint thread no longer sleeps between
   two bands; it only lets the interface in when it is waiting.
 
