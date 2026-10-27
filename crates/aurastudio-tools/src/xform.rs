@@ -4,7 +4,22 @@
 
 use aurastudio_core::Rect;
 use aurastudio_transform::{keep_convex, Homography, Mesh, Warp};
-use aurastudio_ui::{TransformMode, TransformNumbers};
+
+/// How the transform tool's handles work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransformMode {
+    /// Move, scale, rotate, skew; Ctrl+corner distorts.
+    #[default]
+    Free,
+    /// Each corner on its own.
+    Perspective,
+    /// A smooth grid to bend.
+    Warp,
+}
+
+/// The transform as numbers, when its box is a parallelogram: center x,
+/// y (px), width and height (% of the source), angle and skew (degrees).
+pub type TransformNumbers = [f64; 6];
 
 pub type P = [f64; 2];
 

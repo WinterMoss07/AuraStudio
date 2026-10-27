@@ -1,6 +1,7 @@
 //! Toolbox (groups of tools, each remembering its last tool and brush),
 //! tool options, and what tools draw over the canvas.
 
+pub use aurastudio_tools::{TransformMode, TransformNumbers};
 use std::collections::HashMap;
 
 use aurastudio_forge_library::{Kind, Preset};
@@ -461,18 +462,6 @@ pub fn selection_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     });
 }
 
-/// How the transform tool's handles work.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TransformMode {
-    /// Move, scale, rotate, skew; Ctrl+corner distorts.
-    #[default]
-    Free,
-    /// Each corner on its own.
-    Perspective,
-    /// A smooth grid to bend.
-    Warp,
-}
-
 /// Settings of the transform tool.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransformOptions {
@@ -487,10 +476,6 @@ pub struct TransformOptions {
 impl Default for TransformOptions {
     fn default() -> Self { Self { mode: TransformMode::Free, interp: Default::default(), keep_aspect: true, grid: 3 } }
 }
-
-/// The transform as numbers, when its box is a parallelogram: center x,
-/// y (px), width and height (% of the source), angle and skew (degrees).
-pub type TransformNumbers = [f64; 6];
 
 /// The transform under way, as the options show it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

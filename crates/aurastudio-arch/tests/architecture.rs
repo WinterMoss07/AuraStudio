@@ -17,6 +17,8 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("raster", &["core"]),
     ("transform", &["core"]),
     ("forge", &["core"]),
+    // The tools apart from the window (shapes, arc, transform box).
+    ("tools", &["core", "transform"]),
     ("forge-library", &["core", "forge"]),
     ("selection", &["core", "raster"]),
     ("layers", &["core", "filters", "raster", "selection"]),
@@ -26,13 +28,13 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("gpu", &["core", "animation"]),
     // The interface still reaches into layers, raster, selection, transform
     // and forge directly: to bring down, through `document`.
-    ("ui", &["core", "document", "filters", "forge", "forge-library", "layers", "raster", "selection", "transform"]),
+    ("ui", &["core", "document", "filters", "forge", "forge-library", "layers", "raster", "selection", "tools", "transform"]),
     // The application puts everything together.
-    ("aurastudio", &["animation", "color", "core", "document", "file", "filters", "forge", "forge-library", "gpu", "input", "layers", "selection", "transform", "ui"]),
+    ("aurastudio", &["animation", "color", "core", "document", "file", "filters", "forge", "forge-library", "gpu", "input", "layers", "selection", "tools", "transform", "ui"]),
 ];
 
 /// Crates that never see a window, the GPU or the interface.
-const DATA: &[&str] = &["core", "raster", "selection", "transform", "forge", "forge-library", "layers", "animation", "document", "file", "filters", "color"];
+const DATA: &[&str] = &["core", "raster", "selection", "transform", "forge", "forge-library", "layers", "animation", "document", "file", "filters", "color", "tools"];
 const FORBIDDEN_IN_DATA: &[&str] = &["wgpu", "egui", "egui-wgpu", "egui_dock", "winit", "eframe"];
 
 fn short(name: &str) -> &str { name.strip_prefix("aurastudio-").unwrap_or(name) }

@@ -215,6 +215,7 @@ dependencies = [
  "aurastudio-input",
  "aurastudio-layers",
  "aurastudio-selection",
+ "aurastudio-tools",
  "aurastudio-transform",
  "aurastudio-ui",
  "dirs",
@@ -365,6 +366,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-tools"
+version = "0.19.1"
+dependencies = [
+ "aurastudio-core",
+ "aurastudio-input",
+ "aurastudio-transform",
+]
+
+[[package]]
 name = "aurastudio-transform"
 version = "0.19.1"
 dependencies = [
@@ -383,6 +393,7 @@ dependencies = [
  "aurastudio-layers",
  "aurastudio-raster",
  "aurastudio-selection",
+ "aurastudio-tools",
  "aurastudio-transform",
  "egui",
  "egui_dock",

@@ -1,0 +1,11 @@
+[package]
+name = "aurastudio-tools"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+aurastudio-core      = { path = "../aurastudio-core" }
+aurastudio-transform = { path = "../aurastudio-transform" }
+
+[dev-dependencies]
+aurastudio-input = { path = "../aurastudio-input" }

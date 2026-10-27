@@ -181,7 +181,7 @@ mod tests {
     const CX: Ctx = Ctx { zoom: 1.0, shift: false, multipoint: true };
     const SINGLE: Ctx = Ctx { zoom: 1.0, shift: false, multipoint: false };
 
-    use crate::debounce::{Debounce, Kind, BOUNCE};
+    use aurastudio_input::debounce::{Debounce, Kind, BOUNCE};
     use std::time::{Duration, Instant};
 
     #[derive(Clone, Copy)]

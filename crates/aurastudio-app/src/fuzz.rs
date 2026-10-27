@@ -149,10 +149,10 @@ fn stroke(r: &mut Rng, pt: &PaintThread, doc: &SharedDoc, lib: &Library, size: (
         let mut p = || (r.range(-0.3, far) * w, r.range(-0.3, far) * h);
         let (a, b, m) = (p(), p(), p());
         let path = match r.below(4) {
-            0 => crate::shapes::line(a, b),
-            1 => crate::shapes::rectangle(a, b),
-            2 => crate::shapes::ellipse(a, b),
-            _ => crate::shapes::arc(a, b, m),
+            0 => aurastudio_tools::shapes::line(a, b),
+            1 => aurastudio_tools::shapes::rectangle(a, b),
+            2 => aurastudio_tools::shapes::ellipse(a, b),
+            _ => aurastudio_tools::shapes::arc(a, b, m),
         };
         for (i, (x, y)) in path.into_iter().enumerate() {
             pt.send(Cmd::Sample(PenSample::new(x, y, 1.0, i as f64 * 0.001)));

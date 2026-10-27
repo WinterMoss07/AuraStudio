@@ -4,6 +4,7 @@ members = [
     "crates/aurastudio-core",
     "crates/aurastudio-raster",
     "crates/aurastudio-animation",
+    "crates/aurastudio-tools",
     "crates/aurastudio-selection",
     "crates/aurastudio-transform",
     "crates/aurastudio-forge",

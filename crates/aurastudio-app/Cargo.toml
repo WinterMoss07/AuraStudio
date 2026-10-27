@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core" }
+aurastudio-tools = { path = "../aurastudio-tools" }
 aurastudio-forge  = { path = "../aurastudio-forge" }
 aurastudio-input  = { path = "../aurastudio-input" }
 aurastudio-gpu    = { path = "../aurastudio-gpu" }

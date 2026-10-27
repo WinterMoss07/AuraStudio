@@ -308,11 +308,11 @@ fn painter_session() {
                     let k = s.k;
                     let b = if i + 1 == n { first } else { (a.0 + s.r.range(-300.0, 300.0) * k, a.1 + s.r.range(-300.0, 300.0) * k) };
                     let c = (a.0 + s.r.range(-250.0, 250.0) * k, a.1 + s.r.range(-250.0, 250.0) * k);
-                    let arc = crate::shapes::arc(a, b, c);
+                    let arc = aurastudio_tools::shapes::arc(a, b, c);
                     path.extend(arc.into_iter().skip(usize::from(i > 0)));
                     a = b;
                 }
-                if s.r.chance(0.4) { path = crate::shapes::ellipse(start, (start.0 + s.r.range(20.0, 900.0) * s.k, start.1 + s.r.range(20.0, 900.0) * s.k)); }
+                if s.r.chance(0.4) { path = aurastudio_tools::shapes::ellipse(start, (start.0 + s.r.range(20.0, 900.0) * s.k, start.1 + s.r.range(20.0, 900.0) * s.k)); }
                 let radius = s.r.range(0.5, 3.0);
                 s.stroke(Work::Shape, preset, radius, &path, 1.0, false);
             }

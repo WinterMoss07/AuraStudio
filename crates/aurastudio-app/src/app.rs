@@ -23,10 +23,10 @@ use aurastudio_selection::{SelectMode, Segment};
 use aurastudio_transform::Interp;
 use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, Group, ImportBrushes, Loupe, Model, Overlay, PickerOptions, Prefs, SelectCmd, SelectOptions, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformOptions, TransformOverlay, UiState, ViewCmd};
 
-use crate::arc_tool::{ArcTool, Ctx as ArcCtx};
-use crate::debounce::{Debounce, Kind as DebounceKind};
+use aurastudio_tools::arc::{ArcTool, Ctx as ArcCtx};
+use aurastudio_input::debounce::{Debounce, Kind as DebounceKind};
 use crate::paint_thread::{self, Cmd, PaintThread, Timing, TransformAction};
-use crate::xform::{Hit, Mods, Xform};
+use aurastudio_tools::xform::{Hit, Mods, Xform};
 use crate::projection::{Projection, SharedProjection};
 
 /// Window title: the name and version.
@@ -872,7 +872,7 @@ impl App {
     fn select_box(&self, a: (f32, f32), b: (f32, f32), held: (bool, bool)) -> ((f32, f32), (f32, f32)) {
         let square = self.shift_held() && !held.0;
         let centered = self.modifiers.alt_key() && !held.1;
-        crate::shapes::drag_box(a, b, square, centered)
+        aurastudio_tools::shapes::drag_box(a, b, square, centered)
     }
 
     /// What the selection gesture outlines now, canvas pixels.
@@ -888,7 +888,7 @@ impl App {
             Gesture::Lasso { pts, .. } => Some(pts.clone()),
             Gesture::Box { ellipse, a, b, held, .. } => {
                 let (p, q) = self.select_box(*a, *b, *held);
-                Some(if *ellipse { crate::shapes::ellipse(p, q) } else { vec![p, (q.0, p.1), q, (p.0, q.1)] })
+                Some(if *ellipse { aurastudio_tools::shapes::ellipse(p, q) } else { vec![p, (q.0, p.1), q, (p.0, q.1)] })
             }
             _ => None,
         }
@@ -984,9 +984,9 @@ impl App {
     fn shape_path(&self, tool: Tool, start: (f32, f32), end: (f32, f32)) -> Vec<(f32, f32)> {
         let (shift, alt) = (self.shift_held(), self.modifiers.alt_key());
         match tool {
-            Tool::Line => crate::shapes::line(start, if shift { crate::shapes::snap_angle(start, end) } else { end }),
-            Tool::Rectangle => { let (a, b) = crate::shapes::drag_box(start, end, shift, alt); crate::shapes::rectangle(a, b) }
-            Tool::Ellipse => { let (a, b) = crate::shapes::drag_box(start, end, shift, alt); crate::shapes::ellipse(a, b) }
+            Tool::Line => aurastudio_tools::shapes::line(start, if shift { aurastudio_tools::shapes::snap_angle(start, end) } else { end }),
+            Tool::Rectangle => { let (a, b) = aurastudio_tools::shapes::drag_box(start, end, shift, alt); aurastudio_tools::shapes::rectangle(a, b) }
+            Tool::Ellipse => { let (a, b) = aurastudio_tools::shapes::drag_box(start, end, shift, alt); aurastudio_tools::shapes::ellipse(a, b) }
             _ => Vec::new(),
         }
     }

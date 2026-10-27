@@ -1,6 +1,4 @@
 mod app;
-mod arc_tool;
-mod debounce;
 mod memory;
 mod cursors;
 #[cfg(test)]
@@ -12,8 +10,6 @@ mod pure;
 mod paint_thread;
 mod projection;
 mod rescue;
-mod shapes;
-mod xform;
 
 #[global_allocator]
 static ALLOC: memory::Counting = memory::Counting;

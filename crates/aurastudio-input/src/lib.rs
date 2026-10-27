@@ -3,6 +3,8 @@
 // licensed MIT OR Apache-2.0. See /NOTICE.md. Vendored (not a crate
 // dependency) so this input layer is ours to modify and optimize.
 
+pub mod debounce;
+
 pub struct StylusSample {
     /// Physical client pixels (same unit as winit's CursorMoved).
     pub x:        f32,

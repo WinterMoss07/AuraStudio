@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 /// Default window: old mice bounce for 15-20 ms.
 pub const DEFAULT_MS: u32 = 20;
-#[cfg(test)]
+/// The default window, as a duration.
 pub const BOUNCE: Duration = Duration::from_millis(DEFAULT_MS as u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
