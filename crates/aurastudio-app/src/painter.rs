@@ -183,7 +183,7 @@ fn painter_session() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| { PANICKED.store(true, Ordering::SeqCst); default_hook(info); }));
 
-    let lib = Library::load();
+    let lib = Library::load(crate::app::brush_dir());
     let pencils = pick(&lib, &["pencil", "charcoal", "2b", "4h", "8b"]);
     let paints = pick(&lib, &["acrylic", "oil", "knife", "bristle", "paint", "watercolor", "brush", "Soft round"]);
     let blends = pick(&lib, &["smudg", "blend", "water"]);

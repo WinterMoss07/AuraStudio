@@ -309,7 +309,6 @@ version = "0.19.1"
 dependencies = [
  "aurastudio-core",
  "aurastudio-forge",
- "dirs",
  "log",
  "png 0.18.1",
 ]

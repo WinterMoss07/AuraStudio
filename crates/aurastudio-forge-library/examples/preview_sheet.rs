@@ -5,7 +5,7 @@ use aurastudio_forge_library::{stroke_preview::{self, Mode, Shape}, Library};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let filter = args.get(1).map(|s| s.to_lowercase());
-    let lib = Library::load();
+    let lib = Library::load(None);
     let presets: Vec<_> = lib.presets.iter().filter(|p| filter.as_ref().is_none_or(|f| p.name.to_lowercase().contains(f) || p.medium.to_lowercase().contains(f))).collect();
     let (w, h, cols) = (360u32, 72u32, 4u32);
     let rows = (presets.len() as u32).div_ceil(cols);

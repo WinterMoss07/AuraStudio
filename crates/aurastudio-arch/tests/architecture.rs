@@ -23,7 +23,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("animation", &["core", "layers"]),
     ("document", &["core", "filters", "layers", "raster", "selection", "transform"]),
     ("file", &["core", "document", "filters", "layers", "raster"]),
-    ("gpu", &["core", "animation", "layers"]),
+    ("gpu", &["core", "animation"]),
     // The interface still reaches into layers, raster, selection, transform
     // and forge directly: to bring down, through `document`.
     ("ui", &["core", "document", "filters", "forge", "forge-library", "layers", "raster", "selection", "transform"]),

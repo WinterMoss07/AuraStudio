@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn every_bundled_brush_draws_something_in_both_modes() {
-        let lib = Library::load();
+        let lib = Library::load(None);
         let mut detail_blank = FlatSurface::new(160, 48, [255, 255, 255, 0]);
         paper(&mut detail_blank);
         for p in &lib.presets {

@@ -794,7 +794,7 @@ fn pure_fuzz() {
     let pt = PaintThread::spawn(Arc::clone(&proj), |_| {});
     let mut run = Run {
         r: Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1),
-        lib: Library::load(),
+        lib: Library::load(None),
         doc: Arc::new(Mutex::new(Document::new(DocId(1), "pure", 1, 1))),
         pt, proj, t: 0.0,
         ops: BTreeMap::new(), checks: BTreeMap::new(), slow: Vec::new(),

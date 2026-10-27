@@ -63,6 +63,13 @@ pub fn recovery_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(name))
 }
 
+/// Where imported brushes are kept (AURASTUDIO_BRUSH_DIR, else
+/// %APPDATA%\AuraStudio\brushes and the like).
+pub fn brush_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("AURASTUDIO_BRUSH_DIR") { return Some(PathBuf::from(dir)); }
+    dirs::data_dir().map(|d| d.join("AuraStudio").join("brushes"))
+}
+
 /// The list of recently used files, one path per line.
 fn recent_list_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("AuraStudio").join("recent.txt"))
@@ -387,7 +394,7 @@ pub struct App {
 
 impl App {
     pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
-        let library = Library::load();
+        let library = Library::load(brush_dir());
         log::info!("brushes: {} presets", library.presets.len());
         let mut workspace = Workspace::new();
         let doc = workspace.new_document("", PLACEHOLDER.0, PLACEHOLDER.1);

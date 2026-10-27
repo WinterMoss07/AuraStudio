@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-animation = { path = "../aurastudio-animation" }
-aurastudio-layers = { path = "../aurastudio-layers" }
 # OpenGL too ("angle" turns the GL backend on where it is off by
 # default: WGL on Windows), the fallback when Vulkan is missing.
 wgpu              = { version = "30", features = ["angle"] }
@@ -19,4 +18,5 @@ egui-winit = "0.36"
 half      = "2"
 
 [dev-dependencies]
+aurastudio-layers = { path = "../aurastudio-layers" }
 pollster = "0.3"

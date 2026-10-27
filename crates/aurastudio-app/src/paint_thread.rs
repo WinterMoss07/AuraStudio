@@ -931,7 +931,7 @@ mod tests {
     /// any engine, quickly (MyPaint brushes took seconds per sample).
     #[test]
     fn stroke_leaving_the_canvas_far_pauses_and_resumes() {
-        let lib = aurastudio_forge_library::Library::load();
+        let lib = aurastudio_forge_library::Library::load(None);
         let mypaint = lib.presets.iter().find(|p| p.name == "Marker").unwrap().brush.clone();
         for (n, forge) in [round(), mypaint].into_iter().enumerate() {
             let (doc, id) = doc_with_layer();

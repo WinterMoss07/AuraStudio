@@ -167,13 +167,18 @@ pub struct Library {
     pub presets: Vec<Preset>,
     /// Every medium, in order (the Tools docker shows those of a group).
     pub mediums: Vec<Medium>,
+    /// Where imported brushes, the mediums and the layout are kept (None:
+    /// nothing is read or written). Given by the application.
+    dir: Option<PathBuf>,
 }
 
 impl Library {
-    /// The bundled brushes, then those imported before.
-    pub fn load() -> Self {
+    /// The bundled brushes, then those imported before into `dir`
+    /// (e.g. %APPDATA%\AuraStudio\brushes), with their layout.
+    pub fn load(dir: Option<PathBuf>) -> Self {
         let mut lib = Self::load_bundled();
-        if let Some(dir) = user_dir() {
+        lib.dir = dir;
+        if let Some(dir) = lib.dir.clone() {
             let n = lib.add_from(&dir, None);
             if n > 0 { log::info!("brushes: {n} imported brush(es) loaded from {}", dir.display()); }
         }
@@ -182,6 +187,8 @@ impl Library {
         lib.load_layout();
         lib
     }
+
+    fn file(&self, name: &str) -> Option<PathBuf> { self.dir.as_ref().map(|d| d.join(name)) }
 
     /// The bundled brushes only, as shipped (no user layout).
     pub fn load_bundled() -> Self {
@@ -196,7 +203,7 @@ impl Library {
                 },
             }
         }
-        Self { presets, mediums: default_mediums() }
+        Self { presets, mediums: default_mediums(), dir: None }
     }
 
     /// Move brush `index` to `medium`, before brush `before` (None: at the
@@ -224,7 +231,7 @@ impl Library {
     /// Mediums and order the user gave the brushes (layout.txt in the
     /// brush folder: key, medium, order per line).
     fn load_layout(&mut self) {
-        let Some(text) = layout_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return };
+        let Some(text) = self.file("layout.txt").and_then(|p| std::fs::read_to_string(p).ok()) else { return };
         for line in text.lines() {
             let mut f = line.split('\t');
             let (Some(key), Some(medium), Some(order)) = (f.next(), f.next(), f.next()) else { continue };
@@ -239,7 +246,7 @@ impl Library {
     }
 
     fn save_layout(&self) {
-        let Some(path) = layout_path() else { return };
+        let Some(path) = self.file("layout.txt") else { return };
         if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
         let text: String = self.presets.iter().map(|p| format!("{}\t{}\t{}\n", p.key(), p.medium, p.order)).collect();
         if let Err(e) = std::fs::write(&path, text) { log::warn!("brush layout: {e}"); }
@@ -298,7 +305,7 @@ impl Library {
     /// folder: group, name, and "custom" for the user's, per line). Bundled
     /// mediums missing from it go last of their group.
     fn load_mediums(&mut self) {
-        let Some(text) = mediums_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return };
+        let Some(text) = self.file("mediums.txt").and_then(|p| std::fs::read_to_string(p).ok()) else { return };
         let defaults = std::mem::take(&mut self.mediums);
         for line in text.lines() {
             let mut f = line.split('\t');
@@ -318,7 +325,7 @@ impl Library {
     }
 
     fn save_mediums(&self) {
-        let Some(path) = mediums_path() else { return };
+        let Some(path) = self.file("mediums.txt") else { return };
         if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
         let text: String = self.mediums.iter()
             .map(|m| format!("{}\t{}{}\n", m.kind.key(), m.name, if m.custom { "\tcustom" } else { "" })).collect();
@@ -328,7 +335,7 @@ impl Library {
     /// Import a .myb file or a folder of them (recursively): copied into
     /// the user's brush folder and added. Returns how many were added.
     pub fn import(&mut self, path: &Path) -> Result<usize, String> {
-        let dest_root = user_dir().ok_or("no user data folder on this system")?;
+        let dest_root = self.dir.clone().ok_or("no user data folder on this system")?;
         let pack = match path.is_dir() {
             true => path.file_name().map_or_else(|| "Imported".into(), |n| n.to_string_lossy().into_owned()),
             false => "Imported".into(),
@@ -368,22 +375,6 @@ impl Library {
         }
         added
     }
-}
-
-fn mediums_path() -> Option<PathBuf> {
-    user_dir().map(|d| d.join("mediums.txt"))
-}
-
-fn layout_path() -> Option<PathBuf> {
-    user_dir().map(|d| d.join("layout.txt"))
-}
-
-/// Where imported brushes are kept (e.g. %APPDATA%\AuraStudio\brushes).
-pub fn user_dir() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("AURASTUDIO_BRUSH_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    dirs::data_dir().map(|d| d.join("AuraStudio").join("brushes"))
 }
 
 /// .myb files at `path` (a file, or a folder searched recursively), sorted.
@@ -429,13 +420,9 @@ mod tests {
 
     use super::*;
 
-    /// Tests reading or setting AURASTUDIO_BRUSH_DIR take turns.
-    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn catalog_loads_by_medium() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
-        let lib = Library::load();
+        let lib = Library::load(None);
         let n = lib.presets.len();
         assert!((50..=70).contains(&n), "{n} bundled brushes");
         assert!(lib.presets.iter().all(|p| MEDIUMS.contains(&p.medium.as_str())), "unknown medium");
@@ -451,27 +438,22 @@ mod tests {
 
     #[test]
     fn brushes_move_and_the_layout_is_kept() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("aura_layout_test_{}", std::process::id()));
-        std::env::set_var("AURASTUDIO_BRUSH_DIR", &tmp);
-        let mut lib = Library::load();
+        let mut lib = Library::load(Some(tmp.clone()));
         let find = |lib: &Library, n: &str| lib.presets.iter().position(|p| p.name == n).unwrap();
         let (w, oil) = (find(&lib, "Thin watercolor"), find(&lib, "Oil"));
         lib.move_preset(w, "Paint", Some(oil));
         let paint = Library::in_medium(&lib.presets, "Paint");
         assert_eq!(paint[paint.iter().position(|&i| i == oil).unwrap() - 1], w);
-        let lib = Library::load();
+        let lib = Library::load(Some(tmp.clone()));
         assert_eq!(lib.presets[find(&lib, "Thin watercolor")].medium, "Paint", "saved");
-        std::env::remove_var("AURASTUDIO_BRUSH_DIR");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn mediums_move_get_added_renamed_and_are_kept() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("aura_mediums_test_{}", std::process::id()));
-        std::env::set_var("AURASTUDIO_BRUSH_DIR", &tmp);
-        let mut lib = Library::load();
+        let mut lib = Library::load(Some(tmp.clone()));
         assert_eq!(mediums_of(&lib.mediums, Kind::Draw), ["Pencil", "Ink", "Charcoal & pastel", "Misc"]);
         lib.move_medium("Misc", Some("Pencil"));
         let name = lib.add_medium(Kind::Draw);
@@ -482,11 +464,10 @@ mod tests {
         lib.move_preset(pen, "Mine", None);
         assert!(!lib.remove_medium("Mine"), "not empty");
 
-        let lib = Library::load();
+        let lib = Library::load(Some(tmp.clone()));
         assert_eq!(mediums_of(&lib.mediums, Kind::Draw), ["Misc", "Pencil", "Ink", "Charcoal & pastel", "Mine"]);
         let pen = lib.presets.iter().find(|p| p.name == "Round pen").unwrap();
         assert_eq!((pen.medium.as_str(), pen.kind), ("Mine", Kind::Draw));
-        std::env::remove_var("AURASTUDIO_BRUSH_DIR");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -502,16 +483,14 @@ mod tests {
 
     #[test]
     fn import_copies_brushes_into_the_user_folder() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = std::env::temp_dir().join(format!("aura_brush_test_{}", std::process::id()));
         let src = tmp.join("My pack");
         let user = tmp.join("user");
         std::fs::create_dir_all(src.join("sub")).unwrap();
         std::fs::write(src.join("sub/inky.myb"), r#"{"version": 3, "settings": {"radius_logarithmic": {"base_value": 1.5, "inputs": {}}}}"#).unwrap();
         std::fs::write(src.join("broken.myb"), "not json").unwrap();
-        std::env::set_var("AURASTUDIO_BRUSH_DIR", &user);
 
-        let mut lib = Library { presets: Vec::new(), mediums: default_mediums() };
+        let mut lib = Library { presets: Vec::new(), mediums: default_mediums(), dir: Some(user.clone()) };
         let added = lib.import(&src).unwrap();
         assert_eq!(added, 1);
         assert!(user.join("My pack/inky.myb").is_file());
@@ -520,7 +499,6 @@ mod tests {
         assert_eq!(lib.presets[0].name, "inky");
         // Importing again doesn't duplicate.
         assert_eq!(lib.import(&src).unwrap(), 0);
-        std::env::remove_var("AURASTUDIO_BRUSH_DIR");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

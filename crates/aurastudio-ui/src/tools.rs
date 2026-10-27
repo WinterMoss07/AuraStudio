@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn groups_remember_their_tool_and_brush() {
-        let lib = Library::load();
+        let lib = Library::load(None);
         let p = &lib.presets;
         let find = |n: &str| p.iter().position(|x| x.name == n).unwrap();
         let (mut tool, mut preset) = (Tool::Brush, find("Liner"));

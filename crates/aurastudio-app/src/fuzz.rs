@@ -192,7 +192,7 @@ fn fuzz() {
     }));
 
     let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut lib = Library::load();
+    let mut lib = Library::load(crate::app::brush_dir());
     let mut size = (r.below(300) as u32 + 1, r.below(300) as u32 + 1);
     let doc: SharedDoc = Arc::new(Mutex::new(Document::new(DocId(1), "fuzz", size.0, size.1)));
     // Odd seeds animate (animation folders, frames, the Cel template).
