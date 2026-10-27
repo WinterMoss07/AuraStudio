@@ -102,3 +102,13 @@ fn data_crates_know_nothing_about_windows_or_the_gpu() {
     }
     assert!(errors.is_empty(), "\n{}", errors.join("\n"));
 }
+
+/// The GPU crate draws the canvas into any window: the window system and
+/// the interface meet it in the application (window.rs).
+#[test]
+fn the_gpu_crate_knows_no_window_system_or_interface() {
+    let (_, all) = graph();
+    let deps = &all["gpu"];
+    let bad: Vec<&str> = ["egui", "egui-wgpu", "egui-winit", "egui_dock", "winit", "eframe"].into_iter().filter(|f| deps.contains(*f)).collect();
+    assert!(bad.is_empty(), "`gpu` depends on {bad:?}");
+}

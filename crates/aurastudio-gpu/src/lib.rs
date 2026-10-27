@@ -10,9 +10,12 @@ pub use view::{wrap_angle, CanvasView};
 pub use playback::PlayKey;
 
 use std::sync::Arc;
+
+/// What a window must offer to be drawn into (winit's `Arc<Window>` does).
+pub trait Target: WindowHandle + wgt::WgpuHasDisplayHandle + Clone {}
+impl<T: WindowHandle + wgt::WgpuHasDisplayHandle + Clone> Target for T {}
 use wgpu::*;
 use wgpu::util::DeviceExt;
-use winit::window::Window;
 pub use canvas::Canvas;
 
 /// Standard quality: from this zoom up, canvas pixels are shown as sharp
@@ -103,8 +106,6 @@ pub struct GpuState {
     /// The window changed size: the swapchain is built again before the
     /// next frame.
     size_pending:    bool,
-    /// egui's wish for the next frame, from the last render().
-    repaint_delay:   Option<std::time::Duration>,
     /// Scale of the monitor the window is on (Windows display scaling:
     /// 2.0 at 200 %), as of the last check.
     dpi_scale:       f32,
@@ -112,8 +113,6 @@ pub struct GpuState {
     /// "1 image pixel = 1 screen pixel"); off: per point, so a picture
     /// keeps the same size on a 4K and an HD screen.
     pixel_exact:     bool,
-    /// Interface size chosen in the View menu (1.0 = the system's).
-    ui_scale:        f32,
     canvas_pipeline: RenderPipeline,
     /// The exact average (High quality), built in the background.
     canvas_high:     display::HighPipeline,
@@ -130,9 +129,6 @@ pub struct GpuState {
     surface_caps:    SurfaceCapabilities,
     /// Pixels sent to textures, with a ceiling on the staging memory.
     uploads:         upload::Uploads,
-    /// Bytes of each interface texture alive, and the traffic so far.
-    egui_bytes:      std::collections::HashMap<egui::TextureId, u64>,
-    traffic:         TextureTraffic,
     /// Keeps the canvas texture's mipmaps up to date.
     mip:             mip::MipGen,
     view_buffer:     Buffer,
@@ -151,29 +147,12 @@ pub struct GpuState {
     cursor_buffer:   Buffer,
     cursor_bind:     BindGroup,
     brush_cursor:    Option<((f32, f32), f32)>,
-    /// Cursor egui wants over its widgets, from the last UI frame.
-    egui_cursor:     egui::CursorIcon,
-    /// Last UI primitives, redrawn as-is by render_cached_ui.
-    last_ui:         Option<(Vec<egui::ClippedPrimitive>, f32)>,
-    /// Textures egui dropped in the frame `last_ui` comes from: that frame
-    /// may still draw them (a dialog closing draws its pictures one last
-    /// time), and so may its cached redraws. Freed once a newer UI frame
-    /// has been submitted.
-    textures_to_free: Vec<egui::TextureId>,
-    /// Interface textures sent whole: name, size, private bytes the
-    /// process gained meanwhile (the first 40; for the memory report).
-    texture_costs:   Vec<(String, u64, u64)>,
     view_bind_group: BindGroup,
     canvas_bgl:      BindGroupLayout,
     pub canvas:      Canvas,
-    window:          Arc<Window>,
-    egui_ctx:        egui::Context,
-    egui_state:      egui_winit::State,
-    egui_renderer:   egui_wgpu::Renderer,
     /// Window area (physical pixels) where the canvas is drawn: all the
     /// space not covered by docks. (x, y, width, height)
     viewport:        [f32; 4],
-    text_input_active: bool,
     /// Backdrop color around the canvas (sRGB, 0..1).
     pub clear_color: [f64; 3],
     /// A transform's live preview (lift.rs), and its pipelines.
@@ -276,7 +255,8 @@ fn mipped_bytes(w: u32, h: u32) -> u64 {
 }
 
 impl GpuState {
-    /// Itemise what the GPU holds (for Window > Memory report).
+    /// Itemise what the GPU holds (for Window > Memory report); the
+    /// interface's textures are added by whoever draws it.
     pub fn memory(&self) -> GpuMemory {
         let mut m = GpuMemory { backend: format!("{:?}", self.backend), adapter: ADAPTER_INFO.get().cloned().unwrap_or_default(), ..Default::default() };
         let (w, h) = (self.canvas.width, self.canvas.height);
@@ -299,13 +279,7 @@ impl GpuState {
             SHADER_COMPILER.get().copied().unwrap_or("?"),
             self.high_ms.map_or("still building".to_string(), |ms| format!("built in {ms:.0} ms (in the background)")),
         );
-        m.traffic = self.traffic;
         m.upload_waits = self.uploads.flushes;
-        let tex = self.egui_ctx.tex_manager();
-        let tex = tex.read();
-        for (_, meta) in tex.allocated() { m.egui.push((meta.name.clone(), meta.bytes_used() as u64)); }
-        m.egui.sort_by_key(|x| std::cmp::Reverse(x.1));
-        m.uploads = self.texture_costs.clone();
         if let Some(r) = self.device.generate_allocator_report() {
             m.allocated = Some(r.total_allocated_bytes);
             m.reserved = Some(r.total_reserved_bytes);
@@ -332,13 +306,13 @@ mod memory_tests {
 }
 
 impl GpuState {
-    /// `canvas_size`: initial canvas width and height in pixels. The
+    /// Draw into `window`, of `size` physical pixels at display scale
+    /// `dpi_scale`. `canvas_size`: initial canvas width and height in pixels. The
     /// graphics API `prefer`, else the next one that runs (Vulkan, DirectX
     /// 12, OpenGL); AURASTUDIO_BACKEND overrides. Err: none runs.
     /// `quality`: how the canvas is drawn; `vsync`: presentation in step
     /// with the screen.
-    pub async fn new(window: Arc<Window>, canvas_size: (u32, u32), prefer: Backend, quality: CanvasQuality, vsync: bool) -> Result<Self, String> {
-        let size = window.inner_size();
+    pub async fn new<W: Target>(window: W, size: (u32, u32), dpi_scale: f32, canvas_size: (u32, u32), prefer: Backend, quality: CanvasQuality, vsync: bool) -> Result<Self, String> {
 
         let forced = match std::env::var("AURASTUDIO_BACKEND").ok().as_deref() {
             Some("dx12")   => Some(Backend::DirectX12),
@@ -357,11 +331,11 @@ impl GpuState {
         for b in order {
             let (shader_compiler, _) = shader_compiler(b);
             // (OpenGL needs the display connection, Wayland above all.)
-            let mut desc = InstanceDescriptor { backends: b.wgpu(), ..InstanceDescriptor::new_with_display_handle(Box::new(Arc::clone(&window))) };
+            let mut desc = InstanceDescriptor { backends: b.wgpu(), ..InstanceDescriptor::new_with_display_handle(Box::new(window.clone())) };
             desc.backend_options.dx12.shader_compiler = shader_compiler;
             let instance = Instance::new(desc);
             step("graphics instance");
-            let surface = match instance.create_surface(Arc::clone(&window)) {
+            let surface = match instance.create_surface(window.clone()) {
                 Ok(s) => s,
                 Err(e) => { errors.push(format!("{}: {e}", b.name())); continue; }
             };
@@ -423,8 +397,8 @@ impl GpuState {
         let config = SurfaceConfiguration {
             usage:                         TextureUsages::RENDER_ATTACHMENT,
             format,
-            width:                         size.width.max(1),
-            height:                        size.height.max(1),
+            width:                         size.0.max(1),
+            height:                        size.1.max(1),
             present_mode,
             alpha_mode:                    caps.alpha_modes[0],
             view_formats:                  vec![],
@@ -470,54 +444,28 @@ impl GpuState {
         let view_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &canvas.sampler, &view_buffer, &lut);
         let nearest_bind_group = canvas_bind_group(&device, &canvas_bgl, &canvas, &nearest_sampler, &view_buffer, &lut);
 
-        let dpi_scale = window.scale_factor() as f32;
-        let egui_ctx = egui::Context::default();
-        // One pass per frame: the app's UI closure runs once (a second pass
-        // egui asks for, to settle a size, would draw an empty UI); what a
-        // discarded pass changes shows on the next frame.
-        egui_ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::MIN);
-        let egui_state = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
-        );
         step("canvas, mipmaps, display table");
-        let egui_renderer = egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions { msaa_samples: 1, dithering: false, ..Default::default() });
-        step("interface renderer");
 
         Ok(Self {
             backend,
             surface, device, queue, config,
             canvas_pipeline, canvas_high, high_ms, quality, quality_later: None, smooth_zoom_in: false, vsync, surface_caps: caps,
             uploads: upload::Uploads::default(),
-            egui_bytes: std::collections::HashMap::new(),
-            traffic: TextureTraffic::default(),
             view_buffer, view_bind_group, canvas_bgl,
             nearest_sampler, nearest_bind_group,
             view: CanvasView::default(),
-            last_ui: None,
-            textures_to_free: Vec::new(),
-            texture_costs: Vec::new(),
             cursor_pipeline, cursor_buffer, cursor_bind,
             brush_cursor: None,
-            egui_cursor: egui::CursorIcon::Default,
             lut,
             color_managed: false,
-            canvas, window, mip,
-            egui_ctx, egui_state, egui_renderer,
-            viewport: [0.0, 0.0, size.width.max(1) as f32, size.height.max(1) as f32],
-            text_input_active: false,
+            canvas, mip,
+            viewport: [0.0, 0.0, size.0.max(1) as f32, size.1.max(1) as f32],
             swapchain_rebuilt: false,
             swapchain_builds: 1,
             size_pending: false,
-            repaint_delay: None,
             clear_color: [0.4, 0.4, 0.4],
             dpi_scale,
             pixel_exact: false,
-            ui_scale: 1.0,
             lift: None,
             lift_pipes: None,
             playback: None,
@@ -528,37 +476,18 @@ impl GpuState {
     /// The graphics API drawing the window.
     pub fn backend(&self) -> Backend { self.backend }
 
+    /// For whoever draws over the canvas (the interface).
+    pub fn device(&self) -> &Device { &self.device }
+    pub fn queue(&self) -> &Queue { &self.queue }
+    /// Format of the window's images.
+    pub fn format(&self) -> TextureFormat { self.config.format }
+    /// Size of the window's images (physical pixels).
+    pub fn surface_size(&self) -> (u32, u32) { (self.config.width, self.config.height) }
+
     /// (Re)build the swapchain with `config`, counted for the report.
     fn configure_surface(&mut self) {
         self.surface.configure(&self.device, &self.config);
         self.swapchain_builds += 1;
-    }
-
-    /// An interface texture sent whole (new, or replacing one of the same id).
-    fn note_made(&mut self, id: egui::TextureId, bytes: u64) {
-        let t = &mut self.traffic;
-        if let Some(old) = self.egui_bytes.insert(id, bytes) {
-            t.freed += 1;
-            t.freed_bytes += old;
-            t.live_bytes = t.live_bytes.saturating_sub(old);
-        }
-        t.made += 1;
-        t.made_bytes += bytes;
-        t.live_bytes += bytes;
-        t.peak_bytes = t.peak_bytes.max(t.live_bytes);
-    }
-
-    /// Interface textures egui dropped, freed (and counted).
-    fn free_textures(&mut self, ids: &[egui::TextureId]) {
-        for id in ids {
-            self.egui_renderer.free_texture(id);
-            if let Some(b) = self.egui_bytes.remove(id) {
-                let t = &mut self.traffic;
-                t.freed += 1;
-                t.freed_bytes += b;
-                t.live_bytes = t.live_bytes.saturating_sub(b);
-            }
-        }
     }
 
     /// Biggest canvas side the GPU accepts (max 2D texture size).
@@ -707,16 +636,14 @@ impl GpuState {
         }
     }
 
-    /// Cursor egui wants over its widgets (from the last UI frame).
-    pub fn egui_cursor(&self) -> egui::CursorIcon {
-        self.egui_cursor
-    }
-
     /// Show the brush outline at `center` (physical window pixels) with
     /// `radius` in screen pixels, or hide it.
     pub fn set_brush_cursor(&mut self, cursor: Option<((f32, f32), f32)>) {
         self.brush_cursor = cursor;
     }
+
+    /// The display scale the window is at (2.0 at 200 %).
+    pub fn dpi_scale(&self) -> f32 { self.dpi_scale }
 
     /// Physical screen pixels per canvas pixel at 100 % zoom.
     pub fn zoom_unit(&self) -> f32 {
@@ -738,39 +665,17 @@ impl GpuState {
         if !self.view.fit { self.view_set_zoom(shown * unit, c); }
     }
 
-    /// Size of the interface relative to the system's scaling.
-    pub fn set_ui_scale(&mut self, scale: f32) {
-        self.ui_scale = scale;
-        self.apply_ui_zoom();
-    }
-
-    /// The display scale the window is really at (see
-    /// aurastudio_input::window_dpi; None: trust winit). When it differs
-    /// from winit's, the interface is corrected by that ratio. The picture
-    /// keeps its size on screen. Returns the new scale if it changed.
-    pub fn set_dpi_scale(&mut self, real: Option<f32>) -> Option<f32> {
-        let new = real.unwrap_or(self.window.scale_factor() as f32);
-        if (new - self.dpi_scale).abs() < 1e-3 { return None; }
+    /// The display scale the window is at (2.0 at 200 %). The picture
+    /// keeps its size on screen. True if it changed.
+    pub fn set_dpi_scale(&mut self, new: f32) -> bool {
+        if (new - self.dpi_scale).abs() < 1e-3 { return false; }
         let k = new / self.dpi_scale;
         self.dpi_scale = new;
         if !self.pixel_exact && !self.view.fit {
             self.view.zoom = (self.view.zoom * k).clamp(view::MIN_ZOOM, view::MAX_ZOOM);
             self.view.pan = (self.view.pan.0 * k, self.view.pan.1 * k);
         }
-        self.apply_ui_zoom();
-        Some(new)
-    }
-
-    /// Scale winit reports for the window (egui's base scale).
-    pub fn winit_scale(&self) -> f32 {
-        self.window.scale_factor() as f32
-    }
-
-    /// egui's zoom: the chosen interface size, times the correction when
-    /// winit's scale is stale.
-    fn apply_ui_zoom(&self) {
-        let fix = self.dpi_scale / self.winit_scale();
-        self.egui_ctx.set_zoom_factor(self.ui_scale * fix);
+        true
     }
 
     /// Current zoom (screen pixels per canvas pixel).
@@ -793,10 +698,20 @@ impl GpuState {
         self.view.canvas_to_screen(p, self.canvas_size(), self.viewport)
     }
 
-    /// The current view, to place UI drawn over the canvas (selection
-    /// outline...) in egui points.
-    pub fn view_snapshot(&self) -> ViewSnapshot {
-        ViewSnapshot { view: self.view, canvas: self.canvas_size(), area: self.viewport, ppp: self.egui_ctx.pixels_per_point() }
+    /// The current view, to place what is drawn over the canvas (selection
+    /// outline...) in points of `ppp` physical pixels.
+    pub fn view_snapshot(&self, ppp: f32) -> ViewSnapshot {
+        ViewSnapshot { view: self.view, canvas: self.canvas_size(), area: self.viewport, ppp }
+    }
+
+    /// Window area (physical pixels) where the canvas is drawn: x, y,
+    /// width, height. Set from the interface's layout each frame.
+    pub fn set_viewport(&mut self, area: [f32; 4]) { self.viewport = area; }
+
+    /// `pos` (physical pixels) is in the canvas area.
+    pub fn in_viewport(&self, pos: (f32, f32)) -> bool {
+        let [vx, vy, vw, vh] = self.viewport;
+        pos.0 >= vx && pos.0 < vx + vw && pos.1 >= vy && pos.1 < vy + vh
     }
 
     /// Center of the canvas area (pivot for keyboard zoom / rotation).
@@ -831,61 +746,23 @@ impl GpuState {
         self.view.rotate_at(back, pivot, c, a);
     }
 
-    /// True while egui holds the pointer (dragging a dock tab, a slider,
-    /// a splitter...). It then needs a frame on every pointer move, even
-    /// above the canvas, or the drag never completes.
-    pub fn ui_is_dragging(&self) -> bool {
-        self.egui_ctx.egui_is_using_pointer() || self.egui_ctx.dragged_id().is_some()
-    }
-
-    /// A text field is being edited (not wants_keyboard_input: a clicked
-    /// button has focus too, which disabled Delete).
-    pub fn ui_wants_keyboard(&self) -> bool {
-        self.text_input_active
-    }
-
-    /// When egui wants the next frame (zero = right away), consumed once.
-    pub fn take_repaint_delay(&mut self) -> Option<std::time::Duration> {
-        self.repaint_delay.take()
-    }
-
-    /// Feed a window event to egui. Returns true when egui needs a new
-    /// frame for it (hover change, click, typing...). Whether a press
-    /// starts a stroke is decided by is_canvas_at, not by egui.
-    pub fn egui_handle_event(&mut self, event: &winit::event::WindowEvent) -> bool {
-        self.egui_state.on_window_event(&self.window, event).repaint
-    }
-
-    /// A press at `pos` starts a stroke: over the canvas, under no panel
-    /// (egui's own flag is a frame late here).
-    pub fn is_canvas_at(&self, pos: (f32, f32)) -> bool {
-        let [vx, vy, vw, vh] = self.viewport;
-        let inside = pos.0 >= vx && pos.0 < vx + vw && pos.1 >= vy && pos.1 < vy + vh;
-        let ppp = self.egui_ctx.pixels_per_point();
-        // Floating windows over the canvas (not egui's background layer).
-        let over_ui = self.egui_ctx
-            .layer_id_at(egui::pos2(pos.0 / ppp, pos.1 / ppp))
-            .is_some_and(|layer| layer.order != egui::Order::Background);
-        inside && !over_ui
-    }
-
-    pub fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-        if size.width == 0 || size.height == 0 { return; }
+    /// The window is now `size` physical pixels.
+    pub fn resize(&mut self, size: (u32, u32)) {
+        if size.0 == 0 || size.1 == 0 { return; }
         // Back from minimized at the same size: the swapchain is kept
         // (rebuilding it held old and new images at once, 2 × 23 MB, and
         // the driver kept a few MB each time).
-        if size.width == self.config.width && size.height == self.config.height {
+        if size == (self.config.width, self.config.height) {
             self.size_pending = false;
             return;
         }
         // Built once, before the next frame: a monitor plugged in sends
         // several sizes in a row (0.16.1 built six swapchains for it).
-        self.config.width  = size.width;
-        self.config.height = size.height;
+        (self.config.width, self.config.height) = size;
         self.size_pending = true;
-        // Recomputed from the egui layout on the next frame; until then,
+        // Set from the interface's layout on the next frame; until then,
         // the whole window.
-        self.viewport = [0.0, 0.0, size.width as f32, size.height as f32];
+        self.viewport = [0.0, 0.0, size.0 as f32, size.1 as f32];
     }
 
     /// Upload the view transform and color management switch for this
@@ -910,95 +787,12 @@ impl GpuState {
         if let Some(l) = &mut self.lift { l.uploaded(); }
     }
 
-    /// Draw a frame. egui runs first to know how much room the docks take;
-    /// the canvas is then drawn in the remaining area, and the UI on top.
-    pub fn render(&mut self, ui_fn: impl FnOnce(&mut egui::Ui)) {
-        self.render_impl(Some(ui_fn));
-    }
-
-    /// Draw a frame reusing the last UI as it was, without running it.
-    /// Used mid-stroke when the document is busy being painted: the canvas
-    /// still updates, and the UI thread never waits for the brush.
-    pub fn render_cached_ui(&mut self) {
-        self.render_impl(None::<fn(&mut egui::Ui)>);
-    }
-
-    /// A UI frame exists to reuse (see render_cached_ui).
-    pub fn has_cached_ui(&self) -> bool {
-        self.last_ui.is_some()
-    }
-
-    fn render_impl(&mut self, ui_fn: Option<impl FnOnce(&mut egui::Ui)>) {
-        // Minimized: nothing to show (frames are drawn on demand, not only
-        // on the window system's request).
-        if self.window.is_minimized() == Some(true) { return; }
+    /// Start a frame: the canvas (with a transform's preview or a frame
+    /// of the animation) drawn in its area. The interface is drawn over
+    /// `frame.view` with `frame.encoder`, then `end_frame` shows it. None:
+    /// no image to draw into this time (the next frame tries again).
+    pub fn begin_frame(&mut self) -> Option<Frame> {
         if std::mem::take(&mut self.size_pending) { self.configure_surface(); }
-        let mut textures_free = Vec::new();
-        let (tris, ppp) = match ui_fn {
-            Some(f) => {
-                let raw_input = self.egui_state.take_egui_input(&self.window);
-                let mut ui_fn = Some(f);
-                let mut free_rect = None;
-                let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
-                    if let Some(f) = ui_fn.take() { f(ui); }
-                    // The canvas card the UI laid out, or what's left of
-                    // the window.
-                    free_rect = Some(ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("aurastudio_canvas_rect")))
-                        .unwrap_or_else(|| ui.available_rect_before_wrap()));
-                });
-                // When egui wants its next frame (the app schedules it).
-                self.repaint_delay = full_output.viewport_output.get(&egui::ViewportId::ROOT)
-                    .map(|v| v.repaint_delay);
-
-                // egui asks for IME (text input) only while a text field is focused.
-                self.text_input_active = full_output.platform_output.ime.is_some();
-                // The app picks the cursor: egui's wish is kept for it.
-                let mut platform_output = std::mem::take(&mut full_output.platform_output);
-                self.egui_cursor = std::mem::replace(&mut platform_output.cursor_icon, egui::CursorIcon::Default);
-                self.egui_state.handle_platform_output(&self.window, platform_output);
-
-                let ppp = full_output.pixels_per_point;
-                // The canvas area goes right up to the docks (a zoomed-in
-                // canvas fills it); the fit margin is applied by the view.
-                if let Some(r) = free_rect {
-                    let (ww, wh) = (self.config.width as f32, self.config.height as f32);
-                    let x0 = (r.min.x * ppp).round().clamp(0.0, ww);
-                    let y0 = (r.min.y * ppp).round().clamp(0.0, wh);
-                    let x1 = (r.max.x * ppp).round().clamp(x0, ww);
-                    let y1 = (r.max.y * ppp).round().clamp(y0, wh);
-                    self.viewport = [x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)];
-                }
-
-                let tris = self.egui_ctx.tessellate(std::mem::take(&mut full_output.shapes), ppp);
-                let set = std::mem::take(&mut full_output.textures_delta.set);
-                let freed = std::mem::take(&mut full_output.textures_delta.free);
-                for (id, delta) in set.iter().flat_map(|(id, ds)| ds.iter().map(move |d| (id, d))) {
-                    // A texture sent whole: what it costs the process (the
-                    // driver may take its share later, at the submit).
-                    let probe = MEMORY_PROBE.get().filter(|_| delta.pos.is_none() && self.texture_costs.len() < 40);
-                    let before = probe.map(|f| f());
-                    self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
-                    if delta.pos.is_none() {
-                        let [w, h] = delta.image.size();
-                        self.note_made(*id, w as u64 * h as u64 * 4);
-                    }
-                    if let (Some(f), Some(before)) = (probe, before) {
-                        let name = self.egui_ctx.tex_manager().read().meta(*id).map_or_else(|| format!("{id:?}"), |m| m.name.clone());
-                        let [w, h] = delta.image.size();
-                        self.texture_costs.push((format!("{name} {w}x{h}"), w as u64 * h as u64 * 4, f().saturating_sub(before)));
-                    }
-                }
-                // Free what the previous frame dropped (this frame no longer
-                // draws it); keep what this one dropped for later.
-                textures_free = std::mem::replace(&mut self.textures_to_free, freed.into_iter().collect());
-                (tris, ppp)
-            }
-            None => match self.last_ui.take() {
-                Some(ui) => ui,
-                None => return,
-            },
-        };
-
         self.write_view_uniform();
 
         let (output, suboptimal) = match self.surface.get_current_texture() {
@@ -1011,11 +805,7 @@ impl GpuState {
                     // (Timeout, hidden window: the next frame tries again.)
                     _ => {}
                 }
-                // No frame this time: what the previous frame dropped can go
-                // all the same (this one's waits).
-                self.free_textures(&textures_free);
-                self.last_ui = Some((tris, ppp));
-                return;
+                return None;
             }
         };
 
@@ -1071,19 +861,14 @@ impl GpuState {
             pass.set_bind_group(0, bind, &[]);
             pass.draw(0..6, 0..1);
         }
+        Some(Frame { encoder: enc, view, output, suboptimal })
+    }
 
-        // UI (docks) over the canvas.
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels:    [self.config.width, self.config.height],
-            pixels_per_point:  ppp,
-        };
-        self.egui_renderer.update_buffers(&self.device, &self.queue, &mut enc, &tris, &screen_descriptor);
-
-        {
-            let pass = over_pass(&mut enc, &view, "egui_pass");
-            self.egui_renderer.render(&mut pass.forget_lifetime(), &tris, &screen_descriptor);
-        }
-
+    /// Finish the frame: the brush outline over everything, then shown.
+    /// `window_size`: the window's size now (physical pixels), to rebuild a
+    /// suboptimal swapchain.
+    pub fn end_frame(&mut self, frame: Frame, window_size: (u32, u32)) {
+        let Frame { encoder: mut enc, view, output, suboptimal } = frame;
         // Brush outline, over everything (it follows the pen also while
         // the UI is shown from cache mid-stroke).
         if let Some(((cx, cy), r)) = self.brush_cursor {
@@ -1101,31 +886,30 @@ impl GpuState {
             pass.draw(0..6, 0..1);
         }
 
-        self.last_ui = Some((tris, ppp));
-
         self.queue.submit(std::iter::once(enc.finish()));
         self.uploads.submitted();
-        // (After the submit: wgpu refuses a submit using a texture already
-        // destroyed.)
-        self.free_textures(&textures_free);
         self.queue.present(output);
 
         // Suboptimal swapchain (resize, DPI change): rebuilt once per episode
         // (the taskbar thumbnail keeps it suboptimal).
-        if suboptimal && !self.swapchain_rebuilt {
-            let size = self.window.inner_size();
-            if size.width > 0 && size.height > 0 {
-                self.config.width  = size.width;
-                self.config.height = size.height;
-                self.configure_surface();
-            }
+        if suboptimal && !self.swapchain_rebuilt && window_size.0 > 0 && window_size.1 > 0 {
+            (self.config.width, self.config.height) = window_size;
+            self.configure_surface();
         }
         self.swapchain_rebuilt = suboptimal;
     }
 }
 
+/// A frame being drawn (see `GpuState::begin_frame`).
+pub struct Frame {
+    pub encoder: CommandEncoder,
+    pub view:    TextureView,
+    output:      SurfaceTexture,
+    suboptimal:  bool,
+}
+
 /// A render pass drawing over what `view` already shows.
-fn over_pass<'e>(enc: &'e mut CommandEncoder, view: &TextureView, label: &str) -> RenderPass<'e> {
+pub fn over_pass<'e>(enc: &'e mut CommandEncoder, view: &TextureView, label: &str) -> RenderPass<'e> {
     enc.begin_render_pass(&RenderPassDescriptor {
         label: Some(label),
         color_attachments: &[Some(RenderPassColorAttachment {

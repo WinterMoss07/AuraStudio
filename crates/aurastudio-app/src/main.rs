@@ -10,6 +10,7 @@ mod pure;
 mod paint_thread;
 mod projection;
 mod rescue;
+mod window;
 
 #[global_allocator]
 static ALLOC: memory::Counting = memory::Counting;

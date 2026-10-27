@@ -14,6 +14,7 @@ use winit::{
 use aurastudio_forge::{Brush, PenSample};
 use aurastudio_forge_library::Library;
 use aurastudio_gpu::GpuState;
+use crate::window::Screen;
 use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};
 use aurastudio_document::{Document, SelectOp, Shape, SharedDoc, Wand, Workspace};
@@ -228,7 +229,7 @@ pub struct App {
     layer_label: Option<&'static str>,
     proxy:  EventLoopProxy<AppEvent>,
     window: Option<Arc<Window>>,
-    gpu:    Option<GpuState>,
+    gpu:    Option<Screen>,
     stylus: Option<Stylus>,
 
     /// Brush presets (built-in, MyPaint collection, imported).
@@ -1429,7 +1430,7 @@ impl App {
         match cmd {
             ViewCmd::ZoomIn        => gpu.view_zoom_at(1.25, c),
             ViewCmd::ZoomOut       => gpu.view_zoom_at(1.0 / 1.25, c),
-            ViewCmd::ActualSize    => gpu.view_set_zoom(gpu.zoom_unit(), c),
+            ViewCmd::ActualSize    => { let u = gpu.zoom_unit(); gpu.view_set_zoom(u, c) }
             ViewCmd::Fit           => gpu.view.fit_to_area(),
             ViewCmd::RotateLeft    => gpu.view_rotate_at(-step, turn),
             ViewCmd::RotateRight   => gpu.view_rotate_at(step, turn),
@@ -1681,7 +1682,7 @@ impl App {
         }
         let now = Instant::now();
         if self.memory_at.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) { return; }
-        let gpu = self.gpu.as_ref().map(GpuState::memory);
+        let gpu = self.gpu.as_ref().map(Screen::memory);
         let pending = self.projection.try_lock().map_or(0, |p| p.pending_bytes());
         let report = match self.doc.try_lock() {
             Ok(d) => crate::memory::build(Some(&d), pending, gpu.as_ref()),
@@ -2043,11 +2044,11 @@ impl App {
     /// common limit).
     /// View zoom (1.0 before the window exists).
     fn zoom(&self) -> f32 {
-        self.gpu.as_ref().map_or(1.0, GpuState::zoom)
+        self.gpu.as_ref().map_or(1.0, |g| g.zoom())
     }
 
     fn max_canvas(&self) -> u32 {
-        self.gpu.as_ref().map_or(16384, GpuState::max_canvas_size)
+        self.gpu.as_ref().map_or(16384, |g| g.max_canvas_size())
     }
 
     fn file_cmd(&mut self, cmd: FileCmd) {
@@ -2533,7 +2534,7 @@ impl ApplicationHandler<AppEvent> for App {
         if std::mem::take(&mut self.redraw_wanted) {
             // One frame per display refresh; UI-only hover frames 60 per
             // second at most (a hovering pen moves all the time).
-            let dragging = self.gpu.as_ref().is_some_and(GpuState::ui_is_dragging);
+            let dragging = self.gpu.as_ref().is_some_and(Screen::ui_is_dragging);
             let interval = if self.is_drawing {
                 PAINT_FRAME
             } else if self.ui_dirty && !dragging && self.nav.is_none() {
@@ -2586,7 +2587,7 @@ impl ApplicationHandler<AppEvent> for App {
             aurastudio_ui::Renderer::OpenGl => Backend::OpenGl,
             aurastudio_ui::Renderer::Metal => Backend::Metal,
         };
-        let mut gpu = match pollster::block_on(GpuState::new(Arc::clone(&window), size, prefer, gpu_quality(self.prefs.canvas_quality), self.prefs.vsync)) {
+        let mut gpu = match pollster::block_on(Screen::new(Arc::clone(&window), size, prefer, gpu_quality(self.prefs.canvas_quality), self.prefs.vsync)) {
             Ok(g) => g,
             Err(e) => {
                 // Nothing to draw with at all: say so, don't just vanish.
@@ -2688,7 +2689,7 @@ impl App {
         let over_canvas = self.gpu.as_ref()
             .map(|gpu| gpu.is_canvas_at(self.cursor))
             .unwrap_or(false);
-        let ui_dragging = self.gpu.as_ref().is_some_and(GpuState::ui_is_dragging);
+        let ui_dragging = self.gpu.as_ref().is_some_and(Screen::ui_is_dragging);
         let is_redraw = matches!(event, WindowEvent::RedrawRequested);
         // Moving over the canvas changes no hover: only the outline moves.
         let canvas_move = matches!(event, WindowEvent::CursorMoved { .. })
@@ -2767,7 +2768,7 @@ impl App {
                 }
                 // Typing in a docker field (e.g. canvas width) must not
                 // erase the layer, undo or move the view.
-                let ui_typing = self.gpu.as_ref().is_some_and(GpuState::ui_wants_keyboard);
+                let ui_typing = self.gpu.as_ref().is_some_and(Screen::ui_wants_keyboard);
                 if key.state != ElementState::Pressed || ui_typing { return; }
                 let ctrl  = self.modifiers.control_key() || self.modifiers.super_key();
                 let shift = self.modifiers.shift_key();
