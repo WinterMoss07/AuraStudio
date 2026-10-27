@@ -6,11 +6,11 @@
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use aurastudio_core::{BlendMode, TILE};
+use aurastudio_core::BlendMode;
 use aurastudio_document::{DocId, Document, History, Kind, SavedStep, DEFAULT_BUDGET};
 use aurastudio_filters::Filter;
 use aurastudio_layers::{Anim, FilterLayer, Folder, FolderBlend, FolderKind, Layer, LayerStack, Node, Props, Cel, LABELS};
-use aurastudio_raster::{Tiles, TILE_BYTES};
+use aurastudio_raster::Tiles;
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 
@@ -321,7 +321,7 @@ pub fn write<W: Write + Seek>(snap: &Snapshot, out: W) -> io::Result<()> {
     }
     for (id, tiles) in &snap.layers {
         zip.start_file(format!("layers/{id}.tiles"), stored).map_err(err)?;
-        zip.write_all(&pack_tiles(tiles))?;
+        zip.write_all(&tiles.pack())?;
     }
     for (kind, steps) in [("undo", &snap.undo), ("redo", &snap.redo)] {
         for (i, data) in steps.iter().enumerate() {
@@ -391,9 +391,9 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
                 let mut layer = Layer::new(size.0, size.1, background);
                 let damaged = || format!("damaged file (layer {id})");
                 if version >= 2 {
-                    let tiles_max = (size.0.div_ceil(TILE) * size.1.div_ceil(TILE)) as u64 * (TILE_BYTES as u64 + 64) + 4;
+                    let tiles_max = Tiles::packed_max(size.0, size.1);
                     let blob = read_entry(zip, &format!("layers/{id}.tiles"), tiles_max)?;
-                    unpack_tiles(&blob, &mut layer.tiles).ok_or_else(damaged)?;
+                    layer.tiles.unpack_into(&blob).ok_or_else(damaged)?;
                 } else {
                     let blob = read_entry(zip, &format!("layers/{id}.lz4"), len as u64 + 1024)?;
                     let rgba = unpack(&blob, len).ok_or_else(damaged)?;
@@ -511,42 +511,6 @@ fn read_entry<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str, limit: u
     let mut out = Vec::with_capacity(entry.size() as usize);
     entry.take(limit).read_to_end(&mut out).map_err(|_| format!("damaged file ({name} unreadable)"))?;
     Ok(out)
-}
-
-/// A layer's stored tiles: their count (u32), then for each its column
-/// and row (u32 each) and its pixels, LZ4 with their size first.
-fn pack_tiles(tiles: &Tiles) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&(tiles.stored() as u32).to_le_bytes());
-    for (tx, ty, t) in tiles.iter() {
-        out.extend_from_slice(&tx.to_le_bytes());
-        out.extend_from_slice(&ty.to_le_bytes());
-        let packed = lz4_flex::compress_prepend_size(&t[..]);
-        out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
-        out.extend_from_slice(&packed);
-    }
-    out
-}
-
-/// Read `pack_tiles` data into `tiles` (None if damaged).
-fn unpack_tiles(blob: &[u8], tiles: &mut Tiles) -> Option<()> {
-    let mut at = 0usize;
-    let u32_at = |at: &mut usize| -> Option<u32> {
-        let v = u32::from_le_bytes(blob.get(*at..*at + 4)?.try_into().ok()?);
-        *at += 4;
-        Some(v)
-    };
-    let count = u32_at(&mut at)?;
-    let max = tiles.width().div_ceil(TILE) * tiles.height().div_ceil(TILE);
-    if count > max { return None; }
-    for _ in 0..count {
-        let (tx, ty, n) = (u32_at(&mut at)?, u32_at(&mut at)?, u32_at(&mut at)? as usize);
-        if tx >= tiles.width().div_ceil(TILE) || ty >= tiles.height().div_ceil(TILE) { return None; }
-        let data = unpack(blob.get(at..at.checked_add(n)?)?, TILE_BYTES)?;
-        at += n;
-        tiles.set_tile(tx, ty, Some(data.into_boxed_slice().try_into().ok()?));
-    }
-    (at == blob.len()).then_some(())
 }
 
 /// LZ4 data with its size first, expected to unpack to exactly `len`

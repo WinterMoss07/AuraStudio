@@ -1,6 +1,8 @@
 //! Tiled pixels: only the tiles that differ from the layer's fill color
 //! exist (an empty layer costs nothing).
 
+mod pack;
+
 use aurastudio_core::{Rect, TILE};
 
 /// Bytes of one tile: TILE × TILE RGBA pixels. Edge tiles have the same
@@ -238,6 +240,13 @@ impl Tiles {
                 }
                 self.drop_if_fill(tx, ty);
             }
+        }
+    }
+
+    /// Free the tiles touching `rect` whose pixels are all the fill color.
+    pub fn drop_fill_in(&mut self, rect: Rect) {
+        for ty in rect.1 / TILE..rect.3.div_ceil(TILE).min(self.rows) {
+            for tx in rect.0 / TILE..rect.2.div_ceil(TILE).min(self.cols) { self.drop_if_fill(tx, ty); }
         }
     }
 

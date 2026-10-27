@@ -204,11 +204,7 @@ impl Document {
         for t in &s.targets {
             if self.layers.node(t.id).is_none() { continue; }
             steps.push((t.id, area, t.before.read_rect(area)));
-            if let Some(Node::Layer(l)) = self.layers.node_mut(t.id) {
-                for ty in area.1 / 64..area.3.div_ceil(64) {
-                    for tx in area.0 / 64..area.2.div_ceil(64) { l.tiles.drop_if_fill(tx, ty); }
-                }
-            }
+            if let Some(Node::Layer(l)) = self.layers.node_mut(t.id) { l.tiles.drop_fill_in(area); }
         }
         // The selection goes along.
         let moved = s.selection.as_ref().map(|(old, src)| {

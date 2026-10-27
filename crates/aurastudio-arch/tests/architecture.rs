@@ -112,3 +112,42 @@ fn the_gpu_crate_knows_no_window_system_or_interface() {
     let bad: Vec<&str> = ["egui", "egui-wgpu", "egui-winit", "egui_dock", "winit", "eframe"].into_iter().filter(|f| deps.contains(*f)).collect();
     assert!(bad.is_empty(), "`gpu` depends on {bad:?}");
 }
+
+/// Crates that may handle single tiles (their bytes, their place in the
+/// table). The others go through areas and rows (`read_rect`,
+/// `write_rect`, `for_row`, `pixel`, `pack`...), so the way tiles are
+/// stored can change without them.
+const TILE_LEVEL: &[&str] = &["raster", "selection", "layers", "arch"];
+const TILE_API: &[&str] = &["TILE_BYTES", "new_tile", ".tile(", ".tile_mut(", "set_tile(", "drop_if_fill(", ".cols()", "raster::Tile;", "raster::Tile,", " Tile}", "{Tile,"];
+
+fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() { rust_files(&p, out); } else if p.extension().is_some_and(|x| x == "rs") { out.push(p); }
+    }
+}
+
+#[test]
+fn only_the_raster_side_handles_single_tiles() {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut errors = Vec::new();
+    for e in std::fs::read_dir(crates).unwrap().flatten() {
+        let dir = e.path();
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        if TILE_LEVEL.contains(&short(&name)) { continue; }
+        let mut files = Vec::new();
+        rust_files(&dir.join("src"), &mut files);
+        rust_files(&dir.join("tests"), &mut files);
+        for f in files {
+            let text = std::fs::read_to_string(&f).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") { continue; }
+                for t in TILE_API {
+                    if line.contains(t) { errors.push(format!("{}:{}: `{t}`", f.display(), n + 1)); }
+                }
+            }
+        }
+    }
+    assert!(errors.is_empty(), "\n{}", errors.join("\n"));
+}

@@ -353,6 +353,7 @@ name = "aurastudio-raster"
 version = "0.19.1"
 dependencies = [
  "aurastudio-core",
+ "lz4_flex",
 ]
 
 [[package]]
