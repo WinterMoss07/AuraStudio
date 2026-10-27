@@ -15,7 +15,8 @@ use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_core::Rect;
 use aurastudio_document::{Document, SharedDoc};
 use aurastudio_gpu::PlayKey;
-use aurastudio_layers::play::{PlayPart, PlayPlan, PlayTiles};
+use aurastudio_animation::play::{PlayPart, PlayPlan, PlayTiles};
+use aurastudio_animation::prelude::*;
 
 use crate::projection::{add_rect, union, SharedProjection};
 

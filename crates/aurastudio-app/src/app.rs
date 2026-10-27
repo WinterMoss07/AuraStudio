@@ -172,9 +172,9 @@ pub enum AppEvent {
     /// Transform preview n is on the projection.
     TransformShown(u64),
     /// How the document plays from the GPU (paint_thread::Event::PlayPlan).
-    PlayPlan { gen: u64, plan: Option<Box<aurastudio_layers::play::PlayPlan>> },
+    PlayPlan { gen: u64, plan: Option<Box<aurastudio_animation::play::PlayPlan>> },
     /// The tiles of one of its parts.
-    PlayTiles { gen: u64, key: aurastudio_gpu::PlayKey, tiles: Box<aurastudio_layers::play::PlayTiles> },
+    PlayTiles { gen: u64, key: aurastudio_gpu::PlayKey, tiles: Box<aurastudio_animation::play::PlayTiles> },
 }
 
 /// The GPU preview's mesh for `warp` (lift.rs): a grid over the source

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use crate::Canvas;
-use aurastudio_layers::play::{PlayPart, PlayPlan, PlayTile, PlayTiles, PLAY_TILE};
+use aurastudio_animation::play::{PlayPart, PlayPlan, PlayTile, PlayTiles, PLAY_TILE};
 use wgpu::util::DeviceExt;
 use wgpu::*;
 
@@ -300,6 +300,7 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aurastudio_animation::prelude::*;
     use aurastudio_layers::{LayerStack, Pick};
 
     /// A drawn frame read back from the GPU equals the merge (to 1 level)

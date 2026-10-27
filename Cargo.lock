@@ -203,6 +203,7 @@ name = "aurastudio"
 version = "0.19.1"
 dependencies = [
  "arboard",
+ "aurastudio-animation",
  "aurastudio-color",
  "aurastudio-core",
  "aurastudio-document",
@@ -228,6 +229,14 @@ dependencies = [
  "windows",
  "winit",
  "winresource",
+]
+
+[[package]]
+name = "aurastudio-animation"
+version = "0.19.1"
+dependencies = [
+ "aurastudio-core",
+ "aurastudio-layers",
 ]
 
 [[package]]
@@ -309,6 +318,7 @@ dependencies = [
 name = "aurastudio-gpu"
 version = "0.19.1"
 dependencies = [
+ "aurastudio-animation",
  "aurastudio-core",
  "aurastudio-layers",
  "bytemuck",

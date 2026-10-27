@@ -16,6 +16,7 @@
 //!
 //!     PURE_OPS=3000000 PURE_SEED=1 cargo test --release -p aurastudio pure_fuzz -- --ignored --nocapture
 
+use aurastudio_animation::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;

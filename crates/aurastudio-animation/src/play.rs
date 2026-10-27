@@ -11,11 +11,8 @@
 //! isolated folder that holds no animation folder may blend inside), and
 //! no isolated folder below 100 % around an animation folder.
 
-use aurastudio_core::Rect;
-
-use crate::anim::FolderKind;
-use crate::compose::Pick;
-use crate::{BlendMode, FolderBlend, LayerStack, Node};
+use aurastudio_core::{BlendMode, Rect};
+use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Pick};
 
 /// Side of the playback tiles, pixels.
 pub const PLAY_TILE: u32 = 16;
@@ -135,10 +132,27 @@ fn units(nodes: &[Node], out: &mut Vec<(u64, bool)>) {
     }
 }
 
-impl LayerStack {
+/// PlayBuild cache building, on a stack.
+pub trait PlayBuild {
     /// How to play this stack from the cache, or None when the cache would
     /// not show what the merge shows.
-    pub fn play_plan(&self) -> Option<PlayPlan> {
+    fn play_plan(&self) -> Option<PlayPlan>;
+    /// Static part `k` on its own. At the bottom, its opaque white tiles
+    /// are left out (frames are drawn over white).
+    fn play_static(&mut self, plan: &PlayPlan, k: usize) -> PlayTiles;
+    /// Sheet `frame` (a sheet of the plan) on its own, with its
+    /// folder's opacity.
+    fn play_drawing(&mut self, plan: &PlayPlan, frame: u64) -> PlayTiles;
+    /// Frame `t` drawn from the parts over white, as the GPU does (f64,
+    /// then rounded): RGB rows. For the tests and the fuzzing.
+    #[doc(hidden)]
+    fn play_cpu(&mut self, plan: &PlayPlan, t: u32) -> Vec<u8>;
+}
+
+impl PlayBuild for LayerStack {
+    /// How to play this stack from the cache, or None when the cache would
+    /// not show what the merge shows.
+    fn play_plan(&self) -> Option<PlayPlan> {
         if self.needs_general_merge() || !plays(&self.root) { return None; }
         let mut all = Vec::new();
         units(&self.root, &mut all);
@@ -157,10 +171,10 @@ impl LayerStack {
 
     /// Static part `k` on its own. At the bottom, its opaque white tiles
     /// are left out (frames are drawn over white).
-    pub fn play_static(&mut self, plan: &PlayPlan, k: usize) -> PlayTiles {
+    fn play_static(&mut self, plan: &PlayPlan, k: usize) -> PlayTiles {
         let keep = &plan.statics[k];
         let full = (0, 0, self.width, self.height);
-        let mut tiles = self.merge_only(plan, |id| keep.contains(&id), None, full);
+        let mut tiles = merge_only(self, plan, |id| keep.contains(&id), None, full);
         if plan.parts.first() == Some(&PlayPart::Static(k)) {
             let (w, h) = (self.width as usize, self.height as usize);
             tiles.tiles.retain(|t| {
@@ -175,7 +189,7 @@ impl LayerStack {
 
     /// Sheet `frame` (a sheet of the plan) on its own, with its
     /// folder's opacity.
-    pub fn play_drawing(&mut self, plan: &PlayPlan, frame: u64) -> PlayTiles {
+    fn play_drawing(&mut self, plan: &PlayPlan, frame: u64) -> PlayTiles {
         let Some((folder, _)) = self.anim_of(frame) else { return PlayTiles::default() };
         // Where its visible cels show.
         let mut area: Option<Rect> = None;
@@ -187,13 +201,13 @@ impl LayerStack {
             }
         }
         let Some(area) = area else { return PlayTiles::default() };
-        self.merge_only(plan, |id| id == folder, Some((folder, frame)), area)
+        merge_only(self, plan, |id| id == folder, Some((folder, frame)), area)
     }
 
     /// Frame `t` drawn from the parts over white, as the GPU does (f64,
     /// then rounded): RGB rows. For the tests and the fuzzing.
     #[doc(hidden)]
-    pub fn play_cpu(&mut self, plan: &PlayPlan, t: u32) -> Vec<u8> {
+    fn play_cpu(&mut self, plan: &PlayPlan, t: u32) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
         let mut acc = vec![[1.0f64; 3]; w * h];
         let shown = plan.shown_at(t);
@@ -222,36 +236,36 @@ impl LayerStack {
         }
         acc.iter().flat_map(|p| [0, 1, 2].map(|i| (p[i] * 255.0).round() as u8)).collect()
     }
+}
 
-    /// The merge of `rect` (grown to whole tiles) with only the units
-    /// `keep` takes visible (and, in `show`'s folder, only its sheet),
-    /// over transparency, as tiles. Visibility is put back after.
-    fn merge_only(&mut self, plan: &PlayPlan, keep: impl Fn(u64) -> bool, show: Option<(u64, u64)>, rect: Rect) -> PlayTiles {
-        let mut saved: Vec<(u64, bool)> = Vec::new();
-        for &id in &plan.units {
-            if let Some(n) = self.node_mut(id) {
-                saved.push((id, n.visible()));
-                if !keep(id) { *n.visible_mut() = false; }
-            }
+/// The merge of `rect` (grown to whole tiles) with only the units
+/// `keep` takes visible (and, in `show`'s folder, only its sheet),
+/// over transparency, as tiles. Visibility is put back after.
+fn merge_only(s: &mut LayerStack, plan: &PlayPlan, keep: impl Fn(u64) -> bool, show: Option<(u64, u64)>, rect: Rect) -> PlayTiles {
+    let mut saved: Vec<(u64, bool)> = Vec::new();
+    for &id in &plan.units {
+        if let Some(n) = s.node_mut(id) {
+            saved.push((id, n.visible()));
+            if !keep(id) { *n.visible_mut() = false; }
         }
-        if let Some((folder, frame)) = show {
-            if let Some(Node::Folder(f)) = self.node_mut(folder) {
-                for c in &mut f.children {
-                    if matches!(c, Node::Folder(cf) if matches!(cf.kind, FolderKind::Sheet(_))) {
-                        saved.push((c.id(), c.visible()));
-                        *c.visible_mut() = c.id() == frame;
-                    }
+    }
+    if let Some((folder, frame)) = show {
+        if let Some(Node::Folder(f)) = s.node_mut(folder) {
+            for c in &mut f.children {
+                if matches!(c, Node::Folder(cf) if matches!(cf.kind, FolderKind::Sheet(_))) {
+                    saved.push((c.id(), c.visible()));
+                    *c.visible_mut() = c.id() == frame;
                 }
             }
         }
-        let t = PLAY_TILE;
-        let r = (rect.0 / t * t, rect.1 / t * t, rect.2.div_ceil(t).saturating_mul(t).min(self.width), rect.3.div_ceil(t).saturating_mul(t).min(self.height));
-        let px = if r.0 < r.2 && r.1 < r.3 { self.composite_pick_par(r, Pick::ALL, true) } else { Vec::new() };
-        for (id, v) in saved.into_iter().rev() {
-            if let Some(n) = self.node_mut(id) { *n.visible_mut() = v; }
-        }
-        to_tiles(&px, r)
     }
+    let t = PLAY_TILE;
+    let r = (rect.0 / t * t, rect.1 / t * t, rect.2.div_ceil(t).saturating_mul(t).min(s.width), rect.3.div_ceil(t).saturating_mul(t).min(s.height));
+    let px = if r.0 < r.2 && r.1 < r.3 { s.composite_pick_par(r, Pick::ALL, true) } else { Vec::new() };
+    for (id, v) in saved.into_iter().rev() {
+        if let Some(n) = s.node_mut(id) { *n.visible_mut() = v; }
+    }
+    to_tiles(&px, r)
 }
 
 /// Straight RGBA rows of `r` (corner on the tile grid) as tiles: the

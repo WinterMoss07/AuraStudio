@@ -597,19 +597,19 @@ impl GpuState {
     }
 
     /// Playback from the GPU for `plan`: the tiles come with `play_add`.
-    pub fn play_begin(&mut self, plan: aurastudio_layers::play::PlayPlan) {
+    pub fn play_begin(&mut self, plan: aurastudio_animation::play::PlayPlan) {
         let device = &self.device;
         self.playback.get_or_insert_with(|| playback::Playback::new(device)).begin(plan);
         self.play_frame = None;
     }
 
     /// The plan being played from the GPU, if any.
-    pub fn play_plan(&self) -> Option<&aurastudio_layers::play::PlayPlan> { self.playback.as_ref()?.plan() }
+    pub fn play_plan(&self) -> Option<&aurastudio_animation::play::PlayPlan> { self.playback.as_ref()?.plan() }
 
     /// The tiles of `key` are on the GPU.
     pub fn play_has(&self, key: PlayKey) -> bool { self.playback.as_ref().is_some_and(|p| p.has(key)) }
 
-    pub fn play_add(&mut self, key: PlayKey, tiles: &aurastudio_layers::play::PlayTiles) {
+    pub fn play_add(&mut self, key: PlayKey, tiles: &aurastudio_animation::play::PlayTiles) {
         if let Some(p) = &mut self.playback { p.add(&self.device, &self.queue, key, tiles); }
     }
 
@@ -621,8 +621,8 @@ impl GpuState {
         if (plan.width, plan.height) != (self.canvas.width, self.canvas.height) || self.lift.is_some() { return false; }
         let mut k = 0;
         let ready = plan.parts.iter().all(|part| match part {
-            aurastudio_layers::play::PlayPart::Static(i) => p.has(PlayKey::Static(*i)),
-            aurastudio_layers::play::PlayPart::Anim { .. } => {
+            aurastudio_animation::play::PlayPart::Static(i) => p.has(PlayKey::Static(*i)),
+            aurastudio_animation::play::PlayPart::Anim { .. } => {
                 let d = plan.shown_at(t)[k];
                 k += 1;
                 d.is_none_or(|d| p.has(PlayKey::Drawing(d)))

@@ -5,7 +5,6 @@ pub mod anim;
 mod compose;
 pub mod fill;
 pub mod onion;
-pub mod play;
 mod stroke_cache;
 
 mod tree;
