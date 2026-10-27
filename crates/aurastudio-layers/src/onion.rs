@@ -59,9 +59,9 @@ impl OnionLook {
 /// One sheet shown as a ghost: its id, tint and opacity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ghost {
-    pub sheet:   u64,
-    pub tint:    [f32; 3],
-    pub opacity: f32,
+    pub(crate) sheet:   u64,
+    pub(crate) tint:    [f32; 3],
+    pub(crate) opacity: f32,
 }
 
 /// The onion state of a stack: the marks, their look, and the ghosts they
@@ -110,7 +110,7 @@ impl LayerStack {
     }
 
     /// The ghosts shown now (for the merge; empty when off).
-    pub fn ghosts(&self) -> &[(u64, Vec<Ghost>)] { &self.onion.ghosts }
+    pub(crate) fn ghosts(&self) -> &[(u64, Vec<Ghost>)] { &self.onion.ghosts }
 
     /// The sheets the marks show now, for the active animation folder.
     pub(crate) fn update_onion(&mut self) {

@@ -193,7 +193,7 @@ impl Layer {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.tiles.clear();
     }
 }
@@ -561,7 +561,7 @@ impl LayerStack {
     }
 
     /// `id` sits directly in a group.
-    pub fn in_group(&self, id: u64) -> bool {
+    pub(crate) fn in_group(&self, id: u64) -> bool {
         let Some(path) = self.path(id) else { return false };
         let mut nodes = &self.root;
         let mut parent_is_group = false;

@@ -682,7 +682,7 @@ impl LayerStack {
     }
 
     /// The animation folders, bottom to top (the X-sheet's columns).
-    pub fn animation_folders(&self) -> Vec<u64> {
+    pub(crate) fn animation_folders(&self) -> Vec<u64> {
         fn walk(nodes: &[Node], out: &mut Vec<u64>) {
             for n in nodes {
                 if n.is_animation() { out.push(n.id()); } else if let Node::Folder(f) = n { if f.sheet_start().is_none() { walk(&f.children, out); } }
