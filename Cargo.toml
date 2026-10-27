@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/aurastudio-core",
+    "crates/aurastudio-raster",
     "crates/aurastudio-forge",
     "crates/aurastudio-forge-library",
     "crates/aurastudio-layers",

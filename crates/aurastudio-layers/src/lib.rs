@@ -8,7 +8,7 @@ pub mod onion;
 pub mod play;
 mod selection;
 mod stroke_cache;
-mod tiles;
+
 pub mod transform;
 mod tree;
 
@@ -20,7 +20,7 @@ pub use compose::Pick;
 pub use tree::TreeState;
 pub use fill::{flood, flood_with, similar_with, FillParams, Refer};
 pub use selection::{Mode as SelectMode, Segment, Selection};
-pub use tiles::{new_tile, Tile, Tiles, TILE_BYTES};
+use aurastudio_raster::{new_tile, Tile, Tiles, TILE_BYTES};
 
 /// Straight-alpha "over": `src` painted on `dst`.
 fn over(dst: &mut [u8], src: [u8; 4]) {

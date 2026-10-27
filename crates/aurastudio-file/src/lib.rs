@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use aurastudio_core::{BlendMode, TILE};
 use aurastudio_document::{DocId, Document, History, Kind, SavedStep, DEFAULT_BUDGET};
 use aurastudio_filters::Filter;
-use aurastudio_layers::{Anim, FilterLayer, Folder, FolderBlend, FolderKind, Layer, LayerStack, Node, Props, Cel, Tiles, LABELS, TILE_BYTES};
+use aurastudio_layers::{Anim, FilterLayer, Folder, FolderBlend, FolderKind, Layer, LayerStack, Node, Props, Cel, LABELS};
+use aurastudio_raster::{Tiles, TILE_BYTES};
 use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 

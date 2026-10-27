@@ -9,6 +9,7 @@ aurastudio-forge  = { path = "../aurastudio-forge" }
 aurastudio-forge-library = { path = "../aurastudio-forge-library" }
 aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-layers = { path = "../aurastudio-layers" }
+aurastudio-raster = { path = "../aurastudio-raster" }
 aurastudio-document = { path = "../aurastudio-document" }
 aurastudio-filters = { path = "../aurastudio-filters" }
 egui      = "0.36"

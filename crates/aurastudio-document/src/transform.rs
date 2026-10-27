@@ -5,7 +5,8 @@
 
 use aurastudio_core::Rect;
 use aurastudio_layers::transform::{render, Interp, Source, Warp};
-use aurastudio_layers::{Node, Selection, Tiles};
+use aurastudio_layers::{Node, Selection};
+use aurastudio_raster::Tiles;
 
 use crate::Document;
 

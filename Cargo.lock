@@ -248,6 +248,7 @@ dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
  "aurastudio-layers",
+ "aurastudio-raster",
  "lz4_flex",
 ]
 
@@ -259,6 +260,7 @@ dependencies = [
  "aurastudio-document",
  "aurastudio-filters",
  "aurastudio-layers",
+ "aurastudio-raster",
  "image",
  "lz4_flex",
  "serde",
@@ -323,6 +325,14 @@ version = "0.19.0"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
+ "aurastudio-raster",
+]
+
+[[package]]
+name = "aurastudio-raster"
+version = "0.19.0"
+dependencies = [
+ "aurastudio-core",
 ]
 
 [[package]]
@@ -335,6 +345,7 @@ dependencies = [
  "aurastudio-forge",
  "aurastudio-forge-library",
  "aurastudio-layers",
+ "aurastudio-raster",
  "egui",
  "egui_dock",
  "egui_extras",
