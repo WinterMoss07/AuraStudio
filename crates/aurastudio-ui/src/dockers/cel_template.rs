@@ -7,6 +7,7 @@
 //! those states. Below, the template itself: add, remove, drag to reorder,
 //! rename (double click).
 
+use aurastudio_document::Edit;
 use egui::{vec2, Color32, RichText, Sense, Stroke, Ui};
 
 use aurastudio_layers::{Cel, LayerStack, Node};
@@ -56,7 +57,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
     };
     let Some(anim) = m.layers.anim(folder).cloned() else { return };
     let time = m.layers.time();
-    let shown = shown_sheet(m.layers, folder, frame);
+    let shown = shown_sheet(&m.layers, folder, frame);
     let folder_name = m.layers.node(folder).map_or(String::new(), |n| n.name().to_owned());
 
     // Where we are: a sheet exposed from now, a hold, or nothing yet.
@@ -70,7 +71,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
     ui.label(RichText::new(state).small().color(theme::TEXT_WEAK));
     ui.add_space(4.0);
 
-    let cels = shown.map(|f| cels_of(m.layers, f)).unwrap_or_default();
+    let cels = shown.map(|f| cels_of(&m.layers, f)).unwrap_or_default();
     let mut chosen = anim.cel;
     let mut changed_states = false;
     let mut lock_edit = false;
@@ -113,7 +114,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
                 let name = buf.trim().to_owned();
                 st.rename = None;
                 if !name.is_empty() && name != t.name && !anim.template.iter().any(|x| x.name == name) {
-                    m.layers.rename_cel(folder, r, &name);
+                    m.layers.apply(Edit::RenameCel { folder, at: r, name });
                     a.modified = true;
                     a.layer_edit = Some("Rename cel");
                 }
@@ -142,12 +143,12 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
         } else if resp.clicked() {
             match pt {
                 Some(pt) if eye.contains(pt) => match layer {
-                    Some(id) => { if let Some(n) = m.layers.node_mut(id) { *n.visible_mut() ^= true; } changed_states = true; }
-                    None => { set_template_state(m.layers, folder, r, Some(!visible), None); changed_states = true; }
+                    Some(id) => { m.toggle_visible(id); changed_states = true; }
+                    None => { m.layers.apply(Edit::SetTemplateState { folder, at: r, visible: Some(!visible), locked: None }); changed_states = true; }
                 },
                 Some(pt) if lock.contains(pt) => match layer {
-                    Some(id) => { if let Some(n) = m.layers.node_mut(id) { *n.locked_mut() ^= true; } lock_edit = true; }
-                    None => { set_template_state(m.layers, folder, r, None, Some(!locked)); lock_edit = true; }
+                    Some(id) => { m.toggle_locked(id); lock_edit = true; }
+                    None => { m.layers.apply(Edit::SetTemplateState { folder, at: r, visible: None, locked: Some(!locked) }); lock_edit = true; }
                 },
                 Some(pt) if mark.contains(pt) => reference_edit = Some((r, !t.reference)),
                 _ => chosen = r,
@@ -155,16 +156,16 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
         }
     }
     if let Some((from, to)) = dropped {
-        m.layers.move_cel(folder, from, to);
+        m.layers.apply(Edit::MoveCel { folder, from, to });
         a.recomposite = true;
         a.layer_edit = Some("Move cel");
     }
     if let Some((r, on)) = reference_edit {
-        m.layers.set_cel_reference(folder, r, on);
+        m.layers.apply(Edit::SetCelReference { folder, at: r, on });
         a.modified = true;
         a.layer_edit = Some("Reference cel");
     }
-    if chosen != anim.cel { m.layers.set_cel(folder, chosen); }
+    if chosen != anim.cel { m.layers.apply(Edit::SetCel { folder, rank: chosen }); }
     if changed_states { a.recomposite = true; }
     if lock_edit { a.modified = true; a.layer_edit = Some("Lock"); }
 
@@ -173,7 +174,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
         .on_hover_text("Every sheet (and the sheets to come) gets these eyes and locks");
     if apply.clicked() {
         if let Some(f) = shown {
-            m.layers.apply_to_folder(f);
+            m.layers.apply(Edit::ApplyToFolder(f));
             a.recomposite = true;
             a.layer_edit = Some("Apply to folder");
         }
@@ -188,7 +189,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
         if icon_button(ui, Icon::Plus, "Add a cel above", true) {
             let mut k = 1;
             while anim.template.iter().any(|t| t.name == format!("Cel {k}")) { k += 1; }
-            m.layers.add_cel(folder, r, Cel::new(&format!("Cel {k}"), false));
+            m.layers.apply(Edit::AddCel { folder, at: r, cel: Cel::new(&format!("Cel {k}"), false) });
             a.recomposite = true;
             a.layer_edit = Some("Add cel");
         }
@@ -197,7 +198,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
             if m.layers.cel_content(folder, r).1 > 0 {
                 st.ask = Some((folder, r));
             } else {
-                m.layers.remove_cel(folder, r);
+                m.layers.apply(Edit::RemoveCel { folder, at: r });
                 a.recomposite = true;
                 a.layer_edit = Some("Remove cel");
             }
@@ -234,7 +235,7 @@ fn ask_dialog(ctx: &egui::Context, st: &mut CelState, m: &mut Model, a: &mut Act
     if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter)) { cancel = true; }
     if delete {
         st.ask = None;
-        if m.layers.remove_cel(folder, r) {
+        if m.layers.apply(Edit::RemoveCel { folder, at: r }).changed {
             a.recomposite = true;
             a.layer_edit = Some("Remove cel");
         }
@@ -243,12 +244,3 @@ fn ask_dialog(ctx: &egui::Context, st: &mut CelState, m: &mut Model, a: &mut Act
     }
 }
 
-/// No sheet yet: eye and lock are the template's (what sheets start
-/// with).
-fn set_template_state(layers: &mut LayerStack, folder: u64, r: usize, visible: Option<bool>, locked: Option<bool>) {
-    let Some(Node::Folder(f)) = layers.node_mut(folder) else { return };
-    let aurastudio_layers::FolderKind::Animation(a) = &mut f.kind else { return };
-    let Some(t) = a.template.get_mut(r) else { return };
-    if let Some(v) = visible { t.visible = v; }
-    if let Some(l) = locked { t.locked = l; }
-}

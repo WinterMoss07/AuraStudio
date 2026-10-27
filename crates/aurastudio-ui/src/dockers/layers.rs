@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use aurastudio_core::Rect as PxRect;
+use aurastudio_document::Edit;
 use aurastudio_filters::GROUPS;
 use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
@@ -194,13 +195,13 @@ impl LayersState {
 
 pub fn new_layer(m: &mut Model, a: &mut Actions) {
     let n = m.layers.layer_count();
-    m.layers.add_layer(&format!("Layer {n}"));
+    m.layers.apply(Edit::AddLayer(format!("Layer {n}")));
     a.recomposite = true;
     a.layer_edit = Some("New layer");
 }
 
 pub fn new_folder(m: &mut Model, a: &mut Actions) {
-    m.layers.add_folder("Folder");
+    m.layers.apply(Edit::AddFolder("Folder".into()));
     a.recomposite = true;
     a.layer_edit = Some("New folder");
 }
@@ -212,7 +213,7 @@ pub fn new_folder(m: &mut Model, a: &mut Actions) {
 pub fn new_animation_folder(m: &mut Model, a: &mut Actions, group: Option<u64>) {
     if m.doc_kind != aurastudio_document::Kind::Animation { return; }
     let n = m.layers.rows().iter().filter(|r| r.animation).count() + 1;
-    m.layers.add_animation_folder_in(&format!("Animation {n}"), group);
+    m.layers.apply(Edit::AddAnimationFolder { name: format!("Animation {n}"), group });
     a.recomposite = true;
     a.layer_edit = Some("New animation folder");
     a.show_docker = Some(super::Tab::CelTemplate);
@@ -234,7 +235,7 @@ pub fn special_folder_entries(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
 /// A new filter layer above the active node, its dialog opened (Cancel
 /// there removes it again).
 pub fn new_filter_layer(st: &mut LayersState, kind: aurastudio_filters::Kind, m: &mut Model, a: &mut Actions) {
-    let id = m.layers.add_filter_layer(crate::filters::fresh(kind, m.brush.color));
+    let Some(id) = m.layers.apply(Edit::AddFilterLayer(crate::filters::fresh(kind, m.brush.color))).made else { return };
     st.selected.clear();
     st.edit_filter = Some((id, true));
     a.recomposite = true;
@@ -245,14 +246,14 @@ pub fn new_filter_layer(st: &mut LayersState, kind: aurastudio_filters::Kind, m:
 /// paint layer).
 pub fn delete_layer(st: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
     let mut refused = None;
-    for id in st.selection(m.layers) {
+    for id in st.selection(&m.layers) {
         // (Gone with a folder deleted before it.)
         if m.layers.node(id).is_none() { continue; }
-        m.layers.set_active(id);
+        m.layers.apply(Edit::SetActive(id));
         match m.layers.removal_refused() {
             Some(why) => refused = Some(why),
             None => {
-                m.layers.remove_active();
+                m.layers.apply(Edit::RemoveActive);
                 a.recomposite = true;
                 a.layer_edit = Some("Delete layer");
             }
@@ -265,9 +266,9 @@ pub fn delete_layer(st: &mut LayersState, notice: &mut Notice, m: &mut Model, a:
 /// Duplicate the selected nodes, each above itself.
 pub fn duplicate(st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     let mut copies = Vec::new();
-    for id in st.selection(m.layers) {
-        m.layers.set_active(id);
-        if m.layers.active_id() == id { copies.push(m.layers.duplicate_active()); }
+    for id in st.selection(&m.layers) {
+        m.layers.apply(Edit::SetActive(id));
+        if m.layers.active_id() == id { copies.extend(m.layers.apply(Edit::DuplicateActive).made); }
     }
     st.selected = if copies.len() > 1 { copies } else { Vec::new() };
     a.recomposite = true;
@@ -372,36 +373,35 @@ fn ungroup_label(node: &Node) -> &'static str {
 }
 
 pub fn apply(cmd: LayerCmd, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
-    let sel = st.selection(m.layers);
+    let sel = st.selection(&m.layers);
     let active = m.layers.active_id();
     match cmd {
         LayerCmd::Group => {
-            if groups_animation(m.layers, &sel) {
-                if m.layers.group_animation_folders(&sel, "Group").is_none() { return; }
+            if groups_animation(&m.layers, &sel) {
+                if m.layers.apply(Edit::GroupAnimationFolders { ids: sel, name: "Group".into() }).made.is_none() { return; }
                 a.layer_edit = Some("Group animation folders");
                 a.recomposite = true;
                 st.selected.clear();
                 return;
             }
-            if sel.len() > 1 { m.layers.group_nodes(&sel, "Folder"); } else { m.layers.group_active("Folder"); }
+            m.layers.apply(Edit::Group { ids: sel, name: "Folder".into() });
             st.selected.clear();
         }
         LayerCmd::Ungroup => {
-            if !m.layers.ungroup_active() { return; }
+            if !m.layers.apply(Edit::Ungroup).changed { return; }
             st.selected.clear();
         }
         // (The selected nodes follow the active one.)
         LayerCmd::Clip | LayerCmd::Draft => {
-            let on = !cmd.is_on(m.layers);
-            for id in &sel {
-                let Some(p) = m.layers.node_mut(*id).map(Node::props_mut) else { continue };
-                if cmd == LayerCmd::Clip { p.clip = on } else { p.draft = on }
+            let on = !cmd.is_on(&m.layers);
+            for &id in &sel {
+                m.layers.apply(if cmd == LayerCmd::Clip { Edit::SetClip(id, on) } else { Edit::SetDraft(id, on) });
             }
         }
         // One per folder: the active node only.
         LayerCmd::Reference => {
             let on = !m.layers.active_node().props().reference;
-            m.layers.set_reference(active, on);
+            m.layers.apply(Edit::SetReference(active, on));
         }
     }
     a.layer_edit = Some(cmd.name());
@@ -411,8 +411,8 @@ pub fn apply(cmd: LayerCmd, st: &mut LayersState, m: &mut Model, a: &mut Actions
 
 /// Give the selected nodes color label `l`.
 fn set_label(st: &LayersState, l: u8, m: &mut Model, a: &mut Actions) {
-    for id in st.selection(m.layers) {
-        if let Some(n) = m.layers.node_mut(id) { n.props_mut().label = l; }
+    for id in st.selection(&m.layers) {
+        m.layers.apply(Edit::SetLabel(id, l));
     }
     a.modified = true;
     a.layer_edit = Some("Color label");
@@ -423,17 +423,17 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
     crate::widgets::menu(ui, "New filter layer", |ui| filter_layer_menu(ui, st, m, a));
     crate::widgets::menu(ui, "New special folder", |ui| special_folder_entries(ui, m, a));
     ui.separator();
-    let sel = st.selection(m.layers);
-    for (cmd, label) in [(LayerCmd::Group, group_label(m.layers, &sel)), (LayerCmd::Ungroup, ungroup_label(m.layers.active_node()))] {
-        if ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() {
+    let sel = st.selection(&m.layers);
+    for (cmd, label) in [(LayerCmd::Group, group_label(&m.layers, &sel)), (LayerCmd::Ungroup, ungroup_label(m.layers.active_node()))] {
+        if ui.add_enabled(cmd.enabled(&m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut())).clicked() {
             apply(cmd, st, m, a);
             ui.close();
         }
     }
     ui.separator();
     for cmd in [LayerCmd::Clip, LayerCmd::Reference, LayerCmd::Draft] {
-        let label = format!("{} {}", if cmd.is_on(m.layers) { "✔" } else { "   " }, cmd.name());
-        let on = ui.add_enabled(cmd.enabled(m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut()))
+        let label = format!("{} {}", if cmd.is_on(&m.layers) { "✔" } else { "   " }, cmd.name());
+        let on = ui.add_enabled(cmd.enabled(&m.layers), egui::Button::new(label).shortcut_text(cmd.shortcut()))
             .on_disabled_hover_text(cmd.disabled_why());
         if on.clicked() {
             apply(cmd, st, m, a);
@@ -559,9 +559,9 @@ fn make_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Action
 /// Clip, reference, draft (grouping is in the right-click menu).
 fn mark_buttons(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     for (cmd, icon) in [(LayerCmd::Clip, Icon::Clip), (LayerCmd::Reference, Icon::Reference), (LayerCmd::Draft, Icon::Draft)] {
-        let enabled = cmd.enabled(m.layers);
+        let enabled = cmd.enabled(&m.layers);
         let tip = if enabled { cmd.tip() } else { format!("{}: {}", cmd.name(), cmd.disabled_why()) };
-        if icon_toggle(ui, icon, &tip, enabled, cmd.is_on(m.layers)).clicked() { apply(cmd, st, m, a); }
+        if icon_toggle(ui, icon, &tip, enabled, cmd.is_on(&m.layers)).clicked() { apply(cmd, st, m, a); }
     }
 }
 
@@ -577,7 +577,7 @@ fn label_filter_button(ui: &mut Ui, st: &mut LayersState, m: &mut Model) {
     let fr = icon_toggle(ui, Icon::FilterBy, "Filter by color", true, st.label_filter != 0);
     crate::widgets::popup_below(&fr, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
         ui.set_min_width(LABELS.len() as f32 * 25.0 + 8.0);
-        label_filter_swatches(ui, &mut st.label_filter, m.layers);
+        label_filter_swatches(ui, &mut st.label_filter, &m.layers);
         if ui.add_enabled(st.label_filter != 0, egui::Button::new("Show all")).clicked() { st.label_filter = 0; }
     });
 }
@@ -615,11 +615,11 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
         }
         // The rest of the row (available_width overshoots in a row).
         let w = (full - (ui.cursor().left() - left)).max(40.0);
-        let node = m.layers.active_node_mut();
-        let pct = (node.opacity() * 100.0).round();
+        let pct = (m.layers.active_node().opacity() * 100.0).round();
         if let Some(v) = crate::widgets::fill_slider(ui, "layer_opacity", crate::widgets::percent("Opacity"), pct, w)
         {
-            *node.opacity_mut() = v / 100.0;
+            let id = m.layers.active_id();
+            m.layers.apply(Edit::SetOpacity(id, v / 100.0));
             a.recomposite = true;
             a.layer_edit = Some("Opacity");
         }
@@ -687,10 +687,10 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 if st.label_filter != 0 && row.id != active && !m.layers.node(row.id).is_some_and(|n| shown(n, st.label_filter)) { continue; }
                 let (e, resp) = layer_row(ui, st, m, &row);
                 if let Some(e) = e { event = Some((row.id, e)); }
-                if let Some(d) = drop_target(ui, &resp, &row, &st.selected, m.layers) { dropped = Some(d); }
+                if let Some(d) = drop_target(ui, &resp, &row, &st.selected, &m.layers) { dropped = Some(d); }
                 crate::widgets::context_menu(&resp, |ui| {
                     // The right-clicked row's own selection, else it alone.
-                    let mut sel = st.selection(m.layers);
+                    let mut sel = st.selection(&m.layers);
                     if !sel.contains(&row.id) { sel = vec![row.id]; }
                     if let Some(c) = row_menu(ui, m, row.id, &sel) { menu_cmd = Some((row.id, c)); }
                 });
@@ -709,7 +709,7 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     });
     let multi = st.selected.len() > 1;
     if let Some(d) = egui::DragAndDrop::payload::<LayerDrag>(ui.ctx()) {
-        let n = st.selection(m.layers).len();
+        let n = st.selection(&m.layers).len();
         match m.layers.node(d.0) {
             Some(_) if multi && st.selected.contains(&d.0) => drag_ghost(ui.ctx(), &format!("{n} layers")),
             Some(node) => drag_ghost(ui.ctx(), node.name()),
@@ -718,8 +718,8 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
     }
     if let Some((id, target, place)) = dropped {
         // The selected layers go together when one of them is dragged.
-        let ids = if multi && st.selected.contains(&id) { st.selection(m.layers) } else { vec![id] };
-        if m.layers.move_nodes(&ids, id, target, place) {
+        let ids = if multi && st.selected.contains(&id) { st.selection(&m.layers) } else { vec![id] };
+        if m.layers.apply(Edit::Move { ids: ids.clone(), dragged: id, target, place }).changed {
             a.recomposite = true;
             a.layer_edit = Some("Move layer");
         }
@@ -728,8 +728,8 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
 
     if let Some((id, c)) = menu_cmd {
         // A row of the selection: for all of it; another: for it alone.
-        if !st.selection(m.layers).contains(&id) { st.selected.clear(); }
-        m.layers.set_active(id);
+        if !st.selection(&m.layers).contains(&id) { st.selected.clear(); }
+        m.layers.apply(Edit::SetActive(id));
         match c {
             RowMenu::Cmd(cmd) => apply(cmd, st, m, a),
             RowMenu::Label(l) => set_label(st, l, m, a),
@@ -747,15 +747,15 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 select(st, m, id, mods, &shown_ids);
                 // A sheet chosen: go to the frame it is exposed from.
                 if let Some(n) = m.layers.node(id).and_then(Node::sheet_start) {
-                    if m.layers.time() != n { a.frame_changed |= m.layers.set_time(n); }
+                    if m.layers.time() != n { a.frame_changed |= m.layers.apply(Edit::SetTime(n)).changed; }
                 }
             }
             RowEvent::ToggleVisible => {
-                if let Some(node) = m.layers.node_mut(id) { *node.visible_mut() ^= true; }
+                m.toggle_visible(id);
                 a.recomposite = true;
             }
             RowEvent::ToggleLock => {
-                if let Some(node) = m.layers.node_mut(id) { *node.locked_mut() ^= true; }
+                m.toggle_locked(id);
                 a.modified = true;
                 a.layer_edit = Some("Lock");
             }
@@ -764,16 +764,16 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 a.layer_edit = Some("Rename");
             }
             RowEvent::ToggleCollapse => {
-                if let Some(Node::Folder(f)) = m.layers.node_mut(id) { f.collapsed ^= true; }
+                if let Some(Node::Folder(f)) = m.layers.node(id) { let c = !f.collapsed; m.layers.apply(Edit::SetCollapsed(id, c)); }
             }
             RowEvent::EditFilter => {
                 st.selected.clear();
-                m.layers.set_active(id);
+                m.layers.apply(Edit::SetActive(id));
                 st.edit_filter = Some((id, false));
             }
             RowEvent::Mark(cmd) => {
-                if !st.selection(m.layers).contains(&id) { st.selected.clear(); }
-                m.layers.set_active(id);
+                if !st.selection(&m.layers).contains(&id) { st.selected.clear(); }
+                m.layers.apply(Edit::SetActive(id));
                 apply(cmd, st, m, a);
             }
         }
@@ -786,16 +786,16 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
 fn select(st: &mut LayersState, m: &mut Model, id: u64, mods: egui::Modifiers, shown: &[u64]) {
     let active = m.layers.active_id();
     if mods.command {
-        let mut sel = st.selection(m.layers);
+        let mut sel = st.selection(&m.layers);
         match sel.iter().position(|x| *x == id) {
             Some(i) if sel.len() > 1 => {
                 sel.remove(i);
-                if id == active { m.layers.set_active(*sel.last().unwrap()); }
+                if id == active { m.layers.apply(Edit::SetActive(*sel.last().unwrap())); }
             }
             Some(_) => {}
             None => {
                 sel.push(id);
-                m.layers.set_active(id);
+                m.layers.apply(Edit::SetActive(id));
             }
         }
         st.selected = if sel.len() > 1 { sel } else { Vec::new() };
@@ -803,10 +803,10 @@ fn select(st: &mut LayersState, m: &mut Model, id: u64, mods: egui::Modifiers, s
         let (Some(i), Some(j)) = (shown.iter().position(|x| *x == active), shown.iter().position(|x| *x == id)) else { return };
         let (i, j) = (i.min(j), i.max(j));
         st.selected = if i < j { shown[i..=j].to_vec() } else { Vec::new() };
-        m.layers.set_active(id);
+        m.layers.apply(Edit::SetActive(id));
     } else {
         st.selected.clear();
-        m.layers.set_active(id);
+        m.layers.apply(Edit::SetActive(id));
     }
 }
 
@@ -847,31 +847,36 @@ fn label_filter_swatches(ui: &mut Ui, mask: &mut u16, layers: &LayerStack) {
 
 /// Blend combo for the active node; folders also offer Pass Through.
 fn node_blend_combo(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
-    let node = m.layers.active_node_mut();
+    let id = m.layers.active_id();
+    let node = m.layers.active_node();
     let label = node.blend_name();
-    egui::ComboBox::from_id_salt("node_blend")
-        .selected_text(label)
-        .width(104.0)
-        .show_ui(ui, |ui| match node {
-            Node::Layer(l) => {
+    let mut edit = None;
+    match node {
+        Node::Layer(l) => {
+            let mut b = l.blend;
+            egui::ComboBox::from_id_salt("node_blend").selected_text(label).width(104.0).show_ui(ui, |ui| {
                 for mode in BlendMode::ALL {
-                    if ui.selectable_value(&mut l.blend, mode, mode.name()).changed() {
-                        a.recomposite = true;
-                    }
+                    if ui.selectable_value(&mut b, mode, mode.name()).changed() { edit = Some(Edit::SetBlend(id, b)); }
                 }
-            }
-            Node::Folder(f) => {
-                if ui.selectable_value(&mut f.blend, FolderBlend::PassThrough, "Pass Through").changed() {
-                    a.recomposite = true;
-                }
+            });
+        }
+        Node::Folder(f) => {
+            let mut b = f.blend;
+            egui::ComboBox::from_id_salt("node_blend").selected_text(label).width(104.0).show_ui(ui, |ui| {
+                if ui.selectable_value(&mut b, FolderBlend::PassThrough, "Pass Through").changed() { edit = Some(Edit::SetFolderBlend(id, b)); }
                 for mode in BlendMode::ALL {
-                    if ui.selectable_value(&mut f.blend, FolderBlend::Isolated(mode), mode.name()).changed() {
-                        a.recomposite = true;
-                    }
+                    if ui.selectable_value(&mut b, FolderBlend::Isolated(mode), mode.name()).changed() { edit = Some(Edit::SetFolderBlend(id, b)); }
                 }
-            }
-            Node::Filter(_) => {}
-        });
+            });
+        }
+        Node::Filter(_) => {
+            egui::ComboBox::from_id_salt("node_blend").selected_text(label).width(104.0).show_ui(ui, |_| {});
+        }
+    }
+    if let Some(e) = edit {
+        m.layers.apply(e);
+        a.recomposite = true;
+    }
 }
 
 enum RowEvent { Select(egui::Modifiers), ToggleVisible, ToggleLock, ToggleCollapse, Renamed, EditFilter, Mark(LayerCmd) }
@@ -893,18 +898,18 @@ fn row_menu(ui: &mut Ui, m: &Model, id: u64, sel: &[u64]) -> Option<RowMenu> {
     ui.separator();
     if let Some(l) = label_swatches(ui, p.label) { out = Some(RowMenu::Label(l)); }
     ui.separator();
-    let inside = holds_animation(m.layers, id) && !node.is_animation();
+    let inside = holds_animation(&m.layers, id) && !node.is_animation();
     for (cmd, on) in [(LayerCmd::Clip, p.clip), (LayerCmd::Reference, p.reference), (LayerCmd::Draft, p.draft)] {
         let label = format!("{} {}", if on { "✔" } else { "   " }, cmd.name());
         // (An animation folder, a sheet, a group: the Cel template decides.)
-        let allowed = cmd != LayerCmd::Reference || !(holds_animation(m.layers, id) || node.is_animation());
+        let allowed = cmd != LayerCmd::Reference || !(holds_animation(&m.layers, id) || node.is_animation());
         let b = ui.add_enabled(allowed, egui::Button::new(label).shortcut_text(cmd.shortcut())).on_disabled_hover_text(cmd.disabled_why());
         if b.clicked() { out = Some(RowMenu::Cmd(cmd)); }
     }
     ui.separator();
     // Sheets and cels stay in their animation folder.
     if !inside {
-        if ui.add(egui::Button::new(group_label(m.layers, sel)).shortcut_text(LayerCmd::Group.shortcut())).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
+        if ui.add(egui::Button::new(group_label(&m.layers, sel)).shortcut_text(LayerCmd::Group.shortcut())).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Group)); }
         if ungroups(node) && ui.add(egui::Button::new(ungroup_label(node)).shortcut_text(LayerCmd::Ungroup.shortcut())).clicked() { out = Some(RowMenu::Cmd(LayerCmd::Ungroup)); }
     }
     if out.is_some() { ui.close(); }
@@ -1080,7 +1085,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
     let text_x = icon_box.right() + 8.0;
     let name_rect = Rect::from_min_max(pos2(text_x, rect.center().y - 4.0), pos2(marks_left - 4.0, rect.center().y + 14.0));
     let info = match folder_size {
-        _ if row.animation => anim_info(m.layers, row.id),
+        _ if row.animation => anim_info(&m.layers, row.id),
         _ if row.group => {
             let members = m.layers.group_members(row.id).len();
             format!("{members} animation folder{}", plural(members))
@@ -1112,7 +1117,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
             let new_name = buf.trim().to_owned();
             st.renaming = None;
             if !new_name.is_empty() && new_name != name {
-                if let Some(n) = m.layers.node_mut(row.id) { *n.name_mut() = new_name; }
+                m.layers.apply(Edit::Rename(row.id, new_name));
                 return Some(RowEvent::Renamed);
             }
         }

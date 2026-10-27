@@ -15,6 +15,7 @@
 //! layer axis (one folder per column / row); `Grid` maps them to the
 //! screen either way.
 
+use aurastudio_document::Edit;
 use egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 
 use aurastudio_layers::{Column, FolderKind, LayerStack, Node, Onto, Place, Shift};
@@ -258,7 +259,7 @@ fn contents(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut 
 fn go(m: &mut Model, a: &mut Actions, n: u32) {
     let n = n.max(1);
     if m.layers.time() != n {
-        a.frame_changed |= m.layers.set_time(n);
+        a.frame_changed |= m.layers.apply(Edit::SetTime(n)).changed;
     }
 }
 
@@ -324,10 +325,10 @@ fn controls(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
             ui.spacing_mut().item_spacing.x = 2.0;
             let folder = m.layers.anim_of(m.layers.active_id()).map(|x| x.0);
             if icon_button(ui, Icon::InsertFrame, "Insert a frame here: the next ones move one later", folder.is_some()) {
-                if let Some(f) = folder { if m.layers.shift_frames(f, t, Shift::Insert) { done(a, "Insert frame"); } }
+                if let Some(f) = folder { if m.layers.apply(Edit::ShiftFrames { folder: f, at: t, shift: Shift::Insert }).changed { done(a, "Insert frame"); } }
             }
             if icon_button(ui, Icon::RemoveFrame, "Remove this frame: the next ones move one earlier", folder.is_some()) {
-                if let Some(f) = folder { if m.layers.shift_frames(f, t, Shift::Remove) { done(a, "Remove frame"); } }
+                if let Some(f) = folder { if m.layers.apply(Edit::ShiftFrames { folder: f, at: t, shift: Shift::Remove }).changed { done(a, "Remove frame"); } }
             }
         });
     });
@@ -361,7 +362,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         match st.picked_in {
             Some(f) if !st.picked.is_empty() => {
                 let mut any = false;
-                for n in std::mem::take(&mut st.picked) { any |= m.layers.delete_sheet(f, n); }
+                for n in std::mem::take(&mut st.picked) { any |= m.layers.apply(Edit::DeleteSheet { folder: f, frame: n }).changed; }
                 st.picked_in = None;
                 if any { done(a, "Delete sheets"); }
             }
@@ -427,8 +428,8 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     let active_folder = m.layers.anim_of(active).map(|x| x.0);
     let is_picked = |id: u64| ls.selected.contains(&id) || Some(id) == active_folder || id == active;
     for (c, &col) in cols.iter().enumerate() {
-        let frames = column_sheets(m.layers, col);
-        let color = folder_color(m.layers, col.id());
+        let frames = column_sheets(&m.layers, col);
+        let color = folder_color(&m.layers, col.id());
         let visible = m.layers.node(col.id()).is_some_and(Node::visible);
         let dim = if visible { 1.0 } else { 0.45 };
         for f in f0..=f1 {
@@ -520,7 +521,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         let Some(n) = m.layers.node(folder) else { continue };
         let on = is_picked(folder);
         lp.rect_filled(r, 2.0, if on { theme::ACCENT_DIM } else { theme::WIDGET });
-        lp.rect_filled(Rect::from_min_size(r.min, if g.vertical { vec2(r.width(), 3.0) } else { vec2(3.0, r.height()) }), 1.0, folder_color(m.layers, folder));
+        lp.rect_filled(Rect::from_min_size(r.min, if g.vertical { vec2(r.width(), 3.0) } else { vec2(3.0, r.height()) }), 1.0, folder_color(&m.layers, folder));
         let (eye, lock, name, sub) = if g.vertical {
             (Rect::from_center_size(pos2(r.left() + 14.0, r.bottom() - 13.0), vec2(22.0, 22.0)),
              Rect::from_center_size(pos2(r.right() - 14.0, r.bottom() - 13.0), vec2(22.0, 22.0)),
@@ -549,7 +550,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                 let new = buf.trim().to_owned();
                 st.rename = None;
                 if !new.is_empty() {
-                    if let Some(n) = m.layers.node_mut(folder) { *n.name_mut() = new; }
+                    m.layers.apply(Edit::Rename(folder, new));
                     a.modified = true;
                     a.layer_edit = Some("Rename");
                 }
@@ -558,7 +559,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             crate::widgets::elided_text(&lp, pos2(name_rect.left(), name_rect.center().y), n.name(), FontId::proportional(12.0), theme::TEXT, name_rect.width());
         }
         let sub_w = if g.vertical { r.width() - 8.0 } else { (lock.left() - sub.x - 2.0).max(10.0) };
-        crate::widgets::elided_text(&lp, sub, &info(m.layers, col), FontId::proportional(10.0), theme::TEXT_WEAK, sub_w);
+        crate::widgets::elided_text(&lp, sub, &info(&m.layers, col), FontId::proportional(10.0), theme::TEXT_WEAK, sub_w);
         heads.push(Head { col, rect: r, eye, lock, name });
     }
     // Where a header dragged would land.
@@ -652,7 +653,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                     let u = if g.vertical { (q.x - h.rect.left()) / h.rect.width() } else { (q.y - h.rect.top()) / h.rect.height() };
                     let inside = matches!(h.col, Column::Group(_)) && (0.25..0.75).contains(&u);
                     let place = place_for(g.vertical, u < 0.5, inside);
-                    let ids = drag_ids(ls, m.layers, cd.id);
+                    let ids = drag_ids(ls, &m.layers, cd.id);
                     if h.col.id() != cd.id && ids.iter().all(|id| m.layers.can_drop(*id, h.col.id(), place)) { cd.target = Some((h.col.id(), place)); }
                 }
             }
@@ -678,7 +679,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                 });
                 if clash {
                     st.ask = Some(Ask { folder: d.folder, frames: d.frames, delta, copy });
-                } else if m.layers.move_sheets(d.folder, &d.frames, delta, copy, Onto::Refuse) {
+                } else if m.layers.apply(Edit::MoveSheets { folder: d.folder, frames: d.frames.clone(), delta, copy, onto: Onto::Refuse }).changed {
                     after_move(st, m, a, d.folder, &d.frames, delta, copy);
                 }
             }
@@ -696,11 +697,11 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             }
         }
         if let Some(cd) = st.col_drag.take() {
-            let ids = drag_ids(ls, m.layers, cd.id);
+            let ids = drag_ids(ls, &m.layers, cd.id);
             let moved = if cd.exit {
-                st.group.is_some_and(|gr| ids.iter().fold(false, |any, id| m.layers.move_node(*id, gr, Place::Above) | any))
+                st.group.is_some_and(|gr| ids.iter().fold(false, |any, id| m.layers.apply(Edit::Move { ids: vec![*id], dragged: *id, target: gr, place: Place::Above }).changed | any))
             } else if let Some((target, place)) = cd.target {
-                if ids.len() > 1 { m.layers.move_nodes(&ids, cd.id, target, place) } else { m.layers.move_node(cd.id, target, place) }
+                m.layers.apply(Edit::Move { ids: if ids.len() > 1 { ids.clone() } else { vec![cd.id] }, dragged: cd.id, target, place }).changed
             } else { false };
             if moved {
                 ls.selected.clear();
@@ -727,13 +728,13 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
                 a.play = Some(false);
                 match cols.get(c).copied() {
                     Some(Column::Folder(folder)) => {
-                        pick_sheet(st, m.layers, folder, f, mods);
+                        pick_sheet(st, &m.layers, folder, f, mods);
                         choose(m, folder, f);
                     }
                     Some(Column::Group(gr)) => {
                         st.picked.clear();
                         st.picked_in = None;
-                        m.layers.set_active(gr);
+                        m.layers.apply(Edit::SetActive(gr));
                     }
                     None => { st.picked.clear(); st.picked_in = None; }
                 }
@@ -744,10 +745,10 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             } else if let Some(h) = head_at(q) {
                 let folder = h.col.id();
                 if h.eye.contains(q) {
-                    if let Some(n) = m.layers.node_mut(folder) { *n.visible_mut() ^= true; }
+                    m.toggle_visible(folder);
                     a.recomposite = true;
                 } else if h.lock.contains(q) {
-                    if let Some(n) = m.layers.node_mut(folder) { *n.locked_mut() ^= true; }
+                    m.toggle_locked(folder);
                     a.modified = true;
                     a.layer_edit = Some("Lock");
                 } else {
@@ -785,7 +786,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         // A folder (or sheet) right clicked is picked alone, unless it is
         // among the picks.
         match hit {
-            Some(Menu::Head(col)) if !ls.selection(m.layers).contains(&col.id()) => { ls.selected.clear(); choose(m, col.id(), t); }
+            Some(Menu::Head(col)) if !ls.selection(&m.layers).contains(&col.id()) => { ls.selected.clear(); choose(m, col.id(), t); }
             Some(Menu::Cell(Column::Folder(folder), f)) if m.layers.sheet_at(folder, f).is_some() => pick_unless_picked(st, folder, f),
             _ => {}
         }
@@ -855,7 +856,7 @@ fn onion_mark_at(m: &Model, fixed: bool, f: u32) -> Option<OnionMark> {
 /// them (no undo step, as in OpenToonz).
 fn onion_set(m: &mut Model, a: &mut Actions, o: aurastudio_layers::onion::Onion) {
     if *m.layers.onion() == o { return; }
-    m.layers.set_onion(o);
+    m.layers.apply(Edit::SetOnion(o));
     a.recomposite = true;
 }
 
@@ -1028,7 +1029,7 @@ fn pick_sheet(st: &mut AnimPanel, layers: &LayerStack, folder: u64, f: u32, mods
 /// takes the range from the active folder (shared with the Layers docker).
 fn pick_folder(ls: &mut LayersState, m: &mut Model, cols: &[Column], id: u64, t: u32, mods: egui::Modifiers) {
     if mods.command {
-        if ls.selected.is_empty() { ls.selected = picked_folders(ls, m.layers); }
+        if ls.selected.is_empty() { ls.selected = picked_folders(ls, &m.layers); }
         if let Some(i) = ls.selected.iter().position(|x| *x == id) { ls.selected.remove(i); } else { ls.selected.push(id); choose(m, id, t); }
     } else if mods.shift {
         let from = m.layers.anim_of(m.layers.active_id()).map_or(m.layers.active_id(), |x| x.0);
@@ -1058,11 +1059,11 @@ fn cell_menu(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions, co
     };
     let drawn = m.layers.sheet_at(folder, f).is_some();
     if ui.button(format!("Insert a frame at {f}")).clicked() {
-        if m.layers.shift_frames(folder, f, Shift::Insert) { done(a, "Insert frame"); }
+        if m.layers.apply(Edit::ShiftFrames { folder, at: f, shift: Shift::Insert }).changed { done(a, "Insert frame"); }
         ui.close();
     }
     if ui.button(format!("Remove frame {f}")).on_hover_text("The next frames move one earlier").clicked() {
-        if m.layers.shift_frames(folder, f, Shift::Remove) { done(a, "Remove frame"); }
+        if m.layers.apply(Edit::ShiftFrames { folder, at: f, shift: Shift::Remove }).changed { done(a, "Remove frame"); }
         ui.close();
     }
     let n = if st.picked_in == Some(folder) { st.picked.len() } else { 0 };
@@ -1070,7 +1071,7 @@ fn cell_menu(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions, co
     if ui.add_enabled(drawn, egui::Button::new(label)).on_hover_text("The sheet before holds on").clicked() {
         let list: Vec<u32> = if n > 1 { st.picked.clone() } else { vec![f] };
         let mut any = false;
-        for x in list { any |= m.layers.delete_sheet(folder, x); }
+        for x in list { any |= m.layers.apply(Edit::DeleteSheet { folder, frame: x }).changed; }
         if any { done(a, if n > 1 { "Delete sheets" } else { "Delete sheet" }); }
         st.picked.clear();
         st.picked_in = None;
@@ -1081,20 +1082,20 @@ fn cell_menu(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions, co
 /// The menu on a header: groups, rename, delete.
 fn head_menu(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Notice, m: &mut Model, a: &mut Actions, col: Column) {
     let id = col.id();
-    let sel: Vec<u64> = picked_folders(ls, m.layers);
+    let sel: Vec<u64> = picked_folders(ls, &m.layers);
     let groupable: Vec<u64> = sel.iter().copied().filter(|x| m.layers.node(*x).is_some_and(Node::is_animation)).collect();
     if let Column::Group(_) = col {
         if ui.button("Open group").clicked() { st.group = Some(id); st.scroll = Vec2::ZERO; ls.selected.clear(); ui.close(); }
         if ui.button("Ungroup animation folders").clicked() {
-            m.layers.set_active(id);
-            if m.layers.ungroup_active() { a.layer_edit = Some("Ungroup animation folders"); a.recomposite = true; }
+            m.layers.apply(Edit::SetActive(id));
+            if m.layers.apply(Edit::Ungroup).changed { a.layer_edit = Some("Ungroup animation folders"); a.recomposite = true; }
             ls.selected.clear();
             if st.group == Some(id) { st.group = None; }
             ui.close();
         }
     } else {
         if ui.add_enabled(!groupable.is_empty(), egui::Button::new("Group animation folders")).clicked() {
-            if m.layers.group_animation_folders(&groupable, "Group").is_some() {
+            if m.layers.apply(Edit::GroupAnimationFolders { ids: groupable.clone(), name: "Group".into() }).made.is_some() {
                 a.layer_edit = Some("Group animation folders");
                 a.recomposite = true;
             }
@@ -1103,7 +1104,7 @@ fn head_menu(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut
         }
         if ui.add_enabled(m.layers.group_of(id).is_some(), egui::Button::new("Take out of its group")).clicked() {
             if let Some(gr) = m.layers.group_of(id) {
-                if m.layers.move_node(id, gr, Place::Above) { a.layer_edit = Some("Move folder"); a.recomposite = true; }
+                if m.layers.apply(Edit::Move { ids: vec![id], dragged: id, target: gr, place: Place::Above }).changed { a.layer_edit = Some("Move folder"); a.recomposite = true; }
             }
             ui.close();
         }
@@ -1123,7 +1124,7 @@ fn head_menu(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut
 /// folder (strokes then make a sheet).
 fn choose(m: &mut Model, folder: u64, f: u32) {
     let target = m.layers.sheet_at(folder, f).unwrap_or(folder);
-    m.layers.set_active(target);
+    m.layers.apply(Edit::SetActive(target));
 }
 
 /// Sheets moved or copied onto other ones: replace them, swap them (moves
@@ -1151,7 +1152,7 @@ fn ask_dialog(ctx: &egui::Context, st: &mut AnimPanel, m: &mut Model, a: &mut Ac
     if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter)) { answer = answer.or(Some(Onto::Refuse)); }
     let Some(onto) = answer else { return };
     st.ask = None;
-    if onto != Onto::Refuse && m.layers.move_sheets(folder, &frames, delta, copy, onto) {
+    if onto != Onto::Refuse && m.layers.apply(Edit::MoveSheets { folder, frames: frames.clone(), delta, copy, onto }).changed {
         after_move(st, m, a, folder, &frames, delta, copy);
     }
 }

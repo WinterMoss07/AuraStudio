@@ -399,7 +399,7 @@ impl Default for WandOptions {
 /// Settings of the selection tools.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SelectOptions {
-    pub mode:    aurastudio_selection::SelectMode,
+    pub mode:    aurastudio_document::SelectMode,
     /// Soft edges one pixel wide (ellipse, lasso, polygon, wand).
     pub aa:      bool,
     /// Soft edges this wide (px).
@@ -424,7 +424,7 @@ const LOUPE_TIP: &str = "A magnified view around the cursor, to aim at one pixel
 
 /// The selection tools' options: mode, edges, the wand's settings.
 pub fn selection_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
-    use aurastudio_selection::SelectMode as S;
+    use aurastudio_document::SelectMode as S;
     use crate::icons::Icon;
     let w = ui.available_width();
     ui.horizontal(|ui| {
@@ -466,7 +466,7 @@ pub fn selection_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TransformOptions {
     pub mode:        TransformMode,
-    pub interp:      aurastudio_transform::Interp,
+    pub interp:      aurastudio_document::Interp,
     /// Corners and edges keep the proportions (Shift: free).
     pub keep_aspect: bool,
     /// Warp grid cells a side.
@@ -509,7 +509,7 @@ pub fn transform_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     ui.add_space(4.0);
     let t = &mut m.transform;
     ui.horizontal(|ui| {
-        use aurastudio_transform::Interp;
+        use aurastudio_document::Interp;
         ui.label(RichText::new("Resampling").small().color(theme::TEXT_WEAK));
         egui::ComboBox::from_id_salt("transform_interp")
             .selected_text(match t.interp { Interp::Bicubic => "Bicubic", Interp::Bilinear => "Bilinear", Interp::Nearest => "Nearest" })
@@ -574,7 +574,7 @@ pub struct TransformOverlay<'a> {
 pub struct Overlay<'a> {
     /// Outline of the current selection, moved by `ants_offset` (being
     /// dragged).
-    pub ants:        &'a [aurastudio_selection::Segment],
+    pub ants:        &'a [aurastudio_document::Segment],
     pub ants_offset: (f32, f32),
     /// Lasso, polygon or box being drawn (closed when shown).
     pub drawing:     Option<&'a [(f32, f32)]>,

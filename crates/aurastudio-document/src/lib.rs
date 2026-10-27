@@ -1,6 +1,7 @@
 //! Documents (layers + their own undo history), each its own
 //! `Arc<Mutex<Document>>`, and the workspace holding the open ones.
 
+pub mod edit;
 mod history;
 mod select;
 mod transform;
@@ -9,11 +10,17 @@ use std::sync::{Arc, Mutex};
 
 use aurastudio_core::Rect;
 use aurastudio_layers::{FillParams, LayerStack, Target};
-use aurastudio_selection::{Selection};
 
+
+pub use edit::{Done, Edit, Editor};
 pub use history::{History, SavedStep, DEFAULT_BUDGET};
 pub use select::{SelectOp, Shape, Wand};
 pub use transform::{Lift, LiftLayer};
+// What the interface shows of the pixels, the selection and the transform:
+// it reaches them through the document.
+pub use aurastudio_raster::Tiles;
+pub use aurastudio_selection::{Segment, SelectMode, Selection};
+pub use aurastudio_transform::Interp;
 
 /// What a document is made for: it turns features on or off (an animation
 /// folder only in an Animation document...), the interface stays the same.

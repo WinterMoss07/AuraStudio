@@ -8,7 +8,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use aurastudio_filters::{Filter, Histogram};
 use aurastudio_layers::{LayerStack};
-use aurastudio_selection::{Selection};
+use aurastudio_document::{Selection};
 
 /// The smallest reduced copy's longest side, about.
 const SMALLEST_SIDE: usize = 128;

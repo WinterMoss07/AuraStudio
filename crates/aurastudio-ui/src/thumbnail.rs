@@ -3,7 +3,7 @@
 //! (picking one pixel in N does that).
 
 use aurastudio_core::Rect;
-use aurastudio_raster::Tiles;
+use aurastudio_document::Tiles;
 
 /// Size of a thumbnail of a `w` × `h` layer that fits `max` pixels on its
 /// longer side (never enlarged).

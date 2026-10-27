@@ -264,7 +264,7 @@ fn fuzz() {
                         playing: false,
                         fps: &mut fps,
                         looping: &mut looping,
-                        layers: &mut d.layers,
+                        layers: aurastudio_document::Editor::new(&mut d.layers),
                         can_undo,
                         can_redo,
                         undo_label,

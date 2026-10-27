@@ -9,6 +9,7 @@ mod editors;
 mod source;
 mod view;
 
+use aurastudio_document::Edit;
 use std::sync::Arc;
 
 use aurastudio_filters::{Filter, Kind, GROUPS};
@@ -98,7 +99,7 @@ pub(crate) fn fresh(kind: Kind, brush_color: [u8; 3]) -> Filter {
 /// A dialog for `kind` on the active layer (None: nothing to filter
 /// there).
 pub fn new_dialog(ctx: &egui::Context, kind: Kind, m: &Model) -> Option<FilterDialog> {
-    let source = Source::capture(m.layers, m.selection)?;
+    let source = Source::capture(&m.layers, m.selection)?;
     Some(FilterDialog {
         target: Target::Layer,
         edit: None,
@@ -116,7 +117,7 @@ pub fn new_dialog(ctx: &egui::Context, kind: Kind, m: &Model) -> Option<FilterDi
 /// it). None if it isn't a filter layer.
 pub fn layer_dialog(ctx: &egui::Context, id: u64, created: bool, m: &Model) -> Option<FilterDialog> {
     let Some(aurastudio_layers::Node::Filter(fl)) = m.layers.node(id) else { return None };
-    let source = Source::below(m.layers, id)?;
+    let source = Source::below(&m.layers, id)?;
     Some(FilterDialog {
         target: Target::FilterLayer { id, before: fl.filter.clone(), created },
         edit: None,
@@ -235,13 +236,13 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
 
 /// Do a filter layer dialog's edit on the layer.
 pub fn apply_layer_edit(id: u64, edit: LayerEdit, m: &mut Model, a: &mut Actions) {
-    let Some(aurastudio_layers::Node::Filter(fl)) = m.layers.node_mut(id) else { return };
+    if !matches!(m.layers.node(id), Some(aurastudio_layers::Node::Filter(_))) { return; }
     match edit {
-        LayerEdit::Set(f) | LayerEdit::Restore(f) => fl.filter = f,
-        LayerEdit::Keep(f) => { fl.filter = f; a.modified = true; a.layer_edit = Some("Filter layer"); }
+        LayerEdit::Set(f) | LayerEdit::Restore(f) => { m.layers.apply(Edit::SetFilter(id, f)); }
+        LayerEdit::Keep(f) => { m.layers.apply(Edit::SetFilter(id, f)); a.modified = true; a.layer_edit = Some("Filter layer"); }
         LayerEdit::Remove => {
-            m.layers.set_active(id);
-            m.layers.remove_active();
+            m.layers.apply(Edit::SetActive(id));
+            m.layers.apply(Edit::RemoveActive);
         }
     }
     a.recomposite = true;
@@ -251,7 +252,7 @@ pub fn apply_layer_edit(id: u64, edit: LayerEdit, m: &mut Model, a: &mut Actions
 mod tests {
     use super::*;
     use aurastudio_layers::{LayerStack};
-    use aurastudio_selection::{Selection};
+    use aurastudio_document::{Selection};
 
     fn layers() -> LayerStack {
         let mut l = LayerStack::new_document(300, 200);

@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use aurastudio_forge::Brush;
 use aurastudio_forge_library::Preset;
+use aurastudio_document::Edit;
 use aurastudio_layers::{FillParams, LayerStack};
 use egui::Frame;
 use egui_dock::{DockArea, DockState};
@@ -50,7 +51,8 @@ pub struct Model<'a> {
     /// Every brush medium, in order.
     pub mediums:            &'a [aurastudio_forge_library::Medium],
     pub preset:             &'a mut usize,
-    pub layers:             &'a mut LayerStack,
+    /// The layers: read freely, changed only with `apply` (an `Edit`).
+    pub layers:             aurastudio_document::Editor<'a>,
     /// What the document is made for (features on or off).
     pub doc_kind:           aurastudio_document::Kind,
     /// Animation playback: running, frames per second, looping.
@@ -94,7 +96,7 @@ pub struct Model<'a> {
     /// The graphics API drawing the window (Preferences).
     pub renderer:           &'a str,
     /// The selection, if any (what a filter changes).
-    pub selection:          Option<&'a aurastudio_selection::Selection>,
+    pub selection:          Option<&'a aurastudio_document::Selection>,
     /// Drawn over the canvas, placed with `to_points` (canvas pixel ->
     /// egui point).
     pub overlay:            Overlay<'a>,
@@ -192,6 +194,18 @@ pub enum ImportBrushes { Files, Folder }
 /// ("Layer is locked"...).
 #[derive(Default)]
 pub(crate) struct Notice(Option<(String, Instant)>);
+
+impl Model<'_> {
+    /// Eye of node `id` the other way.
+    pub(crate) fn toggle_visible(&mut self, id: u64) {
+        if let Some(v) = self.layers.node(id).map(aurastudio_layers::Node::visible) { self.layers.apply(Edit::SetVisible(id, !v)); }
+    }
+
+    /// Lock of node `id` the other way.
+    pub(crate) fn toggle_locked(&mut self, id: u64) {
+        if let Some(v) = self.layers.node(id).map(aurastudio_layers::Node::locked) { self.layers.apply(Edit::SetLocked(id, !v)); }
+    }
+}
 
 impl Notice {
     const DURATION: Duration = Duration::from_millis(2500);
@@ -385,7 +399,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
         theme::apply(ctx);
         state.theme_applied = true;
     }
-    state.layers.refresh_thumbnails(ctx, model.layers);
+    state.layers.refresh_thumbnails(ctx, &model.layers);
     state.tool_list.idle(ctx);
     // (Drawn again below if shown: the Delete key goes by where they are.)
     state.pointer = ctx.pointer_latest_pos();

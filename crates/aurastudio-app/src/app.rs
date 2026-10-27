@@ -1824,7 +1824,7 @@ impl App {
                 playing,
                 fps,
                 looping,
-                layers: &mut d.layers,
+                layers: aurastudio_document::Editor::new(&mut d.layers),
                 tool,
                 tools: tool_memory,
                 fill,

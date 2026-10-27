@@ -26,9 +26,9 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("document", &["core", "filters", "layers", "raster", "selection", "transform"]),
     ("file", &["core", "document", "filters", "layers", "raster"]),
     ("gpu", &["core", "animation"]),
-    // The interface still reaches into layers, raster, selection, transform
-    // and forge directly: to bring down, through `document`.
-    ("ui", &["core", "document", "filters", "forge", "forge-library", "layers", "raster", "selection", "tools", "transform"]),
+    // The interface reads the layers and changes them through `document`
+    // (Edit); pixels, selection and transform types come through it too.
+    ("ui", &["core", "document", "filters", "forge", "forge-library", "layers", "tools"]),
     // The application puts everything together.
     ("aurastudio", &["animation", "color", "core", "document", "file", "filters", "forge", "forge-library", "gpu", "input", "layers", "selection", "tools", "transform", "ui"]),
 ];
@@ -146,6 +146,29 @@ fn only_the_raster_side_handles_single_tiles() {
                 for t in TILE_API {
                     if line.contains(t) { errors.push(format!("{}:{}: `{t}`", f.display(), n + 1)); }
                 }
+            }
+        }
+    }
+    assert!(errors.is_empty(), "\n{}", errors.join("\n"));
+}
+
+/// The interface changes the layers only with `Edit`s (document/edit.rs):
+/// no mutable access to the stack or its nodes.
+#[test]
+fn the_interface_changes_layers_only_with_edits() {
+    let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("aurastudio-ui");
+    let mut files = Vec::new();
+    rust_files(&ui.join("src"), &mut files);
+    let mut errors = Vec::new();
+    for f in files {
+        let text = std::fs::read_to_string(&f).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            // (Test modules build their stacks as they like.)
+            if line.trim_start().starts_with("#[cfg(test)]") && lines.get(n + 1).is_some_and(|l| l.trim_start().starts_with("mod ")) { break; }
+            if line.trim_start().starts_with("//") { continue; }
+            for t in ["&mut LayerStack", "node_mut(", "name_mut()", "visible_mut()", "locked_mut()", "opacity_mut()", "props_mut()", "Editor::new("] {
+                if line.contains(t) { errors.push(format!("{}:{}: `{t}`", f.display(), n + 1)); }
             }
         }
     }

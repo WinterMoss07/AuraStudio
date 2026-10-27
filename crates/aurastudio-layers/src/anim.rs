@@ -581,6 +581,17 @@ impl LayerStack {
     /// Make cel rank `at` the reference of every sheet (the one that was
     /// isn't any more), or none. Only the Colo reads it: the fill and the
     /// gap close look at the reference's lines.
+    /// Eye and lock of template cel `at` of `folder` (what sheets start
+    /// with). True if one changed.
+    pub fn set_template_state(&mut self, folder: u64, at: usize, visible: Option<bool>, locked: Option<bool>) -> bool {
+        let Some(a) = self.anim_mut(folder) else { return false };
+        let Some(t) = a.template.get_mut(at) else { return false };
+        let before = (t.visible, t.locked);
+        if let Some(v) = visible { t.visible = v; }
+        if let Some(l) = locked { t.locked = l; }
+        before != (t.visible, t.locked)
+    }
+
     pub fn set_cel_reference(&mut self, folder: u64, at: usize, on: bool) {
         let Some(a) = self.anim_mut(folder) else { return };
         let len = a.template.len();
