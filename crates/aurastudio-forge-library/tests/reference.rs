@@ -6,11 +6,11 @@
 //! The reference records how Forge paints today (not how they should:
 //! fidelity to MyPaint / Krita is checked against their own renders).
 //! After an intended change: UPDATE_REFERENCE=1 cargo test -p
-//! aurastudio-brushes --test reference, and say why in the commit.
+//! aurastudio-forge-library --test reference, and say why in the commit.
 //! Linux only: other platforms' math libraries may round differently.
 
-use aurastudio_brush::{Brush, Forge, PenSample};
-use aurastudio_brushes::Library;
+use aurastudio_forge::{Brush, Forge, PenSample};
+use aurastudio_forge_library::Library;
 use aurastudio_canvas::FlatSurface;
 
 const W: u32 = 260;
@@ -35,7 +35,7 @@ fn strokes() -> Vec<Vec<PenSample>> {
     ]
 }
 
-fn render(p: &aurastudio_brushes::Preset) -> u64 {
+fn render(p: &aurastudio_forge_library::Preset) -> u64 {
     Forge::reset_random();
     let mut s = FlatSurface::new(W, H, [255, 255, 255, 0]);
     // A band of paint, for smudge and eraser brushes.

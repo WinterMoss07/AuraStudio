@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use aurastudio_brush::{Brush, PenSample};
-use aurastudio_brushes::Library;
+use aurastudio_forge::{Brush, PenSample};
+use aurastudio_forge_library::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_gpu::CanvasView;
 use aurastudio_layers::{FillParams, Selection};

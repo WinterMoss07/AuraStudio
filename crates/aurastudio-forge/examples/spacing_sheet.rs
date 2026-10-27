@@ -1,7 +1,7 @@
 // Straight strokes with big brushes at several hardness values: the dab
 // spacing must not show inside soft strokes (beads / ripples).
-// Usage: cargo run --release -p aurastudio-brush --example spacing_sheet -- out.png
-use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
+// Usage: cargo run --release -p aurastudio-forge --example spacing_sheet -- out.png
+use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
 
 const W: u32 = 1400;
 const H: u32 = 1300;

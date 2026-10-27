@@ -7,8 +7,8 @@ pub mod stroke_preview;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aurastudio_brush::forge::Painting;
-use aurastudio_brush::{parse_myb, Brush, Forge, ForgeBrush};
+use aurastudio_forge::forge::Painting;
+use aurastudio_forge::{parse_myb, Brush, Forge, ForgeBrush};
 
 /// A brush of the catalog.
 pub enum BundledBrush { Round, Soft, MyPaint(&'static str) }

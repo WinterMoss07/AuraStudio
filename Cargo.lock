@@ -203,13 +203,13 @@ name = "aurastudio"
 version = "0.19.0"
 dependencies = [
  "arboard",
- "aurastudio-brush",
- "aurastudio-brushes",
  "aurastudio-canvas",
  "aurastudio-color",
  "aurastudio-document",
  "aurastudio-file",
  "aurastudio-filters",
+ "aurastudio-forge",
+ "aurastudio-forge-library",
  "aurastudio-gpu",
  "aurastudio-input",
  "aurastudio-layers",
@@ -226,28 +226,6 @@ dependencies = [
  "windows",
  "winit",
  "winresource",
-]
-
-[[package]]
-name = "aurastudio-brush"
-version = "0.19.0"
-dependencies = [
- "aurastudio-canvas",
- "png 0.18.1",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "aurastudio-brushes"
-version = "0.19.0"
-dependencies = [
- "aurastudio-brush",
- "aurastudio-canvas",
- "dirs",
- "log",
- "png 0.18.1",
 ]
 
 [[package]]
@@ -296,6 +274,28 @@ name = "aurastudio-filters"
 version = "0.19.0"
 
 [[package]]
+name = "aurastudio-forge"
+version = "0.19.0"
+dependencies = [
+ "aurastudio-canvas",
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "aurastudio-forge-library"
+version = "0.19.0"
+dependencies = [
+ "aurastudio-canvas",
+ "aurastudio-forge",
+ "dirs",
+ "log",
+ "png 0.18.1",
+]
+
+[[package]]
 name = "aurastudio-gpu"
 version = "0.19.0"
 dependencies = [
@@ -332,11 +332,11 @@ dependencies = [
 name = "aurastudio-ui"
 version = "0.19.0"
 dependencies = [
- "aurastudio-brush",
- "aurastudio-brushes",
  "aurastudio-canvas",
  "aurastudio-document",
  "aurastudio-filters",
+ "aurastudio-forge",
+ "aurastudio-forge-library",
  "aurastudio-layers",
  "egui",
  "egui_dock",

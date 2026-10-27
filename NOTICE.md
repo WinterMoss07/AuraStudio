@@ -27,7 +27,7 @@ Cerviño (tanda), Guillaume Loussarévian (kaerhon_v1), Brien Dieterle
 
 ## hokusai — the core of Forge
 
-Forge, AuraStudio's brush engine (`crates/aurastudio-brush/src/forge`),
+Forge, AuraStudio's brush engine (`crates/aurastudio-forge/src/forge`),
 is built on the code of `hokusai-core` 0.3.0 and `hokusai-brush` 0.3.0
 (https://github.com/reearth/hokusai, © Re:Earth and contributors, MIT OR
 Apache-2.0), a Rust port of libmypaint (https://github.com/mypaint/libmypaint,

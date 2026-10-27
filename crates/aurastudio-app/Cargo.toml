@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 aurastudio-canvas = { path = "../aurastudio-canvas" }
-aurastudio-brush  = { path = "../aurastudio-brush" }
+aurastudio-forge  = { path = "../aurastudio-forge" }
 aurastudio-input  = { path = "../aurastudio-input" }
 aurastudio-gpu    = { path = "../aurastudio-gpu" }
 winit             = "0.30"
@@ -24,7 +24,7 @@ aurastudio-file = { path = "../aurastudio-file" }
 aurastudio-filters = { path = "../aurastudio-filters" }
 dirs = "7"
 aurastudio-color    = { path = "../aurastudio-color" }
-aurastudio-brushes  = { path = "../aurastudio-brushes" }
+aurastudio-forge-library  = { path = "../aurastudio-forge-library" }
 aurastudio-ui = { path = "../aurastudio-ui" }
 rfd = "0.17"
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -22,8 +22,8 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::PenSample;
-use aurastudio_brushes::Library;
+use aurastudio_forge::PenSample;
+use aurastudio_forge_library::Library;
 use aurastudio_canvas::{BlendMode, Rect};
 use aurastudio_document::{DocId, Document, SelectOp, Shape, SharedDoc, Wand};
 use aurastudio_filters::{Filter, GROUPS};

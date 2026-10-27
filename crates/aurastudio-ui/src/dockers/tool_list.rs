@@ -1,8 +1,8 @@
 //! Tools docker: the chosen group's tools or brushes (by medium, with
 //! their stroke previews); drag and drop, search, mediums of one's own.
 
-use aurastudio_brushes::stroke_preview::{Mode, Shape};
-use aurastudio_brushes::{mediums_of, Library, Preset};
+use aurastudio_forge_library::stroke_preview::{Mode, Shape};
+use aurastudio_forge_library::{mediums_of, Library, Preset};
 use egui::{vec2, RichText, Sense, Stroke, Ui};
 
 use crate::icons::Icon;
@@ -257,7 +257,7 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
         ui.painter().rect_filled(rect, 2.0, if selected || resp.hovered() { theme::WIDGET } else { theme::SURFACE });
         if t.is_shape() {
             if let Some(p) = m.presets.get(*m.preset) {
-                let settings = aurastudio_brush::Brush { erase: false, ..m.brush.clone() };
+                let settings = aurastudio_forge::Brush { erase: false, ..m.brush.clone() };
                 let spec = StrokeSpec { preset: p, settings: &settings, shape: t.stroke_shape(), mode: Mode::List };
                 st.previews.show(ui, rect.shrink(1.0), Slot::Shape(t.stroke_shape()), spec, Some(t.name()));
             }
@@ -271,7 +271,7 @@ fn tools(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model) {
     }
 }
 
-fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, selected: bool, current: &aurastudio_brush::Brush, strokes: bool) -> egui::Response {
+fn brush_row(ui: &mut Ui, st: &mut ToolListState, p: &Preset, index: usize, selected: bool, current: &aurastudio_forge::Brush, strokes: bool) -> egui::Response {
     let height = if strokes { ROW } else { 26.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click_and_drag());
     if resp.drag_started() { resp.dnd_set_drag_payload(BrushDrag(index)); }

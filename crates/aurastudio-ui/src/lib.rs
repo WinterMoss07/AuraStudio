@@ -20,8 +20,8 @@ mod widgets;
 
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::Brush;
-use aurastudio_brushes::Preset;
+use aurastudio_forge::Brush;
+use aurastudio_forge_library::Preset;
 use aurastudio_layers::{FillParams, LayerStack};
 use egui::Frame;
 use egui_dock::{DockArea, DockState};
@@ -48,7 +48,7 @@ pub struct Model<'a> {
     /// Brush presets (Tools docker) and the selected one.
     pub presets:            &'a [Preset],
     /// Every brush medium, in order.
-    pub mediums:            &'a [aurastudio_brushes::Medium],
+    pub mediums:            &'a [aurastudio_forge_library::Medium],
     pub preset:             &'a mut usize,
     pub layers:             &'a mut LayerStack,
     /// What the document is made for (features on or off).
@@ -128,7 +128,7 @@ pub struct Actions {
     /// A medium dragged: (medium, before which medium; None: last).
     pub move_medium: Option<(String, Option<String>)>,
     /// The + after the medium icons: a new medium of that kind.
-    pub add_medium:  Option<aurastudio_brushes::Kind>,
+    pub add_medium:  Option<aurastudio_forge_library::Kind>,
     /// (medium, new name).
     pub rename_medium: Option<(String, String)>,
     pub remove_medium: Option<String>,

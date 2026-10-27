@@ -1,6 +1,6 @@
 // Every brush preview on the dockers' background, to check them by eye.
-// Usage: cargo run --release -p aurastudio-brushes --example preview_sheet -- out.png [filter]
-use aurastudio_brushes::{stroke_preview::{self, Mode, Shape}, Library};
+// Usage: cargo run --release -p aurastudio-forge-library --example preview_sheet -- out.png [filter]
+use aurastudio_forge_library::{stroke_preview::{self, Mode, Shape}, Library};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

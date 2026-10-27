@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
+use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_canvas::Rect;
 use aurastudio_document::{Document, SharedDoc};
 use aurastudio_gpu::PlayKey;
@@ -915,7 +915,7 @@ mod tests {
     /// any engine, quickly (MyPaint brushes took seconds per sample).
     #[test]
     fn stroke_leaving_the_canvas_far_pauses_and_resumes() {
-        let lib = aurastudio_brushes::Library::load();
+        let lib = aurastudio_forge_library::Library::load();
         let mypaint = lib.presets.iter().find(|p| p.name == "Marker").unwrap().brush.clone();
         for (n, forge) in [round(), mypaint].into_iter().enumerate() {
             let (doc, id) = doc_with_layer();

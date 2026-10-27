@@ -1,6 +1,6 @@
 //! Dock tabs, one file each. A docker only draws and edits what the app
 //! lends it through `Model`; the data itself lives in the data crates
-//! (aurastudio-layers, aurastudio-brush...), which know nothing about egui.
+//! (aurastudio-layers, aurastudio-forge...), which know nothing about egui.
 
 pub mod canvas;
 pub mod cel_template;

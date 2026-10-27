@@ -4,8 +4,8 @@
 //! spacing, ½, 1, 2, 4... px) and their random numbers (seeds by place);
 //! a brush painting past its radius gets a smaller size (`overflow`).
 
-use aurastudio_brush::forge::{BrushSetting, Spacing};
-use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
+use aurastudio_forge::forge::{BrushSetting, Spacing};
+use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
 use aurastudio_canvas::FlatSurface;
 
 /// Bump when `render` or the brush engine changes how a preview looks:

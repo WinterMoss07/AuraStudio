@@ -2,8 +2,8 @@
 resolver = "2"
 members = [
     "crates/aurastudio-canvas",
-    "crates/aurastudio-brush",
-    "crates/aurastudio-brushes",
+    "crates/aurastudio-forge",
+    "crates/aurastudio-forge-library",
     "crates/aurastudio-layers",
     "crates/aurastudio-document",
     "crates/aurastudio-color",

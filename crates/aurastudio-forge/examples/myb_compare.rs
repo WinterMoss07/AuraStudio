@@ -1,12 +1,12 @@
 // Same strokes as tools/mypaint-reference/ref.c (the real libmypaint), painted by Forge's
 // MyPaint path directly (no app settings applied): compares .myb fidelity.
-// Usage: cargo run --release -p aurastudio-brush --example myb_compare -- brush.myb out.ppm
+// Usage: cargo run --release -p aurastudio-forge --example myb_compare -- brush.myb out.ppm
 // (Constants written as in ref.c, for the same floats.)
 #![allow(clippy::approx_constant, clippy::needless_range_loop)]
 use std::collections::HashMap;
 
-use aurastudio_brush::forge::tile::{TilePixels, TILE_SIZE};
-use aurastudio_brush::forge::{BrushSetting, BrushState, TiledSurface};
+use aurastudio_forge::forge::tile::{TilePixels, TILE_SIZE};
+use aurastudio_forge::forge::{BrushSetting, BrushState, TiledSurface};
 
 const W: i32 = 640;
 const H: i32 = 220;
@@ -23,7 +23,7 @@ impl TiledSurface for Tiles {
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let mut b = aurastudio_brush::parse_myb(&std::fs::read_to_string(&a[0]).unwrap()).unwrap();
+    let mut b = aurastudio_forge::parse_myb(&std::fs::read_to_string(&a[0]).unwrap()).unwrap();
     b.get_mut(BrushSetting::ColorH).base_value = 0.62;
     b.get_mut(BrushSetting::ColorS).base_value = 0.8;
     b.get_mut(BrushSetting::ColorV).base_value = 0.55;

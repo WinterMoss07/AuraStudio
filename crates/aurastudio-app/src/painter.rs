@@ -23,8 +23,8 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aurastudio_brush::{Brush, PenSample};
-use aurastudio_brushes::Library;
+use aurastudio_forge::{Brush, PenSample};
+use aurastudio_forge_library::Library;
 use aurastudio_document::{DocId, Document, SharedDoc};
 use aurastudio_layers::{FillParams, Node, Selection};
 

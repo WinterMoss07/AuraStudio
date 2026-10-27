@@ -11,8 +11,8 @@ use winit::{
     window::{CursorIcon, Window, WindowId},
 };
 
-use aurastudio_brush::{Brush, PenSample};
-use aurastudio_brushes::Library;
+use aurastudio_forge::{Brush, PenSample};
+use aurastudio_forge_library::Library;
 use aurastudio_gpu::GpuState;
 use aurastudio_input::Stylus;
 use aurastudio_color::{monitor_profile, DisplayProfile, DisplayTransform, Intent, LUT_SIZE};

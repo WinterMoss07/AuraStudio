@@ -18,10 +18,10 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use aurastudio_brush::{Brush, ForgeBrush};
-use aurastudio_brushes::hash::Fnv;
-use aurastudio_brushes::stroke_preview::{self, Mode, Shape, RENDER_VERSION};
-use aurastudio_brushes::Preset;
+use aurastudio_forge::{Brush, ForgeBrush};
+use aurastudio_forge_library::hash::Fnv;
+use aurastudio_forge_library::stroke_preview::{self, Mode, Shape, RENDER_VERSION};
+use aurastudio_forge_library::Preset;
 use egui::{vec2, Color32, ColorImage, FontId, Rect, Ui};
 
 use crate::strip_pool::{Strip, StripPool};
@@ -545,7 +545,7 @@ fn key_of(s: &Stroke, w: u32, h: u32, ppp: f32) -> u64 {
 mod tests {
     use super::*;
     use crate::strip_pool::max_slots;
-    use aurastudio_brushes::stroke_preview::Shape;
+    use aurastudio_forge_library::stroke_preview::Shape;
 
     const CLASS: Class = (560, 88);
 
@@ -827,7 +827,7 @@ mod tests {
     }
 
     fn preset() -> Preset {
-        aurastudio_brushes::Library::load_bundled().presets.into_iter().next().expect("a bundled brush")
+        aurastudio_forge_library::Library::load_bundled().presets.into_iter().next().expect("a bundled brush")
     }
 
     #[test]

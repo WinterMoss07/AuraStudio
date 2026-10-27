@@ -301,15 +301,15 @@ Environment variables (for testing and comparisons):
 Benchmarks:
 
 ```
-cargo run --release -p aurastudio-brush  --example bench_stroke      # brush cost per sample
+cargo run --release -p aurastudio-forge  --example bench_stroke      # brush cost per sample
 BENCH_PRESSURE=steady BENCH_RADIUS=500 ...                            # filters
 cargo run --release -p aurastudio-layers --example bench_composite   # layer merge cost
-cargo run --release -p aurastudio-brush  --example bench_myb -- brush.myb 300  # MyPaint brush cost per sample
+cargo run --release -p aurastudio-forge  --example bench_myb -- brush.myb 300  # MyPaint brush cost per sample
 cargo test  --release -p aurastudio -- --ignored pipeline --nocapture # paint thread + UI model
-cargo run --release -p aurastudio-brush  --example myb_sheet -- out.png a.myb b.myb  # MyPaint sample sheet
-cargo run --release -p aurastudio-brushes --example preview_sheet -- out.png [filter] # every brush preview
-cargo run --release -p aurastudio-brush  --example myb_compare -- a.myb out.ppm     # Forge vs real libmypaint (tools/mypaint-reference/ref.c)
-cargo run --release -p aurastudio-brush  --example spacing_sheet -- out.png        # round brush strokes (SHEET_LOOP=1, SHEET_RAW=1, SHEET_CONST=1)
+cargo run --release -p aurastudio-forge  --example myb_sheet -- out.png a.myb b.myb  # MyPaint sample sheet
+cargo run --release -p aurastudio-forge-library --example preview_sheet -- out.png [filter] # every brush preview
+cargo run --release -p aurastudio-forge  --example myb_compare -- a.myb out.ppm     # Forge vs real libmypaint (tools/mypaint-reference/ref.c)
+cargo run --release -p aurastudio-forge  --example spacing_sheet -- out.png        # round brush strokes (SHEET_LOOP=1, SHEET_RAW=1, SHEET_CONST=1)
 ```
 
 ---
@@ -334,8 +334,8 @@ One version for the whole app (`[workspace.package]` in `Cargo.toml`),
 | Crate | Role |
 |---|---|
 | `aurastudio-canvas` | shared types: `Rect`, `PaintSurface`, blend modes, GPU canvas texture |
-| `aurastudio-brush` | Forge, the brush engine (`src/forge`), `.myb` reader |
-| `aurastudio-brushes` | brush library: built-in presets, bundled MyPaint collection, import |
+| `aurastudio-forge` | Forge, the brush engine (`src/forge`), `.myb` reader |
+| `aurastudio-forge-library` | brush library: built-in presets, bundled MyPaint collection, import |
 | `aurastudio-layers` | layer tree, folders, lock, compositing, selections, transforms (resampling) |
 | `aurastudio-document` | documents, workspace, undo history, selection commands, the transform under way |
 | `aurastudio-color` | monitor ICC profile, sRGB → display transform (3D LUT) |

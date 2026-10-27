@@ -1,8 +1,8 @@
 // Renders a sample sheet of MyPaint brushes through Forge (the
 // exact path the app uses), one row per brush, pressure rising left to
 // right, on a white layer. Checks .myb support by eye.
-// Usage: cargo run --release -p aurastudio-brush --example myb_sheet -- out.png a.myb b.myb ...
-use aurastudio_brush::{parse_myb, Brush, Forge};
+// Usage: cargo run --release -p aurastudio-forge --example myb_sheet -- out.png a.myb b.myb ...
+use aurastudio_forge::{parse_myb, Brush, Forge};
 
 use aurastudio_canvas::FlatSurface as S;
 
@@ -29,7 +29,7 @@ fn main() {
             let t = i as f32 / 300.0;
             let x = 40.0 + t * (w as f32 - 80.0);
             let y = y0 + (t * 12.0).sin() * 18.0;
-            e.stroke_to(&mut s, aurastudio_brush::PenSample::new(x, y, 0.15 + 0.85 * t, i as f64 * 0.006));
+            e.stroke_to(&mut s, aurastudio_forge::PenSample::new(x, y, 0.15 + 0.85 * t, i as f64 * 0.006));
         }
         e.end_stroke(&mut s);
         println!("{f}: native size {size}px");

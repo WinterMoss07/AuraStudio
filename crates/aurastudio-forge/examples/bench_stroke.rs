@@ -1,8 +1,8 @@
 // Measures CPU cost per pointer sample of the painting path, without a
 // window: the round brush.
-// Usage: cargo run --release -p aurastudio-brush --example bench_stroke
+// Usage: cargo run --release -p aurastudio-forge --example bench_stroke
 use std::time::{Duration, Instant};
-use aurastudio_brush::{Brush, Forge, ForgeBrush, PenSample};
+use aurastudio_forge::{Brush, Forge, ForgeBrush, PenSample};
 
 use aurastudio_canvas::FlatSurface as S;
 

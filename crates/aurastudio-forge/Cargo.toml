@@ -1,14 +1,13 @@
 [package]
-name = "aurastudio-brushes"
+name = "aurastudio-forge"
 version.workspace = true
 edition = "2021"
-build = "build.rs"
 
 [dependencies]
-aurastudio-brush  = { path = "../aurastudio-brush" }
 aurastudio-canvas = { path = "../aurastudio-canvas" }
-dirs = "7"
-log  = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 
 [dev-dependencies]
 png = "0.18"

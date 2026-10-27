@@ -1,7 +1,7 @@
 //! Tool options docker: the brush's stroke preview, then its settings as
 //! full-width sliders (label and value inside: fits a narrow dock).
 
-use aurastudio_brushes::stroke_preview::Mode;
+use aurastudio_forge_library::stroke_preview::Mode;
 use egui::{RichText, Ui};
 
 use crate::stroke_preview::{Slot, Stroke, StrokePreviews};
@@ -21,7 +21,7 @@ pub fn show(ui: &mut Ui, previews: &mut StrokePreviews, m: &mut Model, a: &mut c
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), STRIP), egui::Sense::hover());
     // The preview's empty half shows the canvas desk's color.
     ui.painter().rect_filled(rect, 2.0, theme::DESK);
-    let settings = aurastudio_brush::Brush { erase: *m.tool == Tool::Eraser, ..m.brush.clone() };
+    let settings = aurastudio_forge::Brush { erase: *m.tool == Tool::Eraser, ..m.brush.clone() };
     let stroke = Stroke { preset: p, settings: &settings, shape: m.tool.stroke_shape(), mode: Mode::Detail };
     previews.show(ui, rect, Slot::ToolOptions, stroke, Some(&name));
     resp.on_hover_text(format!("{}  ·  {}", p.medium, p.author));

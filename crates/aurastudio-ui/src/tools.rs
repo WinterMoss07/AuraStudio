@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use aurastudio_brushes::{Kind, Preset};
+use aurastudio_forge_library::{Kind, Preset};
 use egui::{pos2, vec2, Color32, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui};
 
 use crate::widgets::{fill_slider, pixels, Fill};
@@ -93,8 +93,8 @@ impl Tool {
     }
 
     /// The stroke preview's shape for this tool.
-    pub fn stroke_shape(self) -> aurastudio_brushes::stroke_preview::Shape {
-        use aurastudio_brushes::stroke_preview::Shape;
+    pub fn stroke_shape(self) -> aurastudio_forge_library::stroke_preview::Shape {
+        use aurastudio_forge_library::stroke_preview::Shape;
         match self {
             Tool::Line => Shape::Line,
             Tool::Rectangle => Shape::Rectangle,
@@ -803,7 +803,7 @@ pub fn shape_options(ui: &mut Ui, m: &mut Model) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurastudio_brushes::{mediums_of, Library, MEDIUMS};
+    use aurastudio_forge_library::{mediums_of, Library, MEDIUMS};
 
     #[test]
     fn every_medium_has_a_group() {

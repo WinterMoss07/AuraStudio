@@ -390,7 +390,7 @@ mod size_curve {
 }
 
 /// Brush size as a diameter: 1..1000 px, 100 at the middle.
-pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
+pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
     let max = crate::MAX_BRUSH_SIZE as f32;
     let d = (brush.radius * 2.0).round().clamp(1.0, max);
     if let Some(v) = fill_slider(ui, id, pixels("Size", 1.0..=max, Some(100.0)), d, width) {
@@ -399,14 +399,14 @@ pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, w
     }
 }
 
-pub fn opacity_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
+pub fn opacity_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
     let o = (brush.opacity * 100.0).round();
     if let Some(v) = fill_slider(ui, id, percent("Opacity"), o, width) {
         brush.opacity = v / 100.0;
     }
 }
 
-pub fn hardness_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_brush::Brush, width: f32) {
+pub fn hardness_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
     let h = (brush.hardness * 100.0).round();
     if let Some(v) = fill_slider(ui, id, percent("Hardness"), h, width) {
         brush.hardness = v / 100.0;
