@@ -625,7 +625,7 @@ mod tests {
         doc.layers.layer_surface(id).unwrap().prepare(rect);
         let n = ((rect.2 - rect.0) * (rect.3 - rect.1)) as usize;
         assert!(doc.layers.set_layer_rect(id, rect, &rgba.repeat(n)));
-        doc.commit_stroke(id, rect);
+        doc.commit_stroke(id);
         doc.layers.end_stroke();
     }
 
@@ -643,7 +643,7 @@ mod tests {
             doc.layers.layer_surface(id).unwrap().prepare((0, 0, w, h));
             let px: Vec<u8> = (0..w * h * 4).map(|_| { noise = noise.wrapping_mul(1664525).wrapping_add(1013904223); (noise >> 24) as u8 | 1 }).collect();
             assert!(doc.layers.set_layer_rect(id, (0, 0, w, h), &px));
-            doc.commit_stroke(id, (0, 0, w, h));
+            doc.commit_stroke(id);
             doc.layers.end_stroke();
         }
         let t = std::time::Instant::now();

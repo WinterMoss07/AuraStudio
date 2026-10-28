@@ -2,6 +2,9 @@
 //! exist (an empty layer costs nothing).
 
 mod pack;
+mod patch;
+
+pub use patch::TilePatch;
 
 use aurastudio_core::{Rect, TILE};
 

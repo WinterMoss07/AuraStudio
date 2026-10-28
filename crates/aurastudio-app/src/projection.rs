@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use aurastudio_core::Rect;
 
 /// Above this many pending rectangles, they are merged into one: cheaper
-/// than issuing hundreds of tiny uploads.
-const MAX_RECTS: usize = 32;
+/// than issuing hundreds of tiny uploads. (An undone diagonal stroke comes
+/// as one rectangle per row of tiles: ~50 for 3000 px.)
+const MAX_RECTS: usize = 128;
 
 pub struct Projection {
     pub width:  u32,

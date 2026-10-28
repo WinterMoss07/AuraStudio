@@ -1,12 +1,13 @@
 //! Undo / redo of one document, within a byte budget. A pixel step keeps
 //! the touched rectangle, LZ4-compressed, swapped with the layer on undo
-//! (no extra copy); a layer step keeps the tree as it was and the nodes
-//! only one side has.
+//! (no extra copy); a stroke keeps only the tiles it changed, each
+//! compressed, swapped the same way; a layer step keeps the tree as it was
+//! and the nodes only one side has.
 
 use std::collections::VecDeque;
 
 use aurastudio_core::Rect;
-use aurastudio_layers::{LayerStack, Node, TreeState};
+use aurastudio_layers::{LayerStack, Node, TilePatch, TreeState};
 use aurastudio_selection::{Selection};
 
 use crate::Change;
@@ -18,6 +19,7 @@ const MAX_STEPS: usize = 200;
 
 enum Step {
     Pixels(PixelStep),
+    Tiles(TileStep),
     Tree(TreeStep),
     /// The selection to go back to.
     Select(&'static str, Option<Selection>),
@@ -34,6 +36,15 @@ struct PixelStep {
     data:     Vec<u8>,
 }
 
+/// A stroke: the tiles it changed as they were (as they are once undone).
+struct TileStep {
+    label:    &'static str,
+    layer_id: u64,
+    /// Around the tiles (saved with the step in a file).
+    bbox:     Rect,
+    patch:    TilePatch,
+}
+
 struct TreeStep {
     label: &'static str,
     /// The tree to go back to.
@@ -45,12 +56,13 @@ struct TreeStep {
 
 impl Step {
     fn label(&self) -> &'static str {
-        match self { Step::Pixels(p) => p.label, Step::Tree(t) => t.label, Step::Select(l, _) => l, Step::Group { label, .. } => label }
+        match self { Step::Pixels(p) => p.label, Step::Tiles(t) => t.label, Step::Tree(t) => t.label, Step::Select(l, _) => l, Step::Group { label, .. } => label }
     }
 
     fn bytes(&self) -> usize {
         match self {
             Step::Pixels(p) => p.data.len(),
+            Step::Tiles(t) => t.patch.bytes(),
             Step::Tree(t) => t.bytes,
             Step::Select(_, s) => s.as_ref().map_or(0, Selection::bytes),
             Step::Group { steps, .. } => steps.iter().map(Step::bytes).sum(),
@@ -62,6 +74,13 @@ impl Step {
     fn swap_into(&mut self, layers: &mut LayerStack, selection: &mut Option<Selection>) -> Option<Change> {
         match self {
             Step::Pixels(p) => p.swap_into(layers).then(|| p.change()),
+            Step::Tiles(t) => {
+                if !layers.swap_layer_tiles(t.layer_id, &mut t.patch) { return None; }
+                // Shown again tile row by tile row (not the box around).
+                let mut rects = t.patch.rects(layers.width, layers.height).into_iter();
+                let rect = rects.next().unwrap_or((0, 0, 0, 0));
+                Some(Change { layer_id: t.layer_id, rect, tree: false, selection: false, more: rects.map(|r| (t.layer_id, r)).collect() })
+            }
             Step::Tree(t) => {
                 let now = layers.tree_state();
                 let made = layers.restore_tree(&t.state, std::mem::take(&mut t.kept));
@@ -154,6 +173,16 @@ impl History {
         self.trim();
     }
 
+    /// Record a stroke on `layer_id`: the tiles it changed, as they were
+    /// (`bbox`: around them).
+    pub fn push_tiles(&mut self, label: &'static str, layer_id: u64, bbox: Rect, patch: TilePatch) {
+        if patch.is_empty() { return; }
+        self.redo.clear();
+        self.serial += 1;
+        self.undo.push_back(Step::Tiles(TileStep { label, layer_id, bbox, patch }));
+        self.trim();
+    }
+
     /// Record a selection change: `before` is the selection before it.
     pub fn push_selection(&mut self, label: &'static str, before: Option<Selection>) {
         self.redo.clear();
@@ -225,6 +254,8 @@ impl History {
         fn save(s: &Step, redo: bool, out: &mut Vec<SavedStep>) {
             match s {
                 Step::Pixels(p) => out.push(SavedStep { label: p.label.to_owned(), layer_id: p.layer_id, rect: p.rect, data: p.data.clone() }),
+                // (Told from a pixel step by its first bytes: TilePatch.)
+                Step::Tiles(t) => out.push(SavedStep { label: t.label.to_owned(), layer_id: t.layer_id, rect: t.bbox, data: t.patch.to_bytes() }),
                 Step::Tree(_) | Step::Select(..) => {}
                 Step::Group { steps, .. } => {
                     let parts: Vec<&Step> = if redo { steps.iter().rev().collect() } else { steps.iter().collect() };
@@ -246,8 +277,12 @@ impl History {
     pub fn import(budget: usize, undo: Vec<SavedStep>, redo: Vec<SavedStep>) -> Self {
         let load = |s: SavedStep| {
             let label = LABELS.iter().find(|l| **l == s.label).copied().unwrap_or("Action");
-            (s.rect.0 < s.rect.2 && s.rect.1 < s.rect.3)
-                .then_some(Step::Pixels(PixelStep { label, layer_id: s.layer_id, rect: s.rect, data: s.data }))
+            if !(s.rect.0 < s.rect.2 && s.rect.1 < s.rect.3) { return None; }
+            if TilePatch::is_patch(&s.data) {
+                let patch = TilePatch::from_bytes(&s.data)?;
+                return Some(Step::Tiles(TileStep { label, layer_id: s.layer_id, bbox: s.rect, patch }));
+            }
+            Some(Step::Pixels(PixelStep { label, layer_id: s.layer_id, rect: s.rect, data: s.data }))
         };
         let mut h = Self {
             undo: undo.into_iter().filter_map(load).collect(),

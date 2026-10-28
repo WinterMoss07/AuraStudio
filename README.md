@@ -191,7 +191,9 @@ switches), HiDPI scaling, color management and intent, brush outline
 cursor, click debounce, autosave delay. Kept in `settings.txt`.
 
 **Layers** — Paper + Layer 1 for new documents, folders, opacity, blend,
-lock, rename, undo / redo with a memory budget. What the Layers docker
+lock, rename, undo / redo with a memory budget (a stroke keeps only the
+tiles it changed: undoing a long diagonal stroke is as quick as a short
+one). What the Layers docker
 does is undoable too (new, delete, move, group, clip, marks, label,
 opacity, blend, name, filter layer values), a deleted layer coming back
 with its pixels; hiding a layer is not an undo step (Photoshop, CSP).
@@ -223,7 +225,10 @@ rebuilt after a stroke); **Standard** uses mipmaps (lighter on old graphics
 chips, +33 % GPU memory for the canvas texture). Close up, canvas pixels
 stay sharp squares, or are blended ("Smooth zoom above 100 %"). Frames are
 shown as soon as drawn (lowest pen latency), or in step with the screen
-("V-Sync").
+("V-Sync"). While painting, every pen sample is painted, but the canvas
+is merged and shown at the **canvas frame rate** (Preferences > Canvas &
+display, 24 to 240 fps, 60 by default): set it to the screen's refresh
+rate; more only adds work nobody sees.
 - High-density screens: 100 % follows the system's display scaling, so a
   picture has the same size on a 3K laptop and an HD monitor; moving the
   window to another monitor keeps it the same size; the hand, rotate and

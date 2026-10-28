@@ -139,15 +139,25 @@ impl Document {
 
     pub fn history(&self) -> &History { &self.history }
 
-    /// Record a finished stroke on `layer_id`, which changed `rect`. The
-    /// pixels from before the stroke are still in the layer stack's stroke
-    /// snapshot, so only that rectangle is copied (and compressed).
+    /// Record a finished stroke on `layer_id`. The tiles from before the
+    /// stroke are still in the layer stack's stroke snapshot: those it
+    /// changed are kept (compressed), not the box around the stroke.
     #[profiling::function]
-    pub fn commit_stroke(&mut self, layer_id: u64, rect: Rect) {
-        let before = self.layers.stroke_base_rect(rect);
+    pub fn commit_stroke(&mut self, layer_id: u64) {
+        let patch = self.layers.stroke_patch();
+        // Nothing changed after all (erasing nothing...): no step, and the
+        // sheet made for it goes.
+        if patch.is_empty() {
+            self.drop_new_sheet();
+            return;
+        }
+        let bbox = patch.bbox(self.layers.width, self.layers.height);
         // (A layer edit not recorded yet goes first: undone after it.)
         self.record_tree("Layers");
-        self.push_painted("Brush stroke", layer_id, rect, &before);
+        let join = self.new_sheet.take() == Some(self.history.serial());
+        let s0 = self.history.serial();
+        self.history.push_tiles("Brush stroke", layer_id, bbox, patch);
+        if join && self.history.serial() == s0 + 1 { self.history.join_last("Brush stroke"); }
         self.touch();
     }
 
@@ -490,7 +500,7 @@ mod tests {
         doc.layers.layer_surface(id).unwrap().prepare(rect);
         let n = ((rect.2 - rect.0) * (rect.3 - rect.1)) as usize;
         assert!(doc.layers.set_layer_rect(id, rect, &rgba.repeat(n)));
-        doc.commit_stroke(id, rect);
+        doc.commit_stroke(id);
     }
 
     fn px(doc: &Document, id: u64, x: u32, y: u32) -> [u8; 4] {
@@ -562,6 +572,40 @@ mod tests {
         assert_eq!(doc.history().undo_len(), undo);
     }
 
+    /// A stroke from one corner to the other keeps only the tiles it
+    /// changed for undo (not the box around it), and is undone and redone
+    /// by them.
+    #[test]
+    fn a_stroke_keeps_only_the_tiles_it_changed() {
+        let mut doc = Document::new(DocId(1), "a", 640, 640);
+        let id = doc.layers.add_layer("ink");
+        assert!(doc.layers.begin_stroke(id));
+        // Prepared along the way (like the engines), painted at both ends.
+        doc.layers.layer_surface(id).unwrap().prepare((0, 0, 640, 640));
+        assert!(doc.layers.set_layer_rect(id, (5, 5, 20, 20), &[9, 9, 9, 255].repeat(15 * 15)));
+        assert!(doc.layers.set_layer_rect(id, (600, 600, 630, 630), &[7, 7, 7, 255].repeat(30 * 30)));
+        doc.commit_stroke(id);
+        doc.layers.end_stroke();
+        // Two tiles, a few hundred bytes (the box would be 1.6 MB of RGBA).
+        assert!(doc.history().bytes() < 2_000, "{} bytes", doc.history().bytes());
+        let c = doc.undo().unwrap();
+        let mut rects = vec![c.rect];
+        rects.extend(c.more.iter().map(|m| m.1));
+        assert_eq!(rects, vec![(0, 0, 64, 64), (576, 576, 640, 640)]);
+        assert_eq!(px(&doc, id, 10, 10)[3], 0);
+        assert_eq!(px(&doc, id, 620, 620)[3], 0);
+        doc.redo().unwrap();
+        assert_eq!(px(&doc, id, 10, 10), [9, 9, 9, 255]);
+        assert_eq!(px(&doc, id, 620, 620), [7, 7, 7, 255]);
+        // Nothing changed: no step at all.
+        let n = doc.history().undo_len();
+        assert!(doc.layers.begin_stroke(id));
+        doc.layers.layer_surface(id).unwrap().prepare((100, 100, 300, 300));
+        doc.commit_stroke(id);
+        doc.layers.end_stroke();
+        assert_eq!(doc.history().undo_len(), n);
+    }
+
     #[test]
     fn undo_redo_restore_exact_pixels() {
         let mut doc = Document::new(DocId(1), "a", 64, 64);
@@ -571,7 +615,8 @@ mod tests {
         assert_eq!(px(&doc, id, 16, 16), [0, 0, 255, 255]);
 
         let c = doc.undo().unwrap();
-        assert_eq!((c.layer_id, c.rect), (id, (15, 15, 30, 30)));
+        // (A stroke is undone by tile: the tile it touched shows again.)
+        assert_eq!((c.layer_id, c.rect), (id, (0, 0, 64, 64)));
         assert!(!c.selection && c.more.is_empty());
         assert_eq!(px(&doc, id, 16, 16), [255, 0, 0, 255]);
         assert_eq!(px(&doc, id, 25, 25), [255, 255, 255, 0]);
@@ -630,7 +675,7 @@ mod tests {
             }).collect();
             doc.layers.layer_surface(id).unwrap().prepare((0, 0, 256, 256));
             doc.layers.set_layer_rect(id, (0, 0, 256, 256), &data);
-            doc.commit_stroke(id, (0, 0, 256, 256));
+            doc.commit_stroke(id);
         }
         assert!(doc.history().bytes() <= 300 * 1024, "{}", doc.history().bytes());
         assert!(doc.history().undo_len() < 4);
@@ -754,7 +799,7 @@ mod anim_tests {
         assert!(d.layers.begin_stroke(id));
         { let mut s = d.layers.layer_surface(id).unwrap(); aurastudio_core::PaintSurface::prepare(&mut s, r); }
         d.layers.set_layer_rect(id, r, &rgba.repeat(100));
-        d.commit_stroke(id, r);
+        d.commit_stroke(id);
         d.layers.end_stroke();
         Some(id)
     }

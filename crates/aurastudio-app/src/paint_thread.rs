@@ -1,13 +1,17 @@
 //! The paint thread: pen samples queue up here and are painted in batches,
 //! on this one thread (splitting a stroke was slower). Undo, clear, fill...
 //! go through the same queue, after what was sent before them. It also
-//! merges the changed areas for the screen (Krita), at least every
-//! UPDATE_PERIOD.
+//! merges the changed areas for the screen (Krita): every sample is
+//! painted as it comes, but the screen's merge is made once per canvas
+//! frame (Preferences, "Canvas frame rate"), what changed since the last
+//! one together. A pen sends more samples than a screen shows frames: one
+//! merge per sample was work nobody saw.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -31,15 +35,22 @@ const MAX_YIELD: Duration = Duration::from_millis(4);
 
 /// Wait (briefly) while the interface asks for the document.
 fn let_ui_in() {
-    use std::sync::atomic::Ordering;
     if !UI_WANTS_DOC.load(Ordering::Acquire) { return; }
     let t = Instant::now();
     while UI_WANTS_DOC.load(Ordering::Acquire) && t.elapsed() < MAX_YIELD { std::thread::yield_now(); }
 }
 
-/// Shortest time between two projection updates while painting is behind
-/// the pen (~120 fps; Krita's default limit is 100).
-const UPDATE_PERIOD: Duration = Duration::from_millis(8);
+/// Time between two merges for the screen, in microseconds: one canvas
+/// frame (the app sets it from the preferences; 60 fps by default).
+static CANVAS_FRAME_US: AtomicU64 = AtomicU64::new(16_667);
+
+/// Merge for the screen at most this often (the end of a stroke, an undo...
+/// are shown at once all the same).
+pub fn set_canvas_frame(d: Duration) {
+    CANVAS_FRAME_US.store((d.as_micros() as u64).clamp(1_000, 100_000), Ordering::Relaxed);
+}
+
+fn canvas_frame() -> Duration { Duration::from_micros(CANVAS_FRAME_US.load(Ordering::Relaxed)) }
 
 pub enum Cmd {
     /// A stroke on the active layer; `limit`: stay inside the lines, the
@@ -314,19 +325,32 @@ impl Worker {
         loop {
             // Sleep until there is work, then take everything queued.
             if queue.is_empty() {
+                // Painted, not merged yet: wake for the next canvas frame.
+                let merge_at = (!self.pending.is_empty()).then(|| self.last_update + canvas_frame());
                 // Playback tiles are made while nothing else waits.
                 let cmd = if self.play.is_some() {
                     match rx.try_recv() {
-                        Ok(cmd) => Ok(cmd),
+                        Ok(cmd) => Some(cmd),
                         Err(TryRecvError::Empty) => { self.play_step(); continue; }
                         Err(TryRecvError::Disconnected) => return,
                     }
+                } else if let Some(at) = merge_at {
+                    match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                        Ok(cmd) => Some(cmd),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
                 } else {
-                    rx.recv().map_err(|_| ())
+                    match rx.recv() { Ok(cmd) => Some(cmd), Err(_) => return }
                 };
                 match cmd {
-                    Ok(cmd) => queue.push_back(cmd),
-                    Err(_) => return,
+                    Some(cmd) => queue.push_back(cmd),
+                    // Its frame: show what was painted.
+                    None => {
+                        self.update_projection();
+                        (self.notify)(Event::Painted);
+                        continue;
+                    }
                 }
             }
             queue.extend(rx.try_iter());
@@ -513,13 +537,13 @@ impl Worker {
                         flush = true;
                     }
                 }
-                if flush || t0.elapsed() >= UPDATE_PERIOD { break; }
+                if flush || t0.elapsed() >= canvas_frame() { break; }
             }
 
-            // Update the projection when caught up with the pen (lowest
-            // latency), when asked to, or at least every UPDATE_PERIOD.
+            // Update the projection once per canvas frame (when behind the
+            // pen too), or at once when asked to (the end of a stroke...).
             queue.extend(rx.try_iter());
-            let due = flush || queue.is_empty() || self.last_update.elapsed() >= UPDATE_PERIOD;
+            let due = flush || self.last_update.elapsed() >= canvas_frame();
             if due && !self.pending.is_empty() {
                 self.update_projection();
                 (self.notify)(Event::Painted);
@@ -733,8 +757,8 @@ impl Worker {
         // After a resize the snapshot no longer matches: nothing to record.
         if !same_size { self.stroke_rect = None; }
         let whole = self.stroke_rect.take();
-        if let Some(r) = whole {
-            doc.commit_stroke(id, r);
+        if whole.is_some() {
+            doc.commit_stroke(id);
             #[cfg(feature = "profile")]
             tracy_client::plot!("undo history MB", doc.history().bytes() as f64 / 1_048_576.0);
         } else {
@@ -830,6 +854,41 @@ mod tests {
         for (r, rgba) in &patches { blit(&mut screen, 64, *r, rgba); }
         let i = ((32 * 64 + 30) * 4) as usize;
         assert_eq!(&screen[i..i + 4], &[0, 0, 0, 255]);
+    }
+
+    /// A pen faster than the canvas frame rate: every sample is painted,
+    /// but the screen's merge comes once per canvas frame (60 fps by
+    /// default), not once per sample; the end of the stroke shows at once.
+    #[test]
+    fn merges_once_per_canvas_frame() {
+        let (doc, id) = doc_with_layer();
+        let (ev_tx, ev_rx) = channel();
+        let pt = PaintThread::spawn(proj(64, 64), move |e| {
+            if matches!(e, Event::Painted) { let _ = ev_tx.send(Instant::now()); }
+        });
+        let mut brush = Brush::new();
+        brush.radius = 2.0;
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush, forge: round(), limit: None });
+        let (n, t0) = (200, Instant::now());
+        for i in 0..n {
+            let x = 4.0 + 56.0 * i as f32 / n as f32;
+            pt.send(Cmd::Sample(PenSample::new(x, 32.0, 1.0, i as f64 * 0.001)));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        pt.send(Cmd::End);
+        drop(pt);
+        let spent = t0.elapsed();
+        let merges: Vec<Instant> = ev_rx.try_iter().collect();
+        // At most one per frame over the time spent, plus the end's.
+        let frames = (spent.as_secs_f64() / canvas_frame().as_secs_f64()).ceil() as usize;
+        assert!(merges.len() <= frames + 2, "{} merges for {n} samples in {spent:?}", merges.len());
+        assert!(merges.len() >= 3 && merges.len() < n / 4, "{} merges", merges.len());
+        // (The first merge of a stroke is at once and slower: it builds the
+        // stroke cache; the last is the end's.)
+        for w in merges.windows(2).skip(1).take(merges.len().saturating_sub(3)) {
+            assert!(w[1] - w[0] >= canvas_frame() * 9 / 10, "two merges {:?} apart", w[1] - w[0]);
+        }
+        assert_eq!(pixel(&doc, id, 58, 32), [0, 0, 0, 255], "the whole stroke painted");
     }
 
     /// Undo sent right after End undoes that stroke (same queue), then redo

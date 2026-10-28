@@ -33,10 +33,8 @@ use crate::projection::{Projection, SharedProjection};
 /// Window title: the name and version.
 const APP_TITLE: &str = concat!("AuraStudio ", env!("CARGO_PKG_VERSION"));
 
-/// Shortest time between two frames that only update the UI, and while
-/// painting (new paint shows sooner than one display refresh).
+/// Shortest time between two frames that only update the UI.
 const UI_FRAME: Duration = Duration::from_micros(16_667);
-const PAINT_FRAME: Duration = Duration::from_millis(4);
 
 /// Size of the empty stand-in document while the start screen shows.
 const PLACEHOLDER: (u32, u32) = (1, 1);
@@ -373,6 +371,10 @@ pub struct App {
     frame_interval: Duration,
     /// A frame wanted before `frame_interval` was over: drawn at this time.
     deferred_frame: Option<Instant>,
+    /// One canvas frame while the canvas changes (Preferences, "Canvas
+    /// frame rate"): the paint thread merges at this pace, and new paint
+    /// is shown as soon as it is merged.
+    canvas_frame: Duration,
     /// Since when the UI couldn't run (document held by the paint thread).
     ui_blocked_since: Option<Instant>,
     /// A frame is needed: drawn in about_to_wait, or right away by
@@ -495,6 +497,7 @@ impl App {
             last_frame:   None,
             frame_interval: UI_FRAME,
             deferred_frame: None,
+            canvas_frame: UI_FRAME,
             ui_blocked_since: None,
             redraw_wanted: false,
             ui_dirty:     true,
@@ -702,8 +705,15 @@ impl App {
         })
     }
 
+    /// Shortest time between two frames showing new paint: the paint
+    /// thread merges once per canvas frame, a little early is let through
+    /// (two clocks: waiting for the next one would show it a frame late).
+    fn paint_frame(&self) -> Duration { self.canvas_frame * 3 / 4 }
+
     /// Interface size and 100 % zoom meaning, from the settings.
     fn apply_settings(&mut self) {
+        self.canvas_frame = Duration::from_secs_f64(1.0 / self.prefs.canvas_fps.max(1) as f64);
+        paint_thread::set_canvas_frame(self.canvas_frame);
         self.apply_onion_look();
         let Some(gpu) = &mut self.gpu else { return };
         gpu.set_pixel_exact(!self.prefs.hidpi_scaling);
@@ -1659,9 +1669,9 @@ impl App {
 
     /// Render now when a frame is due (Windows sends WM_PAINT only once the
     /// queue is empty: pen packets kept it from ever coming). New paint:
-    /// every 4 ms at most; else one frame per refresh.
+    /// as soon as it is merged; else one frame per refresh.
     fn render_if_due(&mut self) {
-        let min = if self.painted { PAINT_FRAME } else { self.frame_interval };
+        let min = if self.painted { self.paint_frame() } else { self.frame_interval };
         if !self.painted && !self.redraw_wanted { return; }
         if self.last_frame.is_some_and(|t| t.elapsed() < min) { return; }
         self.redraw_wanted = false;
@@ -2521,11 +2531,16 @@ impl ApplicationHandler<AppEvent> for App {
             self.redraw_wanted = true;
         }
         if std::mem::take(&mut self.redraw_wanted) {
-            // One frame per display refresh; UI-only hover frames 60 per
-            // second at most (a hovering pen moves all the time).
+            // New paint as soon as merged; while drawing, the brush outline
+            // alone one canvas frame after the last frame (the paint's
+            // frames come first); one frame per display refresh otherwise;
+            // UI-only hover frames 60 per second at most (a hovering pen
+            // moves all the time).
             let dragging = self.gpu.as_ref().is_some_and(Screen::ui_is_dragging);
-            let interval = if self.is_drawing {
-                PAINT_FRAME
+            let interval = if self.painted {
+                self.paint_frame()
+            } else if self.is_drawing {
+                self.canvas_frame
             } else if self.ui_dirty && !dragging && self.nav.is_none() {
                 self.frame_interval.max(UI_FRAME)
             } else {

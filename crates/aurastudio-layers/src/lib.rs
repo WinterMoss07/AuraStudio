@@ -18,6 +18,7 @@ pub use tree::TreeState;
 pub use fill::{flood, flood_with, similar_with, FillParams, Refer};
 use aurastudio_selection::Selection;
 use aurastudio_raster::{new_tile, Tile, Tiles};
+pub use aurastudio_raster::TilePatch;
 
 /// Straight-alpha "over": `src` painted on `dst`.
 fn over(dst: &mut [u8], src: [u8; 4]) {
@@ -1014,8 +1015,36 @@ impl LayerStack {
         }
     }
 
+    /// The undo data of the stroke: the tiles it changed, as they were when
+    /// it began (only those: not the whole box around the stroke).
+    #[profiling::function]
+    pub fn stroke_patch(&self) -> TilePatch {
+        let s = &self.stroke;
+        let mut patch = TilePatch::default();
+        let Some(Node::Layer(l)) = node_in(&self.root, s.layer) else { return patch };
+        let (cols, fill) = (l.tiles.cols(), l.tiles.fill());
+        for (i, base) in s.base.iter().enumerate() {
+            let Some(base) = base else { continue };
+            let (tx, ty) = (i as u32 % cols, i as u32 / cols);
+            let unchanged = match l.tiles.tile(tx, ty) {
+                Some(now) => now[..] == base[..],
+                None => base.chunks_exact(4).all(|p| p == fill),
+            };
+            if !unchanged { patch.push(tx, ty, base, fill); }
+        }
+        patch
+    }
+
+    /// Undo / redo a stroke on paint layer `id`: its tiles and the patch's
+    /// trade places. False if the layer is gone or the patch doesn't fit
+    /// it (nothing changed then).
+    pub fn swap_layer_tiles(&mut self, id: u64, patch: &mut TilePatch) -> bool {
+        let Some(Node::Layer(l)) = self.node_mut(id) else { return false };
+        patch.swap(&mut l.tiles)
+    }
+
     /// Pixels of `rect` in the stroke's layer as it was when the stroke
-    /// began (the undo data of the stroke). RGBA rows, tightly packed.
+    /// began. RGBA rows, tightly packed.
     pub fn stroke_base_rect(&self, rect: Rect) -> Vec<u8> {
         let s = &self.stroke;
         let Some(Node::Layer(l)) = node_in(&self.root, s.layer) else { return Vec::new() };

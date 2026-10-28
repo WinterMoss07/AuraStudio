@@ -3,6 +3,44 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.19.4 — 2026-10-28
+
+The display follows the screen instead of the pen; strokes are undone
+tile by tile. From the paint pipeline audit (project doc
+`pipeline-audit.md`).
+
+**Canvas frame rate**
+- Preferences > Canvas & display > Canvas frame rate: 24 to 240 fps, 60
+  by default. Every pen sample is still painted as it comes; the merge
+  for the screen, its upload to the GPU and the frame are now made once
+  per canvas frame, what changed since the last one together. Before,
+  each pen sample (~200 per second) had its own merge, upload and frame
+  (up to 250 frames per second while drawing): on a 60 Hz screen most of
+  that work was never seen. The end of a stroke, an undo, a fill still
+  show at once.
+- While drawing, a frame that only moves the brush outline comes only if
+  no new paint came for one canvas frame.
+- Preferences: a section taller than the dialog scrolls (Canvas & display
+  ran over: the last lines were drawn over each other).
+
+**Undo**
+- A stroke is recorded as the tiles it changed, each compressed, instead
+  of the whole box around it. Measured on a 2000 × 3000 canvas, 300 px
+  round pen (sandbox, 2 cores, three runs each):
+  - diagonal stroke, empty layer: end of stroke 19.8–27.3 → 1.4 ms, undo
+    85.6–100.5 → 2.3 ms, redo 35.1–43.6 → 3.7 ms;
+  - diagonal stroke, painted layer: end of stroke 40–56 → 4.7–7.4 ms,
+    undo 55–84 → 10–17 ms, redo 58–98 → 9–15 ms, undo memory 3.1 MB →
+    0.8 MB;
+  - horizontal stroke, painted layer (its box fits it already): end of
+    stroke 4.8–6.4 → 2.2–2.8 ms, undo and redo about the same, undo
+    memory +19 % (tiles compress a little less well one by one).
+- An undone stroke is shown again tile row by tile row, not as its box.
+- A stroke that changed nothing (erasing nothing) leaves no undo step;
+  the sheet made for it goes.
+- Files: the steps are saved the same way, in the same format version.
+  Older versions skip those undo steps (the document opens as before).
+
 ## 0.19.3 — 2026-10-28
 
 Measure everything with Tracy, keep a report of every crash, a faster

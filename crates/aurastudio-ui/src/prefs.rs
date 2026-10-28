@@ -72,6 +72,10 @@ pub struct Prefs {
     /// Frames shown in step with the screen (no tearing, a little more
     /// latency); off: as soon as drawn.
     pub vsync:            bool,
+    /// How many times per second the canvas is shown while it changes
+    /// (painting, the brush outline moving). More: a little less latency,
+    /// more work; more than the screen's refresh rate is never seen.
+    pub canvas_fps:       u32,
     // Brushes and input.
     /// The brush outline replaces the cursor over the canvas (off: a
     /// crosshair).
@@ -101,7 +105,7 @@ impl Default for Prefs {
         Self {
             ui_scale: 1.0, brush_previews: true, open_maximized: true,
             hidpi_scaling: true, color_managed: true, perceptual: true, renderer: Renderer::default(),
-            canvas_quality: CanvasQuality::High, smooth_zoom_in: false, vsync: false,
+            canvas_quality: CanvasQuality::High, smooth_zoom_in: false, vsync: false, canvas_fps: 60,
             brush_outline: true, debounce_ms: 20,
             autosave_minutes: 5,
             onion_before: [255, 0, 0], onion_after: [0, 255, 0], onion_thickness: 50, onion_playback: false, onion_by_frames: false,
@@ -113,6 +117,8 @@ impl Default for Prefs {
 pub const UI_SCALES: [f32; 6] = [0.75, 0.85, 1.0, 1.1, 1.25, 1.5];
 const DEBOUNCES: [u32; 7] = [0, 10, 20, 30, 40, 60, 80];
 const AUTOSAVES: [u32; 7] = [0, 1, 2, 5, 10, 15, 30];
+/// Canvas frame rates offered (lowest, highest).
+pub const CANVAS_FPS: (u32, u32) = (24, 240);
 
 impl Prefs {
     pub fn from_text(text: &str) -> Self {
@@ -132,6 +138,7 @@ impl Prefs {
                 "canvas_quality" => p.canvas_quality = if v == "standard" { CanvasQuality::Standard } else { CanvasQuality::High },
                 "smooth_zoom_in" => p.smooth_zoom_in = b,
                 "vsync" => p.vsync = v == "true",
+                "canvas_fps" => if let Ok(v) = v.parse::<u32>() { p.canvas_fps = v.clamp(CANVAS_FPS.0, CANVAS_FPS.1) },
                 "brush_outline" => p.brush_outline = b,
                 "click_debounce_ms" => if let Ok(v) = v.parse::<u32>() { p.debounce_ms = v.min(200) },
                 "autosave_minutes" => if let Ok(v) = v.parse::<u32>() { p.autosave_minutes = v.min(120) },
@@ -148,10 +155,10 @@ impl Prefs {
 
     pub fn to_text(&self) -> String {
         format!(
-            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\nonion_by={}\n",
+            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\ncanvas_fps={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\nonion_by={}\n",
             self.ui_scale, self.brush_previews, self.open_maximized, self.hidpi_scaling, self.color_managed,
             self.perceptual, self.renderer.key(),
-            if self.canvas_quality == CanvasQuality::Standard { "standard" } else { "high" }, self.smooth_zoom_in, self.vsync,
+            if self.canvas_quality == CanvasQuality::Standard { "standard" } else { "high" }, self.smooth_zoom_in, self.vsync, self.canvas_fps,
             self.brush_outline, self.debounce_ms, self.autosave_minutes,
             hex(self.onion_before), hex(self.onion_after), self.onion_thickness, self.onion_playback,
             if self.onion_by_frames { "frames" } else { "sheets" },
@@ -210,13 +217,17 @@ pub fn dialog(ctx: &egui::Context, section: &mut Section, p: &mut Prefs, profile
                 ui.painter().vline(line.center().x, line.y_range(), egui::Stroke::new(1.0_f32, theme::BORDER));
                 ui.vertical(|ui| {
                     ui.set_height(H);
-                    match section {
-                        Section::Interface => interface(ui, p, reset_docks),
-                        Section::Display => display(ui, p, profile, in_use),
-                        Section::Brushes => brushes(ui, p),
-                        Section::Animation => animation(ui, p),
-                        Section::Files => files(ui, p),
-                    }
+                    // A section taller than that scrolls (the dialog keeps
+                    // its size).
+                    egui::ScrollArea::vertical().id_salt(("prefs", *section as u8)).max_height(H).auto_shrink([false, true]).show(ui, |ui| {
+                        match section {
+                            Section::Interface => interface(ui, p, reset_docks),
+                            Section::Display => display(ui, p, profile, in_use),
+                            Section::Brushes => brushes(ui, p),
+                            Section::Animation => animation(ui, p),
+                            Section::Files => files(ui, p),
+                        }
+                    });
                 });
             });
             ui.add_space(12.0);
@@ -286,6 +297,9 @@ fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>, in_use: &str) {
     title(ui, "Screen sync");
     ui.checkbox(&mut p.vsync, "Show frames in step with the screen (V-Sync)");
     note(ui, "Off: lowest pen latency, a tear may show while panning.");
+    title(ui, "Canvas frame rate");
+    ui.add(egui::Slider::new(&mut p.canvas_fps, CANVAS_FPS.0..=CANVAS_FPS.1).suffix(" fps"));
+    note(ui, "While painting. Your screen's refresh rate is enough; higher: a little less latency, more work.");
     title(ui, "Color management");
     note(ui, &format!("Monitor profile: {}", profile.unwrap_or("none found (sRGB)")));
     ui.add_enabled_ui(profile.is_some(), |ui| {
@@ -350,13 +364,15 @@ mod tests {
     #[test]
     fn prefs_round_trip_and_old_files_read() {
         let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl,
-            canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true,
+            canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true, canvas_fps: 144,
             onion_before: [12, 200, 255], onion_after: [250, 128, 0], onion_thickness: 73, onion_playback: true, onion_by_frames: true, ..Prefs::default() };
         assert_eq!(Prefs::from_text(&p.to_text()), p);
         // A 0.7 settings file.
         let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");
         assert_eq!((old.hidpi_scaling, old.ui_scale, old.debounce_ms, old.autosave_minutes), (false, 0.85, 30, 5));
-        assert_eq!((old.canvas_quality, old.smooth_zoom_in, old.vsync), (CanvasQuality::High, false, false));
+        assert_eq!((old.canvas_quality, old.smooth_zoom_in, old.vsync, old.canvas_fps), (CanvasQuality::High, false, false, 60));
+        assert_eq!(Prefs::from_text("canvas_fps=5\n").canvas_fps, CANVAS_FPS.0);
+        assert_eq!(Prefs::from_text("canvas_fps=1000\n").canvas_fps, CANVAS_FPS.1);
         assert_eq!((old.onion_before, old.onion_after, old.onion_thickness), ([255, 0, 0], [0, 255, 0], 50));
     }
 
