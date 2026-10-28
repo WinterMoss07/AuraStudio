@@ -97,7 +97,7 @@ impl TabViewer for Viewer<'_, '_> {
 
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText { tab.title().into() }
 
-    fn id(&mut self, tab: &mut Tab) -> egui::Id { egui::Id::new(("dock_tab", tab.title())) }
+    fn id(&mut self, tab: &mut Tab) -> egui::Id { egui::Id::unique(("dock_tab", tab.title())) }
 
     // Docks stay in the dock column (no floating windows).
     fn allowed_in_windows(&self, _tab: &mut Self::Tab) -> bool { false }

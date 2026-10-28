@@ -335,7 +335,7 @@ pub fn start_screen(ctx: &egui::Context, area: Rect, recent: &mut [RecentFile], 
             r.thumb = Some(ctx.load_texture(format!("recent-{}", r.path.display()), img, egui::TextureOptions::LINEAR));
         }
     }
-    egui::Area::new(egui::Id::new("start_screen"))
+    egui::Area::new(egui::Id::unique("start_screen"))
         .fixed_pos(area.min)
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
@@ -373,7 +373,7 @@ pub fn start_screen(ctx: &egui::Context, area: Rect, recent: &mut [RecentFile], 
 }
 
 fn big_button(ui: &Ui, rect: Rect, text: &str, key: &str, primary: bool) -> bool {
-    let resp = ui.interact(rect, ui.id().with(text), Sense::click());
+    let resp = ui.interact(rect, ui.scope_id().with(text), Sense::click());
     let p = ui.painter();
     let hover = resp.hovered();
     if primary {

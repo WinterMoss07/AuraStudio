@@ -1133,7 +1133,7 @@ fn ask_dialog(ctx: &egui::Context, st: &mut AnimPanel, m: &mut Model, a: &mut Ac
     let Some(Ask { folder, frames, delta, copy }) = st.ask.clone() else { return };
     let name = m.layers.node(folder).map_or(String::new(), |n| n.name().to_owned());
     let mut answer = None;
-    egui::Modal::new(egui::Id::new("anim_onto")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("anim_onto")).show(ctx, |ui| {
         ui.set_width(340.0);
         ui.label(RichText::new(format!("Some sheets of {name} are in the way")).strong());
         ui.add_space(4.0);
@@ -1191,7 +1191,7 @@ mod tests {
         for k in 0..3 {
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), time: Some(k as f64 * 0.1), ..Default::default() };
             crate::test_pass(&ctx, input, |root| {
-                let r = egui::Area::new(egui::Id::new("menu_test")).fixed_pos(pos2(100.0, 100.0)).show(root.ctx(), |ui| {
+                let r = egui::Area::new(egui::Id::unique("menu_test")).fixed_pos(pos2(100.0, 100.0)).show(root.ctx(), |ui| {
                     ui.set_min_width(MENU_W);
                     let _ = ui.button("I");
                 });

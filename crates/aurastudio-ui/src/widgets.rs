@@ -148,7 +148,7 @@ pub fn channel_row(
         egui::FontId::proportional(12.0), theme::TEXT_WEAK);
 
     let mut changed = false;
-    let resp = ui.interact(rect, ui.id().with(("channel", label)), Sense::click_and_drag());
+    let resp = ui.interact(rect, ui.scope_id().with(("channel", label)), Sense::click_and_drag());
     if let Some(p) = resp.interact_pointer_pos() {
         let t = snap(((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0), display_max);
         if (t - *value).abs() > f32::EPSILON {
@@ -202,7 +202,7 @@ pub fn drag_ghost(ctx: &egui::Context, text: &str) {
     // The hand closes on what it carries (as on the canvas when panning).
     ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     let Some(p) = ctx.pointer_interact_pos() else { return };
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("drag_ghost")));
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("drag_ghost")));
     let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.0), theme::TEXT);
     let r = Rect::from_min_size(p + vec2(14.0, 6.0), galley.size() + vec2(12.0, 6.0));
     painter.rect_filled(r, 2.0, theme::ACCENT_DIM);
@@ -287,7 +287,7 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
     let to_t = |v: f32| match mid { Some(m) => size_curve::to_t(v, lo, m, hi), None => (v - lo) / (hi - lo) };
     let from_t = |t: f32| match mid { Some(m) => size_curve::from_t(t, lo, m, hi), None => lo + t * (hi - lo) };
 
-    let id = ui.id().with(("fill_slider", id_salt));
+    let id = ui.scope_id().with(("fill_slider", id_salt));
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 18.0), Sense::click_and_drag());
     let editing_id = id.with("editing");
     // (text typed so far, focus already given)
@@ -298,8 +298,7 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
         let edit = ui.put(rect, egui::TextEdit::singleline(&mut text)
             .frame(egui::Frame::NONE)
             .hint_text(format(value))
-            .horizontal_align(egui::Align::Center)
-            .vertical_align(egui::Align::Center));
+            .align(egui::Align2::CENTER_CENTER));
         // Focus once: asked every frame, it came straight back after a
         // click elsewhere and only Escape could close the field.
         if !focused { edit.request_focus(); }

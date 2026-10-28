@@ -113,6 +113,7 @@ fn ui_events(r: &mut Rng, pointer: &mut Pos2, held: &mut Option<PointerButton>) 
             unit: egui::MouseWheelUnit::Line,
             delta: vec2(0.0, r.range(-5.0, 5.0)),
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
             modifiers: mods,
         }),
         // Typing: digits, text, Enter, Escape, Delete, Tab...

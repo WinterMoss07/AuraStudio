@@ -269,7 +269,7 @@ pub const TOOLBOX_WIDTH: f32 = 34.0;
 /// of the canvas's left edge. Returns its rect.
 pub fn toolbox(ctx: &egui::Context, at: Pos2, m: &mut Model) -> Rect {
     let r = theme::CANVAS_ROUNDING;
-    let id = egui::Id::new("toolbox");
+    let id = egui::Id::unique("toolbox");
     // Above the start screen, which covers the whole canvas area.
     ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
     egui::Area::new(id)
@@ -631,7 +631,7 @@ fn draw_loupe(ctx: &egui::Context, painter: &egui::Painter, l: &Loupe, pt: &dyn 
     };
     // The pixels, as a texture kept between frames.
     let image = egui::ColorImage::from_rgba_unmultiplied([l.side as usize, l.side as usize], l.rgba);
-    let id = egui::Id::new("aurastudio_loupe");
+    let id = egui::Id::unique("aurastudio_loupe");
     let tex = match ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         Some(mut t) => { t.set(image, egui::TextureOptions::NEAREST); t }
         None => {

@@ -1,5 +1,9 @@
 # Opens a pull request when a dependency has a new version; the Build
-# workflow checks it. Minor and patch updates come grouped in one PR.
+# workflow checks it. The egui crates move together (each alone doesn't
+# build: egui, egui-wgpu, egui-winit, egui_extras and the vendored
+# egui_dock share one version): one PR for all of them, whatever the
+# update. Other minor and patch updates come grouped in one PR; the CI's
+# actions, one PR a month for all of them.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -8,9 +12,14 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      egui:
+        patterns: ["egui", "egui-*", "egui_*", "epaint", "emath", "ecolor"]
       minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

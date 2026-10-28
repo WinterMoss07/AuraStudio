@@ -388,7 +388,7 @@ mod tests {
                 ..Default::default()
             };
             crate::test_pass(&ctx, input, |root| { dialog(root.ctx(), &mut section, &mut p, None, "Vulkan", &mut reset); });
-            heights.push(ctx.memory(|m| m.area_rect(egui::Id::new("preferences"))).map_or(0.0, |r| r.height()));
+            heights.push(ctx.memory(|m| m.area_rect(egui::Id::unique("preferences"))).map_or(0.0, |r| r.height()));
         }
         assert!(heights[39] > 100.0 && heights[39] < 600.0, "{heights:?}");
         assert_eq!(heights[10], heights[39], "grew: {heights:?}");

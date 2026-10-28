@@ -218,7 +218,7 @@ impl Screen {
                     if let Some(f) = ui_fn.take() { f(ui); }
                     // The canvas card the UI laid out, or what's left of
                     // the window.
-                    free_rect = Some(ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("aurastudio_canvas_rect")))
+                    free_rect = Some(ui.data(|d| d.get_temp::<egui::Rect>(egui::Id::unique("aurastudio_canvas_rect")))
                         .unwrap_or_else(|| ui.available_rect_before_wrap()));
                 });
                 // When egui wants its next frame (the app schedules it).

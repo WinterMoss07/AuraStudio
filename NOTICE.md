@@ -70,7 +70,9 @@ dragged shows a bar on the edge where it would be inserted, and the tab
 bar of the dock it would join lights up (`drag_and_drop.rs`); the pointer
 stays an arrow over a tab, the hand only while dragging (`leaf.rs`); the
 `paste` macro (an unmaintained crate) replaced by plain names in
-`show/mod.rs`. Used through `[patch.crates-io]`.
+`show/mod.rs`; built against egui 0.37 (no egui_dock release for it yet:
+`Id::unique` and `Ui::scope_id` for egui's renamed ones). Used through
+`[patch.crates-io]`.
 
 ## Lucide icons
 

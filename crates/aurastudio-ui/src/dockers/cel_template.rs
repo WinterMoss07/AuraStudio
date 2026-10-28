@@ -217,7 +217,7 @@ fn ask_dialog(ctx: &egui::Context, st: &mut CelState, m: &mut Model, a: &mut Act
     let (sheets, drawn) = m.layers.cel_content(folder, r);
     let mut delete = false;
     let mut cancel = false;
-    egui::Modal::new(egui::Id::new("cel_delete")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("cel_delete")).show(ctx, |ui| {
         ui.set_width(340.0);
         ui.label(RichText::new(format!("Delete cel {name}?")).strong());
         ui.add_space(4.0);

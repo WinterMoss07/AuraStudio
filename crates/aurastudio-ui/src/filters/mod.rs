@@ -150,7 +150,7 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
     }
     let title = match d.target { Target::Layer => kind.name().to_string(), Target::FilterLayer { .. } => format!("{} (filter layer)", kind.name()) };
     egui::Window::new(title)
-        .id(egui::Id::new("filter_dialog"))
+        .id(egui::Id::unique("filter_dialog"))
         .collapsible(false)
         .resizable(false)
         // (Placed by its left top corner: with a right top pivot, egui

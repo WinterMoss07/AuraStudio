@@ -228,7 +228,7 @@ pub fn slider(ui: &mut Ui, id: &str, spec: Spec, v: &mut f32) -> bool {
             ui.add(egui::DragValue::new(v).range(lo..=hi).speed(((hi - lo) / 400.0).max(step)).fixed_decimals(decimals));
         });
     });
-    let id = ui.id().with(("filter_slider", id));
+    let id = ui.scope_id().with(("filter_slider", id));
     let (r, resp) = ui.allocate_exact_size(vec2(WIDTH, 18.0), Sense::click_and_drag());
     let bar = Rect::from_min_max(pos2(r.left() + 7.0, r.top() + 2.0), pos2(r.right() - 7.0, r.top() + 9.0));
     let to_t = |v: f32| ((v - lo) / (hi - lo)).clamp(0.0, 1.0).powf(1.0 / pow);

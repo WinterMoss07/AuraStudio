@@ -504,7 +504,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
 
 /// A modal dialog in the app's frame.
 fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
-    egui::Modal::new(egui::Id::new(id))
+    egui::Modal::new(egui::Id::unique(id))
         .frame(egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(18)).corner_radius(theme::CANVAS_ROUNDING))
 }
 
@@ -624,7 +624,7 @@ fn canvas_card(ctx: &egui::Context, free: egui::Rect, model: &mut Model) -> Opti
     // From the window's left edge (the toolbox sits on it).
     let card = Rect::from_min_max(free.min, pos2(free.right(), free.bottom() - g));
     if card.width() <= 0.0 || card.height() <= 0.0 { return None; }
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new(CANVAS_RECT_ID), card));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CANVAS_RECT_ID), card));
     let tools = tools::toolbox(ctx, card.left_center(), model);
 
     let painter = ctx.layer_painter(egui::LayerId::background());
