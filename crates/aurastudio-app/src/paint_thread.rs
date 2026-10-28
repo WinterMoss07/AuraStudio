@@ -1380,6 +1380,64 @@ mod tests {
         }
     }
 
+    /// Several strokes in a row with a big Round pen on an A4 300 dpi page,
+    /// each committed for undo as in the app: per stroke, painting and
+    /// merge time, how far behind a 200 Hz pen.
+    /// cargo test --release -p aurastudio -- --ignored stroke_after_stroke --nocapture
+    #[test]
+    #[ignore]
+    fn stroke_after_stroke_benchmark() {
+        let lib = aurastudio_forge_library::Library::load(None);
+        let name = std::env::var("BRUSH").unwrap_or("Round pen".into());
+        let radius: f32 = std::env::var("RADIUS").ok().and_then(|r| r.parse().ok()).unwrap_or(500.0);
+        let preset = lib.presets.iter().find(|p| p.name == name).unwrap();
+        let (w, h) = (3508u32, 4961u32);
+        let mut d = Document::new(DocId(1), "b", w, h);
+        let id = d.layers.add_layer("ink");
+        d.layers.set_active(id);
+        let strokes: usize = std::env::var("STROKES").ok().and_then(|r| r.parse().ok()).unwrap_or(4);
+        for stroke in 0..strokes {
+            assert!(d.layers.begin_stroke(id));
+            let mut brush = Brush::new();
+            brush.radius = radius;
+            let mut e = Forge::new((*preset.brush).clone());
+            e.sync_from(&brush);
+            e.begin_stroke();
+            let (mut paint, mut merge, mut slowest, mut slowest_at) = (0.0f64, 0.0f64, 0.0f64, 0);
+            let (mut clock, mut last_merge, mut behind) = (0.0f64, 0.0f64, 0.0f64);
+            let mut pending: Option<aurastudio_core::Rect> = None;
+            let y0 = 1200.0 + stroke as f32 * 300.0;
+            for i in 0..150 {
+                let t = i as f32 / 150.0;
+                let p = PenSample::new(600.0 + t * 2200.0, y0 + (t * 6.0).sin() * 200.0, (t * 4.0).min(1.0), i as f64 * 0.005);
+                let t0 = Instant::now();
+                let r = { let mut s = d.layers.layer_surface(id).unwrap(); e.stroke_to(&mut s, p) };
+                let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                paint += ms;
+                if ms > slowest { slowest = ms; slowest_at = i; }
+                if let Some(r) = r { pending = Some(pending.map_or(r, |q| union(q, r))); }
+                clock = clock.max(i as f64 * 5.0) + ms;
+                if clock - last_merge >= 16.7 {
+                    if let Some(r) = pending.take() {
+                        let t1 = Instant::now();
+                        std::hint::black_box(d.layers.composite_rect_stroke(r));
+                        let m = t1.elapsed().as_secs_f64() * 1000.0;
+                        merge += m;
+                        clock += m;
+                    }
+                    last_merge = clock;
+                }
+                behind = f64::max(behind, clock - i as f64 * 5.0);
+            }
+            let t2 = Instant::now();
+            { let mut s = d.layers.layer_surface(id).unwrap(); e.end_stroke(&mut s); }
+            d.commit_stroke(id);
+            d.layers.end_stroke();
+            let commit = t2.elapsed().as_secs_f64() * 1000.0;
+            println!("stroke {stroke}: paint {paint:6.0} ms (slowest {slowest:5.1} at #{slowest_at:3}), merge {merge:5.0} ms, behind up to {behind:5.0} ms, commit {commit:5.1} ms");
+        }
+    }
+
     /// GUI side of the benchmark: copy the finished rectangles (stands for the
     /// GPU upload, which copies them into wgpu's staging memory).
     fn gui_show_painted(projection: &SharedProjection, screen: &mut [u8]) {
