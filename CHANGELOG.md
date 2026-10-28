@@ -3,6 +3,38 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.19.5 — 2026-10-28
+
+Big brushes keep up with the pen at the start of a stroke; dependencies
+up to date.
+
+**Big brushes**
+- Smudge brushes read the colors under the dab (libmypaint's get_color)
+  over its whole area, pixel by pixel, on one core. At the start of a
+  stroke the pen is light and slow: many brushes then sample at every
+  dab (smudge length by pressure) and draw bigger dabs (radius by
+  speed), so a big brush fell behind the pen for about a second, then
+  caught up. The sampling now runs on several cores, tile by tile, as
+  libmypaint's own does; the result is the same to the bit (tested
+  against the previous code).
+- The tiles a big dab covers are now also blended on several cores (only
+  its masks were); same pixels as before (every catalog brush painted at
+  300 px compared with the previous version: identical).
+- Measured, 800 px brushes over a 2000 × 3000 picture, pen at 200 Hz
+  (sandbox, 2 cores; more cores, more gain): Blending knife 276 → 81 ms
+  behind the pen after a quarter second, slowest sample 84 → 38 ms;
+  Halftone 130 → 12 ms per sample; Fountain pen 1.4 → 0.8 s behind;
+  Watercolor glazing, after 1.5 s, 7.5 → 5.0 s behind.
+- A stroke that falls more than 100 ms behind the pen is logged when it
+  ends: how far behind, the slowest sample and merge. The "UI waited …
+  for the document" warning names the brush and its size.
+
+**Dependencies**
+- egui 0.37 (egui-wgpu, egui-winit, egui_extras; the vendored egui_dock
+  adapted), tiny-skia 0.12, CI actions v7.
+- Dependabot: the egui crates in one pull request, other minor and patch
+  updates in one, the CI actions in one a month.
+
 ## 0.19.4 — 2026-10-28
 
 The display follows the screen instead of the pen; strokes are undone

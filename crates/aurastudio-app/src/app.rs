@@ -1909,7 +1909,8 @@ impl App {
             (false, Some(t)) if run_ui => {
                 self.ui_blocked_since = None;
                 if t.elapsed() > Duration::from_millis(100) {
-                    log::warn!("UI waited {:.0} ms for the document (paint thread busy)", t.elapsed().as_secs_f64() * 1000.0);
+                    log::warn!("UI waited {:.0} ms for the document (paint thread busy; brush {}, {:.0} px)", t.elapsed().as_secs_f64() * 1000.0,
+                        self.library.presets.get(self.preset).map_or("?", |p| p.name.as_str()), self.brush.radius * 2.0);
                 }
             }
             _ => {}

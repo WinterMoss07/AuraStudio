@@ -225,6 +225,43 @@ struct Worker {
     limit:    Option<aurastudio_selection::Selection>,
     /// Playback tiles still to make.
     play:     Option<PlayJob>,
+    /// How the open stroke kept up with the pen (logged when it didn't).
+    pace:     StrokePace,
+}
+
+/// Painting time of a stroke against the pen's: a stroke that fell behind
+/// is logged with what took the time (a sample: the brush; a merge: the
+/// layers under and over it).
+#[derive(Default)]
+struct StrokePace {
+    /// When the first sample was painted, and its pen time.
+    start:    Option<(Instant, f64)>,
+    samples:  u32,
+    painting: Duration,
+    slowest:  (Duration, u32),
+    slowest_merge: Duration,
+    /// Most behind the pen, and at which sample.
+    behind:   (Duration, u32),
+}
+
+impl StrokePace {
+    fn sample(&mut self, pen_time: f64, took: Duration) {
+        let now = Instant::now();
+        let (t0, p0) = *self.start.get_or_insert((now - took, pen_time));
+        self.samples += 1;
+        self.painting += took;
+        if took > self.slowest.0 { self.slowest = (took, self.samples); }
+        let behind = (now - t0).saturating_sub(Duration::from_secs_f64((pen_time - p0).max(0.0)));
+        if behind > self.behind.0 { self.behind = (behind, self.samples); }
+    }
+
+    /// The stroke is over: what to say about it (nothing if it kept up).
+    fn report(&self) -> Option<String> {
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        (self.behind.0 > Duration::from_millis(100)).then(|| format!(
+            "stroke behind the pen by up to {:.0} ms (sample {} of {}): {:.0} ms painting in all, slowest sample {:.0} ms (#{}), slowest merge {:.0} ms",
+            ms(self.behind.0), self.behind.1, self.samples, ms(self.painting), ms(self.slowest.0), self.slowest.1, ms(self.slowest_merge)))
+    }
 }
 
 /// The parts of a playback plan left to make.
@@ -317,6 +354,7 @@ impl Worker {
             limit_params: None,
             limit: None,
             play: None,
+            pace: StrokePace::default(),
         }
     }
 
@@ -462,7 +500,9 @@ impl Worker {
                         }
                     }
                     Cmd::Sample(p) => {
+                        let t = Instant::now();
                         let r = self.with_doc(|w, d| w.sample(d, p)).flatten();
+                        if self.active { self.pace.sample(p.time, t.elapsed()); }
                         if let Some(r) = r {
                             add_rect(&mut self.pending, r);
                             self.stroke_rect = Some(self.stroke_rect.map_or(r, |s| union(s, r)));
@@ -619,6 +659,7 @@ impl Worker {
 
     /// End the open stroke (recorded for undo) and report its layer.
     fn finish_stroke(&mut self, events: &mut Vec<Event>) {
+        if let Some(r) = std::mem::take(&mut self.pace).report() { log::warn!("{r}"); }
         if let Some((rect, whole, id)) = self.with_doc(Worker::end).flatten() {
             if let Some(r) = rect { add_rect(&mut self.pending, r); }
             events.push(Event::LayerChanged { layer_id: id, rect: whole });
@@ -643,7 +684,9 @@ impl Worker {
         } else {
             rects
         };
+        let t = Instant::now();
         let patches: Vec<_> = rects.into_iter().map(|r| (r, d.layers.composite_rect_stroke(r))).collect();
+        if self.active { self.pace.slowest_merge = self.pace.slowest_merge.max(t.elapsed()); }
         let mut p = self.projection.lock().unwrap();
         if (p.width, p.height) != (w, h) { return; }
         for (r, rgba) in patches {
@@ -1272,6 +1315,71 @@ mod tests {
         }
     }
 
+    /// Start of a big stroke, over a picture: time of each pen sample and
+    /// of each merge shown (one per canvas frame), in order.
+    /// cargo test --release -p aurastudio -- --ignored stroke_start --nocapture
+    #[test]
+    #[ignore]
+    fn stroke_start_benchmark() {
+        let lib = aurastudio_forge_library::Library::load(None);
+        let only = std::env::var("BRUSH").ok();
+        let radius: f32 = std::env::var("RADIUS").ok().and_then(|r| r.parse().ok()).unwrap_or(400.0);
+        let step: f32 = std::env::var("STEP").ok().and_then(|r| r.parse().ok()).unwrap_or(8.0);
+        let verbose = std::env::var("VERBOSE").is_ok();
+        let (w, h) = (2000u32, 3000u32);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for (i, p) in px.chunks_exact_mut(4).enumerate() {
+            let v = (i as u32).wrapping_mul(2654435761);
+            p.copy_from_slice(&[(v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8, 255]);
+        }
+        for preset in &lib.presets {
+            if only.as_ref().is_some_and(|o| *o != preset.name) { continue; }
+            let mut d = Document::new(DocId(1), "b", w, h);
+            let pic = d.layers.add_layer("picture");
+            assert!(d.layers.set_layer_rect(pic, (0, 0, w, h), &px));
+            let id = d.layers.add_layer("ink");
+            d.layers.set_active(id);
+            assert!(d.layers.begin_stroke(id));
+            let mut brush = Brush::new();
+            brush.radius = radius;
+            let mut e = Forge::new((*preset.brush).clone());
+            e.sync_from(&brush);
+            e.begin_stroke();
+            let mut pending: Option<aurastudio_core::Rect> = None;
+            let (mut last_merge, mut clock, mut worst, mut worst_at) = (0.0f64, 0.0f64, 0.0f64, 0);
+            let mut late = Vec::new();
+            let samples: usize = std::env::var("SAMPLES").ok().and_then(|r| r.parse().ok()).unwrap_or(300);
+            for i in 0..samples {
+                let t = i as f32 / 300.0;
+                let p = PenSample::new(300.0 + i as f32 * step * 0.8, 1500.0 + (t * 6.0).sin() * step * 30.0, 0.3 + 0.7 * (t * 3.0).min(1.0), i as f64 * 0.005);
+                let t0 = Instant::now();
+                let r = { let mut s = d.layers.layer_surface(id).unwrap(); e.stroke_to(&mut s, p) };
+                let paint = t0.elapsed().as_secs_f64() * 1000.0;
+                if paint > worst { worst = paint; worst_at = i; }
+                if let Some(r) = r { pending = Some(pending.map_or(r, |q| union(q, r))); }
+                clock = clock.max(i as f64 * 5.0) + paint;
+                let mut merge = 0.0;
+                if clock - last_merge >= 16.7 {
+                    if let Some(r) = pending.take() {
+                        let t1 = Instant::now();
+                        std::hint::black_box(d.layers.composite_rect_stroke(r));
+                        merge = t1.elapsed().as_secs_f64() * 1000.0;
+                        if merge > worst { worst = merge; worst_at = i; }
+                        clock += merge;
+                    }
+                    last_merge = clock;
+                }
+                late.push(clock - i as f64 * 5.0);
+                if verbose && (paint > 10.0 || merge > 10.0) {
+                    println!("  #{i:3} pen {:6.0} ms  done {clock:6.0} ms  paint {paint:6.1}  merge {merge:6.1}", i as f64 * 5.0);
+                }
+            }
+            let at = |ms: usize| late.get(ms / 5).copied().unwrap_or(0.0);
+            println!("{:>22} | worst hold {worst:6.1} ms at #{worst_at:3} | behind the pen at 0.25 s {:6.0}, 0.5 s {:6.0}, 1 s {:6.0}, 1.5 s {:6.0} ms",
+                preset.name, at(250), at(500), at(1000), at(1495));
+        }
+    }
+
     /// GUI side of the benchmark: copy the finished rectangles (stands for the
     /// GPU upload, which copies them into wgpu's staging memory).
     fn gui_show_painted(projection: &SharedProjection, screen: &mut [u8]) {
@@ -1297,6 +1405,24 @@ mod tests {
 mod ui_turn_tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    /// A stroke that kept up says nothing; one that fell behind the pen
+    /// says by how much, and where the time went.
+    #[test]
+    fn a_stroke_behind_the_pen_is_reported() {
+        let mut pace = StrokePace::default();
+        for i in 0..5 { pace.sample(i as f64 * 0.005, Duration::from_millis(1)); }
+        assert!(pace.report().is_none());
+        // Pen 5 ms apart, each sample painted in 60 ms: behind from the start.
+        let mut pace = StrokePace::default();
+        let t = Instant::now();
+        for i in 0..4 {
+            while t.elapsed() < Duration::from_millis(60 * (i + 1)) { std::thread::sleep(Duration::from_millis(1)); }
+            pace.sample(i as f64 * 0.005, Duration::from_millis(60));
+        }
+        let r = pace.report().expect("behind the pen");
+        assert!(r.contains("slowest sample 60 ms"), "{r}");
+    }
 
     /// The paint thread holds back while the interface asks, for a few
     /// milliseconds at most, and not at all otherwise.

@@ -271,8 +271,7 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
     let mut painted = false;
     let threads = mask_threads(tiles.len());
     if threads > 1 {
-        // A big dab: the masks (most of its cost) on several cores, then
-        // blended in order. The same pixels as one by one.
+        // A big dab: the masks (most of its cost) on several cores.
         if masks.len() < tiles.len() { masks.resize_with(tiles.len(), Vec::new); }
         let per = tiles.len().div_ceil(threads);
         rayon::scope(|sc| {
@@ -280,11 +279,23 @@ pub fn draw_dab_default<S: TiledSurface + ?Sized>(surface: &mut S, dab: &Dab) ->
                 sc.spawn(move |_| for (t, m) in chunk.iter().zip(out.iter_mut()) { mask_of(m, *t) });
             }
         });
-        for (&(tx, ty), m) in tiles.iter().zip(&masks) {
-            if m.is_empty() { continue; }
-            blend(surface.tile_request_start(tx, ty), m);
-            surface.tile_request_end(tx, ty);
-            painted = true;
+        // (Only the tiles the dab covers: the others stay untouched.)
+        let todo: Vec<usize> = (0..tiles.len()).filter(|&i| !masks[i].is_empty()).collect();
+        painted = !todo.is_empty();
+        let want: Vec<(i32, i32)> = todo.iter().map(|&i| tiles[i]).collect();
+        match surface.tiles_mut(&want) {
+            // Then blended on several cores too: each tile on its own,
+            // the same pixels as one by one.
+            Some(mut targets) => {
+                use rayon::prelude::*;
+                let (masks, todo) = (&masks, &todo);
+                targets.par_iter_mut().for_each(|(j, tile)| blend(tile, &masks[todo[*j]]));
+            }
+            None => for (&(tx, ty), m) in tiles.iter().zip(&masks) {
+                if m.is_empty() { continue; }
+                blend(surface.tile_request_start(tx, ty), m);
+                surface.tile_request_end(tx, ty);
+            },
         }
     } else {
         if masks.is_empty() { masks.push(Vec::new()); }
@@ -842,33 +853,40 @@ pub fn get_color_default<S: TiledSurface + ?Sized>(
     let ty0 = ((y - r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
     let ty1 = ((y + r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
 
-    let mut sum_weight = 0.0_f32;
-    let mut sum_r = 0.0_f32;
-    let mut sum_g = 0.0_f32;
-    let mut sum_b = 0.0_f32;
-    let mut sum_a = 0.0_f32;
-
-    for ty in ty0..=ty1 {
-        for tx in tx0..=tx1 {
-            let tile_opt = surface.tile_lookup(tx, ty);
-            // Per-tile u32 accumulators, like get_color_pixels_legacy.
-            let (mut weight, mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32, 0u32);
-            for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| {
-                weight += mask;
-                if let Some(tile) = tile_opt {
-                    let p = tile[ly][lx];
-                    r += mask * p[0] as u32 / ONE;
-                    g += mask * p[1] as u32 / ONE;
-                    b += mask * p[2] as u32 / ONE;
-                    a += mask * p[3] as u32 / ONE;
-                }
-            });
-            sum_weight += weight as f32;
-            sum_r += r as f32;
-            sum_g += g as f32;
-            sum_b += b as f32;
-            sum_a += a as f32;
-        }
+    // Per tile, u32 sums like get_color_pixels_legacy; a big area on
+    // several cores (as libmypaint's OpenMP loop), added up in tile order:
+    // the same result as one by one.
+    let tiles: Vec<(i32, i32, Option<&TilePixels>)> = (ty0..=ty1)
+        .flat_map(|ty| (tx0..=tx1).map(move |tx| (tx, ty)))
+        .map(|(tx, ty)| (tx, ty, surface.tile_lookup(tx, ty)))
+        .collect();
+    let tile_sums = |&(tx, ty, tile_opt): &(i32, i32, Option<&TilePixels>)| {
+        let (mut weight, mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32, 0u32);
+        for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| {
+            weight += mask;
+            if let Some(tile) = tile_opt {
+                let p = tile[ly][lx];
+                r += mask * p[0] as u32 / ONE;
+                g += mask * p[1] as u32 / ONE;
+                b += mask * p[2] as u32 / ONE;
+                a += mask * p[3] as u32 / ONE;
+            }
+        });
+        [weight, r, g, b, a]
+    };
+    let sums: Vec<[u32; 5]> = if mask_threads(tiles.len()) > 1 {
+        use rayon::prelude::*;
+        tiles.par_iter().map(tile_sums).collect()
+    } else {
+        tiles.iter().map(tile_sums).collect()
+    };
+    let (mut sum_weight, mut sum_r, mut sum_g, mut sum_b, mut sum_a) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+    for [weight, r, g, b, a] in sums {
+        sum_weight += weight as f32;
+        sum_r += r as f32;
+        sum_g += g as f32;
+        sum_b += b as f32;
+        sum_a += a as f32;
     }
 
     if sum_weight <= 0.0 {
@@ -926,45 +944,60 @@ pub fn get_color_pigment_default<S: TiledSurface + ?Sized>(
     let mut avg_spectral = rgb_to_spectral(0.0, 0.0, 0.0);
     let mut avg_rgb = [0.0_f32; 3];
 
-    for ty in ty0..=ty1 {
-        for tx in tx0..=tx1 {
-            let tile_opt = surface.tile_lookup(tx, ty);
-            // Per tile, counting non-zero mask entries only.
-            let mut interval_counter: u32 = 0;
-            for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| {
-                let sampled = interval_counter == 0
-                    || (sample_interval > 1 && c_rand() < random_sample_threshold);
-                if sampled {
-                    let p = tile_opt.map(|t| t[ly][lx]).unwrap_or([0, 0, 0, 0]);
-                    let pa = p[3] as u32;
-                    let a = mask as f32 * pa as f32 / (1u32 << 30) as f32;
-                    let alpha_sums = a + sum_a;
-                    sum_weight += mask as f32 / FIX15_ONE as f32;
-                    let (mut fac_a, mut fac_b) = (1.0_f32, 1.0_f32);
-                    if alpha_sums > 0.0 {
-                        fac_a = a / alpha_sums;
-                        fac_b = 1.0 - fac_a;
-                    }
-                    if paint > 0.0 && pa > 0 {
-                        let spectral = rgb_to_spectral(
-                            p[0] as f32 / pa as f32,
-                            p[1] as f32 / pa as f32,
-                            p[2] as f32 / pa as f32,
-                        );
-                        for i in 0..10 {
-                            avg_spectral[i] =
-                                fastpow(spectral[i], fac_a) * fastpow(avg_spectral[i], fac_b);
-                        }
-                    }
-                    if paint < 1.0 && pa > 0 {
-                        for i in 0..3 {
-                            avg_rgb[i] = p[i] as f32 * fac_a / pa as f32 + avg_rgb[i] * fac_b;
-                        }
-                    }
-                    sum_a += a;
+    // The masks (most of the cost) per tile, a big area on several cores;
+    // then sampled in order (the running averages and the random picks
+    // depend on it): the same result as one by one.
+    let tiles: Vec<(i32, i32)> = (ty0..=ty1).flat_map(|ty| (tx0..=tx1).map(move |tx| (tx, ty))).collect();
+    let mask_of = |&(tx, ty): &(i32, i32)| {
+        let mut m: Vec<(u8, u8, u32)> = Vec::new();
+        for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| m.push((lx as u8, ly as u8, mask)));
+        m
+    };
+    let masks: Vec<Vec<(u8, u8, u32)>> = if mask_threads(tiles.len()) > 1 {
+        use rayon::prelude::*;
+        tiles.par_iter().map(mask_of).collect()
+    } else {
+        tiles.iter().map(mask_of).collect()
+    };
+
+    for (&(tx, ty), entries) in tiles.iter().zip(&masks) {
+        let tile_opt = surface.tile_lookup(tx, ty);
+        // Per tile, counting non-zero mask entries only.
+        let mut interval_counter: u32 = 0;
+        for &(lx, ly, mask) in entries {
+            let (lx, ly) = (lx as usize, ly as usize);
+            let sampled = interval_counter == 0
+                || (sample_interval > 1 && c_rand() < random_sample_threshold);
+            if sampled {
+                let p = tile_opt.map(|t| t[ly][lx]).unwrap_or([0, 0, 0, 0]);
+                let pa = p[3] as u32;
+                let a = mask as f32 * pa as f32 / (1u32 << 30) as f32;
+                let alpha_sums = a + sum_a;
+                sum_weight += mask as f32 / FIX15_ONE as f32;
+                let (mut fac_a, mut fac_b) = (1.0_f32, 1.0_f32);
+                if alpha_sums > 0.0 {
+                    fac_a = a / alpha_sums;
+                    fac_b = 1.0 - fac_a;
                 }
-                interval_counter = (interval_counter + 1) % sample_interval;
-            });
+                if paint > 0.0 && pa > 0 {
+                    let spectral = rgb_to_spectral(
+                        p[0] as f32 / pa as f32,
+                        p[1] as f32 / pa as f32,
+                        p[2] as f32 / pa as f32,
+                    );
+                    for i in 0..10 {
+                        avg_spectral[i] =
+                            fastpow(spectral[i], fac_a) * fastpow(avg_spectral[i], fac_b);
+                    }
+                }
+                if paint < 1.0 && pa > 0 {
+                    for i in 0..3 {
+                        avg_rgb[i] = p[i] as f32 * fac_a / pa as f32 + avg_rgb[i] * fac_b;
+                    }
+                }
+                sum_a += a;
+            }
+            interval_counter = (interval_counter + 1) % sample_interval;
         }
     }
 
@@ -1022,5 +1055,215 @@ mod tests {
         let near = rr_at(0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0, 1.0);
         let far = rr_at(2.0, 0.0, 0.5, 0.5, 1.0, 1.0, 0.0, 1.0);
         assert!(far > near);
+    }
+
+    struct Tiles(std::collections::HashMap<(i32, i32), Box<TilePixels>>);
+
+    impl TiledSurface for Tiles {
+        fn tile_request_start(&mut self, _tx: i32, _ty: i32) -> &mut TilePixels { unreachable!() }
+        fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+        fn tile_lookup(&self, tx: i32, ty: i32) -> Option<&TilePixels> { self.0.get(&(tx, ty)).map(|t| &**t) }
+    }
+
+    // The sampling as it was, one tile after the other.
+    fn old_get_color_default<S: TiledSurface + ?Sized>(
+        surface: &S,
+        x: f32,
+        y: f32,
+        radius: f32,
+    ) -> RgbaF32 {
+        const ONE: u32 = FIX15_ONE;
+        let radius = if radius < 1.0 { 1.0 } else { radius };
+        let r_fringe = radius + 1.0;
+        let tx0 = ((x - r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+        let tx1 = ((x + r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+        let ty0 = ((y - r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+        let ty1 = ((y + r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+
+        let mut sum_weight = 0.0_f32;
+        let mut sum_r = 0.0_f32;
+        let mut sum_g = 0.0_f32;
+        let mut sum_b = 0.0_f32;
+        let mut sum_a = 0.0_f32;
+
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                let tile_opt = surface.tile_lookup(tx, ty);
+                // Per-tile u32 accumulators, like get_color_pixels_legacy.
+                let (mut weight, mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32, 0u32);
+                for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| {
+                    weight += mask;
+                    if let Some(tile) = tile_opt {
+                        let p = tile[ly][lx];
+                        r += mask * p[0] as u32 / ONE;
+                        g += mask * p[1] as u32 / ONE;
+                        b += mask * p[2] as u32 / ONE;
+                        a += mask * p[3] as u32 / ONE;
+                    }
+                });
+                sum_weight += weight as f32;
+                sum_r += r as f32;
+                sum_g += g as f32;
+                sum_b += b as f32;
+                sum_a += a as f32;
+            }
+        }
+
+        if sum_weight <= 0.0 {
+            return RgbaF32::TRANSPARENT;
+        }
+        sum_a /= sum_weight;
+        let a_out = sum_a.clamp(0.0, 1.0);
+        if sum_a > 0.0 {
+            RgbaF32 {
+                r: (sum_r / sum_weight / sum_a).clamp(0.0, 1.0),
+                g: (sum_g / sum_weight / sum_a).clamp(0.0, 1.0),
+                b: (sum_b / sum_weight / sum_a).clamp(0.0, 1.0),
+                a: a_out,
+            }
+        } else {
+            // All transparent: libmypaint's green.
+            RgbaF32 {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: a_out,
+            }
+        }
+    }
+
+    fn old_get_color_pigment_default<S: TiledSurface + ?Sized>(
+        surface: &S,
+        x: f32,
+        y: f32,
+        radius: f32,
+        paint: f32,
+    ) -> RgbaF32 {
+        use crate::forge::spectral::{fastpow, rgb_to_spectral, spectral_to_rgb};
+
+        let radius = if radius < 1.0 { 1.0 } else { radius };
+        let r_fringe = radius + 1.0;
+        let tx0 = ((x - r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+        let tx1 = ((x + r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+        let ty0 = ((y - r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+        let ty1 = ((y + r_fringe).floor() as i32).div_euclid(TILE_SIZE as i32);
+
+        let sample_interval: u32 = if radius <= 2.0 {
+            1
+        } else {
+            (radius * 7.0) as u32
+        };
+        let random_sample_rate = 1.0_f32 / (7.0 * radius);
+        let random_sample_threshold = (random_sample_rate * C_RAND_MAX as f32) as i32;
+
+        let mut sum_weight = 0.0_f32;
+        let mut sum_a = 0.0_f32;
+        // Starts from black's spectrum, as libmypaint.
+        let mut avg_spectral = rgb_to_spectral(0.0, 0.0, 0.0);
+        let mut avg_rgb = [0.0_f32; 3];
+
+        for ty in ty0..=ty1 {
+            for tx in tx0..=tx1 {
+                let tile_opt = surface.tile_lookup(tx, ty);
+                // Per tile, counting non-zero mask entries only.
+                let mut interval_counter: u32 = 0;
+                for_each_mask_pixel(x, y, radius, tx, ty, |lx, ly, mask| {
+                    let sampled = interval_counter == 0
+                        || (sample_interval > 1 && c_rand() < random_sample_threshold);
+                    if sampled {
+                        let p = tile_opt.map(|t| t[ly][lx]).unwrap_or([0, 0, 0, 0]);
+                        let pa = p[3] as u32;
+                        let a = mask as f32 * pa as f32 / (1u32 << 30) as f32;
+                        let alpha_sums = a + sum_a;
+                        sum_weight += mask as f32 / FIX15_ONE as f32;
+                        let (mut fac_a, mut fac_b) = (1.0_f32, 1.0_f32);
+                        if alpha_sums > 0.0 {
+                            fac_a = a / alpha_sums;
+                            fac_b = 1.0 - fac_a;
+                        }
+                        if paint > 0.0 && pa > 0 {
+                            let spectral = rgb_to_spectral(
+                                p[0] as f32 / pa as f32,
+                                p[1] as f32 / pa as f32,
+                                p[2] as f32 / pa as f32,
+                            );
+                            for i in 0..10 {
+                                avg_spectral[i] =
+                                    fastpow(spectral[i], fac_a) * fastpow(avg_spectral[i], fac_b);
+                            }
+                        }
+                        if paint < 1.0 && pa > 0 {
+                            for i in 0..3 {
+                                avg_rgb[i] = p[i] as f32 * fac_a / pa as f32 + avg_rgb[i] * fac_b;
+                            }
+                        }
+                        sum_a += a;
+                    }
+                    interval_counter = (interval_counter + 1) % sample_interval;
+                });
+            }
+        }
+
+        if sum_weight <= 0.0 {
+            return RgbaF32::TRANSPARENT;
+        }
+        sum_a /= sum_weight;
+
+        let spec_rgb = spectral_to_rgb(&avg_spectral);
+        let sum_r = spec_rgb.0 * paint + (1.0 - paint) * avg_rgb[0];
+        let sum_g = spec_rgb.1 * paint + (1.0 - paint) * avg_rgb[1];
+        let sum_b = spec_rgb.2 * paint + (1.0 - paint) * avg_rgb[2];
+
+        let a_out = sum_a.clamp(0.0, 1.0);
+        if sum_a > 0.0 {
+            RgbaF32 {
+                r: sum_r.clamp(0.0, 1.0),
+                g: sum_g.clamp(0.0, 1.0),
+                b: sum_b.clamp(0.0, 1.0),
+                a: a_out,
+            }
+        } else {
+            RgbaF32 {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+                a: a_out,
+            }
+        }
+    }
+
+    /// Smudge sampling of a big area, spread over several cores, gives
+    /// exactly what the one by one sampling gave.
+    #[test]
+    fn parallel_color_sampling_matches_the_serial_one() {
+        let mut tiles = std::collections::HashMap::new();
+        let mut v = 7u32;
+        for ty in 0..12 {
+            for tx in 0..12 {
+                // (Some tiles missing: transparent.)
+                if (tx + ty) % 5 == 0 { continue; }
+                let mut t: Box<TilePixels> = Box::new([[[0u16; 4]; TILE_SIZE]; TILE_SIZE]);
+                for row in t.iter_mut() {
+                    for p in row.iter_mut() {
+                        v = v.wrapping_mul(1664525).wrapping_add(1013904223);
+                        let a = (v >> 17) as u16 % (FIX15_ONE as u16 + 1);
+                        let c = |s: u32| ((s & 0x7fff) * a as u32 / FIX15_ONE) as u16;
+                        *p = [c(v), c(v >> 5), c(v >> 9), a];
+                    }
+                }
+                tiles.insert((tx, ty), t);
+            }
+        }
+        let s = Tiles(tiles);
+        for (x, y, r) in [(400.3, 380.7, 300.0), (100.0, 90.0, 12.5), (700.0, 650.0, 2.0)] {
+            assert_eq!(get_color_default(&s, x, y, r), old_get_color_default(&s, x, y, r));
+            for paint in [0.0, 0.4, 1.0] {
+                reset_get_color_rng();
+                let new = get_color_pigment_default(&s, x, y, r, paint);
+                reset_get_color_rng();
+                let old = old_get_color_pigment_default(&s, x, y, r, paint);
+                assert_eq!(new, old, "radius {r}, paint {paint}");
+            }
+        }
     }
 }

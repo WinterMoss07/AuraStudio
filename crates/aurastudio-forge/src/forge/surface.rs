@@ -30,6 +30,13 @@ pub trait TiledSurface {
         crate::forge::brushmodes::draw_dab_default(self, dab)
     }
 
+    /// These tiles all at once, each with its index in `tiles` (a big dab
+    /// blended on several cores); off-canvas ones may be left out. None:
+    /// one by one through tile_request_start.
+    fn tiles_mut(&mut self, _tiles: &[(i32, i32)]) -> Option<Vec<(usize, &mut TilePixels)>> {
+        None
+    }
+
     /// About to read the colors within `radius` of (x, y) (smudge): a
     /// surface that loads its tiles on demand loads them here (reads go
     /// through `tile_lookup`, which can't).

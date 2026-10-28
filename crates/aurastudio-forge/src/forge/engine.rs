@@ -303,6 +303,18 @@ impl<S: PaintSurface> TiledSurface for TileCache<'_, S> {
 
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
 
+    fn tiles_mut(&mut self, tiles: &[(i32, i32)]) -> Option<Vec<(usize, &mut TilePixels)>> {
+        // (Off the canvas: nothing to paint, nothing kept.)
+        let mut index = HashMap::with_capacity(tiles.len());
+        for (i, &(tx, ty)) in tiles.iter().enumerate() {
+            if !self.on_canvas(tx, ty) { continue; }
+            self.dirty.insert((tx, ty));
+            self.load(tx, ty);
+            index.insert((tx, ty), i);
+        }
+        Some(self.tiles.iter_mut().filter_map(|(k, t)| index.get(k).map(|&i| (i, &mut **t))).collect())
+    }
+
     fn prepare_read(&mut self, x: f32, y: f32, radius: f32) {
         // (The tiles get_color_default reads: radius at least 1, plus a
         // pixel of fringe.)
