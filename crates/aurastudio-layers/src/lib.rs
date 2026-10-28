@@ -280,6 +280,32 @@ impl PaintSurface for LayerSurface<'_> {
         let mask = self.mask[i].as_mut().unwrap();
         (&mut px[o * 4..(o + len) * 4], &base[o * 4..(o + len) * 4], &mut mask[o..o + len])
     }
+
+    fn spans_mut(&mut self, r: Rect) -> Option<Vec<aurastudio_core::Span<'_>>> {
+        let (w, h) = (self.pixels.width(), self.pixels.height());
+        let r = (r.0.min(w), r.1.min(h), r.2.min(w), r.3.min(h));
+        if r.0 >= r.2 || r.1 >= r.3 { return Some(Vec::new()); }
+        self.prepare(r);
+        let (tx0, ty0, tx1, ty1) = (r.0 / TILE, r.1 / TILE, r.2.div_ceil(TILE), r.3.div_ceil(TILE));
+        let cols = self.pixels.cols();
+        let inside = |i: usize| { let (tx, ty) = (i as u32 % cols, i as u32 / cols); tx >= tx0 && tx < tx1 && ty >= ty0 && ty < ty1 };
+        let px = self.pixels.tiles_mut_in(tx0, ty0, tx1, ty1);
+        let bm = self.base.iter().zip(self.mask.iter_mut()).enumerate().filter(|(i, _)| inside(*i));
+        // One tile's runs: its rows inside `r`.
+        let mut by_tile: Vec<Vec<aurastudio_core::Span<'_>>> = Vec::with_capacity(px.len());
+        for ((tx, ty, p), (_, (b, m))) in px.into_iter().zip(bm) {
+            let (b, m) = (b.as_ref().unwrap(), m.as_mut().unwrap());
+            let (x0, x1) = ((tx * TILE).max(r.0), ((tx + 1) * TILE).min(r.2));
+            let (y0, y1) = ((ty * TILE).max(r.1), ((ty + 1) * TILE).min(r.3));
+            let (a, z) = ((x0 % TILE) as usize, (x1 - tx * TILE) as usize);
+            let t = TILE as usize;
+            by_tile.push(p.chunks_exact_mut(t * 4).zip(b.chunks_exact(t * 4)).zip(m.chunks_exact_mut(t)).enumerate()
+                .skip((y0 % TILE) as usize).take((y1 - y0) as usize)
+                .map(|(row, ((p, b), m))| aurastudio_core::Span { x: x0, y: ty * TILE + row as u32, pixels: &mut p[a * 4..z * 4], base: &b[a * 4..z * 4], mask: &mut m[a..z] })
+                .collect());
+        }
+        Some(by_tile.into_iter().flatten().collect())
+    }
 }
 
 /// Layer tree + active node, and the stroke buffers of the layer being
@@ -1565,6 +1591,50 @@ pub(crate) fn fill_run(fill: [u8; 4]) -> [u8; (TILE * 4) as usize] {
     let mut run = [0u8; (TILE * 4) as usize];
     for p in run.chunks_exact_mut(4) { p.copy_from_slice(&fill); }
     run
+}
+
+#[cfg(test)]
+mod spans_tests {
+    use super::*;
+
+    /// All the runs of an area at once: each pixel of it exactly once, the
+    /// same pixels as span_mut's.
+    #[test]
+    fn spans_cover_the_area_once() {
+        let (w, h) = (300u32, 200u32);
+        let mut s = LayerStack::new(w, h);
+        let id = s.add_layer("ink");
+        assert!(s.begin_stroke(id));
+        let r = (37, 50, 241, 133);
+        let mut surf = s.layer_surface(id).unwrap();
+        let mut spans = surf.spans_mut(r).unwrap();
+        let mut count = 0;
+        for sp in spans.iter_mut() {
+            assert_eq!(sp.x / TILE, (sp.x + sp.mask.len() as u32 - 1) / TILE, "one tile");
+            for (k, (p, m)) in sp.pixels.chunks_exact_mut(4).zip(sp.mask.iter_mut()).enumerate() {
+                let x = sp.x + k as u32;
+                assert!(x >= r.0 && x < r.2 && sp.y >= r.1 && sp.y < r.3);
+                p.copy_from_slice(&[(x % 251) as u8, (sp.y % 241) as u8, 7, 255]);
+                *m = (x ^ sp.y) as u8;
+                count += 1;
+            }
+        }
+        drop(spans);
+        assert_eq!(count, (r.2 - r.0) * (r.3 - r.1));
+        for y in r.1..r.3 {
+            let mut x = r.0;
+            while x < r.2 {
+                let n = aurastudio_core::tile_run(x, (r.2 - x) as usize);
+                let (p, _, m) = surf.span_mut(x, y, n);
+                for k in 0..n {
+                    let xx = x + k as u32;
+                    assert_eq!(&p[k * 4..k * 4 + 4], &[(xx % 251) as u8, (y % 241) as u8, 7, 255]);
+                    assert_eq!(m[k], (xx ^ y) as u8);
+                }
+                x += n as u32;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

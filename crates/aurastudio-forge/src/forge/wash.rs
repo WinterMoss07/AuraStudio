@@ -14,10 +14,12 @@ use crate::forge::Dab;
 pub struct Wash {
     /// Averaged opacity (0..255), see the module doc.
     average: f32,
+    /// The last dab's target opacity.
+    last_target: u8,
 }
 
 impl Wash {
-    pub fn begin_stroke(&mut self) { self.average = 0.0; }
+    pub fn begin_stroke(&mut self) { self.average = 0.0; self.last_target = 0; }
 
     /// One dab; returns the pixels changed.
     #[profiling::function]
@@ -42,6 +44,10 @@ impl Wash {
         // Pressure falling: pull toward the average (see the module doc).
         let falling = average > cap;
         let target = cap.max(average);
+        // Opacity going up (the pen pressed harder, the start of a stroke):
+        // the whole dab changes, not just its leading edge.
+        let rising = target > self.last_target;
+        self.last_target = target;
         if target == 0 { return None; }
         let (capf, avgf) = (cap as f32, average as f32);
         let inv_avg = 1.0 / avgf.max(1.0);
@@ -52,90 +58,139 @@ impl Wash {
         let x0 = ((cx - reach).floor() as i32).max(0);
         let x1 = ((cx + reach).ceil() as i32 + 1).min(w);
         if x0 >= x1 { return None; }
-        surface.prepare((x0 as u32, y0 as u32, x1 as u32, y1 as u32));
+        let run = Run { cx, cy, reach, core2, smooth_edge, falling, cap, capf, avgf, inv_avg, target, erase, color, blend };
         let (mut wx0, mut wy0, mut wx1, mut wy1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-
-        for py in y0..y1 {
-            let dy = py as f32 + 0.5 - cy;
-            let half2 = reach * reach - dy * dy;
-            if half2 <= 0.0 { continue; }
-            let half = half2.sqrt();
-            let xa = ((cx - half).floor() as i32).max(0);
-            let xb = ((cx + half).ceil() as i32 + 1).min(w);
-            if xa >= xb { continue; }
-            let dy2 = dy * dy;
-            let (mut row_x0, mut row_x1) = (i32::MAX, i32::MIN);
-            // By chunks within a tile: the new coverage (vectorized), then the
-            // pixels where it changed.
-            let mut x = xa;
-            while x < xb {
-                let n = tile_run(x as u32, ((xb - x) as usize).min(CHUNK));
-                let (prow, brow, mrow) = surface.span_mut(x as u32, py as u32, n);
-                // Already at this opacity: nothing to do.
-                if min_u8(mrow) >= target {
-                    x += n as i32;
-                    continue;
-                }
-                // Dab shape over the run, 0..=256.
-                let mut shape = [0u16; CHUNK];
-                let shape = &mut shape[..n];
-                let dx0 = x as f32 + 0.5 - cx;
-                let dx1 = dx0 + (n - 1) as f32;
-                if dx0.abs().max(dx1.abs()).powi(2) + dy2 <= core2 {
-                    // All of the run in the opaque core (most of a big dab).
-                    shape.fill(256);
-                } else if let Some(inv_soft) = smooth_edge {
-                    for (v, &j) in shape.iter_mut().zip(IOTA.iter()) {
-                        let dx = dx0 + j;
-                        let t = ((reach - (dx * dx + dy2).sqrt()) * inv_soft).clamp(0.0, 1.0);
-                        *v = round_small(t * t * (3.0 - 2.0 * t) * 256.0);
-                    }
-                } else {
-                    for (v, &j) in shape.iter_mut().zip(IOTA.iter()) {
-                        let dx = dx0 + j;
-                        let t = (reach - (dx * dx + dy2).sqrt()).clamp(0.0, 1.0);
-                        *v = round_small(t * 256.0);
-                    }
-                }
-                // The wash step.
-                let mut new = [0u8; CHUNK];
-                let new = &mut new[..n];
-                if falling {
-                    // Krita's alpha darken with a higher average: never lowers a pixel.
-                    for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
-                        let src = capf * sh as f32 * (1.0 / 256.0);
-                        let m = cur as f32;
-                        let v = src + (avgf - src) * (m * inv_avg).min(1.0);
-                        *nv = round_small(v.max(m)) as u8;
-                    }
-                } else {
-                    for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
-                        let gap = cap.saturating_sub(cur) as u16;
-                        *nv = cur + ((gap * sh + 128) >> 8) as u8;
-                    }
-                }
-                let Some((c0, c1)) = changed_span(mrow, new) else {
-                    x += n as i32;
-                    continue;
-                };
-                mrow[c0..c1].copy_from_slice(&new[c0..c1]);
-                if erase {
-                    erase_pixels(&mut prow[c0 * 4..c1 * 4], &brow[c0 * 4..c1 * 4], &new[c0..c1]);
-                } else {
-                    write_pixels(&mut prow[c0 * 4..c1 * 4], &brow[c0 * 4..c1 * 4], &new[c0..c1], color, blend);
-                }
-                row_x0 = row_x0.min(x + c0 as i32);
-                row_x1 = row_x1.max(x + c1 as i32);
-                x += n as i32;
+        let mut grow = |y: i32, (a, b): (i32, i32)| {
+            wx0 = wx0.min(a);
+            wx1 = wx1.max(b);
+            wy0 = wy0.min(y);
+            wy1 = wy1.max(y + 1);
+        };
+        let rect = (x0 as u32, y0 as u32, x1 as u32, y1 as u32);
+        // A big dab changing all over: its runs on several cores (each
+        // pixel the same as one by one; a run only reads and writes its own
+        // pixels). Otherwise most runs are skipped at once: one by one.
+        let big = rising && (x1 - x0) as usize * (y1 - y0) as usize >= 64 * 1024;
+        if let Some(mut spans) = big.then(|| surface.spans_mut(rect)).flatten() {
+            use rayon::prelude::*;
+            let changed: Vec<Option<(i32, i32)>> = spans.par_iter_mut().map(|sp| {
+                let (xa, xb, dy2) = run.row(sp.y as i32, w)?;
+                // The part of the run inside the dab's row.
+                let (s0, s1) = (xa.max(sp.x as i32), xb.min(sp.x as i32 + sp.mask.len() as i32));
+                if s0 >= s1 { return None; }
+                let (o, n) = ((s0 - sp.x as i32) as usize, (s1 - s0) as usize);
+                let (c0, c1) = run.pixels(s0, dy2, &mut sp.pixels[o * 4..(o + n) * 4], &sp.base[o * 4..(o + n) * 4], &mut sp.mask[o..o + n])?;
+                Some((s0 + c0 as i32, s0 + c1 as i32))
+            }).collect();
+            for (sp, c) in spans.iter().zip(changed) {
+                if let Some(c) = c { grow(sp.y as i32, c); }
             }
-            if row_x0 < row_x1 {
-                wx0 = wx0.min(row_x0);
-                wx1 = wx1.max(row_x1);
-                wy0 = wy0.min(py);
-                wy1 = wy1.max(py + 1);
+        } else {
+            surface.prepare(rect);
+            for py in y0..y1 {
+                let Some((xa, xb, dy2)) = run.row(py, w) else { continue };
+                // By chunks within a tile.
+                let mut x = xa;
+                while x < xb {
+                    let n = tile_run(x as u32, ((xb - x) as usize).min(CHUNK));
+                    let (prow, brow, mrow) = surface.span_mut(x as u32, py as u32, n);
+                    if let Some((c0, c1)) = run.pixels(x, dy2, prow, brow, mrow) {
+                        grow(py, (x + c0 as i32, x + c1 as i32));
+                    }
+                    x += n as i32;
+                }
             }
         }
         (wx0 < wx1).then_some((wx0 as u32, wy0 as u32, wx1 as u32, wy1 as u32))
+    }
+}
+
+/// One dab's wash, for any run of its pixels.
+struct Run {
+    cx: f32,
+    cy: f32,
+    reach: f32,
+    /// Inside this squared distance the shape is full (256); -1: no core.
+    core2: f32,
+    smooth_edge: Option<f32>,
+    falling: bool,
+    cap: u8,
+    capf: f32,
+    avgf: f32,
+    inv_avg: f32,
+    target: u8,
+    erase: bool,
+    color: [u8; 3],
+    blend: BlendMode,
+}
+
+impl Run {
+    /// Row `py` of the dab: its pixels xa..xb on the canvas, and dy².
+    fn row(&self, py: i32, w: i32) -> Option<(i32, i32, f32)> {
+        let dy = py as f32 + 0.5 - self.cy;
+        let half2 = self.reach * self.reach - dy * dy;
+        if half2 <= 0.0 { return None; }
+        let half = half2.sqrt();
+        let xa = ((self.cx - half).floor() as i32).max(0);
+        let xb = ((self.cx + half).ceil() as i32 + 1).min(w);
+        (xa < xb).then_some((xa, xb, dy * dy))
+    }
+
+    /// The pixels from x (one run, at most CHUNK, in one tile): the new
+    /// coverage (vectorized), then the pixels where it changed. Returns
+    /// the changed part (c0..c1 in the run).
+    fn pixels(&self, x: i32, dy2: f32, prow: &mut [u8], brow: &[u8], mrow: &mut [u8]) -> Option<(usize, usize)> {
+        let n = mrow.len();
+        // Already at this opacity: nothing to do.
+        if min_u8(mrow) >= self.target { return None; }
+        // Dab shape over the run, 0..=256.
+        let mut shape = [0u16; CHUNK];
+        let shape = &mut shape[..n];
+        let dx0 = x as f32 + 0.5 - self.cx;
+        let dx1 = dx0 + (n - 1) as f32;
+        let reach = self.reach;
+        if dx0.abs().max(dx1.abs()).powi(2) + dy2 <= self.core2 {
+            // All of the run in the opaque core (most of a big dab).
+            shape.fill(256);
+        } else if let Some(inv_soft) = self.smooth_edge {
+            for (v, &j) in shape.iter_mut().zip(IOTA.iter()) {
+                let dx = dx0 + j;
+                let t = ((reach - (dx * dx + dy2).sqrt()) * inv_soft).clamp(0.0, 1.0);
+                *v = round_small(t * t * (3.0 - 2.0 * t) * 256.0);
+            }
+        } else {
+            for (v, &j) in shape.iter_mut().zip(IOTA.iter()) {
+                let dx = dx0 + j;
+                let t = (reach - (dx * dx + dy2).sqrt()).clamp(0.0, 1.0);
+                *v = round_small(t * 256.0);
+            }
+        }
+        // The wash step.
+        let mut new = [0u8; CHUNK];
+        let new = &mut new[..n];
+        if self.falling {
+            // Krita's alpha darken with a higher average: never lowers a pixel.
+            let (capf, avgf, inv_avg) = (self.capf, self.avgf, self.inv_avg);
+            for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
+                let src = capf * sh as f32 * (1.0 / 256.0);
+                let m = cur as f32;
+                let v = src + (avgf - src) * (m * inv_avg).min(1.0);
+                *nv = round_small(v.max(m)) as u8;
+            }
+        } else {
+            for ((nv, &cur), &sh) in new.iter_mut().zip(mrow.iter()).zip(shape.iter()) {
+                let gap = self.cap.saturating_sub(cur) as u16;
+                *nv = cur + ((gap * sh + 128) >> 8) as u8;
+            }
+        }
+        let (c0, c1) = changed_span(mrow, new)?;
+        mrow[c0..c1].copy_from_slice(&new[c0..c1]);
+        if self.erase {
+            erase_pixels(&mut prow[c0 * 4..c1 * 4], &brow[c0 * 4..c1 * 4], &new[c0..c1]);
+        } else {
+            write_pixels(&mut prow[c0 * 4..c1 * 4], &brow[c0 * 4..c1 * 4], &new[c0..c1], self.color, self.blend);
+        }
+        Some((c0, c1))
     }
 }
 

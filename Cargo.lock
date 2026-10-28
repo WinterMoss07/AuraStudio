@@ -360,6 +360,7 @@ dependencies = [
  "aurastudio-raster",
  "aurastudio-selection",
  "profiling",
+ "rayon",
 ]
 
 [[package]]

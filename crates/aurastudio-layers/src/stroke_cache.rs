@@ -85,51 +85,64 @@ impl LayerStack {
         let (w, h, cols) = (self.width, self.height, self.width.div_ceil(TILE));
         let Item::Node(layer, scale) = items[k] else { unreachable!() };
         let (below_items, above_items) = (&items[..k], &items[k + 1..]);
-        let mut group = Vec::new();
-
-        // Fill the caches of the tiles this rectangle touches.
-        for ty in r.1 / TILE..r.3.div_ceil(TILE) {
-            for tx in r.0 / TILE..r.2.div_ceil(TILE) {
-                let i = (ty * cols + tx) as usize;
-                if cache.below[i].is_some() { continue; }
-                let (x0, y0) = (tx * TILE, ty * TILE);
-                let (tw, th) = ((w - x0).min(TILE) as usize, (h - y0).min(TILE));
-                let mut below = crate::new_tile([255, 255, 255, 255]);
-                // (Nothing over the painted layer: no tile to make.)
-                let mut above = (!above_items.is_empty()).then(|| crate::new_tile([0, 0, 0, 0]));
-                let mut prow = vec![[0.0f32; 4]; if above.is_some() { tw } else { 0 }];
-                let mut covered = false;
-                for y in 0..th {
-                    let o = (y * TILE * 4) as usize;
-                    let dst = &mut below[o..o + tw * 4];
-                    for it in below_items {
-                        match *it {
-                            Item::Node(n, s) => composite_row_opaque(std::slice::from_ref(n), y0 + y, x0, dst, s, &mut group, ghosts),
-                            Item::Ghosts(f, s, gh) => ghost_row_opaque(f, gh, y0 + y, x0, dst, s),
-                        }
-                    }
-                    let Some(above) = above.as_mut() else { continue };
-                    prow.iter_mut().for_each(|p| *p = [0.0; 4]);
-                    for it in above_items {
-                        match *it {
-                            Item::Node(n, s) => composite_row(std::slice::from_ref(n), y0 + y, x0, &mut prow, s, ghosts),
-                            Item::Ghosts(f, s, gh) => ghost_row(f, gh, y0 + y, x0, &mut prow, s),
-                        }
-                    }
-                    for (d, p) in above[o..o + tw * 4].chunks_exact_mut(4).zip(&prow) {
-                        for c in 0..4 { d[c] = (p[c].clamp(0.0, 1.0) * 255.0 + 0.5) as u8; }
-                        covered |= d[3] != 0;
+        // The merges under / over each tile this rectangle touches that has
+        // none yet (a big brush: hundreds at the start of a stroke), on
+        // several cores.
+        let missing: Vec<(u32, u32)> = (r.1 / TILE..r.3.div_ceil(TILE))
+            .flat_map(|ty| (r.0 / TILE..r.2.div_ceil(TILE)).map(move |tx| (tx, ty)))
+            .filter(|&(tx, ty)| cache.below[(ty * cols + tx) as usize].is_none())
+            .collect();
+        let build = |&(tx, ty): &(u32, u32)| {
+            let mut group = Vec::new();
+            let (x0, y0) = (tx * TILE, ty * TILE);
+            let (tw, th) = ((w - x0).min(TILE) as usize, (h - y0).min(TILE));
+            let mut below = crate::new_tile([255, 255, 255, 255]);
+            // (Nothing over the painted layer: no tile to make.)
+            let mut above = (!above_items.is_empty()).then(|| crate::new_tile([0, 0, 0, 0]));
+            let mut prow = vec![[0.0f32; 4]; if above.is_some() { tw } else { 0 }];
+            let mut covered = false;
+            for y in 0..th {
+                let o = (y * TILE * 4) as usize;
+                let dst = &mut below[o..o + tw * 4];
+                for it in below_items {
+                    match *it {
+                        Item::Node(n, s) => composite_row_opaque(std::slice::from_ref(n), y0 + y, x0, dst, s, &mut group, ghosts),
+                        Item::Ghosts(f, s, gh) => ghost_row_opaque(f, gh, y0 + y, x0, dst, s),
                     }
                 }
-                cache.below[i] = Some(below);
-                cache.above[i] = above.filter(|_| covered);
+                let Some(above) = above.as_mut() else { continue };
+                prow.iter_mut().for_each(|p| *p = [0.0; 4]);
+                for it in above_items {
+                    match *it {
+                        Item::Node(n, s) => composite_row(std::slice::from_ref(n), y0 + y, x0, &mut prow, s, ghosts),
+                        Item::Ghosts(f, s, gh) => ghost_row(f, gh, y0 + y, x0, &mut prow, s),
+                    }
+                }
+                for (d, p) in above[o..o + tw * 4].chunks_exact_mut(4).zip(&prow) {
+                    for c in 0..4 { d[c] = (p[c].clamp(0.0, 1.0) * 255.0 + 0.5) as u8; }
+                    covered |= d[3] != 0;
+                }
             }
+            (below, above.filter(|_| covered))
+        };
+        let built: Vec<_> = if missing.len() > 4 {
+            use rayon::prelude::*;
+            missing.par_iter().map(build).collect()
+        } else {
+            missing.iter().map(build).collect()
+        };
+        for (&(tx, ty), (below, above)) in missing.iter().zip(built) {
+            let i = (ty * cols + tx) as usize;
+            cache.below[i] = Some(below);
+            cache.above[i] = above;
         }
 
-        // Below, then the painted layer, then what is over it.
+        // Below, then the painted layer, then what is over it; rows on
+        // several cores for a big rectangle.
         let n = (r.2 - r.0) as usize;
         let mut out = vec![0u8; n * (r.3 - r.1) as usize * 4];
-        for (y, row) in (r.1..r.3).zip(out.chunks_exact_mut(n * 4)) {
+        let cache = &*cache;
+        let row = |(y, row): (u32, &mut [u8]), group: &mut Vec<_>| {
             let mut x = r.0;
             while x < r.2 {
                 let (tx, ty) = (x / TILE, y / TILE);
@@ -139,7 +152,7 @@ impl LayerStack {
                 let len = (end - x) as usize * 4;
                 let seg = &mut row[(x - r.0) as usize * 4..][..len];
                 seg.copy_from_slice(&cache.below[i].as_ref().unwrap()[o..o + len]);
-                composite_row_opaque(std::slice::from_ref(layer), y, x, seg, scale, &mut group, ghosts);
+                composite_row_opaque(std::slice::from_ref(layer), y, x, seg, scale, group, ghosts);
                 if let Some(above) = &cache.above[i] {
                     // d = d × (1 - A) + C over every byte (vectorizes; the
                     // alpha byte gets A = 0, C = 0: stays 255).
@@ -159,6 +172,14 @@ impl LayerStack {
                 }
                 x = end;
             }
+        };
+        let rows = (r.1..r.3).zip(out.chunks_exact_mut(n * 4));
+        if n * (r.3 - r.1) as usize >= 128 * 1024 {
+            use rayon::prelude::*;
+            rows.collect::<Vec<_>>().into_par_iter().for_each_init(Vec::new, |group, yr| row(yr, group));
+        } else {
+            let mut group = Vec::new();
+            rows.for_each(|yr| row(yr, &mut group));
         }
         out
     }
@@ -229,6 +250,47 @@ mod tests {
             assert!(max_diff(&full, &cached) <= 2, "after painting: off by {}", max_diff(&full, &cached));
             if multiply_above { assert_eq!(full, cached, "fallback must be the full merge"); }
             s.end_stroke();
+        }
+    }
+}
+
+#[cfg(test)]
+mod parallel_tests {
+    use crate::{BlendMode, Layer, LayerStack, Node, Tiles};
+
+    /// A big rectangle (merged on several cores) gives the same bytes as
+    /// the same pixels merged in small pieces (one core).
+    #[test]
+    fn big_merge_matches_small_pieces() {
+        let (w, h) = (700u32, 420u32);
+        let mut s = LayerStack::new(w, h);
+        for (id, seed) in [(10u64, 1u32), (11, 2), (12, 3)] {
+            let mut l = Layer::new(w, h, false);
+            l.id = id;
+            l.blend = if id == 11 { BlendMode::Multiply } else { BlendMode::Normal };
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            for (i, p) in px.chunks_exact_mut(4).enumerate() {
+                let v = (i as u32).wrapping_mul(2654435761).wrapping_add(seed * 7919);
+                if (i as u32 / 5 + seed).is_multiple_of(4) { continue; }
+                p.copy_from_slice(&[(v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8, (v >> 3) as u8 | 0x10]);
+            }
+            l.tiles = Tiles::from_rgba(w, h, &px, [0, 0, 0, 0]);
+            s.root.push(Node::Layer(l));
+        }
+        assert!(s.begin_stroke(11));
+        let whole = s.composite_rect_stroke((0, 0, w, h));
+        s.drop_stroke_cache();
+        let (pw, ph) = (100u32, 60u32);
+        for y0 in (0..h).step_by(ph as usize) {
+            for x0 in (0..w).step_by(pw as usize) {
+                let r = (x0, y0, (x0 + pw).min(w), (y0 + ph).min(h));
+                let piece = s.composite_rect_stroke(r);
+                let rw = (r.2 - r.0) as usize * 4;
+                for (y, row) in (r.1..r.3).zip(piece.chunks_exact(rw)) {
+                    let o = (y * w + r.0) as usize * 4;
+                    assert_eq!(&whole[o..o + rw], row, "row {y} at x {x0}");
+                }
+            }
         }
     }
 }

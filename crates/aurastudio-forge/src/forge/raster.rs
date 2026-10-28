@@ -76,9 +76,7 @@ pub fn write_pixels(out: &mut [u8], base: &[u8], cov: &[u8], color: [u8; 3], ble
             match k {
                 0 => over_opaque(o, b, c, color),
                 1 => over_empty(o, c, color),
-                _ => for ((o, b), &a) in o.chunks_exact_mut(4).zip(b.chunks_exact(4)).zip(c) {
-                    o.copy_from_slice(&paint_pixel_u8([b[0], b[1], b[2], b[3]], color, a, blend));
-                },
+                _ => over_partial(o, b, c, color),
             }
             i = j;
         }
@@ -106,6 +104,36 @@ fn over_opaque(out: &mut [u8], base: &[u8], cov: &[u8], color: [u8; 3]) {
     }
 }
 
+/// Normal blending over partly covered pixels: blend_pixel_u8's float
+/// math, operation for operation (the same bytes), in plain loops the
+/// compiler vectorizes. At most CHUNK pixels.
+fn over_partial(out: &mut [u8], base: &[u8], cov: &[u8], color: [u8; 3]) {
+    let n = cov.len();
+    let cs = [color[0] as f32 / 255.0, color[1] as f32 / 255.0, color[2] as f32 / 255.0];
+    let mut a_s = [0.0f32; CHUNK];
+    let mut a_b = [0.0f32; CHUNK];
+    for (s, &c) in a_s[..n].iter_mut().zip(cov) { *s = (c as f32 / 255.0).clamp(0.0, 1.0); }
+    for (b, p) in a_b[..n].iter_mut().zip(base.chunks_exact(4)) { *b = p[3] as f32 / 255.0; }
+    // Alpha: a_s + a_b (1 - a_s), then its reciprocal.
+    let mut inv = [0.0f32; CHUNK];
+    let mut a8 = [0u8; CHUNK];
+    for i in 0..n {
+        let a = (a_s[i] + a_b[i] * (1.0 - a_s[i])).clamp(0.0, 1.0);
+        inv[i] = 1.0 / a;
+        a8[i] = (a * 255.0 + 0.5) as u8;
+    }
+    for c in 0..3 {
+        let mut v = [0u8; CHUNK];
+        for i in 0..n {
+            let p = base[i * 4 + c] as f32 / 255.0 * a_b[i];
+            let d = cs[c] * a_s[i] + p * (1.0 - a_s[i]);
+            v[i] = ((d * inv[i]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        }
+        for (o, &v) in out.chunks_exact_mut(4).zip(&v[..n]) { o[c] = v; }
+    }
+    for (o, &a) in out.chunks_exact_mut(4).zip(&a8[..n]) { o[3] = a; }
+}
+
 /// Normal blending over empty pixels: the color at the coverage.
 fn over_empty(out: &mut [u8], cov: &[u8], color: [u8; 3]) {
     for (o, &a) in out.chunks_exact_mut(4).zip(cov) {
@@ -113,3 +141,31 @@ fn over_empty(out: &mut [u8], cov: &[u8], color: [u8; 3]) {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The vectorized blend over partly covered pixels gives exactly
+    /// paint_pixel_u8's bytes (every alpha and coverage, varied colors).
+    #[test]
+    fn partial_blend_matches_paint_pixel() {
+        let mut v = 1u32;
+        let mut next = || { v = v.wrapping_mul(1664525).wrapping_add(1013904223); (v >> 24) as u8 };
+        for ab in 1..=254u8 {
+            for cov0 in (0..=255u16).step_by(CHUNK) {
+                let n = CHUNK.min(256 - cov0 as usize);
+                let color = [next(), next(), next()];
+                let base: Vec<u8> = (0..n).flat_map(|_| [next(), next(), next(), ab]).collect();
+                let cov: Vec<u8> = (0..n).map(|i| (cov0 as usize + i) as u8).collect();
+                let mut out = vec![0u8; n * 4];
+                over_partial(&mut out, &base, &cov, color);
+                for i in 0..n {
+                    let b = &base[i * 4..i * 4 + 4];
+                    let want = paint_pixel_u8([b[0], b[1], b[2], b[3]], color, cov[i], BlendMode::Normal);
+                    assert_eq!(&out[i * 4..i * 4 + 4], &want, "alpha {ab} cov {}", cov[i]);
+                }
+            }
+        }
+    }
+}

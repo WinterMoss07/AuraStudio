@@ -25,6 +25,23 @@ up to date.
   behind the pen after a quarter second, slowest sample 84 → 38 ms;
   Halftone 130 → 12 ms per sample; Fountain pen 1.4 → 0.8 s behind;
   Watercolor glazing, after 1.5 s, 7.5 → 5.0 s behind.
+- Round pen and the other wash brushes (Krita-style, the layer = the
+  pixels before the stroke + the color at the stroke's coverage) lagged
+  at the start of a stroke over earlier paint, not over an empty layer:
+  while the pressure rises, every dab rewrites its whole disk (~785,000
+  pixels at 1000 px), and over paint each pixel is a blend. A run that
+  crossed the edge of earlier paint, or any semi-transparent pixel, went
+  pixel by pixel through the float blend. Now opaque, empty and partly
+  covered stretches each have their vectorized blend (the same bytes:
+  checked against the float one for every alpha and coverage), and a
+  big dab whose opacity rises is painted on several cores, run by run.
+  Measured, 1000 px Round pen, strokes over strokes on an A4 300 dpi
+  page (2 cores): painting 270–300 → 150–185 ms per stroke, behind the
+  pen 126–149 → 15–23 ms. The first stroke on an empty layer is
+  unchanged.
+- The display merge builds the merges under / over the painted layer of
+  many tiles at once (the start of a big stroke), and merges a big
+  rectangle, on several cores (same bytes as in small pieces).
 - A stroke that falls more than 100 ms behind the pen is logged when it
   ends: how far behind, the slowest sample and merge. The "UI waited …
   for the document" warning names the brush and its size.

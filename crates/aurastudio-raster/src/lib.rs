@@ -73,6 +73,19 @@ impl Tiles {
         self.table()[i].get_or_insert_with(|| new_tile(fill))
     }
 
+    /// The tiles of columns tx0..tx1, rows ty0..ty1 (made from the fill
+    /// color if absent), all at once: (tx, ty, pixels), row by row.
+    pub fn tiles_mut_in(&mut self, tx0: u32, ty0: u32, tx1: u32, ty1: u32) -> Vec<(u32, u32, &mut Tile)> {
+        let (tx1, ty1) = (tx1.min(self.cols), ty1.min(self.rows));
+        if tx0 >= tx1 || ty0 >= ty1 { return Vec::new(); }
+        for ty in ty0..ty1 { for tx in tx0..tx1 { self.tile_mut(tx, ty); } }
+        let cols = self.cols;
+        self.tiles.iter_mut().enumerate().filter_map(|(i, t)| {
+            let (tx, ty) = (i as u32 % cols, i as u32 / cols);
+            (tx >= tx0 && tx < tx1 && ty >= ty0 && ty < ty1).then(|| (tx, ty, t.as_mut().unwrap()))
+        }).collect()
+    }
+
     /// The slots of the tiles, made on first use.
     fn table(&mut self) -> &mut Vec<Option<Tile>> {
         if self.tiles.is_empty() { self.tiles.resize_with((self.cols * self.rows) as usize, || None); }
