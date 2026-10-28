@@ -60,6 +60,7 @@ impl LayerStack {
 
     /// The merge of `rect` while a stroke is painted (composite_rect's
     /// result, from the cache when it can).
+    #[profiling::function]
     pub fn composite_rect_stroke(&mut self, rect: Rect) -> Vec<u8> {
         let r = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
         if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }

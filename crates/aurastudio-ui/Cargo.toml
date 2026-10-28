@@ -16,3 +16,4 @@ egui      = "0.36"
 log       = "0.4"
 egui_dock = "0.21"
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+profiling = "1"

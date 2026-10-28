@@ -259,6 +259,7 @@ impl Selection {
 
     /// The pixels for which `inside` holds within `bbox` (the brushes'
     /// "stay inside the lines": a fill area).
+    #[profiling::function]
     pub fn from_predicate(width: u32, height: u32, bbox: Rect, inside: impl Fn(u32, u32) -> bool) -> Option<Self> {
         let b = bbox;
         let (x1, y1) = (b.2.min(width), b.3.min(height));
@@ -500,6 +501,7 @@ impl Selection {
     /// The outline (where coverage crosses one half) as horizontal and
     /// vertical runs, looking at one pixel per `step` × `step` block (zoomed
     /// out, a fine outline is not seen anyway).
+    #[profiling::function]
     pub fn outline(&self, step: u32) -> Vec<Segment> {
         let s = step.max(1);
         let b = self.bbox;

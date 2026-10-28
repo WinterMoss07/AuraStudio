@@ -152,6 +152,7 @@ fn similar(a: [u8; 4], b: [u8; 4], tol: u8) -> bool {
 
 /// The area to fill from (x, y) on `layer`, inside `selection` if any.
 /// None if the point is off the canvas or outside the selection.
+#[profiling::function]
 pub fn flood(layers: &LayerStack, layer: u64, x: u32, y: u32, p: FillParams, selection: Option<&Selection>) -> Option<Area> {
     flood_with(layers, layer, x, y, p, selection, p.pick(layers, layer))
 }

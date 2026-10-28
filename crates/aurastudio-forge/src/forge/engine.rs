@@ -165,6 +165,7 @@ impl Forge {
 
     /// One pen sample. Only the path over the canvas (and a margin) is
     /// painted; off it, the stroke pauses like a lifted pen.
+    #[profiling::function]
     pub fn stroke_to<S: PaintSurface>(&mut self, surface: &mut S, p: PenSample) -> Option<Rect> {
         let prev = self.last.replace(p);
         let m = (self.reach + 64.0).max(256.0);
@@ -208,6 +209,7 @@ impl Forge {
     }
 
     /// End of stroke: let libmypaint finish its smoothed path.
+    #[profiling::function]
     pub fn end_stroke<S: PaintSurface>(&mut self, surface: &mut S) -> Option<Rect> {
         let rect = self.lift(surface);
         self.tiles.clear();

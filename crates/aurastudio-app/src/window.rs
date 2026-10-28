@@ -202,6 +202,7 @@ impl Screen {
     /// A UI frame exists to reuse (see render_cached_ui).
     pub fn has_cached_ui(&self) -> bool { self.last_ui.is_some() }
 
+    #[profiling::function]
     fn render_impl(&mut self, ui_fn: Option<impl FnOnce(&mut egui::Ui)>) {
         // Minimized: nothing to show (frames are drawn on demand, not only
         // on the window system's request).
@@ -213,6 +214,7 @@ impl Screen {
                 let mut ui_fn = Some(f);
                 let mut free_rect = None;
                 let mut full_output = self.egui_ctx.run_ui(raw_input, |ui| {
+                    profiling::scope!("egui UI");
                     if let Some(f) = ui_fn.take() { f(ui); }
                     // The canvas card the UI laid out, or what's left of
                     // the window.
@@ -243,7 +245,10 @@ impl Screen {
                     self.gpu.set_viewport([x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)]);
                 }
 
-                let tris = self.egui_ctx.tessellate(std::mem::take(&mut full_output.shapes), ppp);
+                let tris = {
+                    profiling::scope!("egui tessellate");
+                    self.egui_ctx.tessellate(std::mem::take(&mut full_output.shapes), ppp)
+                };
                 let set = std::mem::take(&mut full_output.textures_delta.set);
                 let freed = std::mem::take(&mut full_output.textures_delta.free);
                 for (id, delta) in set.iter().flat_map(|(id, ds)| ds.iter().map(move |d| (id, d))) {
@@ -286,12 +291,14 @@ impl Screen {
         let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [w, h], pixels_per_point: ppp };
         self.egui_renderer.update_buffers(self.gpu.device(), self.gpu.queue(), &mut frame.encoder, &tris, &screen);
         {
+            profiling::scope!("egui draw");
             let pass = over_pass(&mut frame.encoder, &frame.view, "egui_pass");
             self.egui_renderer.render(&mut pass.forget_lifetime(), &tris, &screen);
         }
         self.last_ui = Some((tris, ppp));
 
         self.gpu.end_frame(frame, size_of(&self.window));
+        profiling::finish_frame!();
         // (After the submit: wgpu refuses a submit using a texture already
         // destroyed.)
         self.free_textures(&textures_free);

@@ -18,6 +18,11 @@ static ALLOC: memory::Counting = memory::Counting;
 use winit::event_loop::{ControlFlow, DeviceEvents, EventLoop};
 
 fn main() {
+    // Tracy profiler build (--features profile): the client runs from here
+    // on, the Tracy window connects to it (README, Profiling).
+    #[cfg(feature = "profile")]
+    let _tracy = tracy_client::Client::start();
+    profiling::register_thread!("main");
     let _ = aurastudio_gpu::MEMORY_PROBE.set(|| memory::process_memory().1.unwrap_or(0));
     memory::mark("program start");
     // Info level by default so the startup log (pen backend, GPU) shows in
@@ -38,8 +43,8 @@ fn main() {
     // Stroke previews kept between runs.
     if let Some(d) = dirs::cache_dir() { aurastudio_ui::set_preview_cache_dir(&d.join("AuraStudio")); }
 
-    // A crash keeps the work (rescue.rs).
-    rescue::install(app::recovery_path());
+    // A crash keeps the work and writes a report (rescue.rs).
+    rescue::install(app::recovery_path(), dirs::data_dir().map(|d| d.join("AuraStudio").join("crashes")));
     memory::mark("event loop");
     let mut app = app::App::new(event_loop.create_proxy());
     memory::mark("brushes, document, paint thread");

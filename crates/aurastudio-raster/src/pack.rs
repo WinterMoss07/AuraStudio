@@ -7,6 +7,7 @@ use crate::{Tiles, TILE, TILE_BYTES};
 
 impl Tiles {
     /// The stored tiles as bytes (see the module).
+    #[profiling::function]
     pub fn pack(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&(self.stored() as u32).to_le_bytes());
@@ -27,6 +28,7 @@ impl Tiles {
     }
 
     /// Read `pack` data into these tiles (None if damaged).
+    #[profiling::function]
     pub fn unpack_into(&mut self, blob: &[u8]) -> Option<()> {
         let mut at = 0usize;
         let u32_at = |at: &mut usize| -> Option<u32> {

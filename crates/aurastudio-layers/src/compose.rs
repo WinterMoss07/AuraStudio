@@ -78,6 +78,7 @@ impl LayerStack {
     /// The merge of the nodes `pick` takes, over `rect` (clipped to the
     /// canvas): on white (an opaque image), or on transparency
     /// (`transparent`: what the picked layers cover). RGBA rows, straight.
+    #[profiling::function]
     pub fn composite_pick(&self, rect: Rect, pick: Pick, transparent: bool) -> Vec<u8> {
         let r = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
         if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }

@@ -9,35 +9,47 @@ use aurastudio_gpu::GpuMemory;
 use aurastudio_layers::Node;
 use aurastudio_ui::{MemoryReport, MemorySection};
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-/// The global allocator: Rust's own, counting the bytes alive. Tells the
+/// Where the app's allocations go: mimalloc (feature `mimalloc`, on by
+/// default) or the system's allocator. Chosen when building, so the two
+/// can be compared (README, Profiling).
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc as Inner;
+#[cfg(not(feature = "mimalloc"))]
+use std::alloc::System as Inner;
+
+/// The allocator's name, for the report.
+pub const ALLOCATOR: &str = if cfg!(feature = "mimalloc") { "mimalloc" } else { "system" };
+
+/// The global allocator: `Inner`, counting the bytes alive. Tells the
 /// app's data from the driver's and the system's in the report.
 pub struct Counting;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 
-// SAFETY: every call goes to the system allocator unchanged; the counter
-// only follows the sizes.
+// SAFETY: every call goes to `Inner` unchanged; the counter only follows
+// the sizes.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        let p = System.alloc(l);
+        let p = Inner.alloc(l);
         if !p.is_null() { LIVE.fetch_add(l.size(), Ordering::Relaxed); }
         p
     }
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        let p = System.alloc_zeroed(l);
+        let p = Inner.alloc_zeroed(l);
         if !p.is_null() { LIVE.fetch_add(l.size(), Ordering::Relaxed); }
         p
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-        System.dealloc(p, l);
+        Inner.dealloc(p, l);
         LIVE.fetch_sub(l.size(), Ordering::Relaxed);
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
-        let q = System.realloc(p, l, new);
+        let q = Inner.realloc(p, l, new);
         if !q.is_null() {
             LIVE.fetch_add(new, Ordering::Relaxed);
             LIVE.fetch_sub(l.size(), Ordering::Relaxed);
@@ -138,8 +150,9 @@ pub fn process_memory() -> (Option<u64>, Option<u64>) {
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn process_memory() -> (Option<u64>, Option<u64>) { (None, None) }
 
-/// (committed, in use) of the process heap, where Rust's allocations
-/// live: committed minus in use is memory freed but kept by the heap.
+/// (committed, in use) of the Windows process heap: the graphics driver's
+/// and the system libraries' allocations, plus the app's own with the
+/// system allocator (counted as the Rust heap either way). Committed minus in use: freed but kept.
 #[cfg(windows)]
 fn system_heap() -> Option<(u64, u64)> {
     use windows::Win32::System::Memory::{GetProcessHeap, HeapSummary, HEAP_SUMMARY};
@@ -218,7 +231,8 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>
     if let Some(g) = gpu { sections.extend(gpu_sections(g)); }
     sections.push(boot_section());
     sections.push(events_section());
-    let mut header = Vec::new();
+    let mut header = vec![format!("AuraStudio {}, allocator {ALLOCATOR}{}", env!("CARGO_PKG_VERSION"),
+        if cfg!(feature = "profile") { ", Tracy build" } else { "" })];
     if let Some(g) = gpu {
         header.push(format!("Graphics: {} on {}", g.backend, if g.adapter.is_empty() { "?" } else { &g.adapter }));
         header.push(format!("Display: canvas quality {}, frames presented {}", g.quality, g.present));
@@ -233,7 +247,8 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuMemory>
     header.push(previews_line());
     if let Some((committed, used)) = system_heap() {
         header.push(format!(
-            "System heap (where the app allocates): {} committed, {} in use ({} freed but kept)",
+            "Windows process heap (driver and system libraries{}): {} committed, {} in use ({} freed but kept)",
+            if cfg!(feature = "mimalloc") { "" } else { ", and the app's allocations" },
             aurastudio_ui::mb(committed), aurastudio_ui::mb(used), aurastudio_ui::mb(committed.saturating_sub(used)),
         ));
     }

@@ -412,6 +412,7 @@ fn bands(dst: &mut [u8], w: usize, rows: usize, run: &(dyn Fn(usize, &mut [u8]) 
 
 /// Paint `src` transformed by `warp` over `dst` (straight RGBA rows of
 /// `rect`, canvas pixels).
+#[profiling::function]
 pub fn render(src: &Source, warp: &Warp, interp: Interp, rect: Rect, dst: &mut [u8]) {
     let (rw, rh) = ((rect.2 - rect.0) as usize, (rect.3 - rect.1) as usize);
     if rw == 0 || rh == 0 || dst.len() != rw * rh * 4 { return; }

@@ -142,6 +142,7 @@ impl Document {
     /// Record a finished stroke on `layer_id`, which changed `rect`. The
     /// pixels from before the stroke are still in the layer stack's stroke
     /// snapshot, so only that rectangle is copied (and compressed).
+    #[profiling::function]
     pub fn commit_stroke(&mut self, layer_id: u64, rect: Rect) {
         let before = self.layers.stroke_base_rect(rect);
         // (A layer edit not recorded yet goes first: undone after it.)
@@ -217,6 +218,7 @@ impl Document {
 
     /// Fill tool at (x, y) on the active layer, undoable. Returns the
     /// layer and the rectangle changed.
+    #[profiling::function]
     pub fn fill(&mut self, x: u32, y: u32, color: [u8; 4], p: FillParams) -> Option<(u64, Rect)> {
         let id = self.begin_paint()?;
         let done = (|| {

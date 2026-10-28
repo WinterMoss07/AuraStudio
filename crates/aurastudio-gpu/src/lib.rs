@@ -777,6 +777,7 @@ impl GpuState {
 
     /// Copy merged pixels (`rgba`: the rows of `rect`, tightly packed) to
     /// the canvas texture.
+    #[profiling::function]
     pub fn upload(&mut self, rect: aurastudio_core::Rect, rgba: &[u8]) {
         let (x0, y0, x1, y1) = rect;
         if x1 <= x0 || y1 <= y0 || x1 > self.canvas.width || y1 > self.canvas.height { return; }
@@ -791,6 +792,7 @@ impl GpuState {
     /// of the animation) drawn in its area. The interface is drawn over
     /// `frame.view` with `frame.encoder`, then `end_frame` shows it. None:
     /// no image to draw into this time (the next frame tries again).
+    #[profiling::function]
     pub fn begin_frame(&mut self) -> Option<Frame> {
         if std::mem::take(&mut self.size_pending) { self.configure_surface(); }
         self.write_view_uniform();
@@ -867,6 +869,7 @@ impl GpuState {
     /// Finish the frame: the brush outline over everything, then shown.
     /// `window_size`: the window's size now (physical pixels), to rebuild a
     /// suboptimal swapchain.
+    #[profiling::function]
     pub fn end_frame(&mut self, frame: Frame, window_size: (u32, u32)) {
         let Frame { encoder: mut enc, view, output, suboptimal } = frame;
         // Brush outline, over everything (it follows the pen also while

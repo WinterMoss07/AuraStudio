@@ -11,3 +11,4 @@ aurastudio-selection = { path = "../aurastudio-selection" }
 aurastudio-raster = { path = "../aurastudio-raster" }
 aurastudio-filters = { path = "../aurastudio-filters" }
 lz4_flex          = "0.14"
+profiling = "1"

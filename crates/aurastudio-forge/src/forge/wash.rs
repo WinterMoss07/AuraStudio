@@ -20,6 +20,7 @@ impl Wash {
     pub fn begin_stroke(&mut self) { self.average = 0.0; }
 
     /// One dab; returns the pixels changed.
+    #[profiling::function]
     pub fn dab<S: PaintSurface>(&mut self, surface: &mut S, dab: &Dab, opacity: f32, blend: BlendMode) -> Option<Rect> {
         let (cx, cy) = (dab.x, dab.y);
         let r = dab.radius.max(0.5);

@@ -27,6 +27,8 @@ pub const ACCENT_DIM:   Color32 = Color32::from_rgb(0x49, 0x40, 0x80);
 pub const CLIP_BLUE:    Color32 = Color32::from_rgb(110, 200, 255);
 /// Where a dragged item would land (CSP: a thin red line).
 pub const DROP:         Color32 = Color32::from_rgb(0xe5, 0x48, 0x4d);
+/// The current frame's line across the timeline / X-sheet cells.
+pub const PLAYHEAD:     Color32 = Color32::from_rgb(0xf0, 0x3c, 0x3c);
 pub const TEXT:         Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
 pub const TEXT_WEAK:    Color32 = Color32::from_rgb(0xaf, 0xaf, 0xb3);
 

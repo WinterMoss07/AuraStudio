@@ -12,6 +12,10 @@ on:
         description: "Also build macOS"
         type: boolean
         default: false
+      profile:
+        description: "Also build the Tracy profiler version (Windows)"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -64,6 +68,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          # Windows: the .exe names its .pdb with the version (copied
+          # beside it below), so crash reports and Tracy find it.
+          if [ "$RUNNER_OS" = Windows ]; then
+            v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/PDBALTPATH:aurastudio-$v.pdb"
+          fi
           if ! cargo build --profile ci 2>&1 | tee build.log; then
             grep -E "^(error|warning: build failed)|panicked|--> " -A3 build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
@@ -79,12 +89,37 @@ jobs:
           mkdir dist
           if [ -f target/ci/aurastudio.exe ]; then
             cp target/ci/aurastudio.exe "dist/aurastudio-$v.exe"
+            cp target/ci/aurastudio.pdb "dist/aurastudio-$v.pdb"
           else
             cp target/ci/aurastudio "dist/aurastudio-$v"
           fi
+
+      # The Tracy build (README, Profiling), on demand, twice: with
+      # mimalloc and with the system allocator, to compare them. Each in a
+      # folder of its own with its .pdb.
+      - name: Build the profiler versions
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.profile
+        shell: bash
+        run: |
+          set -o pipefail
+          export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/PDBALTPATH:aurastudio-$VERSION.pdb"
+          for alloc in mimalloc system; do
+            if [ $alloc = mimalloc ]; then flags="--features profile"; else flags="--no-default-features --features profile"; fi
+            cargo build --profile ci -p aurastudio $flags 2>&1 | tee build-profile-$alloc.log
+            mkdir -p dist-profile/$alloc
+            cp target/ci/aurastudio.exe "dist-profile/$alloc/aurastudio-$VERSION-profile-$alloc.exe"
+            cp target/ci/aurastudio.pdb "dist-profile/$alloc/aurastudio-$VERSION.pdb"
+          done
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: aurastudio-${{ env.VERSION }}-${{ runner.os }}
           path: dist/*
+
+      - name: Upload the profiler version
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: aurastudio-${{ env.VERSION }}-Windows-profile
+          path: dist-profile/

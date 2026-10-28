@@ -471,7 +471,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
     // The current frame: a line across.
     let tc = g.cell(0, t);
     let now_line = if g.vertical { [pos2(cells.left(), tc.center().y), pos2(cells.right(), tc.center().y)] } else { [pos2(tc.center().x, cells.top()), pos2(tc.center().x, cells.bottom())] };
-    cp.line_segment(now_line, Stroke::new(1.0_f32, theme::ACCENT.gamma_multiply(0.7)));
+    cp.line_segment(now_line, Stroke::new(1.5_f32, theme::PLAYHEAD));
     // Frames being dragged: where they would land.
     if let Some(d) = &st.drag {
         if let Some(c) = cols.iter().position(|x| x.id() == d.folder) {

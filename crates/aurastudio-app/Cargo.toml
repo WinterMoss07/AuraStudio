@@ -7,7 +7,19 @@ edition = "2021"
 name = "aurastudio"
 path = "src/main.rs"
 
+[features]
+default = ["mimalloc"]
+# The app's allocator: mimalloc, or the system's without this feature
+# (--no-default-features), to compare them (README, Profiling).
+mimalloc = ["dep:mimalloc"]
+# Tracy profiler: zones, frames and plots for the Tracy window (README,
+# Profiling). Off: the profiling macros compile to nothing.
+profile = ["profiling/profile-with-tracy", "dep:tracy-client"]
+
 [dependencies]
+profiling = "1"
+# Same version as the one profiling uses (one Tracy client).
+tracy-client = { version = "0.18", optional = true }
 aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-tools = { path = "../aurastudio-tools" }
 aurastudio-forge  = { path = "../aurastudio-forge" }
@@ -37,6 +49,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # System clipboard: images copied to / from other apps.
 arboard = { version = "3", default-features = false, features = ["image-data"] }
 tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
+mimalloc = { version = "0.1", optional = true }
 
 # The .exe icon (Windows resource), see build.rs.
 [target.'cfg(windows)'.build-dependencies]

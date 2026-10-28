@@ -233,6 +233,7 @@ fn has_animation(nodes: &[Node]) -> bool {
 
 /// Take a snapshot of `doc`. `origin`: for autosaves, the file the work
 /// belongs to.
+#[profiling::function]
 pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
     fn walk(nodes: &[Node], blobs: &mut Vec<(u64, Tiles)>) -> Vec<NodeJson> {
         nodes.iter().map(|n| match n {
@@ -301,6 +302,7 @@ pub fn snapshot(doc: &Document, origin: Option<&Path>) -> Snapshot {
 }
 
 /// Write the snapshot as an .aurs archive.
+#[profiling::function]
 pub fn write<W: Write + Seek>(snap: &Snapshot, out: W) -> io::Result<()> {
     let mut zip = zip::ZipWriter::new(out);
     let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -335,6 +337,7 @@ pub fn write<W: Write + Seek>(snap: &Snapshot, out: W) -> io::Result<()> {
 
 /// Save to `path` safely: written next to it first, then moved over it, so
 /// a crash or a full disk mid-save never leaves a broken file in its place.
+#[profiling::function]
 pub fn save(snap: &Snapshot, path: &Path) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() { std::fs::create_dir_all(dir)?; }
@@ -363,6 +366,7 @@ pub struct Opened {
 
 /// Read an .aurs archive. `max_side`: biggest canvas side accepted (the
 /// GPU limit).
+#[profiling::function]
 pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> Result<Opened, String> {
     let mut zip = zip::ZipArchive::new(input).map_err(|_| "not an AuraStudio file (not an archive)".to_string())?;
     let mimetype = read_entry(&mut zip, "mimetype", 256)?;
@@ -462,6 +466,7 @@ pub fn read<R: Read + Seek>(input: R, id: DocId, name: &str, max_side: u32) -> R
 }
 
 /// Open an .aurs file.
+#[profiling::function]
 pub fn open(path: &Path, id: DocId, max_side: u32) -> Result<Opened, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut opened = read(io::BufReader::new(file), id, &doc_name(path), max_side)?;
@@ -532,6 +537,7 @@ pub fn doc_name(path: &Path) -> String {
 
 /// Open an image (PNG, JPG...) as a new document: the picture on a layer
 /// named after the file, over the locked white Paper.
+#[profiling::function]
 pub fn import_image(path: &Path, id: DocId, max_side: u32) -> Result<Document, String> {
     let mut reader = image::ImageReader::open(path).map_err(|e| e.to_string())?
         .with_guessed_format().map_err(|e| e.to_string())?;

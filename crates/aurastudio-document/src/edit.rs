@@ -156,6 +156,7 @@ pub struct Editor<'a> {
 impl<'a> Editor<'a> {
     pub fn new(stack: &'a mut LayerStack) -> Self { Self { stack, applied: 0 } }
 
+    #[profiling::function]
     pub fn apply(&mut self, e: Edit) -> Done {
         self.applied += 1;
         e.apply(self.stack)

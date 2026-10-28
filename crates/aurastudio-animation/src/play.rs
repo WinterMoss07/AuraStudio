@@ -152,6 +152,7 @@ pub trait PlayBuild {
 impl PlayBuild for LayerStack {
     /// How to play this stack from the cache, or None when the cache would
     /// not show what the merge shows.
+    #[profiling::function]
     fn play_plan(&self) -> Option<PlayPlan> {
         if self.needs_general_merge() || !plays(&self.root) { return None; }
         let mut all = Vec::new();
@@ -171,6 +172,7 @@ impl PlayBuild for LayerStack {
 
     /// Static part `k` on its own. At the bottom, its opaque white tiles
     /// are left out (frames are drawn over white).
+    #[profiling::function]
     fn play_static(&mut self, plan: &PlayPlan, k: usize) -> PlayTiles {
         let keep = &plan.statics[k];
         let full = (0, 0, self.width, self.height);
@@ -189,6 +191,7 @@ impl PlayBuild for LayerStack {
 
     /// Sheet `frame` (a sheet of the plan) on its own, with its
     /// folder's opacity.
+    #[profiling::function]
     fn play_drawing(&mut self, plan: &PlayPlan, frame: u64) -> PlayTiles {
         let Some((folder, _)) = self.anim_of(frame) else { return PlayTiles::default() };
         // Where its visible cels show.
@@ -207,6 +210,7 @@ impl PlayBuild for LayerStack {
     /// Frame `t` drawn from the parts over white, as the GPU does (f64,
     /// then rounded): RGB rows. For the tests and the fuzzing.
     #[doc(hidden)]
+    #[profiling::function]
     fn play_cpu(&mut self, plan: &PlayPlan, t: u32) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
         let mut acc = vec![[1.0f64; 3]; w * h];

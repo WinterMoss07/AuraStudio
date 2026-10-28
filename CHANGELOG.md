@@ -3,6 +3,56 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.19.3 — 2026-10-28
+
+Measure everything with Tracy, keep a report of every crash, a faster
+allocator; three display fixes.
+
+**Measuring**
+- Tracy profiler build: `cargo run --release --features profile`, then
+  connect the Tracy window (0.14.x). Frames, the main / paint / save
+  threads and their zones (window events, UI build, docks, egui, canvas
+  upload, brush samples and dabs, merges, fills, filters, transforms,
+  playback tiles, opens and saves), plots of the heap, the paint queue
+  and the undo history. Without the feature the zones compile to
+  nothing. See README, Profiling.
+- Gone, now in Tracy: the durations in the log (fill, filter,
+  transform, selection, open, save, the per-stroke line, the stroke
+  frame times) and the 5 s activity report. The Memory report stays
+  (Tracy sees neither the GPU allocator nor Windows' figures), and so do
+  the "slow frame" and "UI waited" warnings.
+- The CI builds the profiler version on demand (Run workflow, "Also
+  build the Tracy profiler version"), as its own Windows artifact, twice:
+  with mimalloc and with the system allocator, to compare them.
+- The allocator is a build option (feature `mimalloc`, on by default);
+  the Memory report's first line gives the version, the allocator and
+  whether it is the Tracy build.
+- Opening an image is a Tracy zone too (`import_image`).
+- Memory report: the Windows heap line now says what it holds (the
+  driver's and the system's allocations); the app's own are the Rust
+  heap, in mimalloc.
+- Debug builds have their dependencies optimized: fast enough to draw
+  with, quick to rebuild.
+
+**Crashes**
+- A crash writes `crash-<date>.txt` (version, graphics, pen backend,
+  message, backtrace) in the app's data folder, `crashes`; the message
+  names the file. The 20 newest are kept.
+- Release builds keep file and line tables (nothing changes in what
+  runs); the CI ships the `.pdb` beside the `.exe` so backtraces and
+  Tracy name the functions.
+
+**Memory**
+- The app's allocator is mimalloc (the Memory report's heap figure still
+  counts every byte).
+
+**Display**
+- No more huge circle in place of the cursor at start: the brush outline
+  no longer shows on the start screen (its 1 × 1 placeholder canvas is
+  shown at the highest zoom).
+- The grayed dockers of the start screen can no longer be resized.
+- The current frame's line across the timeline and X-sheet is red.
+
 ## 0.19.2 — 2026-10-27
 
 Big brushes faster; crates with fewer ties between them. Nothing else

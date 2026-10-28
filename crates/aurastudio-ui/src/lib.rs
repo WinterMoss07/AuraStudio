@@ -393,13 +393,17 @@ impl UiState {
 }
 
 /// Build the whole UI for this frame.
+#[profiling::function]
 pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions: &mut Actions) {
     let ctx = &root.ctx().clone();
     if !state.theme_applied {
         theme::apply(ctx);
         state.theme_applied = true;
     }
-    state.layers.refresh_thumbnails(ctx, &model.layers);
+    {
+        profiling::scope!("layer thumbnails");
+        state.layers.refresh_thumbnails(ctx, &model.layers);
+    }
     state.tool_list.idle(ctx);
     // (Drawn again below if shown: the Delete key goes by where they are.)
     state.pointer = ctx.pointer_latest_pos();
@@ -418,13 +422,15 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
     }
 
     egui::Panel::right("dock")
-        .resizable(true)
+        // Grayed out with no document open: its width stays too.
+        .resizable(!model.home)
         .show_separator_line(false)
         .default_size(300.0)
         .size_range(240.0..=600.0)
         // A little room on the left: the tabs no longer touch the canvas.
         .frame(Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin { left: 6, ..Default::default() }))
         .show(root, |ui| {
+            profiling::scope!("dockers");
             // No document open: grayed out, like the toolbox.
             if model.home { ui.disable(); }
             let style = theme::dock_style(ui.style());
@@ -455,6 +461,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
     // The Animation panel (Animation documents): under the canvas or
     // beside the dockers.
     if state.anim.open && !model.home && model.doc_kind == aurastudio_document::Kind::Animation {
+        profiling::scope!("animation panel");
         animation::panel(root, &mut state.anim, &mut state.layers, &mut state.notice, model, actions);
     }
 

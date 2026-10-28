@@ -1238,6 +1238,7 @@ impl LayerStack {
     }
 
     /// The merge of `rect` into `out` (RGBA rows), on white. ~5 ns/px.
+    #[profiling::function]
     pub fn composite_rect_to(&self, rect: Rect, out: &mut [u8]) {
         self.merge_to(rect, out, &self.onion.ghosts);
     }
@@ -1260,6 +1261,7 @@ impl LayerStack {
     }
 
     /// `composite_pick` of `rect` split in bands over the cores.
+    #[profiling::function]
     pub fn composite_pick_par(&self, rect: Rect, pick: Pick, transparent: bool) -> Vec<u8> {
         let r = (rect.0, rect.1, rect.2.min(self.width), rect.3.min(self.height));
         if r.0 >= r.2 || r.1 >= r.3 { return Vec::new(); }
@@ -1277,6 +1279,7 @@ impl LayerStack {
     /// transparency, what is over it (None: nothing shows there). A
     /// transform's live preview puts what moves between the two (exact
     /// with normal blending above).
+    #[profiling::function]
     pub fn merge_split(&mut self, id: u64) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
         let path = self.path(id)?;
         // Drawn before / after it: its siblings and its folders' siblings.
@@ -1306,6 +1309,7 @@ impl LayerStack {
     }
 
     /// A small merged image (file previews): sampled rows, shrunk.
+    #[profiling::function]
     pub fn composite_preview(&self, max: u32) -> (u32, u32, Vec<u8>) {
         let (w, h) = (self.width, self.height);
         let k = (max as f32 / w.max(h) as f32).min(1.0);

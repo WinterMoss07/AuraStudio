@@ -290,13 +290,56 @@ Environment variables (for testing and comparisons):
 
 | Variable | Effect |
 |---|---|
-| `RUST_LOG=info` (default) | log: GPU, pen backend, monitor profile, per-stroke timings |
+| `RUST_LOG=info` (default) | log: GPU, pen backend, monitor profile, files opened and saved |
 | `AURASTUDIO_BACKEND=dx12\|vulkan\|metal\|gl` | force a GPU backend |
 | `AURASTUDIO_PRESENT=mailbox\|immediate\|fifo` | force a present mode (default: immediate, fifo with V-Sync) |
 | `dxcompiler.dll` next to the program | DirectX 12 compiles shaders with DXC instead of FXC |
 | `AURASTUDIO_DISPLAY_ICC=<file.icc>` | use this monitor profile instead of the system's |
 | `AURASTUDIO_BRUSH_DIR=<folder>` | where imported brushes are kept |
 | `AURASTUDIO_DPI=<dpi>` | pretend the window's monitor has this DPI (96 = 100 %) |
+
+### Profiling (Tracy)
+
+Durations are measured with the [Tracy](https://github.com/wolfpld/tracy)
+profiler, in a build of its own:
+
+```
+cargo run --release --features profile
+```
+
+Without a Rust toolchain: GitHub, Actions, Build, **Run workflow** with
+"Also build the Tracy profiler version" ticked; the run's artifacts then
+hold `aurastudio-<version>-Windows-profile`, two builds in two folders
+(keep each `.pdb` beside its `.exe`): `mimalloc` (the app's default
+allocator) and `system` (Windows' allocator), to compare them. The
+Memory report's first line names the allocator.
+
+Locally: `--no-default-features` builds with the system allocator.
+
+Then open the Tracy window (**version 0.14.x**, the protocol the Rust
+client speaks; Windows builds are on its releases page) and click
+Connect. It shows every frame, the main, paint and save threads side by
+side with their zones (window events, UI build, docks, egui, canvas
+upload, brush samples and dabs, merges, fills, filters, transforms,
+playback tiles, saves and opens), and plots: heap MB, the paint thread's
+queue, the undo history. Without `--features profile` the zones compile
+to nothing. The profile build announces itself on the local network for
+Tracy to find it: run it only when profiling.
+
+Memory stays with the Memory report (Window > Memory report): Tracy sees
+neither the GPU allocator nor Windows' figures.
+
+A debug build (`cargo run`) has its dependencies optimized: fast enough to
+draw with, quick to rebuild.
+
+### Crash reports
+
+A crash writes `crash-<date>.txt` (version, graphics, pen backend, panic
+message, backtrace) in `%APPDATA%\AuraStudio\crashes` (Linux:
+`~/.local/share/AuraStudio/crashes`); the message shown names the file.
+The 20 newest are kept. Release builds keep file and line tables: keep
+the `.pdb` beside the `.exe` (the CI build ships it) so the backtrace
+names the functions.
 
 Benchmarks:
 

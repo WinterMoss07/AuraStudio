@@ -12,6 +12,7 @@ wgpu              = { version = "30", features = ["angle"] }
 bytemuck          = { version = "1", features = ["derive"] }
 log               = "0.4"
 half      = "2"
+profiling = "1"
 
 [dev-dependencies]
 aurastudio-layers = { path = "../aurastudio-layers" }

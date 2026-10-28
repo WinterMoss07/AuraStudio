@@ -287,6 +287,7 @@ impl LayerStack {
     /// True if what the merge shows may have changed (a sheet shown or
     /// hidden, other ghosts): false when nothing visible moves (no
     /// animation folder, a sheet held), and the canvas stays as it is.
+    #[profiling::function]
     pub fn set_time(&mut self, n: u32) -> bool {
         self.time = n.clamp(1, MAX_FRAME);
         if let Some((folder, Some(_))) = self.anim_of(self.active) {

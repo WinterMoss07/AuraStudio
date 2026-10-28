@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core" }
 lz4_flex = "0.14"
+profiling = "1"

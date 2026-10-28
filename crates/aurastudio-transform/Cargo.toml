@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core" }
+profiling = "1"

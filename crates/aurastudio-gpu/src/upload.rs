@@ -22,6 +22,7 @@ pub struct Uploads {
 impl Uploads {
     /// Write `rgba` (rows of `size`, tightly packed) at `origin` of level 0
     /// of `texture`, in bands of at most `LIMIT` bytes.
+    #[profiling::function]
     pub fn write(&mut self, device: &Device, queue: &Queue, texture: &Texture, origin: (u32, u32), size: (u32, u32), rgba: &[u8]) {
         let (w, h) = size;
         if w == 0 || h == 0 || rgba.len() != w as usize * h as usize * 4 { return; }

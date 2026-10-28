@@ -30,6 +30,16 @@ egui_dock = { path = "vendor/egui_dock" }
 opt-level     = 3
 lto           = true
 codegen-units = 1
+# File and line of each function, no other debug info: crash report
+# backtraces and Tracy can name them (the .pdb beside the .exe on
+# Windows). Changes nothing in the code that runs.
+debug         = "line-tables-only"
+
+# Debug builds: the dependencies (wgpu, egui, image...) optimized, so a
+# debug build is fast enough to draw with; the workspace's own crates stay
+# unoptimized and quick to rebuild.
+[profile.dev.package."*"]
+opt-level = 3
 
 # CI builds: optimized like release, thin LTO and parallel codegen (a few
 # % slower at most, several times faster to build).
@@ -40,4 +50,4 @@ codegen-units = 16
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.19.2"
+version = "0.19.3"

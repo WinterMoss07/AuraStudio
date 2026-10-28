@@ -251,6 +251,7 @@ impl Filter {
     }
 
     /// The filtered pixels of a `w` × `h` image.
+    #[profiling::function]
     pub fn apply(&self, src: &[u8], w: usize, h: usize) -> Vec<u8> {
         assert_eq!(src.len(), w * h * 4);
         if w == 0 || h == 0 { return src.to_vec(); }

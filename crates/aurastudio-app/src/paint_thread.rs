@@ -134,6 +134,7 @@ impl PaintThread {
         let handle = std::thread::Builder::new()
             .name("paint".into())
             .spawn(move || {
+                profiling::register_thread!("paint");
                 // Its panic unwound (the document is free again): keep the
                 // work before closing (rescue.rs).
                 if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run(rx))).is_err() {
@@ -166,6 +167,7 @@ impl Drop for PaintThread {
 /// region of the reference layers around it (all the other layers when
 /// none is marked), as the fill tool finds it. None (free): started on a
 /// line, off the canvas, or nothing around.
+#[profiling::function]
 fn stay_inside(doc: &Document, layer: u64, x: f32, y: f32, p: aurastudio_layers::FillParams) -> Option<aurastudio_selection::Selection> {
     use aurastudio_layers::Pick;
     let (w, h) = (doc.layers.width, doc.layers.height);
@@ -177,10 +179,8 @@ fn stay_inside(doc: &Document, layer: u64, x: f32, y: f32, p: aurastudio_layers:
     // On a line itself: free (CSP: the brush's center decides).
     let under = doc.layers.composite_pick((x, y, x + 1, y + 1), pick, true);
     if under.get(3).is_some_and(|a| *a >= 128) { return None; }
-    let t = Instant::now();
     let area = aurastudio_layers::flood_with(&doc.layers, layer, x, y, p, doc.selection.as_ref(), Some(pick))?;
-    log::info!("stay inside the lines: area {:?} found in {:.0} ms ({})", area.bbox, t.elapsed().as_secs_f64() * 1000.0,
-        if refs { "its reference layer" } else { "all the other layers" });
+    log::debug!("stay inside the lines: area {:?} ({})", area.bbox, if refs { "its reference layer" } else { "all the other layers" });
     aurastudio_selection::Selection::from_predicate(w, h, area.bbox, |x, y| area.contains(x, y))
 }
 
@@ -212,7 +212,6 @@ struct Worker {
     /// line).
     limit_params: Option<aurastudio_layers::FillParams>,
     limit:    Option<aurastudio_selection::Selection>,
-    stats:    Stats,
     /// Playback tiles still to make.
     play:     Option<PlayJob>,
 }
@@ -306,7 +305,6 @@ impl Worker {
             stroke_rect: None,
             limit_params: None,
             limit: None,
-            stats: Stats::default(),
             play: None,
         }
     }
@@ -332,7 +330,9 @@ impl Worker {
                 }
             }
             queue.extend(rx.try_iter());
-            self.stats.max_queue = self.stats.max_queue.max(queue.len());
+            #[cfg(feature = "profile")]
+            tracy_client::plot!("paint queue", queue.len() as f64);
+            profiling::scope!("paint batch");
 
             let mut events = Vec::new();
             let mut flush = false;
@@ -354,18 +354,17 @@ impl Worker {
                     Cmd::Transform { action: TransformAction::Preview(..), .. }
                         if queue.iter().any(|c| matches!(c, Cmd::Transform { .. })) => {}
                     Cmd::Transform { doc, action } => {
-                        let t = Instant::now();
+                        let _name = match &action { TransformAction::Begin(_) => "begin", TransformAction::Preview(..) => "preview", TransformAction::Apply(..) => "apply", TransformAction::Cancel => "cancel" };
+                        profiling::scope!("transform", _name);
                         let mut d = doc.lock().unwrap();
-                        let name = match &action { TransformAction::Begin(_) => "begin", TransformAction::Preview(..) => "preview", TransformAction::Apply(..) => "apply", TransformAction::Cancel => "cancel" };
                         match action {
                             TransformAction::Begin(ids) => {
                                 let r = d.transform_begin(&ids);
                                 let ok = r.is_ok();
                                 events.push(Event::TransformStarted(r));
                                 if ok {
-                                    let t = Instant::now();
+                                    profiling::scope!("transform lift");
                                     if let Some(l) = d.transform_lift() { events.push(Event::TransformLift(Box::new(l))); }
-                                    log::info!("transform lift: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
                                 }
                             }
                             TransformAction::Preview(w, i, n) => {
@@ -388,14 +387,12 @@ impl Worker {
                             }
                         }
                         drop(d);
-                        log::info!("transform {name}: {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
                         self.doc = Some(doc);
                         flush = true;
                     }
                     Cmd::Select { doc, op } => {
-                        let t = Instant::now();
+                        profiling::scope!("select", op.label());
                         let changed = doc.lock().unwrap().select(&op);
-                        if t.elapsed() > Duration::from_millis(30) { log::info!("{}: {:.0} ms", op.label(), t.elapsed().as_secs_f64() * 1000.0); }
                         if changed { events.push(Event::Selection); }
                         self.doc = Some(doc);
                     }
@@ -408,7 +405,7 @@ impl Worker {
                     Cmd::PlayBuild { doc, gen } => self.play_build(doc, gen),
                     Cmd::Filter { doc, action } => {
                         use aurastudio_ui::FilterAction as F;
-                        let t = Instant::now();
+                        profiling::scope!("filter");
                         let (done, keep) = {
                             let mut d = doc.lock().unwrap();
                             match &action {
@@ -417,8 +414,6 @@ impl Worker {
                                 F::Cancel => (d.filter_cancel(), true),
                             }
                         };
-                        log::info!("filter {:?}: {:.0} ms", match &action { F::Preview(f) => f.as_ref().map(|f| f.kind.name()), F::Apply(f) => Some(f.kind.name()), F::Cancel => None },
-                            t.elapsed().as_secs_f64() * 1000.0);
                         match done {
                             Some((id, r)) => {
                                 if r.2 > r.0 { add_rect(&mut self.pending, r); }
@@ -463,10 +458,9 @@ impl Worker {
                         };
                         let notify = Arc::clone(&self.notify);
                         let spawned = std::thread::Builder::new().name("save".into()).spawn(move || {
-                            let t = Instant::now();
+                            profiling::register_thread!("save");
                             let result = aurastudio_file::save(&snap, &path).map_err(|e| e.to_string());
-                            log::info!("{} {}: {:?} in {:.0} ms", if auto { "autosave" } else { "save" },
-                                path.display(), result, t.elapsed().as_secs_f64() * 1000.0);
+                            log::info!("{} {}: {:?}", if auto { "autosave" } else { "save" }, path.display(), result);
                             notify(Event::Saved { doc: doc_id, path, revision: snap.revision, auto, result });
                         });
                         if let Err(e) = spawned { log::error!("save thread: {e}"); }
@@ -504,14 +498,13 @@ impl Worker {
                         flush = true;
                     }
                     Cmd::Fill { doc, x, y, color, params } => {
-                        let t = Instant::now();
+                        profiling::scope!("fill");
                         let filled = {
                             let mut d = doc.lock().unwrap();
                             let f = d.layers.can_paint().then(|| d.fill(x, y, color, params));
                             if d.take_reshown() { add_rect(&mut self.pending, (0, 0, d.layers.width, d.layers.height)); }
                             f
                         };
-                        log::info!("fill: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
                         match filled {
                             Some(f) => self.report(f, "Outside the selection", &mut events),
                             None => events.push(Event::Notice("Layer is locked or is a folder")),
@@ -541,8 +534,8 @@ impl Worker {
     /// UI thread), by bands, the document locked for one at a time (the UI
     /// runs between two), each shown as it comes. `time_only`: just where
     /// the time changed the picture (nothing at all if nowhere).
+    #[profiling::function]
     fn recomposite(&mut self, doc: SharedDoc, time_only: bool) {
-        let t = Instant::now();
         let (w, h, bands) = {
             let mut d = doc.lock().unwrap();
             d.layers.drop_stroke_cache();
@@ -574,7 +567,6 @@ impl Worker {
             let_ui_in();
         }
         self.doc = Some(doc);
-        log::debug!("recomposite{} {w}x{h}: {:.0} ms", if time_only { " (time)" } else { "" }, t.elapsed().as_secs_f64() * 1000.0);
     }
 
     /// An undo / redo done: show what changed (a layer step: everything).
@@ -610,6 +602,7 @@ impl Worker {
     }
 
     /// Merge the layers of the changed areas into the projection.
+    #[profiling::function]
     fn update_projection(&mut self) {
         self.last_update = Instant::now();
         let rects = std::mem::take(&mut self.pending);
@@ -656,10 +649,10 @@ impl Worker {
 
     /// Start a stroke on the active layer. False if it can't be painted
     /// (locked, or a folder is selected).
+    #[profiling::function]
     fn begin(&mut self, doc: &mut Document, brush: Brush, forge: &ForgeBrush) -> bool {
         self.sampled = false;
         self.stroke_rect = None;
-        self.stats = Stats::default();
         self.size = (doc.layers.width, doc.layers.height);
         // (In an animation folder: maybe a new sheet, made here.)
         let target = doc.begin_paint();
@@ -677,6 +670,7 @@ impl Worker {
         true
     }
 
+    #[profiling::function]
     fn sample(&mut self, doc: &mut Document, now: PenSample) -> Option<Rect> {
         if !self.active { return None; }
         // The canvas was resized under the stroke: its snapshot no longer
@@ -688,7 +682,6 @@ impl Worker {
         if let Some(p) = self.limit_params.take() {
             self.limit = stay_inside(doc, self.layer, now.x, now.y, p);
         }
-        let t0 = Instant::now();
         let Some(mut surface) = doc.layers.layer_surface(self.layer) else {
             // The layer was deleted: nothing left to paint on.
             self.active = false;
@@ -701,7 +694,6 @@ impl Worker {
         // Only selected pixels may change, and inside the lines.
         if let (Some(r), Some(sel)) = (rect, &doc.selection) { doc.layers.clip_stroke(r, sel); }
         if let (Some(r), Some(l)) = (rect, &self.limit) { doc.layers.clip_stroke(r, l); }
-        self.stats.paint.add(t0.elapsed());
         rect
     }
 
@@ -713,6 +705,7 @@ impl Worker {
     /// Finish the stroke and record it for undo. Returns the last painted
     /// area, the area of the whole stroke and the layer id, or None if
     /// nothing was painted.
+    #[profiling::function]
     fn end(&mut self, doc: &mut Document) -> Option<(Option<Rect>, Option<Rect>, u64)> {
         let was_active = std::mem::take(&mut self.active);
         // Also after an aborted stroke (layer deleted / canvas resized):
@@ -741,11 +734,9 @@ impl Worker {
         if !same_size { self.stroke_rect = None; }
         let whole = self.stroke_rect.take();
         if let Some(r) = whole {
-            let t0 = Instant::now();
             doc.commit_stroke(id, r);
-            log::info!("stroke: {} samples | paint {} | max queued {} | undo save {:.1} ms ({} KB history)",
-                self.stats.paint.count, self.stats.paint, self.stats.max_queue,
-                t0.elapsed().as_secs_f64() * 1000.0, doc.history().bytes() / 1024);
+            #[cfg(feature = "profile")]
+            tracy_client::plot!("undo history MB", doc.history().bytes() as f64 / 1_048_576.0);
         } else {
             doc.drop_new_sheet();
         }
@@ -756,28 +747,25 @@ impl Worker {
     }
 }
 
+/// Count, average and worst duration (benchmark below).
+#[cfg(test)]
 #[derive(Default)]
-struct Stats {
-    paint:     Timing,
-    max_queue: usize,
-}
-
-/// Count, average and worst duration, printed in the stroke log line.
-#[derive(Default)]
-pub struct Timing {
+struct Timing {
     pub count: u32,
     total: Duration,
     max:   Duration,
 }
 
+#[cfg(test)]
 impl Timing {
-    pub fn add(&mut self, d: Duration) {
+    fn add(&mut self, d: Duration) {
         self.count += 1;
         self.total += d;
         self.max = self.max.max(d);
     }
 }
 
+#[cfg(test)]
 impl std::fmt::Display for Timing {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         if self.count == 0 { return write!(f, "-"); }

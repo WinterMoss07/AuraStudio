@@ -26,7 +26,7 @@ use aurastudio_ui::{LayerCmd, Actions, Dialog, DialogChoice, EditCmd, FileCmd, G
 
 use aurastudio_tools::arc::{ArcTool, Ctx as ArcCtx};
 use aurastudio_input::debounce::{Debounce, Kind as DebounceKind};
-use crate::paint_thread::{self, Cmd, PaintThread, Timing, TransformAction};
+use crate::paint_thread::{self, Cmd, PaintThread, TransformAction};
 use aurastudio_tools::xform::{Hit, Mods, Xform};
 use crate::projection::{Projection, SharedProjection};
 
@@ -385,12 +385,8 @@ pub struct App {
     memory_at:    Option<Instant>,
     /// The cursor was over the canvas at the last full UI frame.
     ui_saw_canvas: bool,
-    /// What woke the app lately (logged when it keeps busy idle).
-    activity:     Activity,
     /// Delayed frame asked by egui (tooltip, notice fade-out).
     repaint_at:   Option<Instant>,
-    /// Main-thread frame cost during the current stroke (logged at its end).
-    frame_stats:  Timing,
 }
 
 impl App {
@@ -504,9 +500,7 @@ impl App {
             ui_dirty:     true,
             memory_at:    None,
             ui_saw_canvas: false,
-            activity:     Activity::new(),
             repaint_at:   None,
-            frame_stats:  Timing::default(),
         }
     }
 
@@ -589,8 +583,11 @@ impl App {
 
     /// Brush outline under the cursor over the canvas, in place of the OS
     /// cursor (back over the docks and while navigating).
+    /// None on the start screen: its 1 × 1 placeholder canvas is shown at
+    /// the highest zoom, and an event there before the start card was laid
+    /// out showed the brush as a huge circle until the pointer moved.
     fn update_outline(&mut self) {
-        let show = self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
+        let show = !self.home && self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
             && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none() && self.prefs.brush_outline;
         self.outline_shown = show;
         if let Some(gpu) = &mut self.gpu {
@@ -1571,7 +1568,6 @@ impl App {
         self.pen_active = false;
         self.samples_sent = 0;
         self.press_point = Some(self.cursor);
-        self.frame_stats = Timing::default();
         self.send_begin(self.tool == Tool::Eraser);
     }
 
@@ -1636,12 +1632,12 @@ impl App {
 
     /// Native pen samples (WinTab or Windows Ink): position and pressure;
     /// press / release come from MouseInput.
+    #[profiling::function]
     fn drain_stylus(&mut self) {
         // A release held back (debounce.rs): the pen may be up.
         if self.debounce.holding() { return; }
         let Some(stylus) = &self.stylus else { return };
         for s in stylus.drain() {
-            self.activity.pen_packets += 1;
             if self.is_drawing {
                 self.pen_active = true;
                 self.press_point = None;
@@ -1697,6 +1693,7 @@ impl App {
         self.repaint_at = Some(self.repaint_at.map_or(next, |t| t.min(next)));
     }
 
+    #[profiling::function]
     fn render_frame(&mut self) {
         self.update_outline();
         let preview = self.shape_preview();
@@ -1769,7 +1766,7 @@ impl App {
         let ui_saw_canvas = &mut self.ui_saw_canvas;
         let layer_label = &mut self.layer_label;
         let over_canvas = self.over_canvas;
-        if run_ui { self.activity.ui_frames += 1 } else { self.activity.canvas_frames += 1 }
+        profiling::scope!("frame", if run_ui { "UI run" } else { "UI cached" });
         // Outside a stroke, wait a little for it: a merge on the paint
         // thread takes it band by band and lets go between two.
         // During a stroke, a short wait: the paint thread lets the UI in
@@ -1893,10 +1890,6 @@ impl App {
             }
             _ => {}
         }
-        if self.is_drawing {
-            self.frame_stats.add(t0.elapsed());
-        }
-        self.activity.main_time += t0.elapsed();
         if t0.elapsed() > Duration::from_millis(100) {
             log::warn!("slow frame: {:.0} ms (UI {})", t0.elapsed().as_secs_f64() * 1000.0, if run_ui { "run" } else { "cached" });
         }
@@ -2154,7 +2147,6 @@ impl App {
     /// Open an .aurs document, or an image as a new document.
     fn open_path(&mut self, path: &Path) {
         let (id, max) = (self.workspace.reserve_id(), self.max_canvas());
-        let t = Instant::now();
         let opened = if has_extension(path, EXTENSION) {
             aurastudio_file::open(path, id, max).map(|o| o.doc)
         } else {
@@ -2162,7 +2154,7 @@ impl App {
         };
         match opened {
             Ok(doc) => {
-                log::info!("opened {} in {:.0} ms", path.display(), t.elapsed().as_secs_f64() * 1000.0);
+                log::info!("opened {}", path.display());
                 self.install(doc);
                 self.home = false;
                 self.add_recent(path);
@@ -2443,15 +2435,12 @@ impl App {
 
 impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        profiling::scope!("app event");
         match event {
             // Only there to wake the loop; about_to_wait does the work.
             AppEvent::Wake => {}
             AppEvent::Painted => self.on_painted(),
             AppEvent::LayerChanged(layer_id, rect) => {
-                if self.frame_stats.count > 0 {
-                    log::info!("stroke frames (composite+render, main thread): {}", self.frame_stats);
-                    self.frame_stats = Timing::default();
-                }
                 self.on_painted();
                 self.ui.invalidate_thumbnail(layer_id, rect);
                 self.drop_play_cache();
@@ -2507,6 +2496,9 @@ impl ApplicationHandler<AppEvent> for App {
     /// Every pending OS message handled. WinTab packets come as messages
     /// without a winit event: drained here.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        profiling::scope!("wake");
+        #[cfg(feature = "profile")]
+        tracy_client::plot!("heap MB", crate::memory::heap_bytes() as f64 / 1_048_576.0);
         if self.quit {
             event_loop.exit();
             return;
@@ -2517,12 +2509,9 @@ impl ApplicationHandler<AppEvent> for App {
         self.tick_playback();
         self.tick_memory();
         self.update_title();
-        self.activity.wakes += 1;
-        self.activity.report(self.is_drawing || self.nav.is_some());
 
         if self.repaint_at.is_some_and(|t| Instant::now() >= t) {
             self.repaint_at = None;
-            self.activity.timers += 1;
             self.ui_dirty = true;
             self.redraw_wanted = true;
         }
@@ -2604,6 +2593,7 @@ impl ApplicationHandler<AppEvent> for App {
         crate::memory::mark("graphics device");
         self.renderer = gpu.backend().name().to_string();
         log::info!("graphics: {}", self.renderer);
+        crate::rescue::note("graphics", self.renderer.clone());
         gpu.clear_color = aurastudio_ui::theme::backdrop_rgb();
         log::info!("max canvas size: {} px", gpu.max_canvas_size());
 
@@ -2611,6 +2601,7 @@ impl ApplicationHandler<AppEvent> for App {
             if let RawWindowHandle::Win32(h) = handle.as_raw() {
                 let stylus = Stylus::install(h.hwnd.get());
                 log::info!("pen input backend: {}", stylus.backend());
+                crate::rescue::note("pen", stylus.backend().to_string());
                 self.stylus = Some(stylus);
                 if !aurastudio_input::disable_alt_menu(h.hwnd.get()) { log::warn!("couldn't turn off the Alt menu"); }
             }
@@ -2644,6 +2635,7 @@ impl ApplicationHandler<AppEvent> for App {
         _id:        WindowId,
         event:      WindowEvent,
     ) {
+        profiling::scope!("window event");
         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {
             // Cursors at the new display scaling.
             self.cursors = Some(crate::cursors::Cursors::new(event_loop, *scale_factor));
@@ -2697,7 +2689,6 @@ impl App {
         if !is_redraw && (ui_needs_frame || ui_dragging) && !canvas_move {
             self.request_redraw();
         }
-        if !is_redraw { self.activity.events += 1; }
         self.over_canvas = over_canvas;
 
         self.drain_stylus();
@@ -2932,7 +2923,6 @@ impl App {
 
             WindowEvent::CursorMoved { .. } => {
                 self.cursor_in_window = true;
-                self.activity.cursor_moves += 1;
                 // The outline moves with the cursor: a frame is needed.
                 if self.over_canvas || self.outline_shown {
                     self.update_cursor();
@@ -3033,45 +3023,5 @@ fn upload_all(layers: &aurastudio_layers::LayerStack, gpu: &mut GpuState) {
         band.resize(w as usize * (rect.3 - rect.1) as usize * 4, 0);
         layers.composite_rect_to(rect, &mut band);
         gpu.upload(rect, &band);
-    }
-}
-
-/// What makes the app work, over 5 s: logged when it keeps drawing with no
-/// stroke or view drag going on.
-struct Activity {
-    since:         Instant,
-    ui_frames:     u32,
-    canvas_frames: u32,
-    events:        u32,
-    cursor_moves:  u32,
-    pen_packets:   u32,
-    timers:        u32,
-    wakes:         u32,
-    main_time:     Duration,
-}
-
-impl Activity {
-    const WINDOW: Duration = Duration::from_secs(5);
-    /// Logged above this (10 % of a core).
-    const BUSY_TIME: Duration = Duration::from_millis(500);
-
-    fn new() -> Self {
-        Self {
-            since: Instant::now(), ui_frames: 0, canvas_frames: 0, events: 0, cursor_moves: 0,
-            pen_packets: 0, timers: 0, wakes: 0, main_time: Duration::ZERO,
-        }
-    }
-
-    fn report(&mut self, working: bool) {
-        if self.since.elapsed() < Self::WINDOW { return; }
-        if !working && self.main_time >= Self::BUSY_TIME {
-            log::info!(
-                "activity (5 s, no stroke): {} UI frames, {} canvas-only frames, main thread {:.0} ms | \
-                 {} window events ({} cursor moves), {} pen packets, {} UI timers, {} wake-ups",
-                self.ui_frames, self.canvas_frames, self.main_time.as_secs_f64() * 1000.0,
-                self.events, self.cursor_moves, self.pen_packets, self.timers, self.wakes,
-            );
-        }
-        *self = Self::new();
     }
 }
