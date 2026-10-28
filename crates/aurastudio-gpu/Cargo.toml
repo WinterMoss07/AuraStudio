@@ -16,4 +16,4 @@ profiling = "1"
 
 [dev-dependencies]
 aurastudio-layers = { path = "../aurastudio-layers" }
-pollster = "0.3"
+pollster = "0.4"

@@ -26,7 +26,7 @@ aurastudio-forge  = { path = "../aurastudio-forge" }
 aurastudio-input  = { path = "../aurastudio-input" }
 aurastudio-gpu    = { path = "../aurastudio-gpu" }
 winit             = "0.30"
-pollster          = "0.3"
+pollster          = "0.4"
 env_logger        = "0.11"
 log               = "0.4"
 raw-window-handle = "0.6"
