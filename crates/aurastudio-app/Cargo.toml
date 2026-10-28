@@ -19,7 +19,7 @@ profile = ["profiling/profile-with-tracy", "dep:tracy-client"]
 [dependencies]
 profiling = "1"
 # Same version as the one profiling uses (one Tracy client).
-tracy-client = { version = "0.18", optional = true }
+tracy-client = { version = "0.19", optional = true }
 aurastudio-core = { path = "../aurastudio-core" }
 aurastudio-tools = { path = "../aurastudio-tools" }
 aurastudio-forge  = { path = "../aurastudio-forge" }
