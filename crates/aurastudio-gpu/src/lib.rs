@@ -890,7 +890,6 @@ impl GpuState {
         }
 
         self.queue.submit(std::iter::once(enc.finish()));
-        self.uploads.submitted();
         self.queue.present(output);
 
         // Suboptimal swapchain (resize, DPI change): rebuilt once per episode
