@@ -42,6 +42,9 @@ pub struct Cursors {
     cross:       [CustomCursor; 4],
     /// What the window shows now (None: unknown, set it again).
     applied:     Option<Wanted>,
+    /// Hide the cursor again for real on the next `Hidden` (see
+    /// `invalidate`).
+    rehide:      bool,
 }
 
 /// Cursor bitmaps are drawn on a grid this many units wide and high, one
@@ -71,6 +74,7 @@ impl Cursors {
             pipette: make_at(pipette(scale), PIPETTE_TIP.0, PIPETTE_TIP.1),
             cross: [Mark::None, Mark::Add, Mark::Subtract, Mark::Intersect].map(|m| make(cross(m, scale))),
             applied: None,
+            rehide: false,
         }
     }
 
@@ -79,6 +83,13 @@ impl Cursors {
         if self.applied == Some(wanted) { return; }
         self.applied = Some(wanted);
         match wanted {
+            // Shown then hidden: winit keeps one "hidden" flag and calls
+            // ShowCursor only when it changes, but Windows ignores a hide
+            // asked while the window was in the background (the pointer
+            // passed over it before it was active again): the system
+            // arrow stayed over the brush outline until the pointer went
+            // over a docker. A real show / hide pair hides it.
+            Wanted::Hidden if std::mem::take(&mut self.rehide) => { window.set_cursor_visible(true); window.set_cursor_visible(false); }
             Wanted::Hidden => window.set_cursor_visible(false),
             Wanted::Hand => { window.set_cursor(self.hand.clone()); window.set_cursor_visible(true); }
             Wanted::HandClosed => { window.set_cursor(self.hand_closed.clone()); window.set_cursor_visible(true); }
@@ -92,8 +103,10 @@ impl Cursors {
 
     /// The window's cursor may have been changed behind our back (the
     /// pointer left and came back): set it again next time.
+    /// Also when the window becomes active again.
     pub fn invalidate(&mut self) {
         self.applied = None;
+        self.rehide = true;
     }
 }
 

@@ -2756,7 +2756,13 @@ impl App {
             }
 
             WindowEvent::Focused(false) => self.reset_input(),
-            WindowEvent::Focused(true) => self.refresh_dpi("focused"),
+            WindowEvent::Focused(true) => {
+                self.refresh_dpi("focused");
+                // The cursor set again (back from another window: the
+                // system arrow could stay over the brush outline).
+                if let Some(c) = &mut self.cursors { c.invalidate(); }
+                self.update_cursor();
+            }
 
             // Maybe on another monitor now: other profile, other scaling.
             WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
