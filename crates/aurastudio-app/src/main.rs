@@ -10,6 +10,7 @@ mod pure;
 mod paint_thread;
 mod projection;
 mod rescue;
+mod size_drag;
 mod window;
 
 #[global_allocator]

@@ -273,6 +273,8 @@ pub struct App {
     ui:          UiState,
 
     is_drawing: bool,
+    /// Alt + right drag: brush size / hardness (size_drag.rs).
+    size_drag:  Option<crate::size_drag::SizeDrag>,
     pressure:   f32,
     /// Pen tilt of the last sample (-1..1 toward +x / +y; 0: mouse).
     tilt:       (f32, f32),
@@ -444,6 +446,7 @@ impl App {
             ui:          UiState::new(),
 
             is_drawing: false,
+            size_drag:  None,
             pressure:   1.0,
             tilt:       (0.0, 0.0),
             samples_sent: 0,
@@ -590,6 +593,12 @@ impl App {
     /// the highest zoom, and an event there before the start card was laid
     /// out showed the brush as a huge circle until the pointer moved.
     fn update_outline(&mut self) {
+        // Alt + right drag: the brush stays where the drag started.
+        if let Some(d) = &self.size_drag {
+            self.outline_shown = true;
+            if let Some(gpu) = &mut self.gpu { let r = self.brush.radius * gpu.zoom(); gpu.set_brush_cursor(Some((d.anchor, r))); }
+            return;
+        }
         let show = !self.home && self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
             && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none() && self.prefs.brush_outline;
         self.outline_shown = show;
@@ -617,7 +626,7 @@ impl App {
                 Nav::Rotate => Wanted::Rotate,
                 Nav::Pan => Wanted::Hand,
             },
-            None if self.is_drawing => Wanted::Hidden,
+            None if self.is_drawing || self.size_drag.is_some() => Wanted::Hidden,
             None if self.over_canvas && !self.home => match self.tool {
                 Tool::Transform => self.transform_cursor().unwrap_or(Wanted::System(CursorIcon::Default)),
                 _ if matches!(self.gesture, Some(Gesture::MoveSel { .. })) => Wanted::System(CursorIcon::Move),
@@ -1625,6 +1634,7 @@ impl App {
     /// so drop held Space, any view drag and any stroke, instead of
     /// leaving them stuck.
     fn reset_input(&mut self) {
+        self.size_drag = None;
         self.space_down = false;
         self.shift_down = false;
         self.ctrl_down = false;
@@ -1724,6 +1734,14 @@ impl App {
             Some((c, pixel, self.tool == Tool::Picker, mark))
         });
         self.loupe_shown = loupe_req.is_some();
+        // Alt + right drag: the brush's hardness and the value set.
+        let brush_drag = self.size_drag.as_ref().and_then(|d| Some(aurastudio_ui::BrushDrag {
+            center:   self.window_to_canvas(d.anchor.0, d.anchor.1)?,
+            radius:   self.brush.radius,
+            hardness: self.brush.hardness,
+            pointer:  self.window_to_canvas(self.cursor.0, self.cursor.1)?,
+            label:    d.label(),
+        }));
         let Some(gpu) = &mut self.gpu else { return };
         let t0 = Instant::now();
 
@@ -1855,6 +1873,7 @@ impl App {
                     loupe: loupe.as_ref().map(|(cursor, target, pixel, origin, rgba, ring, mark)| Loupe {
                         cursor: *cursor, target: *target, pixel: *pixel, origin: *origin, side: aurastudio_ui::LOUPE_SIDE, rgba, ring: *ring, mark: *mark,
                     }),
+                    brush_drag,
                 },
                 shape,
                 to_points: &to_points,
@@ -2893,7 +2912,7 @@ impl App {
             // releasing above a panel left the app stuck in drawing mode.
             WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
                 if state.is_pressed() {
-                    if self.nav.is_some() || self.is_drawing {
+                    if self.nav.is_some() || self.is_drawing || self.size_drag.is_some() {
                         // Already dragging the view (middle button) or
                         // drawing: a second press starts nothing.
                     } else if self.ui.has_dialog() {
@@ -2915,6 +2934,31 @@ impl App {
                     self.tool_release();
                 } else if self.arc.wants_release() {
                     if let Some(at) = self.window_to_canvas(self.cursor.0, self.cursor.1) { self.arc_release(at); }
+                }
+            }
+
+            // Alt + right drag over the canvas (Photoshop): horizontal sets
+            // the brush size, vertical its hardness (size_drag.rs).
+            WindowEvent::MouseInput { button: MouseButton::Right, state, .. } => {
+                if state.is_pressed() {
+                    if over_canvas && self.modifiers.alt_key() && !self.home && self.tool.paints() && !self.is_drawing
+                        && self.nav.is_none() && self.gesture.is_none() && self.xf.is_none() && !self.ui.has_dialog() && self.size_drag.is_none()
+                    {
+                        let scale = self.gpu.as_ref().map_or(1.0, Screen::winit_scale).max(0.1);
+                        self.size_drag = Some(crate::size_drag::SizeDrag::new(
+                            self.cursor,
+                            (self.cursor.0 / scale, self.cursor.1 / scale),
+                            (self.brush.radius * 2.0).round(),
+                            self.brush.hardness,
+                            aurastudio_ui::MAX_BRUSH_SIZE as f32,
+                            true,
+                        ));
+                        self.update_cursor();
+                        self.request_redraw();
+                    }
+                } else if self.size_drag.take().is_some() {
+                    self.update_cursor();
+                    self.request_redraw();
                 }
             }
 
@@ -2962,7 +3006,15 @@ impl App {
                 // The loupe is UI: a UI frame (also when it just left).
                 let loupe = self.loupe_on().is_some();
                 if loupe || self.loupe_shown { self.request_redraw(); }
-                if self.nav.is_some() {
+                if let Some(d) = &mut self.size_drag {
+                    let scale = self.gpu.as_ref().map_or(1.0, Screen::winit_scale).max(0.1);
+                    d.moved((self.cursor.0 / scale, self.cursor.1 / scale));
+                    self.brush.radius = d.size() / 2.0;
+                    self.brush.hardness = d.hardness();
+                    self.update_outline();
+                    // The slider and the readout follow.
+                    self.request_redraw();
+                } else if self.nav.is_some() {
                     self.drag_nav();
                 } else if self.xf.as_ref().is_some_and(|x| x.drag.is_some()) {
                     self.xform_drag();

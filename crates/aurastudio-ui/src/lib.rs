@@ -35,7 +35,7 @@ pub use stroke_preview::{cache_usage as preview_cache_usage, set_cache_dir as se
 pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
-pub use tools::{Group, Loupe, Overlay, PickerOptions, SelectCmd, SelectOptions, LOUPE_SIDE, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
+pub use tools::{BrushDrag, Group, Loupe, Overlay, PickerOptions, SelectCmd, SelectOptions, LOUPE_SIDE, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
 pub use prefs::{CanvasQuality, Renderer};
 pub use widgets::set_display_transform;
 

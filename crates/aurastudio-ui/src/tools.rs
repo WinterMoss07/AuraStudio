@@ -585,6 +585,20 @@ pub struct Overlay<'a> {
     pub guide:       &'a [(f32, f32)],
     pub transform:   Option<TransformOverlay<'a>>,
     pub loupe:       Option<Loupe<'a>>,
+    /// Alt + right drag: the brush's size / hardness being set.
+    pub brush_drag:  Option<BrushDrag>,
+}
+
+/// The brush being resized / softened (Alt + right drag), canvas pixels.
+pub struct BrushDrag {
+    /// The brush's center and radius (the app draws its outline).
+    pub center:   (f32, f32),
+    pub radius:   f32,
+    /// 0..1: the inner circle where the edge starts to fade.
+    pub hardness: f32,
+    /// The pointer: the readout goes next to it.
+    pub pointer:  (f32, f32),
+    pub label:    String,
 }
 
 /// A magnified view of the canvas around the cursor.
@@ -611,6 +625,23 @@ pub const LOUPE_SIDE: u32 = 27;
 
 /// Diameter of the loupe, points.
 const LOUPE_SIZE: f32 = 132.0;
+
+fn draw_brush_drag(painter: &egui::Painter, b: &BrushDrag, pt: &dyn Fn((f32, f32)) -> Pos2) {
+    // Where the edge starts to fade (dark under light: seen on any color).
+    let c = pt(b.center);
+    let r = (pt((b.center.0 + b.radius, b.center.1)) - c).length() * b.hardness;
+    if b.hardness < 1.0 && r >= 1.0 {
+        painter.circle_stroke(c, r, Stroke::new(2.5_f32, Color32::from_black_alpha(110)));
+        painter.circle_stroke(c, r, Stroke::new(1.0_f32, Color32::from_white_alpha(170)));
+    }
+    // The readout, below right of the pointer (as a tooltip).
+    let font = egui::FontId::proportional(13.0);
+    let galley = painter.layout_no_wrap(b.label.clone(), font, theme::TEXT);
+    let at = pt(b.pointer) + vec2(18.0, 18.0);
+    let rect = Rect::from_min_size(at, galley.size()).expand2(vec2(7.0, 4.0));
+    painter.rect_filled(rect, 4.0, Color32::from_black_alpha(200));
+    painter.galley(rect.min + vec2(7.0, 4.0), galley, theme::TEXT);
+}
 
 fn draw_loupe(ctx: &egui::Context, painter: &egui::Painter, l: &Loupe, pt: &dyn Fn((f32, f32)) -> Pos2) {
     let o = pt(l.cursor);
@@ -738,6 +769,7 @@ pub fn draw_overlay(ctx: &egui::Context, clip: Rect, overlay: &Overlay, to_point
         }
     };
     if let Some(d) = overlay.drawing { outline(&mut mesh, d, true); }
+    if let Some(b) = &overlay.brush_drag { draw_brush_drag(&painter, b, &pt); }
     if !mesh.is_empty() { painter.add(Shape::mesh(mesh)); }
     if let Some(s) = overlay.shape {
         let v: Vec<Pos2> = s.iter().map(|&p| pt(p)).collect();
