@@ -60,6 +60,9 @@ pub enum Cmd {
     /// a filter layer's values...). Only the latest of those waiting is
     /// done.
     Recomposite(SharedDoc),
+    /// Merge only this part again (a node shown / hidden / made / removed
+    /// changes nothing elsewhere).
+    RecompositeArea(SharedDoc, Rect),
     /// Merge again only where the time changed the picture (sheets shown
     /// or hidden, ghosts): the rectangle the document keeps.
     RecompositeTime(SharedDoc),
@@ -460,6 +463,8 @@ impl Worker {
                     }
                     Cmd::Recomposite(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_))) => {}
                     Cmd::Recomposite(doc) => self.recomposite(doc, false),
+                    Cmd::RecompositeArea(_, _) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_))) => {}
+                    Cmd::RecompositeArea(doc, r) => self.recomposite_area(doc, r),
                     // (What a later one will merge is enough: the rectangle
                     // is kept in the document, and adds up meanwhile.)
                     Cmd::RecompositeTime(_) if queue.iter().any(|c| matches!(c, Cmd::Recomposite(_) | Cmd::RecompositeTime(_))) => {}
@@ -629,6 +634,21 @@ impl Worker {
             // locking again at once, this thread would get it first), only
             // when it is waiting: no fixed sleep per band.
             let_ui_in();
+        }
+        self.doc = Some(doc);
+    }
+
+    /// Merge `rect` again for the screen (the rest can't have changed).
+    #[profiling::function]
+    fn recomposite_area(&mut self, doc: SharedDoc, rect: Rect) {
+        {
+            let mut d = doc.lock().unwrap();
+            d.layers.drop_stroke_cache();
+            let (w, h) = (d.layers.width, d.layers.height);
+            // A filter layer reading around (blur) spreads a change.
+            let m = d.layers.merge_margin();
+            let r = (rect.0.saturating_sub(m).min(w), rect.1.saturating_sub(m).min(h), rect.2.saturating_add(m).min(w), rect.3.saturating_add(m).min(h));
+            if r.2 > r.0 && r.3 > r.1 { add_rect(&mut self.pending, r); }
         }
         self.doc = Some(doc);
     }

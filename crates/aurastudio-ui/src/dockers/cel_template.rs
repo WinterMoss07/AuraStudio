@@ -143,7 +143,7 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model, a: &mut Actions) {
         } else if resp.clicked() {
             match pt {
                 Some(pt) if eye.contains(pt) => match layer {
-                    Some(id) => { m.toggle_visible(id); changed_states = true; }
+                    Some(id) => { let _ = m.toggle_visible(id); changed_states = true; }
                     None => { m.layers.apply(Edit::SetTemplateState { folder, at: r, visible: Some(!visible), locked: None }); changed_states = true; }
                 },
                 Some(pt) if lock.contains(pt) => match layer {

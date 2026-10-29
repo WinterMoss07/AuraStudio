@@ -8,7 +8,7 @@ use std::time::Instant;
 use aurastudio_core::Rect as PxRect;
 use aurastudio_document::Edit;
 use aurastudio_filters::GROUPS;
-use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
+use aurastudio_layers::{FolderBlend, FolderKind, Footprint, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
 
 use crate::atlas::{Atlas, Region};
@@ -196,13 +196,14 @@ impl LayersState {
 pub fn new_layer(m: &mut Model, a: &mut Actions) {
     let n = m.layers.layer_count();
     m.layers.apply(Edit::AddLayer(format!("Layer {n}")));
-    a.recomposite = true;
+    // (Empty: no pixel changes.)
+    a.changed_area(Footprint::Nothing);
     a.layer_edit = Some("New layer");
 }
 
 pub fn new_folder(m: &mut Model, a: &mut Actions) {
     m.layers.apply(Edit::AddFolder("Folder".into()));
-    a.recomposite = true;
+    a.changed_area(Footprint::Nothing);
     a.layer_edit = Some("New folder");
 }
 
@@ -214,7 +215,7 @@ pub fn new_animation_folder(m: &mut Model, a: &mut Actions, group: Option<u64>) 
     if m.doc_kind != aurastudio_document::Kind::Animation { return; }
     let n = m.layers.rows().iter().filter(|r| r.animation).count() + 1;
     m.layers.apply(Edit::AddAnimationFolder { name: format!("Animation {n}"), group });
-    a.recomposite = true;
+    a.changed_area(Footprint::Nothing);
     a.layer_edit = Some("New animation folder");
     a.show_docker = Some(super::Tab::CelTemplate);
 }
@@ -253,8 +254,9 @@ pub fn delete_layer(st: &mut LayersState, notice: &mut Notice, m: &mut Model, a:
         match m.layers.removal_refused() {
             Some(why) => refused = Some(why),
             None => {
+                let f = m.layers.footprint(id);
                 m.layers.apply(Edit::RemoveActive);
-                a.recomposite = true;
+                a.changed_area(f);
                 a.layer_edit = Some("Delete layer");
             }
         }
@@ -268,10 +270,12 @@ pub fn duplicate(st: &mut LayersState, m: &mut Model, a: &mut Actions) {
     let mut copies = Vec::new();
     for id in st.selection(&m.layers) {
         m.layers.apply(Edit::SetActive(id));
-        if m.layers.active_id() == id { copies.extend(m.layers.apply(Edit::DuplicateActive).made); }
+        if m.layers.active_id() == id {
+            a.changed_area(m.layers.footprint(id));
+            copies.extend(m.layers.apply(Edit::DuplicateActive).made);
+        }
     }
     st.selected = if copies.len() > 1 { copies } else { Vec::new() };
-    a.recomposite = true;
     a.layer_edit = Some("Duplicate");
 }
 
@@ -751,8 +755,8 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
                 }
             }
             RowEvent::ToggleVisible => {
-                m.toggle_visible(id);
-                a.recomposite = true;
+                let f = m.toggle_visible(id);
+                a.changed_area(f);
             }
             RowEvent::ToggleLock => {
                 m.toggle_locked(id);

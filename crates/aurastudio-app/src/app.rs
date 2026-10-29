@@ -1980,12 +1980,12 @@ impl App {
             save_recent(&self.recent);
             self.refresh_home();
         }
-        if actions.modified || actions.recomposite {
+        if actions.modified || actions.recomposite || actions.recomposite_area.is_some() {
             if let Ok(mut d) = self.doc.try_lock() { d.touch(); }
             self.drop_play_cache();
         }
         // Another frame shown (no edit).
-        if actions.frame_changed && !actions.recomposite { self.paint.send(Cmd::RecompositeTime(Arc::clone(&self.doc))); }
+        if actions.frame_changed && !actions.recomposite && actions.recomposite_area.is_none() { self.paint.send(Cmd::RecompositeTime(Arc::clone(&self.doc))); }
         if let Some(cmd) = actions.view { self.view_cmd(cmd); }
         match actions.play {
             Some(true) => self.start_playback(),
@@ -2000,6 +2000,15 @@ impl App {
             // Merged on the paint thread (filter layers make a whole merge
             // slow): the UI never waits for it.
             self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc)));
+        } else if let (Some(f), None, false) = (actions.recomposite_area, actions.resize_to, self.layers_dirty) {
+            // Only part of the canvas can look different (a node shown,
+            // hidden, made, removed): that part merged and sent again.
+            match f {
+                // (No pixel: the merges kept for strokes still go.)
+                aurastudio_layers::Footprint::Nothing => self.paint.send(Cmd::RecompositeArea(Arc::clone(&self.doc), (0, 0, 0, 0))),
+                aurastudio_layers::Footprint::All => self.paint.send(Cmd::Recomposite(Arc::clone(&self.doc))),
+                aurastudio_layers::Footprint::Area(r) => self.paint.send(Cmd::RecompositeArea(Arc::clone(&self.doc), r)),
+            }
         } else if actions.resize_to.is_some() || actions.recomposite || self.layers_dirty {
             // Layer visibility / opacity / order changed, or new size: merge
             // everything again (rare, never during a stroke).

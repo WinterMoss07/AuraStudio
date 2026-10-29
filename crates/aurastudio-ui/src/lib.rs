@@ -114,6 +114,10 @@ pub struct Actions {
     /// Layer visibility / opacity / blend / order / content changed outside
     /// a stroke: recomposite the whole canvas.
     pub recomposite: bool,
+    /// The tree changed, but only this part of the canvas can look
+    /// different (a node shown / hidden, made, removed, copied): merged
+    /// again for the screen without the rest. `recomposite` wins.
+    pub recomposite_area: Option<aurastudio_layers::Footprint>,
     pub resize_to:   Option<(u32, u32)>,
     pub undo:        bool,
     pub redo:        bool,
@@ -167,6 +171,13 @@ pub struct Actions {
     pub layers_idle: bool,
 }
 
+impl Actions {
+    /// Only `f` of the canvas can look different after a tree edit.
+    pub fn changed_area(&mut self, f: aurastudio_layers::Footprint) {
+        self.recomposite_area = Some(self.recomposite_area.map_or(f, |a| a.union(f)));
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileCmd { New, Open, Save, SaveAs, Export, Close }
 
@@ -197,8 +208,11 @@ pub(crate) struct Notice(Option<(String, Instant)>);
 
 impl Model<'_> {
     /// Eye of node `id` the other way.
-    pub(crate) fn toggle_visible(&mut self, id: u64) {
+    /// Returns what of the canvas it can change.
+    pub(crate) fn toggle_visible(&mut self, id: u64) -> aurastudio_layers::Footprint {
+        let f = self.layers.footprint(id);
         if let Some(v) = self.layers.node(id).map(aurastudio_layers::Node::visible) { self.layers.apply(Edit::SetVisible(id, !v)); }
+        f
     }
 
     /// Lock of node `id` the other way.

@@ -127,6 +127,26 @@ pub enum Node {
     Filter(FilterLayer),
 }
 
+/// The part of the screen a node can change (see `LayerStack::footprint`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Footprint {
+    /// No pixel (an empty layer or folder).
+    Nothing,
+    Area(Rect),
+    /// The whole canvas.
+    All,
+}
+
+impl Footprint {
+    pub fn union(self, o: Footprint) -> Footprint {
+        match (self, o) {
+            (Footprint::All, _) | (_, Footprint::All) => Footprint::All,
+            (Footprint::Nothing, x) | (x, Footprint::Nothing) => x,
+            (Footprint::Area(a), Footprint::Area(b)) => Footprint::Area(aurastudio_core::union(a, b)),
+        }
+    }
+}
+
 /// `$e` on the node's struct, whatever its kind.
 macro_rules! each {
     ($n:expr, $x:ident => $e:expr) => {
@@ -142,6 +162,17 @@ impl Node {
             Node::Layer(l) => out.push(l.id),
             Node::Folder(f) => for c in &f.children { c.push_layer_ids(out) },
             Node::Filter(_) => {}
+        }
+    }
+
+    /// The part of the screen this node can change (every blend mode
+    /// leaves the image below as it is where a layer is transparent).
+    pub fn footprint(&self) -> Footprint {
+        match self {
+            Node::Layer(l) if l.tiles.fill()[3] > 0 => Footprint::All,
+            Node::Layer(l) => l.tiles.visible_bounds().map_or(Footprint::Nothing, Footprint::Area),
+            Node::Folder(f) => f.children.iter().fold(Footprint::Nothing, |acc, c| acc.union(c.footprint())),
+            Node::Filter(_) => Footprint::All,
         }
     }
 
@@ -1204,6 +1235,22 @@ impl LayerStack {
         })
     }
 
+    /// What showing, hiding, removing or copying node `id` can change on
+    /// the screen: its painted area (a folder: its content's, hidden
+    /// sheets included for the onion skin). A layer with a fill (Paper)
+    /// or a filter layer: everything.
+    /// The nodes clipped onto it count too (removed, they would clip to
+    /// another base).
+    pub fn footprint(&self, id: u64) -> Footprint {
+        let Some(path) = self.path(id) else { return Footprint::All };
+        let Some((last, parent)) = path.split_last() else { return Footprint::All };
+        let mut nodes = &self.root;
+        for &i in parent { if let Node::Folder(f) = &nodes[i] { nodes = &f.children; } }
+        let mut f = nodes[*last].footprint();
+        for n in nodes[*last + 1..].iter().take_while(|n| n.props().clip) { f = f.union(n.footprint()); }
+        f
+    }
+
     /// Ids of every paint layer (thumbnails).
     pub fn layer_ids(&self) -> Vec<u64> {
         let mut v = Vec::new();
@@ -1640,6 +1687,46 @@ mod spans_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Showing / hiding / removing a node changes no pixel outside its
+    /// footprint (so only that part is merged again for the screen).
+    #[test]
+    fn a_node_changes_nothing_outside_its_footprint() {
+        let (w, h) = (200, 150);
+        let mut s = LayerStack::new(w, h);
+        let paint = |s: &mut LayerStack, r: Rect, c: [u8; 4]| {
+            let id = s.add_layer("x");
+            assert!(s.set_layer_rect(id, r, &c.repeat(((r.2 - r.0) * (r.3 - r.1)) as usize)));
+            id
+        };
+        let a = paint(&mut s, (10, 10, 40, 30), [255, 0, 0, 200]);
+        let base = paint(&mut s, (100, 50, 140, 90), [0, 0, 255, 255]);
+        let clipped = paint(&mut s, (0, 0, 200, 150), [0, 255, 0, 255]);
+        s.node_mut(clipped).unwrap().props_mut().clip = true;
+        let empty = s.add_layer("empty");
+        assert_eq!(s.footprint(empty), Footprint::Nothing);
+        assert_eq!(s.footprint(1), Footprint::All, "the background has a fill");
+        let outside = |f: Footprint, x: u32, y: u32| match f {
+            Footprint::Nothing => true,
+            Footprint::Area(r) => !(x >= r.0 && x < r.2 && y >= r.1 && y < r.3),
+            Footprint::All => false,
+        };
+        for id in [a, base, clipped, empty] {
+            let f = s.footprint(id);
+            let before = s.composite_rect((0, 0, w, h));
+            *s.node_mut(id).unwrap().visible_mut() = false;
+            let hidden = s.composite_rect((0, 0, w, h));
+            *s.node_mut(id).unwrap().visible_mut() = true;
+            for y in 0..h { for x in 0..w {
+                if !outside(f, x, y) { continue; }
+                let i = ((y * w + x) * 4) as usize;
+                assert_eq!(before[i..i + 4], hidden[i..i + 4], "node {id} changed ({x}, {y}) outside {f:?}");
+            } }
+        }
+        // Removing the base: the clipped layer would clip to `a`.
+        let f = s.footprint(base);
+        assert_eq!(f, Footprint::Area((0, 0, w, h)), "the clipped layer counts");
+    }
 
     #[test]
     fn drag_and_drop_moves_nodes() {

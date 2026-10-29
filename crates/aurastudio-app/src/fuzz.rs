@@ -334,6 +334,13 @@ fn fuzz() {
                 if actions.recomposite && actions.resize_to.is_none() {
                     // As the app: merged on the paint thread.
                     pt.send(Cmd::Recomposite(Arc::clone(&doc)));
+                } else if let (Some(f), None) = (actions.recomposite_area, actions.resize_to) {
+                    match f {
+                        // (No pixel: the merges kept for strokes still go.)
+                        aurastudio_layers::Footprint::Nothing => pt.send(Cmd::RecompositeArea(Arc::clone(&doc), (0, 0, 0, 0))),
+                        aurastudio_layers::Footprint::All => pt.send(Cmd::Recomposite(Arc::clone(&doc))),
+                        aurastudio_layers::Footprint::Area(r) => pt.send(Cmd::RecompositeArea(Arc::clone(&doc), r)),
+                    }
                 } else if actions.resize_to.is_some() {
                     let mut d = doc.lock().unwrap();
                     if let Some((w, h)) = actions.resize_to {

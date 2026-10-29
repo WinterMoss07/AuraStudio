@@ -745,8 +745,8 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             } else if let Some(h) = head_at(q) {
                 let folder = h.col.id();
                 if h.eye.contains(q) {
-                    m.toggle_visible(folder);
-                    a.recomposite = true;
+                    let f = m.toggle_visible(folder);
+                    a.changed_area(f);
                 } else if h.lock.contains(q) {
                     m.toggle_locked(folder);
                     a.modified = true;
