@@ -3,6 +3,47 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.19.6 — 2026-10-29
+
+Memory no longer grows when layers are shown, hidden or added; Alt +
+right drag sets the brush size or hardness; the system cursor no longer
+stays over the brush outline.
+
+**Memory**
+- Pixels went to the GPU through `queue.write_texture`, which makes a
+  staging buffer per call and frees it after the copy. On Vulkan (Intel
+  driver at least) that memory was not given back: showing / hiding a
+  layer or adding one left +16 MB of private bytes for good (measured on
+  a 1920 × 1080 document; GL gave everything back, DX12 kept ~6 MB).
+  The pixels now go through a ring of 1 MB staging buffers made once and
+  reused (as Krita's ring of pixel buffers): no buffer is made or freed
+  per upload, at most 4 MB wait for the GPU.
+- Showing / hiding a layer or folder, adding, deleting or duplicating
+  one merged and sent the whole canvas again. Now only its painted area
+  is (with the layers clipped onto it; a filter layer or the Paper:
+  everything; filter layers that read around widen it): nothing at all
+  for a new empty layer.
+
+**Brush size and hardness by dragging**
+- Alt + right drag over the canvas (Photoshop): horizontal changes the
+  size, vertical the hardness (up: softer). The brush stays where the
+  drag started, the fade of its edge is drawn inside it, and the value
+  shows by the pointer.
+- Never both at once (Photoshop changes both with every move, so the
+  exact size was hard to reach): the first points pick the value (within
+  45° of horizontal: size), the other part of each move is dropped. The
+  drag can switch within the same move (right then up) once its last 10
+  points go more the other way; a slight drift never switches it.
+- Size: 1 px per point up to 100 px (exact small sizes), then 1 % per
+  point; hardness: 0.5 % per point.
+
+**Cursor**
+- Back from another window with the pointer over the canvas, the system
+  arrow stayed over the brush outline until the pointer went over a
+  docker. Windows ignores a hide asked while the window is in the
+  background and winit asks it only once; the cursor is now shown then
+  hidden again when the window gets focus or the pointer comes back.
+
 ## 0.19.5 — 2026-10-28
 
 Big brushes keep up with the pen at the start of a stroke; dependencies
