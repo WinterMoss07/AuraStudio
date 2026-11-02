@@ -16,6 +16,7 @@ members = [
     "crates/aurastudio-compose",
     "crates/aurastudio-animation",
     "crates/aurastudio-file",
+    "crates/aurastudio-document",
     "crates/aurastudio-diag",
     "crates/aurastudio-stress",
 ]

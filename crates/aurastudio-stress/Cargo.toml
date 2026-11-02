@@ -10,6 +10,8 @@ aurastudio-color = { path = "../aurastudio-color" }
 aurastudio-compose = { path = "../aurastudio-compose" }
 aurastudio-core = { path = "../aurastudio-core", features = ["diag"] }
 aurastudio-diag = { path = "../aurastudio-diag" }
+aurastudio-document = { path = "../aurastudio-document" }
+aurastudio-file = { path = "../aurastudio-file" }
 aurastudio-filters = { path = "../aurastudio-filters" }
 aurastudio-layers = { path = "../aurastudio-layers" }
 aurastudio-raster = { path = "../aurastudio-raster" }

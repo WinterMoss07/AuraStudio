@@ -380,6 +380,61 @@ impl Scenario for Compose {
     }
 }
 
+/// A document at work (A4 300 dpi): strokes as undo steps, undo / redo,
+/// a filter preview, a transform dragged, a fill, save to a snapshot and
+/// back.
+pub struct Document;
+
+impl Scenario for Document {
+    fn name(&self) -> &'static str { "document (A4 300 dpi)" }
+    fn run(&mut self, _report: &mut Report) {
+        use aurastudio_document::{DocId, Document as Doc, Edit};
+        use aurastudio_filters::{Filter, Kind};
+        use aurastudio_transform::{corners, Interp, Warp};
+        let mut d = Doc::new(DocId(1), "a4", 2480, 3508, DocType::Illustration);
+        let mut rng = Rng::new(9);
+        for _ in 0..20 {
+            let (x, y) = (rng.below(2300) as i32, rng.below(3300) as i32);
+            let r = Rect::new(x, y, x + 160, y + 160);
+            let c = [rng.below(256) as u8, 40, 90, 255];
+            aurastudio_core::zone!("document stroke 160 px");
+            d.stroke("Brush stroke", |s| {
+                s.prepare(r);
+                for y in r.y0..r.y1 {
+                    let mut x = r.x0;
+                    while x < r.x1 {
+                        let sp = s.span_mut(x, y, (r.x1 - x) as usize);
+                        let n = sp.len();
+                        if n == 0 { break; }
+                        sp.pixels.fill(c);
+                        sp.mask.fill(255);
+                        x += n as i32;
+                    }
+                }
+            });
+        }
+        for _ in 0..10 { aurastudio_core::zone!("document undo"); d.apply(Edit::Undo); }
+        for _ in 0..10 { aurastudio_core::zone!("document redo"); d.apply(Edit::Redo); }
+        for v in [10.0, 30.0, 60.0] {
+            aurastudio_core::zone!("document filter preview (brightness)");
+            d.apply(Edit::FilterPreview(Some(Filter { values: vec![v, 0.0, 0.0], ..Filter::new(Kind::BrightnessContrast) })));
+        }
+        { aurastudio_core::zone!("document filter cancel"); d.apply(Edit::FilterCancel); }
+        let id = d.paint_id().unwrap_or(0);
+        { aurastudio_core::zone!("document transform begin"); d.apply(Edit::TransformBegin(vec![id])); }
+        let src = d.transform_source().unwrap_or(Rect::EMPTY);
+        for k in 0..5 {
+            aurastudio_core::zone!("document transform preview");
+            d.apply(Edit::TransformPreview { warp: Warp { quad: corners(src.moved(k * 20, k * 10)), mesh: None }, interp: Interp::Bilinear });
+        }
+        { aurastudio_core::zone!("document transform cancel"); d.apply(Edit::TransformCancel); }
+        { aurastudio_core::zone!("document fill"); d.apply(Edit::Fill { x: 5, y: 5, color: [0, 200, 0, 255], params: Default::default() }); }
+        let snap = { aurastudio_core::zone!("document snapshot"); d.snapshot(None) };
+        let back = { aurastudio_core::zone!("document from snapshot"); Doc::from_snapshot(DocId(2), "back", snap) };
+        std::hint::black_box(back);
+    }
+}
+
 /// Every scenario, in report order.
 pub fn all() -> Vec<Box<dyn Scenario>> {
     let n = crate::env_u64("STROKES", 20) as u32;
@@ -397,5 +452,6 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
         Box::new(Color),
         Box::new(Layers),
         Box::new(Compose),
+        Box::new(Document),
     ]
 }

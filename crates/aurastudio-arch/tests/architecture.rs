@@ -30,7 +30,8 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("compose", &["core", "raster", "layers", "filters"]),
     // What time DOES to the tree; the camera.
     ("animation", &["core", "layers"]),
-    ("document", &["core", "raster", "layers", "compose", "animation", "selection", "filters", "transform", "color"]),
+    // Fills and reads back `file`'s neutral snapshot.
+    ("document", &["core", "raster", "layers", "compose", "animation", "selection", "filters", "transform", "color", "file"]),
     // Reads and writes a neutral snapshot, not the document.
     ("file", &["core", "raster", "layers", "filters"]),
     ("gpu", &["core", "raster"]),

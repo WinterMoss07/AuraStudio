@@ -1,0 +1,17 @@
+[package]
+name = "aurastudio-document"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+aurastudio-core      = { path = "../aurastudio-core" }
+aurastudio-raster    = { path = "../aurastudio-raster" }
+aurastudio-layers    = { path = "../aurastudio-layers" }
+aurastudio-compose   = { path = "../aurastudio-compose" }
+aurastudio-animation = { path = "../aurastudio-animation" }
+aurastudio-selection = { path = "../aurastudio-selection" }
+aurastudio-filters   = { path = "../aurastudio-filters" }
+aurastudio-transform = { path = "../aurastudio-transform" }
+aurastudio-color     = { path = "../aurastudio-color" }
+aurastudio-file      = { path = "../aurastudio-file" }
+lz4_flex = "0.14"

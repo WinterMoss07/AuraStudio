@@ -68,6 +68,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-document"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-animation",
+ "aurastudio-color",
+ "aurastudio-compose",
+ "aurastudio-core",
+ "aurastudio-file",
+ "aurastudio-filters",
+ "aurastudio-layers",
+ "aurastudio-raster",
+ "aurastudio-selection",
+ "aurastudio-transform",
+ "lz4_flex",
+]
+
+[[package]]
 name = "aurastudio-file"
 version = "0.19.6"
 dependencies = [
@@ -139,6 +156,8 @@ dependencies = [
  "aurastudio-compose",
  "aurastudio-core",
  "aurastudio-diag",
+ "aurastudio-document",
+ "aurastudio-file",
  "aurastudio-filters",
  "aurastudio-layers",
  "aurastudio-raster",
