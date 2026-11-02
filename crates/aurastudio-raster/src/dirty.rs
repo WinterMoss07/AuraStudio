@@ -1,91 +1,101 @@
-//! A set of tiles, exact: what changed, what to upload, merge, mip or
-//! save again. Unlike a union of rectangles, a diagonal stroke stays a
-//! diagonal band of tiles. Callers see pixel rectangles only.
+//! A set of tiles, exact and unbounded: what changed, what to upload,
+//! merge, mip or save again. Unlike a union of rectangles, a diagonal
+//! stroke stays a diagonal band of tiles. Callers see pixel rectangles.
+
+use std::collections::HashMap;
 
 use aurastudio_core::Rect;
 
+const CH: i32 = 32;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirtyTiles {
-    tile:  u32,
-    cols:  u32,
-    rows:  u32,
-    bits:  Vec<u64>,
-    count: usize,
+    tile:   u32,
+    /// Per chunk of 32 × 32 tiles, one bit per tile.
+    chunks: HashMap<(i32, i32), [u64; 16]>,
+    count:  usize,
 }
 
 impl DirtyTiles {
-    /// For a `width` × `height` surface of tiles of `tile`.
-    pub fn new(width: u32, height: u32, tile: u32) -> Self {
-        let tile = tile.max(1);
-        let (cols, rows) = (width.div_ceil(tile), height.div_ceil(tile));
-        Self { tile, cols, rows, bits: vec![0; ((cols * rows) as usize).div_ceil(64)], count: 0 }
-    }
+    /// For tiles of `tile` pixels.
+    pub fn new(tile: u32) -> Self { Self { tile: tile.max(1), chunks: HashMap::new(), count: 0 } }
+
+    pub fn tile_size(&self) -> u32 { self.tile }
 
     pub fn is_empty(&self) -> bool { self.count == 0 }
 
     /// Tiles in the set.
     pub fn len(&self) -> usize { self.count }
 
-    pub fn clear(&mut self) { self.bits.fill(0); self.count = 0; }
+    pub fn clear(&mut self) { self.chunks.clear(); self.count = 0; }
 
-    #[inline]
-    fn set(&mut self, i: usize) {
-        let (w, b) = (i / 64, 1u64 << (i % 64));
-        if self.bits[w] & b == 0 { self.bits[w] |= b; self.count += 1; }
+    fn set(&mut self, tx: i32, ty: i32) {
+        let k = (tx.div_euclid(CH), ty.div_euclid(CH));
+        let i = (ty.rem_euclid(CH) * CH + tx.rem_euclid(CH)) as usize;
+        let w = self.chunks.entry(k).or_insert([0; 16]);
+        let b = 1u64 << (i % 64);
+        if w[i / 64] & b == 0 { w[i / 64] |= b; self.count += 1; }
     }
 
-    #[inline]
-    fn get(&self, i: usize) -> bool { self.bits[i / 64] & (1 << (i % 64)) != 0 }
+    fn get(&self, tx: i32, ty: i32) -> bool {
+        let k = (tx.div_euclid(CH), ty.div_euclid(CH));
+        let i = (ty.rem_euclid(CH) * CH + tx.rem_euclid(CH)) as usize;
+        self.chunks.get(&k).is_some_and(|w| w[i / 64] & (1 << (i % 64)) != 0)
+    }
+
+    fn span(&self, r: &Rect) -> Option<(i32, i32, i32, i32)> {
+        if r.is_empty() { return None; }
+        let t = self.tile as i32;
+        Some((r.x0.div_euclid(t), r.y0.div_euclid(t), (r.x1 - 1).div_euclid(t) + 1, (r.y1 - 1).div_euclid(t) + 1))
+    }
 
     /// Add the tiles touching `r`.
     pub fn insert(&mut self, r: Rect) {
-        let t = self.tile as i32;
-        let full = Rect::new(0, 0, self.cols as i32 * t, self.rows as i32 * t);
-        let Some(r) = r.intersection(&full) else { return };
-        let (tx0, ty0, tx1, ty1) = (r.x0 / t, r.y0 / t, (r.x1 - 1) / t + 1, (r.y1 - 1) / t + 1);
-        for ty in ty0..ty1 { for tx in tx0..tx1 { self.set((ty as u32 * self.cols + tx as u32) as usize); } }
+        let Some((tx0, ty0, tx1, ty1)) = self.span(&r) else { return };
+        for ty in ty0..ty1 { for tx in tx0..tx1 { self.set(tx, ty); } }
     }
 
-    /// Add every tile of `o` (same shape; another shape is ignored).
+    /// Add every tile of `o` (same tile size; another is ignored).
     pub fn union(&mut self, o: &DirtyTiles) {
-        if (o.tile, o.cols, o.rows) != (self.tile, self.cols, self.rows) { return; }
-        for (a, b) in self.bits.iter_mut().zip(&o.bits) { *a |= b; }
-        self.count = self.bits.iter().map(|w| w.count_ones() as usize).sum();
+        if o.tile != self.tile { return; }
+        for (tx, ty) in o.tiles().collect::<Vec<_>>() { self.set(tx, ty); }
     }
 
     /// Whether some tile touching `r` is in the set.
     pub fn touches(&self, r: Rect) -> bool {
-        let t = self.tile as i32;
-        let full = Rect::new(0, 0, self.cols as i32 * t, self.rows as i32 * t);
-        let Some(r) = r.intersection(&full) else { return false };
-        let (tx0, ty0, tx1, ty1) = (r.x0 / t, r.y0 / t, (r.x1 - 1) / t + 1, (r.y1 - 1) / t + 1);
-        (ty0..ty1).any(|ty| (tx0..tx1).any(|tx| self.get((ty as u32 * self.cols + tx as u32) as usize)))
+        let Some((tx0, ty0, tx1, ty1)) = self.span(&r) else { return false };
+        if ((tx1 - tx0) as i64) * ((ty1 - ty0) as i64) > self.count as i64 {
+            let t = self.tile as i32;
+            return self.tiles().any(|(tx, ty)| Rect::from_xywh(tx * t, ty * t, self.tile, self.tile).overlaps(&r));
+        }
+        (ty0..ty1).any(|ty| (tx0..tx1).any(|tx| self.get(tx, ty)))
     }
 
     /// The set as rectangles: runs of tiles side by side in each row,
-    /// clipped to `width` × `height`.
-    pub fn rects(&self, width: u32, height: u32) -> Vec<Rect> {
+    /// top to bottom.
+    pub fn rects(&self) -> Vec<Rect> {
+        let mut cells: Vec<(i32, i32)> = self.tiles().map(|(x, y)| (y, x)).collect();
+        cells.sort_unstable();
         let t = self.tile as i32;
-        let full = Rect::of_size(width, height);
-        let mut out = Vec::new();
-        for ty in 0..self.rows {
-            let mut tx = 0;
-            while tx < self.cols {
-                if !self.get((ty * self.cols + tx) as usize) { tx += 1; continue; }
-                let start = tx;
-                while tx < self.cols && self.get((ty * self.cols + tx) as usize) { tx += 1; }
-                let r = Rect::new(start as i32 * t, ty as i32 * t, tx as i32 * t, (ty as i32 + 1) * t).intersect(&full);
-                if !r.is_empty() { out.push(r); }
+        let mut out: Vec<Rect> = Vec::new();
+        for (ty, tx) in cells {
+            let r = Rect::from_xywh(tx * t, ty * t, self.tile, self.tile);
+            match out.last_mut() {
+                Some(l) if l.y0 == r.y0 && l.x1 == r.x0 => l.x1 = r.x1,
+                _ => out.push(r),
             }
         }
         out
     }
 
+    /// `rects` clipped to `clip`.
+    pub fn rects_in(&self, clip: Rect) -> Vec<Rect> { self.rects().into_iter().map(|r| r.intersect(&clip)).filter(|r| !r.is_empty()).collect() }
+
     /// The smallest rectangle around the set.
-    pub fn bounds(&self, width: u32, height: u32) -> Rect { self.rects(width, height).iter().fold(Rect::EMPTY, |a, r| a.union(r)) }
+    pub fn bounds(&self) -> Rect { self.rects().iter().fold(Rect::EMPTY, |a, r| a.union(r)) }
 
     /// (tx, ty) of every tile in the set.
-    pub(crate) fn tiles(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        (0..self.cols * self.rows).filter(|i| self.get(*i as usize)).map(|i| (i % self.cols, i / self.cols))
+    pub(crate) fn tiles(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.chunks.iter().flat_map(|(k, w)| (0..(CH * CH) as usize).filter(move |i| w[i / 64] & (1 << (i % 64)) != 0).map(move |i| (k.0 * CH + i as i32 % CH, k.1 * CH + i as i32 / CH)))
     }
 }

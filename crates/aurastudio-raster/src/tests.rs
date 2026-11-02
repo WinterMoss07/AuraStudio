@@ -16,13 +16,14 @@ fn pattern(r: Rect) -> Vec<Rgba8> {
 fn empty_surfaces_hold_nothing_not_even_a_table() {
     let mut s = Image::new(6071, 8598, 16, CLEAR);
     assert_eq!(s.stored(), Stored::default());
-    assert_eq!(s.slots.capacity(), 0);
+    assert!(s.grid.chunks.is_empty());
     assert_eq!(s.pixel(100, 100), CLEAR);
     assert_eq!(s.pixel(-5, 3), CLEAR);
     s.write(Rect::new(70, 70, 71, 71), &[[1, 2, 3, 255]]);
     assert_eq!(s.stored().total(), 1);
     s.clear();
-    assert_eq!((s.stored(), s.slots.capacity()), (Stored::default(), 0));
+    assert_eq!(s.stored(), Stored::default());
+    assert!(s.grid.chunks.is_empty());
 }
 
 #[test]
@@ -100,12 +101,13 @@ fn chunks_cover_the_rect_once_on_tile_edges() {
     let r = Rect::new(-10, 5, 333, 700);
     let c = s.chunks(r, 128);
     let area: u64 = c.iter().map(|c| c.area()).sum();
-    assert_eq!(area, r.intersect(&s.rect()).area());
+    assert_eq!(area, r.area(), "the canvas has no edge: past the frame too");
     for (i, a) in c.iter().enumerate() {
         assert!(c[i + 1..].iter().all(|b| !a.overlaps(b)));
         assert!(a.w() <= 128 && a.h() <= 128);
+        assert!(a.x0.rem_euclid(16) == 0 || a.x0 == r.x0);
     }
-    assert!(s.chunks(Rect::new(2000, 0, 2100, 10), 64).is_empty());
+    assert!(s.chunks(Rect::EMPTY, 64).is_empty());
 }
 
 #[test]
@@ -150,15 +152,15 @@ fn set_fill_keeps_stored_pixels() {
 /// the limit, max with the mask, pixel made from the base.
 fn dab(surf: &mut dyn PaintSurface<Rgba8>, r: Rect, color: [u8; 3], cov: u8) {
     surf.prepare(r);
-    let Some((x0, y0, x1, y1)) = r.clipped_u32(surf.width(), surf.height()) else { return };
-    for y in y0..y1 {
-        let mut x = x0;
-        while x < x1 {
-            let s = surf.span_mut(x, y, (x1 - x) as usize);
+    let r = r.intersect(&surf.frame());
+    for y in r.y0..r.y1 {
+        let mut x = r.x0;
+        while x < r.x1 {
+            let s = surf.span_mut(x, y, (r.x1 - x) as usize);
             let n = s.len();
             assert!(n > 0);
             paint(s, color, cov);
-            x += n as u32;
+            x += n as i32;
         }
     }
 }
@@ -275,8 +277,8 @@ fn patches_pack_and_save() {
     let after = s.clone();
     let mut p = s.diff(&snap);
     assert_eq!(p.len(), 5);
-    assert_eq!(p.bounds(100, 100), Rect::new(0, 0, 96, 96));
-    assert_eq!(p.rects(100, 100), vec![Rect::new(0, 0, 64, 32), Rect::new(0, 32, 64, 64), Rect::new(64, 64, 96, 96)]);
+    assert_eq!(p.bounds(), Rect::new(0, 0, 96, 96));
+    assert_eq!(p.rects(), vec![Rect::new(0, 0, 64, 32), Rect::new(0, 32, 64, 64), Rect::new(64, 64, 96, 96)]);
     p.pack();
     let bytes = p.to_bytes();
     let mut back = Patch::<Rgba8>::from_bytes(&bytes).expect("patch");
@@ -298,11 +300,11 @@ fn surfaces_save_and_load_and_damage_is_refused() {
     s.write(Rect::new(10, 20, 150, 90), &pattern(Rect::new(10, 20, 150, 90)));
     s.fill_rect(Rect::new(160, 0, 333, 200), [3, 3, 3, 255]);
     let b = s.save();
-    assert!(b.len() as u64 <= Image::saved_max(333, 200, 32));
+    assert!(b.len() as u64 <= Image::saved_max(s.stored().total() as u64, 32));
     let back = Image::load(&b, 10_000).expect("load");
     assert!(back == s && back.tile_size() == 32 && back.stored() == s.stored());
     assert!(Image::load(&b[..b.len() - 2], 10_000).is_none());
-    assert!(Image::load(&b, 100).is_none(), "too big");
+    assert!(Image::load(&b, 100).is_none(), "frame too big");
     assert!(Mask::load(&b, 10_000).is_none(), "another pixel kind");
     let mut m = Mask::new(50, 50, 16, 0);
     m.fill_rect(Rect::new(3, 3, 40, 40), 200);
@@ -373,7 +375,7 @@ fn heap_bytes_follow_the_pixel_tiles() {
     s.write(Rect::new(0, 0, 1, 1), &[[1, 1, 1, 255]]);
     s.fill_rect(Rect::new(16, 0, 32, 16), [2, 2, 2, 255]);
     s.write(Rect::new(40, 0, 42, 1), &[[1, 1, 1, 255], [9, 9, 9, 255]]);
-    let table = s.slots.capacity() * std::mem::size_of::<Slot<Rgba8>>();
+    let table = s.grid.table_bytes();
     assert_eq!(s.heap_bytes(), table + 16 * 16 + 16 * 16 * 4, "one coverage tile, one uniform, one pixel tile");
 }
 
@@ -414,7 +416,7 @@ fn summaries_give_bounds_opacity_and_a_coarse_picture() {
     s.write(Rect::new(70, 20, 71, 21), &[[255, 0, 0, 128]]);
     assert_eq!(s.pixel_bounds(), Some(Rect::new(0, 0, 71, 21)));
     assert!(s.opaque_in(Rect::new(0, 0, 32, 16)) && !s.opaque_in(Rect::new(0, 0, 33, 16)));
-    let g = s.summary_grid();
+    let g = s.summary_grid(None);
     assert_eq!((g.cols, g.rows, g.cell), (7, 4, 16));
     assert_eq!(g.avg[0], [0, 0, 255, 255]);
     assert_eq!(g.avg[6], [0, 0, 0, 0]);
@@ -468,13 +470,13 @@ fn cold_tiles_read_the_same_and_warm_up_when_painted() {
 
 #[test]
 fn dirty_tiles_are_exact() {
-    let mut d = DirtyTiles::new(1000, 1000, 16);
+    let mut d = DirtyTiles::new(16);
     for i in 0..50 { d.insert(Rect::from_xywh(i * 20, i * 20, 4, 4)); }
     assert_eq!(d.len(), 50);
     assert!(d.touches(Rect::new(20, 20, 21, 21)) && !d.touches(Rect::new(500, 0, 501, 1)));
-    let area: u64 = d.rects(1000, 1000).iter().map(|r| r.area()).sum();
+    let area: u64 = d.rects().iter().map(|r| r.area()).sum();
     assert_eq!(area, 50 * 16 * 16, "a diagonal stays a band of tiles");
-    let mut e = DirtyTiles::new(1000, 1000, 16);
+    let mut e = DirtyTiles::new(16);
     e.insert(Rect::new(0, 0, 32, 16));
     d.union(&e);
     assert_eq!(d.len(), 51);
@@ -543,7 +545,10 @@ fn half_levels_average_in_premultiplied_space() {
     let p = h.pixel(0, 0);
     assert_eq!((p[0], p[2]), (255, 0));
     assert!((p[3] as i32 - 64).abs() <= 1, "{p:?}");
-    assert_eq!(h.pixel(2, 1), [0, 0, 255, 255]);
+    assert_eq!(h.pixel(1, 0), [0, 0, 255, 255]);
+    // Past the frame the canvas goes on (transparent there): the edge
+    // averages with it.
+    assert_eq!(h.pixel(2, 1)[3], 64);
 }
 
 #[test]
@@ -588,4 +593,37 @@ fn base_pixels_are_read_from_before_the_stroke() {
     assert_eq!(st.surface().pixel(3, 3), [200, 0, 0, 255]);
     assert_eq!(st.coverage(3, 3), 255);
     st.end();
+}
+
+#[test]
+fn the_canvas_has_no_edge() {
+    let mut s = Image::new(100, 100, 16, CLEAR);
+    // Painted far past the frame and at negative coordinates.
+    s.write(Rect::new(-500, -300, -499, -299), &[[1, 2, 3, 255]]);
+    s.fill_rect(Rect::new(10_000, 50, 10_032, 82), [9, 9, 9, 255]);
+    assert_eq!(s.pixel(-500, -300), [1, 2, 3, 255]);
+    assert_eq!(s.pixel(10_010, 60), [9, 9, 9, 255]);
+    assert_eq!(s.pixel_bounds(), Some(Rect::new(-500, -300, 10_032, 82)));
+    assert!(s.grid.chunks.len() <= 3, "chunks only where something is: {}", s.grid.chunks.len());
+    // A stroke past the frame is kept and undone.
+    let p = {
+        let mut st = s.begin_stroke(None);
+        st.prepare(Rect::new(-40, -40, -20, -20));
+        let mut buf = Vec::new();
+        st.spans_mut(Rect::new(-40, -40, -20, -20), &mut buf);
+        assert_eq!(buf.iter().map(|sp| sp.len()).sum::<usize>(), 400);
+        for sp in buf { paint(sp, [200, 0, 0], 255); }
+        st.end()
+    };
+    assert_eq!(s.pixel(-30, -30), [200, 0, 0, 255]);
+    let back = Image::load(&s.save(), 1000).expect("load");
+    assert!(back == s, "saved with what is past the frame");
+    let mut p = p;
+    assert!(p.swap(&mut s));
+    assert_eq!(s.pixel(-30, -30), CLEAR);
+    // Moving the frame (canvas resize) cuts nothing.
+    let r = s.resized(300, 300, 100, 100);
+    assert_eq!(r.pixel(-400, -200), [1, 2, 3, 255]);
+    s.clear_outside(s.rect());
+    assert_eq!(s.stored(), Stored::default());
 }

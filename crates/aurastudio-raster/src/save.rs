@@ -46,7 +46,7 @@ impl<P: Pixel> Surface<P> {
     /// holds this save's encodings only.
     pub fn save_with(&self, cache: &mut SaveCache) -> (Vec<u8>, SaveStats) {
         aurastudio_core::zone!("raster save");
-        let stored: Vec<(u32, u32, &Slot<P>)> = self.slots.iter().enumerate().filter(|(_, s)| !s.is_fill()).map(|(i, s)| (i as u32 % self.cols, i as u32 / self.cols, s)).collect();
+        let stored: Vec<(i32, i32, &Slot<P>)> = self.grid.iter().collect();
         let parts: Vec<(u64, Arc<Vec<u8>>, bool)> = stored.par_iter().map(|&(tx, ty, s)| {
             let fp = self.info(tx, ty).fp;
             match cache.tiles.get(&fp) {
@@ -62,7 +62,7 @@ impl<P: Pixel> Surface<P> {
         let mut stats = SaveStats { tiles: stored.len(), ..Default::default() };
         let mut next = HashMap::with_capacity(parts.len());
         for ((tx, ty, _), (fp, bytes, reused)) in stored.iter().zip(parts) {
-            w.varint(*tx as u64).varint(*ty as u64).blob(&bytes);
+            w.svarint(*tx as i64).svarint(*ty as i64).blob(&bytes);
             if reused { stats.reused += 1; } else { stats.encoded += 1; }
             next.insert(fp, bytes);
         }
@@ -72,7 +72,8 @@ impl<P: Pixel> Surface<P> {
     }
 
     /// Read what `save` wrote; `None` if damaged, of another pixel kind,
-    /// or larger than `max_side` on a side. Tiles are opened on all cores.
+    /// or with a frame larger than `max_side` on a side (pixels past the
+    /// frame are kept). Tiles are opened on all cores.
     pub fn load(b: &[u8], max_side: u32) -> Option<Self> {
         aurastudio_core::zone!("raster load");
         let mut r = ByteReader::new(b);
@@ -82,28 +83,26 @@ impl<P: Pixel> Surface<P> {
         let fill = P::read_le(r.bytes(P::BYTES)?)?;
         let mut s = Surface::new(width, height, tile, fill);
         let count = r.varint()? as usize;
-        if count > (s.cols * s.rows) as usize { return None; }
+        if count > r.remaining() { return None; }
         let (n, max) = (s.npx(), encoded_max::<P>(s.npx()));
         let mut raw = Vec::with_capacity(count);
         for _ in 0..count {
-            let (tx, ty) = (u32::try_from(r.varint()?).ok()?, u32::try_from(r.varint()?).ok()?);
-            if tx >= s.cols || ty >= s.rows { return None; }
+            let (tx, ty) = (i32::try_from(r.svarint()?).ok()?, i32::try_from(r.svarint()?).ok()?);
             raw.push((tx, ty, r.blob(max)?));
         }
         if !r.at_end() { return None; }
         // Opened and settled on all cores, then put in place.
         let shape = &s;
-        let opened: Option<Vec<(u32, u32, Slot<P>)>> = raw.into_par_iter().map(|(tx, ty, d)| Some((tx, ty, shape.settled_slot(decode::<P>(d, n)?, tx, ty)))).collect();
+        let opened: Option<Vec<(i32, i32, Slot<P>)>> = raw.into_par_iter().map(|(tx, ty, d)| Some((tx, ty, shape.settled_slot(decode::<P>(d, n)?)))).collect();
         for (tx, ty, slot) in opened? { s.set_slot(tx, ty, slot); }
         s.drop_table_if_empty();
         Some(s)
     }
 
-    /// Most bytes `save` can give for this shape (to refuse a damaged file
-    /// before reading it).
-    pub fn saved_max(width: u32, height: u32, tile: u32) -> u64 {
+    /// Most bytes `save` gives for `tiles` stored tiles of `tile` (to
+    /// refuse a damaged file before reading it).
+    pub fn saved_max(tiles: u64, tile: u32) -> u64 {
         let t = tile.clamp(crate::MIN_TILE, crate::MAX_TILE) as u64;
-        let tiles = (width as u64).div_ceil(t) * (height as u64).div_ceil(t);
         tiles * (encoded_max::<P>((t * t) as usize) as u64 + 24) + 64
     }
 }
@@ -122,23 +121,27 @@ pub mod legacy {
     /// tiles of `tile`. `None` if damaged.
     pub fn load_layer(blob: &[u8], width: u32, height: u32, fill: Rgba8, tile: u32) -> Option<Surface<Rgba8>> {
         let mut old = Surface::new(width, height, TILE, fill);
+        let (cols, rows) = (width.div_ceil(TILE), height.div_ceil(TILE));
         let count = u32_at(blob, 0)?;
-        if count > old.cols * old.rows { return None; }
+        if count > cols * rows { return None; }
         let mut at = 4usize;
         for _ in 0..count {
             let (tx, ty, n) = (u32_at(blob, at)?, u32_at(blob, at + 4)?, u32_at(blob, at + 8)? as usize);
             at += 12;
-            if tx >= old.cols || ty >= old.rows { return None; }
+            if tx >= cols || ty >= rows { return None; }
             let data = blob.get(at..at.checked_add(n)?)?;
             at += n;
             if u32_at(data, 0)? as usize != BYTES { return None; }
             let mut raw = vec![0u8; BYTES];
             if lz4_flex::block::decompress_into(data.get(4..)?, &mut raw).ok()? != BYTES { return None; }
             let px: Vec<Rgba8> = raw.as_chunks::<4>().0.to_vec();
-            old.set_slot(tx, ty, Slot::Full(Arc::new(FullTile { px, info: None })));
+            old.set_slot(tx as i32, ty as i32, Slot::Full(Arc::new(FullTile { px, info: None })));
         }
         if at != blob.len() { return None; }
-        old.compact(old.rect());
+        // (0.19 tiles past the canvas edge held leftovers: the canvas
+        // is the frame there.)
+        old.clear_outside(old.rect());
+        old.compact(old.rect().snapped_out(TILE));
         Some(if tile == TILE { old } else { old.retiled(tile) })
     }
 

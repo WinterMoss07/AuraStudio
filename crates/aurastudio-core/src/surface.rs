@@ -2,7 +2,9 @@
 //! pixels. The engine never knows how the pixels are stored: runs are cut
 //! where the implementer wants (a tile edge for `raster`, nowhere for a
 //! flat buffer), so tile size and layout stay private to the storage.
-//! Generic over the pixel type (8-bit RGBA by default).
+//! Generic over the pixel type (8-bit RGBA by default). Coordinates are
+//! signed: the canvas is unbounded, the document's frame only says what
+//! the document shows by default.
 
 use crate::geom::Rect;
 use crate::pixel::{Pixel, Rgba8};
@@ -17,8 +19,10 @@ use crate::pixel::{Pixel, Rgba8};
 /// still 0 keeps its base value exactly. So a selection clips the stroke
 /// at the source; nothing is blended again afterwards.
 pub trait PaintSurface<P: Pixel = Rgba8> {
-    fn width(&self) -> u32;
-    fn height(&self) -> u32;
+    /// The document's frame (a stroke may go past it: the storage keeps
+    /// what is painted anywhere, unless it says otherwise by giving empty
+    /// runs there).
+    fn frame(&self) -> Rect;
 
     /// Called before the engine reads or writes `rect`: the storage makes
     /// what it needs there (tiles, the stroke base), only where the stroke
@@ -27,9 +31,10 @@ pub trait PaintSurface<P: Pixel = Rgba8> {
 
     /// The run starting at (x, y), at most `max` pixels long. It may be
     /// shorter (the storage cuts it where it wants); its length is
-    /// `mask.len()`, never 0 for `max > 0` inside the surface. The engine
-    /// asks again from `x + len` for the rest.
-    fn span_mut(&mut self, x: u32, y: u32, max: usize) -> Span<'_, P>;
+    /// `mask.len()`, never 0 for `max > 0` where the surface holds pixels
+    /// (0: nothing to paint there). The engine asks again from `x + len`
+    /// for the rest.
+    fn span_mut(&mut self, x: i32, y: i32, max: usize) -> Span<'_, P>;
 
     /// Every run of `rect` at once (prepared, in no particular order),
     /// pushed to `out`, for work on several cores; the runs never
@@ -41,7 +46,7 @@ pub trait PaintSurface<P: Pixel = Rgba8> {
 
     /// The pixel at (x, y) as it was before the stroke (smudge and color
     /// sampling read the base around the dab).
-    fn base_pixel(&self, x: u32, y: u32) -> P;
+    fn base_pixel(&self, x: i32, y: i32) -> P;
 }
 
 /// The allocation of a span buffer, emptied, for the next dab: no
@@ -55,8 +60,8 @@ pub fn recycle_spans<'b, P: Pixel>(mut v: Vec<Span<'_, P>>) -> Vec<Span<'b, P>> 
 /// A run of one row: from (x, y), its pixels, base, mask (one byte per
 /// pixel) and limit (one byte per pixel, or none: no selection).
 pub struct Span<'a, P: Pixel = Rgba8> {
-    pub x:      u32,
-    pub y:      u32,
+    pub x:      i32,
+    pub y:      i32,
     pub pixels: &'a mut [P],
     pub base:   &'a [P],
     pub mask:   &'a mut [u8],
@@ -109,15 +114,18 @@ impl<P: Pixel> FlatSurface<P> {
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> P { self.pixels[y as usize * self.width as usize + x as usize] }
+
+    fn inside(&self, x: i32, y: i32) -> bool { x >= 0 && y >= 0 && (x as u32) < self.width && (y as u32) < self.height }
 }
 
 impl<P: Pixel> PaintSurface<P> for FlatSurface<P> {
-    fn width(&self) -> u32 { self.width }
-    fn height(&self) -> u32 { self.height }
+    fn frame(&self) -> Rect { Rect::of_size(self.width, self.height) }
     fn prepare(&mut self, _rect: Rect) {}
 
-    fn span_mut(&mut self, x: u32, y: u32, max: usize) -> Span<'_, P> {
-        let len = max.min(self.run).min(self.width.saturating_sub(x) as usize);
+    /// (A flat buffer holds nothing outside itself: empty runs there.)
+    fn span_mut(&mut self, x: i32, y: i32, max: usize) -> Span<'_, P> {
+        if !self.inside(x, y) { return Span { x, y, pixels: &mut [], base: &[], mask: &mut [], limit: None }; }
+        let len = max.min(self.run).min((self.width - x as u32) as usize);
         let i = y as usize * self.width as usize + x as usize;
         let limit = self.limit.as_deref().map(|l| &l[i..i + len]);
         Span { x, y, pixels: &mut self.pixels[i..i + len], base: &self.base[i..i + len], mask: &mut self.mask[i..i + len], limit }
@@ -133,22 +141,25 @@ impl<P: Pixel> PaintSurface<P> for FlatSurface<P> {
             let (a, z) = (x0 as usize, x1 as usize);
             let (mut px, mut base, mut mask) = (&mut px[a..z], &base[a..z], &mut mask[a..z]);
             let mut lim = limit.map(|l| &l[y * w + a..y * w + z]);
-            let mut x = x0;
+            let mut x = x0 as i32;
             while !mask.is_empty() {
                 let n = run.min(mask.len());
                 let (p, rp) = px.split_at_mut(n);
                 let (b, rb) = base.split_at(n);
                 let (m, rm) = mask.split_at_mut(n);
                 let (l, rl) = match lim { Some(l) => { let (a, b) = l.split_at(n); (Some(a), Some(b)) } None => (None, None) };
-                out.push(Span { x, y: y as u32, pixels: p, base: b, mask: m, limit: l });
+                out.push(Span { x, y: y as i32, pixels: p, base: b, mask: m, limit: l });
                 (px, base, mask, lim) = (rp, rb, rm, rl);
-                x += n as u32;
+                x += n as i32;
             }
         }
         true
     }
 
-    fn base_pixel(&self, x: u32, y: u32) -> P { self.base[y as usize * self.width as usize + x as usize] }
+    fn base_pixel(&self, x: i32, y: i32) -> P {
+        if !self.inside(x, y) { return P::default(); }
+        self.base[y as usize * self.width as usize + x as usize]
+    }
 }
 
 #[cfg(test)]

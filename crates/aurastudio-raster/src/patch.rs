@@ -8,30 +8,27 @@ use std::sync::Arc;
 use aurastudio_core::{ByteReader, ByteWriter, HeapSize, Pixel, PixelKind, Rect};
 
 use crate::slot::{encode, encoded_max, ColdTile, Info, Slot};
+use crate::grid::Grid;
 use crate::surface::{pixel_of, Surface};
 use crate::DirtyTiles;
 
 /// A surface's tiles at one moment (shared with it until either writes).
 #[derive(Clone, Debug)]
 pub struct Snapshot<P: Pixel> {
-    pub(crate) slots: Vec<Slot<P>>,
-    pub(crate) cols:  u32,
-    pub(crate) rows:  u32,
-    pub(crate) tile:  u32,
-    pub(crate) fill:  P,
+    pub(crate) grid: Grid<P>,
+    pub(crate) tile: u32,
+    pub(crate) fill: P,
 }
 
 impl<P: Pixel> Snapshot<P> {
-    pub(crate) fn slot(&self, i: usize) -> &Slot<P> {
-        match self.slots.get(i) { Some(s) => s, None => &Slot::Fill }
-    }
+    pub(crate) fn slot(&self, tx: i32, ty: i32) -> &Slot<P> { self.grid.get(tx, ty) }
 }
 
 /// Tiles of one surface to put back: (column, row, tile as it was).
 #[derive(Clone, Debug)]
 pub struct Patch<P: Pixel> {
     tile:  u32,
-    tiles: Vec<(u32, u32, Slot<P>)>,
+    tiles: Vec<(i32, i32, Slot<P>)>,
 }
 
 impl<P: Pixel> Default for Patch<P> {
@@ -61,21 +58,21 @@ impl<P: Pixel> Surface<P> {
     /// the patch puts them back. Empty when nothing changed (or `before`
     /// is of another shape).
     pub fn diff(&self, before: &Snapshot<P>) -> Patch<P> {
-        let all = (0..self.cols * self.rows).map(|i| (i % self.cols, i / self.cols));
-        self.diff_cells(before, all)
+        let mut all: Vec<(i32, i32)> = self.grid.iter().map(|(x, y, _)| (x, y)).chain(before.grid.iter().map(|(x, y, _)| (x, y))).collect();
+        all.sort_unstable();
+        all.dedup();
+        self.diff_cells(before, all.into_iter())
     }
 
     /// `diff` for the tiles of `set` only (what a stroke touched).
     pub fn diff_set(&self, before: &Snapshot<P>, set: &DirtyTiles) -> Patch<P> { self.diff_cells(before, set.tiles()) }
 
-    fn diff_cells(&self, before: &Snapshot<P>, cells: impl Iterator<Item = (u32, u32)>) -> Patch<P> {
+    fn diff_cells(&self, before: &Snapshot<P>, cells: impl Iterator<Item = (i32, i32)>) -> Patch<P> {
         let mut p = Patch { tile: self.tile, tiles: Vec::new() };
-        if (before.cols, before.rows, before.tile) != (self.cols, self.rows, self.tile) { return p; }
-        if self.slots.is_empty() && before.slots.is_empty() && before.fill == self.fill { return p; }
+        if before.tile != self.tile { return p; }
         let (n, refill) = (self.npx(), before.fill != self.fill);
         for (tx, ty) in cells {
-            let i = self.index(tx, ty);
-            let (a, b) = (before.slot(i), self.slot(tx, ty));
+            let (a, b) = (before.slot(tx, ty), self.slot(tx, ty));
             if !refill && a.is_fill() && b.is_fill() { continue; }
             if equal(a, before.fill, b, self.fill, n) { continue; }
             let kept = match a { Slot::Fill if refill => Slot::Uniform(before.fill), other => other.clone() };
@@ -90,17 +87,20 @@ impl<P: Pixel> Patch<P> {
 
     pub fn len(&self) -> usize { self.tiles.len() }
 
-    /// The area of the tiles, as few rectangles: runs of tiles side by side
-    /// in a row, clipped to `width` × `height`.
-    pub fn rects(&self, width: u32, height: u32) -> Vec<Rect> {
-        let mut set = DirtyTiles::new(width, height, self.tile.max(1));
+    /// The tiles as a set (what to merge and show again).
+    pub fn tiles(&self) -> DirtyTiles {
+        let mut set = DirtyTiles::new(self.tile.max(1));
         let t = self.tile as i32;
-        for (tx, ty, _) in &self.tiles { set.insert(Rect::from_xywh(*tx as i32 * t, *ty as i32 * t, 1, 1)); }
-        set.rects(width, height)
+        for (tx, ty, _) in &self.tiles { set.insert(Rect::from_xywh(tx * t, ty * t, 1, 1)); }
+        set
     }
 
+    /// The area of the tiles, as few rectangles: runs of tiles side by side
+    /// in a row.
+    pub fn rects(&self) -> Vec<Rect> { self.tiles().rects() }
+
     /// The smallest rectangle around the tiles.
-    pub fn bounds(&self, width: u32, height: u32) -> Rect { self.rects(width, height).iter().fold(Rect::EMPTY, |a, r| a.union(r)) }
+    pub fn bounds(&self) -> Rect { self.tiles().bounds() }
 
     /// Compress the kept pixel and coverage tiles (an older history step:
     /// less memory, a little slower to undo).
@@ -115,15 +115,14 @@ impl<P: Pixel> Patch<P> {
 
     /// Put the kept tiles into `s` and keep its tiles instead: done again,
     /// it goes the other way (undo, redo). False, and `s` untouched, if a
-    /// tile is off the surface, the tile size differs or data is damaged.
+    /// the tile size differs or data is damaged.
     pub fn swap(&mut self, s: &mut Surface<P>) -> bool {
         if self.tiles.is_empty() { return true; }
         if self.tile != s.tile { return false; }
         let n = s.npx();
         // Everything checked and opened first: all or nothing.
         let mut back = Vec::with_capacity(self.tiles.len());
-        for (tx, ty, k) in &self.tiles {
-            if *tx >= s.cols || *ty >= s.rows { return false; }
+        for (_, _, k) in &self.tiles {
             match k.warm(n) { Some(slot) => back.push(slot), None => return false }
         }
         for ((tx, ty, k), slot) in self.tiles.iter_mut().zip(back) {
@@ -141,7 +140,7 @@ impl<P: Pixel> Patch<P> {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut w = ByteWriter::with_header(&MAGIC, VERSION);
         w.u8(P::KIND.code()).u32(self.tile).varint(self.tiles.len() as u64);
-        for (tx, ty, s) in &self.tiles { w.varint(*tx as u64).varint(*ty as u64).blob(&encode(s)); }
+        for (tx, ty, s) in &self.tiles { w.svarint(*tx as i64).svarint(*ty as i64).blob(&encode(s)); }
         w.finish()
     }
 
@@ -157,7 +156,7 @@ impl<P: Pixel> Patch<P> {
         if count > r.remaining() { return None; }
         let mut tiles = Vec::with_capacity(count);
         for _ in 0..count {
-            let (tx, ty) = (u32::try_from(r.varint()?).ok()?, u32::try_from(r.varint()?).ok()?);
+            let (tx, ty) = (i32::try_from(r.svarint()?).ok()?, i32::try_from(r.svarint()?).ok()?);
             let data = r.blob(max)?;
             tiles.push((tx, ty, Slot::Cold(Arc::new(ColdTile { data: data.to_vec(), info: Info::default() }))));
         }

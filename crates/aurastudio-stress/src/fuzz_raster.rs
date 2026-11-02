@@ -129,8 +129,12 @@ pub fn run(seed: u64, ops: u32) {
             }
             _ => {
                 let (dx, dy) = (r.below(60) as i32 - 30, r.below(60) as i32 - 30);
+                // (The model holds the frame only: what the surface keeps
+                // past it is cut first, so a move brings nothing back in.)
+                s.clear_outside(s.rect());
                 let mut m = Image::new(w, h, s.tile_size(), fill);
                 m.copy_from(&s, s.rect(), dx, dy);
+                m.clear_outside(m.rect());
                 let mut g = Flat { w, h, px: vec![fill; (w * h) as usize] };
                 for y in 0..h as i32 { for x in 0..w as i32 {
                     let (sx, sy) = (x - dx, y - dy);

@@ -10,6 +10,7 @@
 //! writes), cold (compressed, for what is not shown).
 
 mod dirty;
+mod grid;
 mod ops;
 mod patch;
 pub mod pool;

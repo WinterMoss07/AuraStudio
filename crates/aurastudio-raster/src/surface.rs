@@ -1,14 +1,17 @@
-//! `Surface<P>`: the pixels of one layer or mask, in square tiles whose
-//! size the surface chose at creation. A tile is the fill (nothing
-//! stored), one color, one color with a coverage byte per pixel (alpha
-//! only: line art), pixels, or cold (compressed). Forms change by
-//! themselves; pixel tiles are shared (copy on write) between a surface,
-//! its copies, its snapshots and the stroke base until one side writes.
+//! `Surface<P>`: the pixels of one layer or mask, unbounded (the canvas
+//! has no edge: what is painted past the document's frame is kept, for
+//! the camera and for layers moved partly out), in square tiles whose size
+//! the surface chose at creation. A tile is the fill (nothing stored), one
+//! color, one color with a coverage byte per pixel (alpha only: line art),
+//! pixels, or cold (compressed). Forms change by themselves; pixel tiles
+//! are shared (copy on write) between a surface, its copies, its snapshots
+//! and the stroke base until one side writes.
 
 use std::sync::Arc;
 
 use aurastudio_core::{Fnv, HeapSize, Pixel, Rect};
 
+use crate::grid::Grid;
 use crate::slot::{decode, encode, info_of, info_of_color, AlphaTile, ColdTile, FullTile, Info, Slot, Summary};
 
 /// Smallest and largest tile side.
@@ -52,106 +55,98 @@ impl Stored {
     pub fn total(&self) -> usize { self.uniform + self.alpha + self.full + self.cold }
 }
 
-/// The coarse picture of a surface: one premultiplied average per tile
-/// (thumbnails, zoomed-out display, the first image when a file opens).
+/// The coarse picture of a part of a surface: one premultiplied average
+/// per tile (thumbnails, zoomed-out display, the first image when a file
+/// opens). Cell (0, 0) is the tile at `origin`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryGrid {
-    pub cols: u32,
-    pub rows: u32,
+    /// Pixel position of cell (0, 0).
+    pub origin: (i32, i32),
+    pub cols:   u32,
+    pub rows:   u32,
     /// Pixels each cell stands for, on a side.
-    pub cell: u32,
-    pub avg:  Vec<[u8; 4]>,
+    pub cell:   u32,
+    pub avg:    Vec<[u8; 4]>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Surface<P: Pixel> {
+    /// The document's frame: what it shows and exports by default.
     pub(crate) width:  u32,
     pub(crate) height: u32,
     pub(crate) tile:   u32,
     pub(crate) shift:  u32,
-    pub(crate) cols:   u32,
-    pub(crate) rows:   u32,
-    /// Empty until the first slot that is not Fill (an empty layer has no
-    /// table either), then `cols × rows`.
-    pub(crate) slots:  Vec<Slot<P>>,
+    pub(crate) grid:   Grid<P>,
     pub(crate) fill:   P,
 }
 
 impl<P: Pixel> Surface<P> {
-    /// `tile`: rounded to a power of two in `MIN_TILE..=MAX_TILE`.
+    /// A surface whose frame is `width` × `height` (it holds pixels
+    /// anywhere); `tile`: rounded to a power of two in `MIN_TILE..=MAX_TILE`.
     pub fn new(width: u32, height: u32, tile: u32, fill: P) -> Self {
         let tile = tile.clamp(MIN_TILE, MAX_TILE).next_power_of_two().min(MAX_TILE);
-        let shift = tile.trailing_zeros();
-        Self { width, height, tile, shift, cols: width.div_ceil(tile), rows: height.div_ceil(tile), slots: Vec::new(), fill }
+        Self { width, height, tile, shift: tile.trailing_zeros(), grid: Grid::default(), fill }
     }
 
     pub fn width(&self) -> u32 { self.width }
     pub fn height(&self) -> u32 { self.height }
+    /// The frame, `(0, 0)` to `(width, height)`.
     pub fn rect(&self) -> Rect { Rect::of_size(self.width, self.height) }
+    /// Change the frame (canvas size); the pixels stay where they are.
+    pub fn set_frame(&mut self, width: u32, height: u32) { (self.width, self.height) = (width, height); }
     /// Side of this surface's tiles (for layout decisions only: callers
     /// work in rects, `chunks`, `DirtyTiles` and runs, never in tiles).
     pub fn tile_size(&self) -> u32 { self.tile }
     pub fn fill(&self) -> P { self.fill }
     /// An empty set of tiles shaped like this surface.
-    pub fn dirty_set(&self) -> crate::DirtyTiles { crate::DirtyTiles::new(self.width, self.height, self.tile) }
+    pub fn dirty_set(&self) -> crate::DirtyTiles { crate::DirtyTiles::new(self.tile) }
 
     /// Change the fill color (the Paper's color): every pixel not stored
     /// takes it; stored tiles keep theirs (a stored tile of the new color
     /// becomes the fill).
     pub fn set_fill(&mut self, fill: P) {
         self.fill = fill;
-        for s in &mut self.slots { if matches!(s, Slot::Uniform(c) if *c == fill) { *s = Slot::Fill; } }
-        self.drop_table_if_empty();
+        for (_, _, s) in self.grid.iter_mut() { if matches!(s, Slot::Uniform(c) if *c == fill) { *s = Slot::Fill; } }
+        self.grid.prune();
     }
 
     #[inline]
     pub(crate) fn npx(&self) -> usize { (self.tile * self.tile) as usize }
 
     #[inline]
-    pub(crate) fn index(&self, tx: u32, ty: u32) -> usize { (ty * self.cols + tx) as usize }
+    pub(crate) fn slot(&self, tx: i32, ty: i32) -> &Slot<P> { self.grid.get(tx, ty) }
 
+    /// The canvas rect of tile (tx, ty).
     #[inline]
-    pub(crate) fn slot(&self, tx: u32, ty: u32) -> &Slot<P> {
-        match self.slots.get(self.index(tx, ty)) { Some(s) => s, None => &Slot::Fill }
-    }
-
-    /// The canvas rect of tile (tx, ty), clipped to the surface.
-    #[inline]
-    pub(crate) fn tile_rect(&self, tx: u32, ty: u32) -> Rect {
+    pub(crate) fn tile_rect(&self, tx: i32, ty: i32) -> Rect {
         let t = self.tile as i32;
-        let (x0, y0) = (tx as i32 * t, ty as i32 * t);
-        Rect::new(x0, y0, (x0 + t).min(self.width as i32), (y0 + t).min(self.height as i32))
+        Rect::from_xywh(tx * t, ty * t, self.tile, self.tile)
     }
 
-    /// Tiles covering `r` (clipped): (tx0, ty0, tx1, ty1), end excluded.
-    pub(crate) fn tiles_of(&self, r: &Rect) -> Option<(u32, u32, u32, u32)> {
-        let (x0, y0, x1, y1) = r.clipped_u32(self.width, self.height)?;
-        Some((x0 >> self.shift, y0 >> self.shift, ((x1 - 1) >> self.shift) + 1, ((y1 - 1) >> self.shift) + 1))
+    /// Tiles covering `r`: (tx0, ty0, tx1, ty1), end excluded.
+    #[inline]
+    pub(crate) fn tiles_of(&self, r: &Rect) -> Option<(i32, i32, i32, i32)> {
+        if r.is_empty() { return None; }
+        let s = self.shift;
+        Some((r.x0 >> s, r.y0 >> s, ((r.x1 - 1) >> s) + 1, ((r.y1 - 1) >> s) + 1))
     }
 
-    pub(crate) fn table(&mut self) -> &mut Vec<Slot<P>> {
-        if self.slots.is_empty() { self.slots.resize((self.cols * self.rows) as usize, Slot::Fill); }
-        &mut self.slots
+    /// Offset of pixel (x, y) inside its tile.
+    #[inline]
+    pub(crate) fn offset(&self, x: i32, y: i32) -> usize {
+        let m = self.tile as i32 - 1;
+        (((y & m) << self.shift) + (x & m)) as usize
     }
 
-    pub(crate) fn set_slot(&mut self, tx: u32, ty: u32, s: Slot<P>) {
-        if tx >= self.cols || ty >= self.rows { return; }
-        if s.is_fill() && self.slots.is_empty() { return; }
-        let i = self.index(tx, ty);
-        let old = std::mem::replace(&mut self.table()[i], s);
-        recycle(old);
-    }
+    pub(crate) fn set_slot(&mut self, tx: i32, ty: i32, s: Slot<P>) { recycle(self.grid.set(tx, ty, s)); }
 
-    pub(crate) fn drop_table_if_empty(&mut self) {
-        if self.slots.iter().all(Slot::is_fill) { self.slots = Vec::new(); }
-    }
+    pub(crate) fn drop_table_if_empty(&mut self) { self.grid.prune(); }
 
     /// The pixels of tile (tx, ty) to write into: any other form becomes
     /// pixels; a shared tile is copied first (into a pooled buffer).
-    pub(crate) fn full_mut(&mut self, tx: u32, ty: u32) -> &mut Vec<P> {
+    pub(crate) fn full_mut(&mut self, tx: i32, ty: i32) -> &mut Vec<P> {
         let (n, fill) = (self.npx(), self.fill);
-        let i = self.index(tx, ty);
-        let slot = &mut self.table()[i];
+        let slot = self.grid.get_mut(tx, ty);
         let shared = match slot { Slot::Full(t) => Arc::strong_count(t) > 1 || Arc::weak_count(t) > 0, _ => true };
         if shared {
             let mut px = crate::pool::take_pixels(n, fill);
@@ -176,55 +171,48 @@ impl<P: Pixel> Surface<P> {
     /// Tiles stored, by form.
     pub fn stored(&self) -> Stored {
         let mut s = Stored::default();
-        for x in &self.slots {
+        for (_, _, x) in self.grid.iter() {
             match x { Slot::Fill => {} Slot::Uniform(_) => s.uniform += 1, Slot::Alpha(_) => s.alpha += 1, Slot::Full(_) => s.full += 1, Slot::Cold(_) => s.cold += 1 }
         }
         s
     }
 
-    /// One pixel (outside the surface: the fill).
+    /// One pixel, anywhere.
     pub fn pixel(&self, x: i32, y: i32) -> P {
-        if x < 0 || y < 0 || x as u32 >= self.width || y as u32 >= self.height { return self.fill; }
-        let (x, y) = (x as u32, y as u32);
-        let o = (((y & (self.tile - 1)) << self.shift) + (x & (self.tile - 1))) as usize;
-        pixel_of(self.slot(x >> self.shift, y >> self.shift), self.fill, o, self.npx())
+        pixel_of(self.slot(x >> self.shift, y >> self.shift), self.fill, self.offset(x, y), self.npx())
     }
 
-    /// Row `y` from `x0` to `x1` (clipped to the surface), as the storage
-    /// holds it: `f(x, run)` from left to right.
+    /// Row `y` from `x0` to `x1`, as the storage holds it: `f(x, run)` from
+    /// left to right.
     pub fn row(&self, y: i32, x0: i32, x1: i32, mut f: impl FnMut(i32, Run<'_, P>)) {
-        if y < 0 || y as u32 >= self.height { return; }
-        let (x0, x1) = (x0.max(0) as u32, (x1.max(0) as u32).min(self.width));
-        let (y, t, n) = (y as u32, self.tile, self.npx());
-        let (ty, ly) = (y >> self.shift, y & (t - 1));
+        let (t, n, shift) = (self.tile as i32, self.npx(), self.shift);
+        let ty = y >> shift;
         let mut x = x0;
         while x < x1 {
-            let tx = x >> self.shift;
-            let end = ((tx + 1) << self.shift).min(x1);
+            let tx = x >> shift;
+            let end = ((tx + 1) * t).min(x1);
             let len = (end - x) as usize;
-            let s = ((ly << self.shift) + (x & (t - 1))) as usize;
+            let s = self.offset(x, y);
             match self.slot(tx, ty) {
                 Slot::Cold(c) => match decode::<P>(&c.data, n) {
-                    Some(open) => emit(&open, self.fill, x as i32, s, len, &mut f),
-                    None => f(x as i32, Run::Uniform(self.fill, len)),
+                    Some(open) => emit(&open, self.fill, x, s, len, &mut f),
+                    None => f(x, Run::Uniform(self.fill, len)),
                 },
-                slot => emit(slot, self.fill, x as i32, s, len, &mut f),
+                slot => emit(slot, self.fill, x, s, len, &mut f),
             }
             x = end;
         }
     }
 
-    /// Every row of `rect` (clipped), runs as `row` gives them: `f(y, x, run)`.
+    /// Every row of `rect`, runs as `row` gives them: `f(y, x, run)`.
     pub fn rows(&self, rect: Rect, mut f: impl FnMut(i32, i32, Run<'_, P>)) {
-        let r = rect.intersect(&self.rect());
-        for y in r.y0..r.y1 { self.row(y, r.x0, r.x1, |x, run| f(y, x, run)); }
+        if rect.is_empty() { return; }
+        for y in rect.y0..rect.y1 { self.row(y, rect.x0, rect.x1, |x, run| f(y, x, run)); }
     }
 
-    /// The pixels of `rect`, rows tightly packed; outside the surface: the
-    /// fill.
+    /// The pixels of `rect`, rows tightly packed.
     pub fn read(&self, rect: Rect) -> Vec<P> {
-        let (w, h) = (rect.w() as usize, rect.h() as usize);
-        let mut out = vec![self.fill; w * h];
+        let mut out = vec![self.fill; rect.area() as usize];
         self.read_into(rect, &mut out);
         out
     }
@@ -232,12 +220,10 @@ impl<P: Pixel> Surface<P> {
     /// `read` into the caller's buffer (`rect.w() × rect.h()` pixels).
     pub fn read_into(&self, rect: Rect, out: &mut [P]) {
         let w = rect.w() as usize;
-        if out.len() != w * rect.h() as usize { return; }
-        out.fill(self.fill);
-        let inside = rect.intersect(&self.rect());
-        for y in inside.y0..inside.y1 {
+        if out.len() != w * rect.h() as usize || rect.is_empty() { return; }
+        for y in rect.y0..rect.y1 {
             let row = (y - rect.y0) as usize * w;
-            self.row(y, inside.x0, inside.x1, |x, run| {
+            self.row(y, rect.x0, rect.x1, |x, run| {
                 let o = row + (x - rect.x0) as usize;
                 match run {
                     Run::Pixels(p) => out[o..o + p.len()].copy_from_slice(p),
@@ -248,8 +234,8 @@ impl<P: Pixel> Surface<P> {
         }
     }
 
-    /// Write `data` (rows of `rect`, tightly packed) into the surface; the
-    /// part outside is ignored. Written tiles settle in their best form.
+    /// Write `data` (rows of `rect`, tightly packed) into the surface.
+    /// Written tiles settle in their best form.
     pub fn write(&mut self, rect: Rect, data: &[P]) {
         let rw = rect.w() as usize;
         if data.len() != rw * rect.h() as usize { return; }
@@ -258,7 +244,6 @@ impl<P: Pixel> Surface<P> {
             for tx in tx0..tx1 {
                 let tr = self.tile_rect(tx, ty);
                 let part = tr.intersect(&rect);
-                if part.is_empty() { continue; }
                 let src_row = |y: i32| { let s = (y - rect.y0) as usize * rw + (part.x0 - rect.x0) as usize; &data[s..s + part.w() as usize] };
                 // The whole tile in one color: no pixels needed.
                 if part == tr {
@@ -293,7 +278,6 @@ impl<P: Pixel> Surface<P> {
             for tx in tx0..tx1 {
                 let tr = self.tile_rect(tx, ty);
                 let part = tr.intersect(&rect);
-                if part.is_empty() { continue; }
                 if part == tr {
                     self.set_slot(tx, ty, if c == self.fill { Slot::Fill } else { Slot::Uniform(c) });
                     continue;
@@ -313,46 +297,59 @@ impl<P: Pixel> Surface<P> {
 
     /// Back to the fill everywhere (frees every tile and the table).
     pub fn clear(&mut self) {
-        for s in std::mem::take(&mut self.slots) { recycle(s); }
+        for (_, c) in std::mem::take(&mut self.grid.chunks) { for s in c.slots { recycle(s); } }
+    }
+
+    /// Back to the fill outside `keep` (crop to the frame, or to a
+    /// selection's box).
+    pub fn clear_outside(&mut self, keep: Rect) {
+        let cells: Vec<(i32, i32)> = self.grid.iter().map(|(tx, ty, _)| (tx, ty)).collect();
+        for (tx, ty) in cells {
+            let tr = self.tile_rect(tx, ty);
+            if !tr.overlaps(&keep) { self.set_slot(tx, ty, Slot::Fill); continue; }
+            if keep.contains_rect(&tr) { continue; }
+            let fill = self.fill;
+            for part in [Rect::new(tr.x0, tr.y0, tr.x1, keep.y0), Rect::new(tr.x0, keep.y1, tr.x1, tr.y1), Rect::new(tr.x0, tr.y0, keep.x0, tr.y1), Rect::new(keep.x1, tr.y0, tr.x1, tr.y1)] {
+                let p = part.intersect(&tr);
+                if !p.is_empty() { self.fill_rect(p, fill); }
+            }
+        }
+        self.drop_table_if_empty();
     }
 
     /// Put tile (tx, ty) in its best form: one color (or the fill), one
     /// color with coverage, or pixels with their summary and fingerprint.
-    pub(crate) fn settle(&mut self, tx: u32, ty: u32) {
-        let r = self.tile_rect(tx, ty);
-        let (w, h, t, n, fill) = (r.w() as usize, r.h() as usize, self.tile as usize, self.npx(), self.fill);
-        let i = self.index(tx, ty);
-        let form = match self.slots.get(i) {
-            Some(Slot::Full(f)) if f.info.is_none() => analyze(&f.px, w, h, t, fill),
-            Some(s @ (Slot::Alpha(_) | Slot::Cold(_))) if !settled(s) => analyze(&s.expand(fill, n), w, h, t, fill),
+    pub(crate) fn settle(&mut self, tx: i32, ty: i32) {
+        let (t, n, fill) = (self.tile as usize, self.npx(), self.fill);
+        let form = match self.slot(tx, ty) {
+            Slot::Full(f) if f.info.is_none() => analyze(&f.px, t, fill),
+            s @ (Slot::Alpha(_) | Slot::Cold(_)) if !settled(s) => analyze(&s.expand(fill, n), t, fill),
             _ => return,
         };
         self.apply(tx, ty, form);
     }
 
-    fn apply(&mut self, tx: u32, ty: u32, form: Form<P>) {
-        let (i, fill, n) = (self.index(tx, ty), self.fill, self.npx());
+    fn apply(&mut self, tx: i32, ty: i32, form: Form<P>) {
+        let (fill, n) = (self.fill, self.npx());
         match form {
-            Form::One(c) => self.set_slot(tx, ty, if c == self.fill { Slot::Fill } else { Slot::Uniform(c) }),
+            Form::One(c) => self.set_slot(tx, ty, if c == fill { Slot::Fill } else { Slot::Uniform(c) }),
             Form::Alpha(a) => self.set_slot(tx, ty, Slot::Alpha(Arc::new(a))),
-            Form::Pixels(info) => match self.slots.get_mut(i) {
-                Some(Slot::Full(f)) => match Arc::get_mut(f) {
+            Form::Pixels(info) => match self.grid.get_mut(tx, ty) {
+                Slot::Full(f) => match Arc::get_mut(f) {
                     Some(f) => f.info = Some(info),
                     None => { let px = f.px.clone(); *f = Arc::new(FullTile { px, info: Some(info) }); }
                 },
-                Some(s) => { let px = s.expand(fill, n); *s = Slot::Full(Arc::new(FullTile { px, info: Some(info) })); }
-                None => {}
+                s => { let px = s.expand(fill, n); *s = Slot::Full(Arc::new(FullTile { px, info: Some(info) })); }
             },
         }
     }
 
     /// A slot opened and put in its best form (loading, on any thread).
-    pub(crate) fn settled_slot(&self, s: Slot<P>, tx: u32, ty: u32) -> Slot<P> {
-        let r = self.tile_rect(tx, ty);
-        let (w, h, t, n, fill) = (r.w() as usize, r.h() as usize, self.tile as usize, self.npx(), self.fill);
+    pub(crate) fn settled_slot(&self, s: Slot<P>) -> Slot<P> {
+        let (t, n, fill) = (self.tile as usize, self.npx(), self.fill);
         let form = match &s {
-            Slot::Full(f) => analyze(&f.px, w, h, t, fill),
-            Slot::Alpha(_) | Slot::Cold(_) => analyze(&s.expand(fill, n), w, h, t, fill),
+            Slot::Full(f) => analyze(&f.px, t, fill),
+            Slot::Alpha(_) | Slot::Cold(_) => analyze(&s.expand(fill, n), t, fill),
             Slot::Uniform(c) if *c == fill => return Slot::Fill,
             _ => return s,
         };
@@ -375,40 +372,38 @@ impl<P: Pixel> Surface<P> {
 
     /// Settle the tiles of a set (exact: a diagonal stroke's band only).
     pub fn compact_set(&mut self, set: &crate::DirtyTiles) {
-        let cells: Vec<(u32, u32)> = set.tiles().collect();
+        let cells: Vec<(i32, i32)> = set.tiles().collect();
         for (tx, ty) in cells { self.settle(tx, ty); }
         self.drop_table_if_empty();
     }
 
     /// The summary and fingerprint of tile (tx, ty) (computed on the spot
     /// for a tile being painted).
-    pub(crate) fn info(&self, tx: u32, ty: u32) -> Info {
-        let r = self.tile_rect(tx, ty);
-        let (w, h) = (r.w() as usize, r.h() as usize);
+    pub(crate) fn info(&self, tx: i32, ty: i32) -> Info {
+        let t = self.tile as usize;
         match self.slot(tx, ty) {
-            Slot::Fill => info_of_color(self.fill, w, h),
-            Slot::Uniform(c) => info_of_color(*c, w, h),
-            Slot::Full(f) => f.info.unwrap_or_else(|| info_of(&f.px, w, h, self.tile as usize)),
+            Slot::Fill => info_of_color(self.fill, t, t),
+            Slot::Uniform(c) => info_of_color(*c, t, t),
+            Slot::Full(f) => f.info.unwrap_or_else(|| info_of(&f.px, t, t, t)),
             Slot::Alpha(a) if a.info != Info::default() => a.info,
             Slot::Cold(c) if c.info != Info::default() => c.info,
-            s => info_of(&s.expand(self.fill, self.npx()), w, h, self.tile as usize),
+            s => info_of(&s.expand(self.fill, self.npx()), t, t, t),
         }
     }
 
-    /// Independent pieces covering `rect` (clipped) for work on several
-    /// cores: whole tiles grouped to about `target` pixels a side, never
-    /// smaller than a tile.
+    /// Independent pieces covering `rect` for work on several cores: whole
+    /// tiles grouped to about `target` pixels a side, never smaller than a
+    /// tile.
     pub fn chunks(&self, rect: Rect, target: u32) -> Vec<Rect> {
-        let r = rect.intersect(&self.rect());
-        if r.is_empty() { return Vec::new(); }
+        if rect.is_empty() { return Vec::new(); }
         let step = target.max(self.tile).next_power_of_two() as i32;
-        let g = r.snapped_out(step as u32);
+        let g = rect.snapped_out(step as u32);
         let mut out = Vec::new();
         let mut y = g.y0;
         while y < g.y1 {
             let mut x = g.x0;
             while x < g.x1 {
-                let c = Rect::new(x, y, x + step, y + step).intersect(&r);
+                let c = Rect::new(x, y, x + step, y + step).intersect(&rect);
                 if !c.is_empty() { out.push(c); }
                 x += step;
             }
@@ -417,57 +412,44 @@ impl<P: Pixel> Surface<P> {
         out
     }
 
-    /// Stored tiles' area (painted once, maybe erased since); `None` when
-    /// nothing is stored.
+    /// Stored tiles' area (painted once, maybe erased since), anywhere;
+    /// `None` when nothing is stored.
     pub fn stored_bounds(&self) -> Option<Rect> {
-        let mut b = Rect::EMPTY;
-        for (i, s) in self.slots.iter().enumerate() {
-            if !s.is_fill() { b = b.union(&self.tile_rect(i as u32 % self.cols, i as u32 / self.cols)); }
-        }
+        let b = self.grid.iter().fold(Rect::EMPTY, |b, (tx, ty, _)| b.union(&self.tile_rect(tx, ty)));
         (!b.is_empty()).then_some(b)
     }
 
     /// Area of the tiles holding a visible pixel; `None`: nothing shows.
-    /// A visible fill covers the whole surface.
+    /// A visible fill covers the frame (and is everywhere past it).
     pub fn visible_bounds(&self) -> Option<Rect> {
-        if self.fill.visible() { return Some(self.rect()); }
-        let mut b = Rect::EMPTY;
-        self.each_stored(|tx, ty, info| if !info.sum.empty() { b = b.union(&self.tile_rect(tx, ty)); });
+        let mut b = if self.fill.visible() { self.rect() } else { Rect::EMPTY };
+        for (tx, ty, _) in self.grid.iter() { if !self.info(tx, ty).sum.empty() { b = b.union(&self.tile_rect(tx, ty)); } }
         (!b.is_empty()).then_some(b)
     }
 
-    /// Exact bounds of the visible pixels; `None`: nothing shows.
+    /// Exact bounds of the visible pixels; `None`: nothing shows. A visible
+    /// fill counts as the frame.
     pub fn pixel_bounds(&self) -> Option<Rect> {
-        if self.fill.visible() { return Some(self.rect()); }
-        let mut b = Rect::EMPTY;
-        self.each_stored(|tx, ty, info| {
-            if info.sum.empty() { return; }
+        let mut b = if self.fill.visible() { self.rect() } else { Rect::EMPTY };
+        for (tx, ty, _) in self.grid.iter() {
+            let info = self.info(tx, ty);
+            if info.sum.empty() { continue; }
             let tr = self.tile_rect(tx, ty);
             let [x0, y0, x1, y1] = info.sum.bbox.map(|v| v as i32);
             b = b.union(&Rect::new(tr.x0 + x0, tr.y0 + y0, tr.x0 + x1, tr.y0 + y1));
-        });
-        (!b.is_empty()).then_some(b)
-    }
-
-    fn each_stored(&self, mut f: impl FnMut(u32, u32, Info)) {
-        for (i, s) in self.slots.iter().enumerate() {
-            if s.is_fill() { continue; }
-            let (tx, ty) = (i as u32 % self.cols, i as u32 / self.cols);
-            f(tx, ty, self.info(tx, ty));
         }
+        (!b.is_empty()).then_some(b)
     }
 
     /// A visible pixel inside `rect`.
     pub fn any_visible_in(&self, rect: Rect) -> bool {
-        let r = rect.intersect(&self.rect());
-        let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&r) else { return false };
+        let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&rect) else { return false };
         for ty in ty0..ty1 {
             for tx in tx0..tx1 {
+                if self.info(tx, ty).sum.empty() { continue; }
                 let tr = self.tile_rect(tx, ty);
-                let info = self.info(tx, ty);
-                if info.sum.empty() { continue; }
-                if r.contains_rect(&tr) { return true; }
-                let part = tr.intersect(&r);
+                if rect.contains_rect(&tr) { return true; }
+                let part = tr.intersect(&rect);
                 let mut found = false;
                 for y in part.y0..part.y1 {
                     self.row(y, part.x0, part.x1, |_, run| found |= (0..run.len()).any(|i| run.at(i).visible()));
@@ -481,12 +463,10 @@ impl<P: Pixel> Surface<P> {
     /// Every pixel of `rect` fully covering (the merge stops below such a
     /// tile).
     pub fn opaque_in(&self, rect: Rect) -> bool {
-        let r = rect.intersect(&self.rect());
-        let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&r) else { return false };
+        let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&rect) else { return false };
         (ty0..ty1).all(|ty| (tx0..tx1).all(|tx| {
-            let info = self.info(tx, ty);
-            if info.sum.opaque() { return true; }
-            let part = self.tile_rect(tx, ty).intersect(&r);
+            if self.info(tx, ty).sum.opaque() { return true; }
+            let part = self.tile_rect(tx, ty).intersect(&rect);
             let mut all = true;
             for y in part.y0..part.y1 { self.row(y, part.x0, part.x1, |_, run| all &= (0..run.len()).all(|i| run.at(i).opaque())); }
             all
@@ -496,7 +476,7 @@ impl<P: Pixel> Surface<P> {
     /// Nothing but the fill inside `rect`.
     pub fn is_fill_in(&self, rect: Rect) -> bool {
         let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&rect) else { return true };
-        if self.slots.is_empty() { return true; }
+        if self.grid.chunks.is_empty() { return true; }
         let fill = self.fill;
         (ty0..ty1).all(|ty| (tx0..tx1).all(|tx| match self.slot(tx, ty) {
             Slot::Fill => true,
@@ -510,11 +490,14 @@ impl<P: Pixel> Surface<P> {
         }))
     }
 
-    /// One premultiplied average per tile.
-    pub fn summary_grid(&self) -> SummaryGrid {
-        let mut avg = Vec::with_capacity((self.cols * self.rows) as usize);
-        for ty in 0..self.rows { for tx in 0..self.cols { avg.push(self.info(tx, ty).sum.avg); } }
-        SummaryGrid { cols: self.cols, rows: self.rows, cell: self.tile, avg }
+    /// One premultiplied average per tile of `rect` (the frame by default).
+    pub fn summary_grid(&self, rect: Option<Rect>) -> SummaryGrid {
+        let r = rect.unwrap_or_else(|| self.rect());
+        let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&r) else { return SummaryGrid { origin: (r.x0, r.y0), cols: 0, rows: 0, cell: self.tile, avg: Vec::new() } };
+        let mut avg = Vec::with_capacity(((tx1 - tx0) * (ty1 - ty0)) as usize);
+        for ty in ty0..ty1 { for tx in tx0..tx1 { avg.push(self.info(tx, ty).sum.avg); } }
+        let t = self.tile as i32;
+        SummaryGrid { origin: (tx0 * t, ty0 * t), cols: (tx1 - tx0) as u32, rows: (ty1 - ty0) as u32, cell: self.tile, avg }
     }
 
     /// A key of the content of `rect` (its tiles' fingerprints): equal
@@ -530,38 +513,36 @@ impl<P: Pixel> Surface<P> {
 
     /// Compress the pixel and coverage tiles outside `keep` (layers not
     /// shown, sheets far from the current frame): read on demand, opened
-    /// again when painted.
+    /// again when painted. Tiles that do not compress stay as they are.
     pub fn freeze(&mut self, keep: Rect) {
-        for i in 0..self.slots.len() {
-            let (tx, ty) = (i as u32 % self.cols, i as u32 / self.cols);
+        let n = self.npx();
+        let cells: Vec<(i32, i32)> = self.grid.iter().filter(|(_, _, s)| matches!(s, Slot::Full(_) | Slot::Alpha(_))).map(|(x, y, _)| (x, y)).collect();
+        for (tx, ty) in cells {
             if self.tile_rect(tx, ty).overlaps(&keep) { continue; }
-            if matches!(self.slots[i], Slot::Full(_) | Slot::Alpha(_)) {
-                let info = self.info(tx, ty);
-                let data = encode(&self.slots[i]);
-                // (Noise does not compress: kept as it is.)
-                let raw = match &self.slots[i] { Slot::Alpha(a) => a.a.len(), _ => self.npx() * P::BYTES };
-                if data.len() >= raw { continue; }
-                let old = std::mem::replace(&mut self.slots[i], Slot::Cold(Arc::new(ColdTile { data, info })));
-                recycle(old);
-            }
+            let info = self.info(tx, ty);
+            let s = self.slot(tx, ty);
+            let data = encode(s);
+            let raw = match s { Slot::Alpha(a) => a.a.len(), _ => n * P::BYTES };
+            if data.len() >= raw { continue; }
+            self.set_slot(tx, ty, Slot::Cold(Arc::new(ColdTile { data, info })));
         }
     }
 
     /// Open every cold tile again.
     pub fn thaw(&mut self) {
         let n = self.npx();
-        for s in &mut self.slots {
+        let mut cells = Vec::new();
+        for (tx, ty, s) in self.grid.iter_mut() {
             if let Slot::Cold(c) = s {
-                if let Some(open) = decode::<P>(&c.data, n) { *s = open; }
+                if let Some(open) = decode::<P>(&c.data, n) { *s = open; cells.push((tx, ty)); }
             }
         }
-        let all: Vec<(u32, u32)> = (0..self.slots.len() as u32).map(|i| (i % self.cols, i / self.cols)).collect();
-        for (tx, ty) in all { self.settle(tx, ty); }
+        for (tx, ty) in cells { self.settle(tx, ty); }
     }
 
     /// A copy whose tiles are shared until one side writes (cheap).
     pub fn snapshot(&self) -> crate::Snapshot<P> {
-        crate::Snapshot { slots: self.slots.clone(), cols: self.cols, rows: self.rows, tile: self.tile, fill: self.fill }
+        crate::Snapshot { grid: self.grid.clone(), tile: self.tile, fill: self.fill }
     }
 }
 
@@ -577,22 +558,19 @@ fn settled<P: Pixel>(s: &Slot<P>) -> bool {
     match s { Slot::Alpha(a) => a.info != Info::default(), Slot::Cold(c) => c.info != Info::default(), _ => true }
 }
 
-/// Choose the form of a tile's pixels (`w` × `h` on the surface, rows of
-/// `t`) without copying them.
-pub(crate) fn analyze<P: Pixel>(px: &[P], w: usize, h: usize, t: usize, fill: P) -> Form<P> {
-    let on = |y: usize| &px[y * t..y * t + w];
+/// Choose the form of a tile's `t × t` pixels without copying them.
+pub(crate) fn analyze<P: Pixel>(px: &[P], t: usize, fill: P) -> Form<P> {
     let c = px[0];
-    if (0..h).all(|y| on(y).iter().all(|p| *p == c)) { return Form::One(c); }
-    let info = info_of(px, w, h, t);
+    if px.iter().all(|p| *p == c) { return Form::One(c); }
+    let info = info_of(px, t, t, t);
     if P::ALPHA_FORM {
         // One color for every visible pixel, one value for the others.
         let (mut color, mut clear) = (None, None);
-        let ok = (0..h).all(|y| on(y).iter().all(|p| {
+        let ok = px.iter().all(|p| {
             if p.visible() { let (c, _) = p.split_alpha(); *color.get_or_insert(c) == c } else { *clear.get_or_insert(*p) == *p }
-        }));
+        });
         if let (true, Some(color)) = (ok, color) {
-            let mut a = vec![0u8; t * t];
-            for y in 0..h { for (x, p) in on(y).iter().enumerate() { if p.visible() { a[y * t + x] = p.split_alpha().1; } } }
+            let a = px.iter().map(|p| if p.visible() { p.split_alpha().1 } else { 0 }).collect();
             return Form::Alpha(AlphaTile { color, clear: clear.unwrap_or(fill), a, info });
         }
     }
@@ -632,7 +610,7 @@ impl<P: Pixel> HeapSize for Surface<P> {
     /// both: the report shows the most this surface could free).
     fn heap_bytes(&self) -> usize {
         let n = self.npx();
-        self.slots.capacity() * std::mem::size_of::<Slot<P>>() + self.slots.iter().map(|s| match s {
+        self.grid.table_bytes() + self.grid.iter().map(|(_, _, s)| match s {
             Slot::Fill | Slot::Uniform(_) => 0,
             Slot::Alpha(a) => a.a.capacity(),
             Slot::Full(_) => n * P::BYTES,
@@ -641,10 +619,13 @@ impl<P: Pixel> HeapSize for Surface<P> {
     }
 }
 
-/// Same pixels, whatever is stored or shared.
+/// Same pixels everywhere (inside the frame and past it), whatever is
+/// stored or shared.
 impl<P: Pixel> PartialEq for Surface<P> {
     fn eq(&self, o: &Self) -> bool {
-        (self.width, self.height) == (o.width, o.height) && self.read(self.rect()) == o.read(o.rect())
+        if (self.width, self.height) != (o.width, o.height) { return false; }
+        let area = [self.stored_bounds(), o.stored_bounds()].into_iter().flatten().fold(self.rect(), |a, r| a.union(&r));
+        self.fill == o.fill && self.read(area) == o.read(area)
     }
 }
 
