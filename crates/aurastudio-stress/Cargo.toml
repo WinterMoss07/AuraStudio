@@ -11,4 +11,5 @@ aurastudio-diag = { path = "../aurastudio-diag" }
 aurastudio-filters = { path = "../aurastudio-filters" }
 aurastudio-raster = { path = "../aurastudio-raster" }
 aurastudio-selection = { path = "../aurastudio-selection" }
+aurastudio-tools = { path = "../aurastudio-tools" }
 aurastudio-transform = { path = "../aurastudio-transform" }

@@ -244,6 +244,36 @@ impl Scenario for Selections {
     }
 }
 
+/// The tools' geometry per frame: shape paths as a drag would ask for
+/// them, a transform box dragged (scale, turn, warp) with its lines.
+pub struct Tools;
+
+impl Scenario for Tools {
+    fn name(&self) -> &'static str { "tools (shapes, transform box)" }
+    fn run(&mut self, _report: &mut Report) {
+        use aurastudio_core::Point;
+        use aurastudio_tools::{shapes, Hit, Mods, Polylines, TransformMode, Xform};
+        for i in 0..240 {
+            let b = Point::new(100.0 + i as f64 * 8.0, 80.0 + i as f64 * 5.0);
+            aurastudio_core::zone!("shape paths (frame)");
+            std::hint::black_box((shapes::ellipse(Point::new(50.0, 50.0), b), shapes::rectangle(Point::new(50.0, 50.0), b), shapes::arc(Point::new(0.0, 0.0), b, Point::new(b.x, 0.0))));
+        }
+        let mut x = Xform::new(Rect::new(0, 0, 2480, 3508));
+        let mut lines = Polylines::default();
+        for (hit, mode) in [(Hit::Corner(2), TransformMode::Free), (Hit::Outside, TransformMode::Free), (Hit::Point(12), TransformMode::Warp)] {
+            if mode == TransformMode::Warp { x.set_grid(4); }
+            let start = match hit { Hit::Point(_) => x.mesh_points()[12], Hit::Corner(i) => x.warp.quad[i], _ => Point::new(3000.0, 1754.0) };
+            x.press(hit, start);
+            for k in 0..240 {
+                aurastudio_core::zone!("transform drag (frame)");
+                x.drag_to(start + Point::new(k as f64 * 2.0, k as f64), Mods::default(), mode, true);
+                x.lines(mode, &mut lines);
+            }
+            x.release();
+        }
+    }
+}
+
 /// Every scenario, in report order.
 pub fn all() -> Vec<Box<dyn Scenario>> {
     let n = crate::env_u64("STROKES", 20) as u32;
@@ -257,5 +287,6 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
         Box::new(Filters),
         Box::new(Transform),
         Box::new(Selections),
+        Box::new(Tools),
     ]
 }
