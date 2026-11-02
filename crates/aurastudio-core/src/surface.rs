@@ -7,8 +7,15 @@
 
 use crate::geom::Rect;
 
-/// Layer pixels, the pixels before the stroke (base) and the stroke's
-/// coverage (mask, one byte per pixel), by runs of one row.
+/// Layer pixels, the pixels before the stroke (base), the stroke's
+/// coverage (mask, one byte per pixel) and, inside a selection, the most
+/// coverage allowed (limit), by runs of one row.
+///
+/// The engine's rule: the coverage it computes for a pixel is first capped
+/// by `limit` (when there is one), then kept as the max with `mask`, and
+/// the pixel is made from `base` with that mask; a pixel whose mask is
+/// still 0 keeps its base value exactly. So a selection clips the stroke
+/// at the source; nothing is blended again afterwards.
 pub trait PaintSurface {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
@@ -18,11 +25,11 @@ pub trait PaintSurface {
     /// goes.
     fn prepare(&mut self, rect: Rect);
 
-    /// (pixels, base, mask) of a run starting at (x, y), at most `max`
-    /// pixels long. It may be shorter (the storage cuts it where it
-    /// wants); its length is `mask.len()`, never 0 for `max > 0` inside
-    /// the surface. The engine asks again from `x + len` for the rest.
-    fn span_mut(&mut self, x: u32, y: u32, max: usize) -> (&mut [u8], &[u8], &mut [u8]);
+    /// The run starting at (x, y), at most `max` pixels long. It may be
+    /// shorter (the storage cuts it where it wants); its length is
+    /// `mask.len()`, never 0 for `max > 0` inside the surface. The engine
+    /// asks again from `x + len` for the rest.
+    fn span_mut(&mut self, x: u32, y: u32, max: usize) -> Span<'_>;
 
     /// Every run of `rect` at once (prepared, in no particular order),
     /// pushed to `out`, for work on several cores; the runs never
@@ -39,14 +46,25 @@ pub fn recycle_spans<'b>(mut v: Vec<Span<'_>>) -> Vec<Span<'b>> {
     v.into_iter().map(|_| unreachable!()).collect()
 }
 
-/// A run of one row (`PaintSurface::spans_mut`): from (x, y), its
-/// pixels, base and mask.
+/// A run of one row: from (x, y), its pixels (RGBA8 bytes), base (RGBA8
+/// bytes), mask (one byte per pixel) and limit (one byte per pixel, or
+/// none: no selection).
 pub struct Span<'a> {
     pub x:      u32,
     pub y:      u32,
     pub pixels: &'a mut [u8],
     pub base:   &'a [u8],
     pub mask:   &'a mut [u8],
+    pub limit:  Option<&'a [u8]>,
+}
+
+impl Span<'_> {
+    /// Pixels in the run.
+    #[inline]
+    pub fn len(&self) -> usize { self.mask.len() }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool { self.mask.is_empty() }
 }
 
 /// A plain surface holding every pixel (tests, benchmarks, examples).
@@ -85,10 +103,10 @@ impl PaintSurface for FlatSurface {
     fn height(&self) -> u32 { self.height }
     fn prepare(&mut self, _rect: Rect) {}
 
-    fn span_mut(&mut self, x: u32, y: u32, max: usize) -> (&mut [u8], &[u8], &mut [u8]) {
+    fn span_mut(&mut self, x: u32, y: u32, max: usize) -> Span<'_> {
         let len = max.min(self.run).min(self.width.saturating_sub(x) as usize);
         let i = y as usize * self.width as usize + x as usize;
-        (&mut self.pixels[i * 4..(i + len) * 4], &self.base[i * 4..(i + len) * 4], &mut self.mask[i..i + len])
+        Span { x, y, pixels: &mut self.pixels[i * 4..(i + len) * 4], base: &self.base[i * 4..(i + len) * 4], mask: &mut self.mask[i..i + len], limit: None }
     }
 
     fn spans_mut<'a>(&'a mut self, r: Rect, out: &mut Vec<Span<'a>>) -> bool {
@@ -104,7 +122,7 @@ impl PaintSurface for FlatSurface {
                 let (p, rp) = px.split_at_mut(n * 4);
                 let (b, rb) = base.split_at(n * 4);
                 let (m, rm) = mask.split_at_mut(n);
-                out.push(Span { x, y: y as u32, pixels: p, base: b, mask: m });
+                out.push(Span { x, y: y as u32, pixels: p, base: b, mask: m, limit: None });
                 (px, base, mask) = (rp, rb, rm);
                 x += n as u32;
             }
@@ -127,8 +145,8 @@ mod tests {
         assert_eq!(total, 8 * 2);
         assert!(spans.iter().all(|sp| sp.mask.len() <= 3 && sp.pixels.len() == sp.mask.len() * 4));
         drop(spans);
-        let (p, _, m) = s.span_mut(8, 0, 100);
-        assert_eq!((p.len(), m.len()), (4 * 2, 2));
+        let sp = s.span_mut(8, 0, 100);
+        assert_eq!((sp.pixels.len(), sp.len()), (4 * 2, 2));
     }
 
     #[test]

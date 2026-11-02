@@ -11,7 +11,7 @@ use aurastudio_diag::report::{Report, Rules};
 pub mod scenarios;
 
 /// One measured situation (idle, painting, layers…).
-pub trait Scenario {
+pub trait Scenario: Send {
     fn name(&self) -> &'static str;
     /// Do the work once; marks go to the recorder. Findings that are the
     /// scenario's own (idle wakeups, preview targets) go to `report`.
@@ -23,13 +23,20 @@ pub trait Scenario {
 pub fn run_all(scenarios: &mut [Box<dyn Scenario>], runs: u32, header: Vec<(String, String)>, rules: &Rules) -> Report {
     aurastudio_diag::install();
     let mut report = Report { header, ..Default::default() };
-    for s in scenarios.iter_mut() {
-        for _ in 0..runs.max(1) {
-            aurastudio_diag::record::reset();
-            s.run(&mut report);
-            report.add_run(s.name(), aurastudio_diag::snapshot());
-        }
-    }
+    // On a thread of their own: the rules for the main and paint threads
+    // (frame budget) are for the app, not for a scenario's whole run.
+    std::thread::scope(|sc| {
+        let worker = std::thread::Builder::new().name("scenario".into()).spawn_scoped(sc, || {
+            for s in scenarios.iter_mut() {
+                for _ in 0..runs.max(1) {
+                    aurastudio_diag::record::reset();
+                    s.run(&mut report);
+                    report.add_run(s.name(), aurastudio_diag::snapshot());
+                }
+            }
+        });
+        if let Ok(w) = worker { let _ = w.join(); }
+    });
     report.check(rules);
     report
 }

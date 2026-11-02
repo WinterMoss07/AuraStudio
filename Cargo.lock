@@ -22,11 +22,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-raster"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-core",
+ "lz4_flex",
+]
+
+[[package]]
 name = "aurastudio-stress"
 version = "0.19.6"
 dependencies = [
  "aurastudio-core",
  "aurastudio-diag",
+ "aurastudio-raster",
 ]
 
 [[package]]
@@ -34,6 +43,15 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "memchr"
@@ -122,6 +140,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "unicode-ident"

@@ -8,3 +8,4 @@ description = "Dev only: fuzzers and diagnostic scenarios. Nothing depends on it
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core", features = ["diag"] }
 aurastudio-diag = { path = "../aurastudio-diag" }
+aurastudio-raster = { path = "../aurastudio-raster" }

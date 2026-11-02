@@ -187,7 +187,8 @@ fn source_files() -> Vec<(String, PathBuf)> {
         let name = short(&dir.file_name().unwrap().to_string_lossy()).to_owned();
         let mut files = Vec::new();
         rust_files(&dir.join("src"), &mut files);
-        out.extend(files.into_iter().map(|f| (name.clone(), f)));
+        // (A `tests.rs` is a test module of its own: `#[cfg(test)] mod tests;`.)
+        out.extend(files.into_iter().filter(|f| f.file_name().is_none_or(|n| n != "tests.rs")).map(|f| (name.clone(), f)));
     }
     out
 }
