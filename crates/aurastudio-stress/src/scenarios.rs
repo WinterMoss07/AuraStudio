@@ -302,6 +302,43 @@ impl Scenario for Color {
     }
 }
 
+/// The fill tool on an A4 300 dpi line-art layer (a grid of ink lines):
+/// a flood of one cell, of a blank page, the magic wand everywhere; and the layer tree's edits on a 60-node stack.
+pub struct Layers;
+
+impl Scenario for Layers {
+    fn name(&self) -> &'static str { "layers (fill on A4 line art, 60-node tree)" }
+    fn run(&mut self, _report: &mut Report) {
+        use aurastudio_layers::fill::{flood, similar_all};
+        use aurastudio_layers::{LayerStack, Place, Start};
+        let (w, h) = (2480i32, 3508i32);
+        let mut ink = Image::new(w as u32, h as u32, 128, [255, 255, 255, 0]);
+        for k in (200..w).step_by(400) { ink.fill_rect(Rect::new(k, 0, k + 3, h), [0, 0, 0, 255]); }
+        for k in (200..h).step_by(400) { ink.fill_rect(Rect::new(0, k, w, k + 3), [0, 0, 0, 255]); }
+        let frame = Rect::new(0, 0, w, h);
+        { aurastudio_core::zone!("fill one cell"); std::hint::black_box(flood(&ink, frame, 500, 500, 32, 1, None)); }
+        let blank = Image::new(w as u32, h as u32, 128, [255, 255, 255, 0]);
+        { aurastudio_core::zone!("fill a blank page"); std::hint::black_box(flood(&blank, frame, 10, 10, 32, 1, None)); }
+        { aurastudio_core::zone!("magic wand everywhere"); std::hint::black_box(similar_all(&ink, frame, 10, 10, 32, 0)); }
+        let mut s = LayerStack::new(w as u32, h as u32, 128, Start::Paper);
+        for i in 0..20 {
+            let f = s.add_folder("f");
+            s.add_layer("a");
+            s.add_layer("b");
+            s.set_active(f);
+            if i % 3 == 0 { s.set_active(1); }
+        }
+        aurastudio_core::zone!("tree edits (200)");
+        for i in 0..200u64 {
+            let ids = s.layer_ids();
+            let (a, b) = (ids[(i as usize * 7) % ids.len()], ids[(i as usize * 13 + 5) % ids.len()]);
+            s.move_node(a, b, if i % 2 == 0 { Place::Above } else { Place::Below });
+            let _ = s.rows();
+            let _ = s.tree_state();
+        }
+    }
+}
+
 /// Every scenario, in report order.
 pub fn all() -> Vec<Box<dyn Scenario>> {
     let n = crate::env_u64("STROKES", 20) as u32;
@@ -317,5 +354,6 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
         Box::new(Selections),
         Box::new(Tools),
         Box::new(Color),
+        Box::new(Layers),
     ]
 }
