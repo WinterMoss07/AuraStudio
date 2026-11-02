@@ -136,7 +136,54 @@ impl Scenario for RasterLineArt {
     }
 }
 
-/// Every scenario, in report order./// Every scenario, in report order.
+/// Every filter on a half-painted A4 300 dpi layer (128 px tiles: a
+/// painted band, a flat color band, line art, the rest empty), then a
+/// large blur inside a selection and a selection's feather: what each
+/// costs, and whether the one-color tiles stay one color.
+pub struct Filters;
+
+impl Scenario for Filters {
+    fn name(&self) -> &'static str { "filters (illustration A4 300 dpi, 128 px tiles)" }
+    fn run(&mut self, report: &mut Report) {
+        use aurastudio_filters::{blur_mask, Filter, Kind};
+        let (w, h) = (2480, 3508);
+        let mut base = Image::new(w, h, 128, [255, 255, 255, 0]);
+        let band = Rect::new(0, 0, w as i32, 1200);
+        let px: Vec<[u8; 4]> = (0..band.area() as usize).map(|i| {
+            let (x, y) = (i % w as usize, i / w as usize);
+            [(x % 256) as u8, (y % 256) as u8, 128, if (x / 64 + y / 64) % 3 == 0 { 0 } else { 255 }]
+        }).collect();
+        base.write(band, &px);
+        base.fill_rect(Rect::new(0, 1200, w as i32, 1800), [200, 180, 150, 255]);
+        let ink: Vec<u8> = (0..(w as usize * 400)).map(|i| if (i % w as usize) % 37 < 3 { 255 } else { 0 }).collect();
+        base.fill_mask(Rect::new(0, 1800, w as i32, 2200), &ink, [20, 20, 30, 255]);
+        // (Whole tiles: the frame's last column is only partly the band's.)
+        let flat = Rect::new(0, 1280, 2432, 1792);
+        let flat_before = base.uniform_in(flat).is_some();
+        for k in Kind::all() {
+            let mut s = base.clone();
+            let f = Filter::new(k);
+            {
+                aurastudio_core::zone!(k.name());
+                f.apply_to(&mut s, None);
+            }
+            if k.is_point() && flat_before && s.uniform_in(flat).is_none() {
+                report.suspect(self.name(), k.name(), "a one-color band came out as pixels".into(), "layer::Job::piece should map one-color tiles once");
+            }
+        }
+        let mut sel = aurastudio_raster::Mask::new(w, h, 128, 0);
+        sel.fill_rect(Rect::new(400, 400, 2000, 2000), 255);
+        {
+            let mut s = base.clone();
+            aurastudio_core::zone!("blur 50 px in a selection");
+            Filter { values: vec![50.0], ..Filter::new(Kind::GaussianBlur) }.apply_to(&mut s, Some(&sel));
+        }
+        aurastudio_core::zone!("feather 20 px");
+        blur_mask(&mut sel, 20.0);
+    }
+}
+
+/// Every scenario, in report order.
 pub fn all() -> Vec<Box<dyn Scenario>> {
     let n = crate::env_u64("STROKES", 20) as u32;
     vec![
@@ -146,5 +193,6 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
         Box::new(RasterStroke { kind: DocType::Illustration, w: 2480, h: 3508, strokes: n, radius: 150.0 }),
         Box::new(RasterFile { w: 3508, h: 4961 }),
         Box::new(RasterLineArt),
+        Box::new(Filters),
     ]
 }

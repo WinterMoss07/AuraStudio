@@ -13,3 +13,14 @@ fn raster_fuzz_long() {
     let (seeds, ops) = (aurastudio_stress::env_u64("FUZZ_SEEDS", 500), aurastudio_stress::env_u64("FUZZ_OPS", 300) as u32);
     for seed in 1..=seeds { aurastudio_stress::fuzz_raster::run(seed, ops); }
 }
+
+#[test]
+fn filters_fuzz_short() {
+    for seed in 1..=60 { aurastudio_stress::fuzz_filters::run(seed); }
+}
+
+#[test]
+#[ignore]
+fn filters_fuzz_long() {
+    for seed in 1..=aurastudio_stress::env_u64("FUZZ_SEEDS", 500) * 4 { aurastudio_stress::fuzz_filters::run(seed); }
+}

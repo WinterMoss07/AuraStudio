@@ -490,6 +490,22 @@ impl<P: Pixel> Surface<P> {
         }))
     }
 
+    /// The one color of every pixel of `rect`, when its tiles are all of
+    /// that color (a tile holding pixels counts as mixed: filters skip
+    /// what this finds without looking at pixels). `None` for an empty
+    /// rect.
+    pub fn uniform_in(&self, rect: Rect) -> Option<P> {
+        let (tx0, ty0, tx1, ty1) = self.tiles_of(&rect)?;
+        let mut c = None;
+        for ty in ty0..ty1 {
+            for tx in tx0..tx1 {
+                let s = self.slot(tx, ty).color(self.fill)?;
+                if *c.get_or_insert(s) != s { return None; }
+            }
+        }
+        c
+    }
+
     /// One premultiplied average per tile of `rect` (the frame by default).
     pub fn summary_grid(&self, rect: Option<Rect>) -> SummaryGrid {
         let r = rect.unwrap_or_else(|| self.rect());

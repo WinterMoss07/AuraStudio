@@ -7,6 +7,7 @@ members = [
     "crates/aurastudio-arch",
     "crates/aurastudio-raster",
     "crates/aurastudio-input",
+    "crates/aurastudio-filters",
     "crates/aurastudio-diag",
     "crates/aurastudio-stress",
 ]

@@ -32,6 +32,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-filters"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-core",
+ "aurastudio-raster",
+ "rayon",
+]
+
+[[package]]
 name = "aurastudio-input"
 version = "0.19.6"
 dependencies = [
@@ -56,6 +65,7 @@ version = "0.19.6"
 dependencies = [
  "aurastudio-core",
  "aurastudio-diag",
+ "aurastudio-filters",
  "aurastudio-raster",
 ]
 
