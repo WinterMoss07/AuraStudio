@@ -183,6 +183,67 @@ impl Scenario for Filters {
     }
 }
 
+/// A layer-sized source (1610 × 1247) turned and scaled at 85 / 40 /
+/// 160 %, bilinear and bicubic, then with a bent grid: the transform's
+/// render and its pyramid.
+pub struct Transform;
+
+impl Scenario for Transform {
+    fn name(&self) -> &'static str { "transform (1610 × 1247 source)" }
+    fn run(&mut self, _report: &mut Report) {
+        use aurastudio_core::Point;
+        use aurastudio_transform::{corners, render, Interp, Mesh, Source, Warp};
+        let (w, h) = (1610i32, 1247i32);
+        let r = Rect::new(0, 0, w, h);
+        let px: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % 251) as u8, (i % 113) as u8, (i % 61) as u8, 255]).collect();
+        let src = {
+            aurastudio_core::zone!("transform source");
+            Source::new(r, &px)
+        };
+        let (c, a) = (Point::new(w as f64 / 2.0, h as f64 / 2.0), 0.15f64);
+        let mut out = vec![[0u8; 4]; r.area() as usize];
+        for (name, k) in [("transform 85 %", 0.85), ("transform 40 %", 0.4), ("transform 160 %", 1.6)] {
+            let quad = corners(r).map(|p| { let d = (p - c) * k; Point::new(c.x + d.x * a.cos() - d.y * a.sin(), c.y + d.x * a.sin() + d.y * a.cos()) });
+            for interp in [Interp::Bilinear, Interp::Bicubic] {
+                aurastudio_core::zone!(name);
+                render(&src, &Warp { quad, mesh: None }, interp, r, &mut out);
+            }
+            let mut m = Mesh::new(4, 4);
+            m.pts[6].x += 0.05;
+            aurastudio_core::zone!("transform mesh");
+            render(&src, &Warp { quad, mesh: Some(m) }, Interp::Bilinear, r, &mut out);
+        }
+    }
+}
+
+/// Selections on an A4 300 dpi frame: a lasso, an ellipse, grow, shrink,
+/// feather, border, invert, the outline at 1:1 and zoomed out.
+pub struct Selections;
+
+impl Scenario for Selections {
+    fn name(&self) -> &'static str { "selection (A4 300 dpi, 128 px tiles)" }
+    fn run(&mut self, _report: &mut Report) {
+        use aurastudio_core::Point;
+        use aurastudio_selection::{Selection, Space};
+        let s = Space { width: 2480, height: 3508, tile: 128 };
+        let lasso: Vec<Point> = (0..2000).map(|i| {
+            let t = i as f64 / 2000.0 * std::f64::consts::TAU;
+            let rr = 900.0 + 120.0 * (7.0 * t).sin();
+            Point::new(1240.0 + rr * t.cos(), 1750.0 + rr * 1.3 * t.sin())
+        }).collect();
+        let sel = { aurastudio_core::zone!("selection lasso"); Selection::polygon(s, &lasso, true) };
+        let Some(sel) = sel else { return };
+        { aurastudio_core::zone!("selection ellipse"); let _ = Selection::ellipse(s, [200.0, 300.0, 2200.0, 3000.0], true); }
+        { aurastudio_core::zone!("selection grow 20"); let _ = sel.grown(20.0); }
+        { aurastudio_core::zone!("selection shrink 20"); let _ = sel.shrunk(20.0); }
+        { aurastudio_core::zone!("selection feather 20"); let _ = sel.feathered(20.0); }
+        { aurastudio_core::zone!("selection border 10"); let _ = sel.bordered(10.0); }
+        { aurastudio_core::zone!("selection invert"); let _ = sel.inverted(); }
+        { aurastudio_core::zone!("selection outline 1:1"); let _ = sel.outline(1); }
+        { aurastudio_core::zone!("selection outline 1:8"); let _ = sel.outline(8); }
+    }
+}
+
 /// Every scenario, in report order.
 pub fn all() -> Vec<Box<dyn Scenario>> {
     let n = crate::env_u64("STROKES", 20) as u32;
@@ -194,5 +255,7 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
         Box::new(RasterFile { w: 3508, h: 4961 }),
         Box::new(RasterLineArt),
         Box::new(Filters),
+        Box::new(Transform),
+        Box::new(Selections),
     ]
 }

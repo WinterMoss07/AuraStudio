@@ -60,6 +60,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-selection"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-core",
+ "aurastudio-filters",
+ "aurastudio-raster",
+]
+
+[[package]]
 name = "aurastudio-stress"
 version = "0.19.6"
 dependencies = [
@@ -67,6 +76,16 @@ dependencies = [
  "aurastudio-diag",
  "aurastudio-filters",
  "aurastudio-raster",
+ "aurastudio-selection",
+ "aurastudio-transform",
+]
+
+[[package]]
+name = "aurastudio-transform"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-core",
+ "rayon",
 ]
 
 [[package]]
