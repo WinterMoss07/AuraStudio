@@ -2,7 +2,9 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    # rework/**: the crates are rebuilt one by one there; every push is
+    # checked on Windows (Windows-only code is only compiled here).
+    branches: [main, 'rework/**']
   pull_request:
     branches: [main]
   # "Run workflow" button in the Actions tab; tick macOS to build it too.
@@ -74,14 +76,26 @@ jobs:
             v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
             export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/PDBALTPATH:aurastudio-$v.pdb"
           fi
-          if ! cargo build --profile ci 2>&1 | tee build.log; then
+          if ! cargo build --profile ci --workspace 2>&1 | tee build.log; then
             grep -E "^(error|warning: build failed)|panicked|--> " -A3 build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          fi
+
+      # Unit tests of every crate (the long fuzz runs are #[ignore]).
+      - name: Tests
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --profile ci --workspace 2>&1 | tee test.log; then
+            grep -E "^(error|test .* FAILED)|panicked" -A3 test.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           fi
 
       # The version in the file name (aurastudio-0.3.2.exe), so two
       # versions can sit side by side and run at the same time.
+      # (Only once the app crate exists again on a rework branch.)
       - name: Name with version
+        if: hashFiles('crates/aurastudio-app/Cargo.toml') != ''
         shell: bash
         run: |
           v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
@@ -98,7 +112,7 @@ jobs:
       # mimalloc and with the system allocator, to compare them. Each in a
       # folder of its own with its .pdb.
       - name: Build the profiler versions
-        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.profile
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.profile && hashFiles('crates/aurastudio-app/Cargo.toml') != ''
         shell: bash
         run: |
           set -o pipefail
@@ -112,13 +126,14 @@ jobs:
           done
 
       - name: Upload artifact
+        if: hashFiles('crates/aurastudio-app/Cargo.toml') != ''
         uses: actions/upload-artifact@v7
         with:
           name: aurastudio-${{ env.VERSION }}-${{ runner.os }}
           path: dist/*
 
       - name: Upload the profiler version
-        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.profile
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.profile && hashFiles('crates/aurastudio-app/Cargo.toml') != ''
         uses: actions/upload-artifact@v7
         with:
           name: aurastudio-${{ env.VERSION }}-Windows-profile

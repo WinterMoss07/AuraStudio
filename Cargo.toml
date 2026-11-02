@@ -1,24 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/aurastudio-core",
-    "crates/aurastudio-raster",
-    "crates/aurastudio-animation",
-    "crates/aurastudio-tools",
-    "crates/aurastudio-selection",
-    "crates/aurastudio-transform",
-    "crates/aurastudio-forge",
-    "crates/aurastudio-forge-library",
-    "crates/aurastudio-layers",
-    "crates/aurastudio-document",
-    "crates/aurastudio-color",
-    "crates/aurastudio-input",
-    "crates/aurastudio-gpu",
-    "crates/aurastudio-ui",
-    "crates/aurastudio-file",
-    "crates/aurastudio-filters",
-    "crates/aurastudio-arch",
-    "crates/aurastudio-app",
+    # Rebuilt crate by crate on rework/foundations (one function per crate;
+    # the dependency table is in crates/aurastudio-arch).
 ]
 
 [patch.crates-io]
