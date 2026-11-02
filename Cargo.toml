@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     # Rebuilt crate by crate on rework/foundations (one function per crate;
     # the dependency table is in crates/aurastudio-arch).
+    "crates/aurastudio-core",
 ]
 
 [patch.crates-io]

@@ -3,4 +3,10 @@ name = "aurastudio-core"
 version.workspace = true
 edition = "2021"
 
+# No dependency, internal or external: every crate may use core.
 [dependencies]
+
+[features]
+# Diagnostic marks (zone!, count!, sample!) compiled in; the diagnostic
+# build turns it on (aurastudio-diag), never the release build.
+diag = []

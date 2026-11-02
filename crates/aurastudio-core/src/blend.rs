@@ -1,6 +1,8 @@
 //! Blend modes (W3C Compositing and Blending, on sRGB values like
 //! Photoshop, Krita, CSP), for compositing and brushes.
 
+use crate::math::{div255, from_u8, to_u8};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum BlendMode {
     #[default]
@@ -127,14 +129,8 @@ fn blend_over_mode(dst: &mut Premul, cs: [f32; 3], a_s: f32, a_b: f32, mode: Ble
 /// layer as it was before the stroke.
 #[inline(always)]
 pub fn blend_pixel_u8(backdrop: [u8; 4], color: [u8; 3], a_s: f32, mode: BlendMode) -> [u8; 4] {
-    let a_b = backdrop[3] as f32 / 255.0;
-    let mut p: Premul = [
-        backdrop[0] as f32 / 255.0 * a_b,
-        backdrop[1] as f32 / 255.0 * a_b,
-        backdrop[2] as f32 / 255.0 * a_b,
-        a_b,
-    ];
-    let cs = [color[0] as f32 / 255.0, color[1] as f32 / 255.0, color[2] as f32 / 255.0];
+    let mut p = to_premul(backdrop);
+    let cs = [from_u8(color[0]), from_u8(color[1]), from_u8(color[2])];
     blend_over(&mut p, cs, a_s.clamp(0.0, 1.0), mode);
     to_straight_u8(p)
 }
@@ -151,11 +147,18 @@ pub fn paint_pixel_u8(backdrop: [u8; 4], color: [u8; 3], cov: u8, mode: BlendMod
         if ab == 255 {
             let a = cov as u32;
             let ia = 255 - a;
-            let mix = |c: u8, b: u8| ((c as u32 * a + b as u32 * ia + 127) / 255) as u8;
+            let mix = |c: u8, b: u8| div255(c as u32 * a + b as u32 * ia) as u8;
             return [mix(color[0], backdrop[0]), mix(color[1], backdrop[1]), mix(color[2], backdrop[2]), 255];
         }
     }
-    blend_pixel_u8(backdrop, color, cov as f32 / 255.0, mode)
+    blend_pixel_u8(backdrop, color, from_u8(cov), mode)
+}
+
+/// A straight 8-bit pixel as premultiplied 0..1.
+#[inline(always)]
+pub fn to_premul(p: [u8; 4]) -> Premul {
+    let a = from_u8(p[3]);
+    [from_u8(p[0]) * a, from_u8(p[1]) * a, from_u8(p[2]) * a, a]
 }
 
 #[inline(always)]
@@ -165,14 +168,26 @@ pub fn to_straight_u8(p: Premul) -> [u8; 4] {
         return [255, 255, 255, 0];
     }
     let inv = 1.0 / a;
-    let q = |v: f32| unit_to_u8(v * inv);
-    [q(p[0]), q(p[1]), q(p[2]), unit_to_u8(a)]
+    let q = |v: f32| to_u8(v * inv);
+    [q(p[0]), q(p[1]), q(p[2]), to_u8(a)]
 }
 
-/// 0..1 → 0..255, rounded (+ 0.5: f32::round is a libm call on x86-64).
+/// Straight RGBA8 → premultiplied RGBA8 (`c × a / 255`, the single
+/// rounding): what the GPU receives.
 #[inline(always)]
-pub fn unit_to_u8(v: f32) -> u8 {
-    (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+pub fn premultiply_u8(p: [u8; 4]) -> [u8; 4] {
+    let a = p[3] as u32;
+    [div255(p[0] as u32 * a) as u8, div255(p[1] as u32 * a) as u8, div255(p[2] as u32 * a) as u8, p[3]]
+}
+
+/// Premultiplied RGBA8 → straight RGBA8 (`c × 255 / a` rounded, clamped
+/// to 255); alpha 0 gives transparent white, as `to_straight_u8`.
+#[inline(always)]
+pub fn unpremultiply_u8(p: [u8; 4]) -> [u8; 4] {
+    let a = p[3] as u32;
+    if a == 0 { return [255, 255, 255, 0]; }
+    let q = |c: u8| ((c as u32 * 255 + a / 2) / a).min(255) as u8;
+    [q(p[0]), q(p[1]), q(p[2]), p[3]]
 }
 
 #[cfg(test)]
@@ -216,6 +231,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn premultiplied_round_trip() {
+        // Opaque pixels survive exactly; others within the precision their
+        // alpha leaves (a / 255 steps per channel).
+        for a in [0u8, 1, 17, 128, 254, 255] {
+            for c in [0u8, 1, 77, 128, 200, 255] {
+                let p = [c, 255 - c, c / 2, a];
+                let back = unpremultiply_u8(premultiply_u8(p));
+                if a == 0 { assert_eq!(back, [255, 255, 255, 0]); continue; }
+                let tol = (255.0 / a as f32).ceil() as i32;
+                for k in 0..3 { assert!((back[k] as i32 - p[k] as i32).abs() <= tol, "{p:?} -> {back:?}"); }
+                if a == 255 { assert_eq!(back, p); }
+            }
+        }
+        assert_eq!(to_straight_u8(to_premul([10, 20, 30, 255])), [10, 20, 30, 255]);
     }
 
     #[test]
