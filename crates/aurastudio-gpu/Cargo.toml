@@ -1,0 +1,17 @@
+[package]
+name = "aurastudio-gpu"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+aurastudio-core   = { path = "../aurastudio-core" }
+aurastudio-raster = { path = "../aurastudio-raster" }
+# OpenGL too ("angle" turns the GL backend on where it is off by
+# default: WGL on Windows), the fallback when Vulkan is missing.
+wgpu     = { version = "30", features = ["angle"] }
+bytemuck = { version = "1", features = ["derive"] }
+log      = "0.4"
+half     = "2"
+
+[dev-dependencies]
+pollster = "0.3"

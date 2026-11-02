@@ -17,6 +17,7 @@ members = [
     "crates/aurastudio-animation",
     "crates/aurastudio-file",
     "crates/aurastudio-document",
+    "crates/aurastudio-gpu",
     "crates/aurastudio-diag",
     "crates/aurastudio-stress",
 ]
