@@ -339,6 +339,47 @@ impl Scenario for Layers {
     }
 }
 
+/// The merge on an A4 300 dpi document of 20 layers (painted bands,
+/// some blend modes, an isolated folder): the whole frame, then a stroke
+/// on a middle layer shown through the stroke cache, dab-sized rects.
+pub struct Compose;
+
+impl Scenario for Compose {
+    fn name(&self) -> &'static str { "compose (A4 300 dpi, 20 layers)" }
+    fn run(&mut self, _report: &mut Report) {
+        use aurastudio_compose::{merge, FolderCache, Opts, StrokeCache};
+        use aurastudio_layers::{FolderBlend, LayerStack, Node, Start};
+        let (w, h) = (2480i32, 3508i32);
+        let mut s = LayerStack::new(w as u32, h as u32, 128, Start::Paper);
+        let mut rng = Rng::new(4);
+        let mut mid = 0;
+        for i in 0..20 {
+            if i == 10 {
+                let f = s.add_folder("f");
+                if let Some(Node::Folder(x)) = s.node_mut(f) { x.blend = FolderBlend::Isolated(BlendMode::Normal); x.opacity = 0.8; }
+            }
+            let id = s.add_layer("l");
+            let (x, y) = (rng.below(w as u64) as i32 / 2, rng.below(h as u64) as i32 / 2);
+            let r = Rect::new(x, y, x + 900, y + 1400);
+            let c = [rng.below(256) as u8, rng.below(256) as u8, rng.below(256) as u8, 200];
+            s.set_layer_rect(id, r, &vec![c; r.area() as usize]);
+            if let Some(Node::Layer(l)) = s.node_mut(id) { if i < 5 && i % 2 == 1 { l.blend = BlendMode::Multiply; } }
+            if i == 5 { mid = id; }
+        }
+        let cache = FolderCache::default();
+        for _ in 0..2 {
+            aurastudio_core::zone!("merge A4 frame");
+            std::hint::black_box(merge(&s, s.frame(), Opts { cache: Some(&cache), ..Default::default() }));
+        }
+        let mut sc = StrokeCache::default();
+        for k in 0..120 {
+            let (x, y) = (300 + k * 12, 600 + k * 9);
+            aurastudio_core::zone!("merge stroke rect (64 px)");
+            std::hint::black_box(sc.merge(&s, mid, Rect::new(x, y, x + 64, y + 64)));
+        }
+    }
+}
+
 /// Every scenario, in report order.
 pub fn all() -> Vec<Box<dyn Scenario>> {
     let n = crate::env_u64("STROKES", 20) as u32;
@@ -355,5 +396,6 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
         Box::new(Tools),
         Box::new(Color),
         Box::new(Layers),
+        Box::new(Compose),
     ]
 }

@@ -29,6 +29,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-compose"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-core",
+ "aurastudio-filters",
+ "aurastudio-layers",
+ "aurastudio-raster",
+ "rayon",
+]
+
+[[package]]
 name = "aurastudio-core"
 version = "0.19.6"
 
@@ -92,6 +103,7 @@ name = "aurastudio-stress"
 version = "0.19.6"
 dependencies = [
  "aurastudio-color",
+ "aurastudio-compose",
  "aurastudio-core",
  "aurastudio-diag",
  "aurastudio-filters",

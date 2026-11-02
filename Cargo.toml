@@ -13,6 +13,7 @@ members = [
     "crates/aurastudio-tools",
     "crates/aurastudio-color",
     "crates/aurastudio-layers",
+    "crates/aurastudio-compose",
     "crates/aurastudio-diag",
     "crates/aurastudio-stress",
 ]
