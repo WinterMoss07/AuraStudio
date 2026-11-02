@@ -24,6 +24,19 @@ impl DisplayLut {
         Self { size: n, texels }
     }
 
+    /// Changes nothing (within half an 8-bit level): the GPU can skip it.
+    pub fn is_identity(&self) -> bool {
+        let n = self.size;
+        let k = 1.0 / (n - 1) as f32;
+        self.texels.iter().enumerate().all(|(i, c)| {
+            let want = [(i % n) as f32 * k, ((i / n) % n) as f32 * k, (i / (n * n)) as f32 * k];
+            (0..3).all(|j| (c[j] - want[j]).abs() < 0.5 / 255.0)
+        })
+    }
+
+    /// An 8-bit color through the table (UI swatches, gradients).
+    pub fn apply_u8(&self, rgb: [u8; 3]) -> [u8; 3] { self.apply(rgb.map(crate::math::from_u8)).map(|v| crate::math::to_u8(v.clamp(0.0, 1.0))) }
+
     /// One color through the table (swatches, tests), 0..1 in and out.
     pub fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
         let n = self.size;
@@ -57,5 +70,7 @@ mod tests {
             let o = l.apply(c);
             for k in 0..3 { assert!((o[k] - c[k]).abs() < 1e-5); }
         }
+        assert!(l.is_identity());
+        assert_eq!(l.apply_u8([200, 30, 90]), [200, 30, 90]);
     }
 }

@@ -274,6 +274,34 @@ impl Scenario for Tools {
     }
 }
 
+/// Display tables (what the app builds when the monitor, the profile or
+/// the view mode changes) and an A4 300 dpi layer converted to another
+/// profile.
+pub struct Color;
+
+impl Scenario for Color {
+    fn name(&self) -> &'static str { "color (display tables, A4 conversion)" }
+    fn run(&mut self, report: &mut Report) {
+        use aurastudio_color::{convert_buffer, Channel, DisplaySetup, Intent, Profile, Proof, ViewMode};
+        let p3 = Profile::display_p3();
+        let base = DisplaySetup { monitor: p3.clone(), ..DisplaySetup::plain() };
+        let proof = Proof { output: Profile::srgb(), intent: Intent::RelativeColorimetric, paper_white: false, gamut_warning: Some([0, 255, 255]) };
+        let cases: [(&'static str, DisplaySetup); 4] = [
+            ("table sRGB → P3 monitor", base.clone()),
+            ("table grayscale", DisplaySetup { mode: ViewMode::Grayscale, ..base.clone() }),
+            ("table channel a", DisplaySetup { mode: ViewMode::Channel(Channel::A), ..base.clone() }),
+            ("table soft proof + warning", DisplaySetup { document: p3.clone(), mode: ViewMode::Proof(proof), ..base }),
+        ];
+        for (name, s) in cases {
+            aurastudio_core::zone!(name);
+            if let Err(e) = s.build() { report.suspect(self.name(), name, e.0, "DisplaySetup::build"); }
+        }
+        let mut px: Vec<[u8; 4]> = (0..2480usize * 3508).map(|i| [(i % 251) as u8, (i % 113) as u8, (i % 61) as u8, 255]).collect();
+        aurastudio_core::zone!("convert A4 sRGB → P3");
+        let _ = convert_buffer(&Profile::srgb(), &p3, Intent::RelativeColorimetric, &mut px);
+    }
+}
+
 /// Every scenario, in report order.
 pub fn all() -> Vec<Box<dyn Scenario>> {
     let n = crate::env_u64("STROKES", 20) as u32;
@@ -288,5 +316,6 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
         Box::new(Transform),
         Box::new(Selections),
         Box::new(Tools),
+        Box::new(Color),
     ]
 }
