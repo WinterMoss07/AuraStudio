@@ -22,6 +22,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-stress"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-core",
+ "aurastudio-diag",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

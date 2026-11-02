@@ -6,6 +6,7 @@ members = [
     "crates/aurastudio-core",
     "crates/aurastudio-arch",
     "crates/aurastudio-diag",
+    "crates/aurastudio-stress",
 ]
 
 [patch.crates-io]

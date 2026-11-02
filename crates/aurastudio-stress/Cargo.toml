@@ -1,0 +1,10 @@
+[package]
+name = "aurastudio-stress"
+version.workspace = true
+edition = "2021"
+publish = false
+description = "Dev only: fuzzers and diagnostic scenarios. Nothing depends on it."
+
+[dependencies]
+aurastudio-core = { path = "../aurastudio-core", features = ["diag"] }
+aurastudio-diag = { path = "../aurastudio-diag" }
