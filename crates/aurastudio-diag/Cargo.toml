@@ -1,0 +1,11 @@
+[package]
+name = "aurastudio-diag"
+version.workspace = true
+edition = "2021"
+description = "Diagnostic builds only: records the marks of core::diag, counts allocations, writes the report."
+
+[dependencies]
+aurastudio-core = { path = "../aurastudio-core", features = ["diag"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }

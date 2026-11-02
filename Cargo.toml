@@ -5,6 +5,7 @@ members = [
     # the dependency table is in crates/aurastudio-arch).
     "crates/aurastudio-core",
     "crates/aurastudio-arch",
+    "crates/aurastudio-diag",
 ]
 
 [patch.crates-io]
