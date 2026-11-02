@@ -6,6 +6,11 @@ description = "Diagnostic builds only: records the marks of core::diag, counts a
 
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core", features = ["diag"] }
+# Zones also shown in the Tracy profiler (protocol 0.14), with `tracy`.
+tracy-client = { version = "0.18", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[features]
+tracy = ["dep:tracy-client"]

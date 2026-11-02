@@ -119,7 +119,18 @@ fn with_data(f: impl FnOnce(&mut ThreadData)) {
     let _ = DATA.try_with(|d| f(&mut d.lock().unwrap_or_else(std::sync::PoisonError::into_inner)));
 }
 
+#[cfg(feature = "tracy")]
+thread_local! {
+    /// The Tracy spans open on this thread (closed in reverse order).
+    static SPANS: std::cell::RefCell<Vec<tracy_client::Span>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn begin(name: &'static str) -> u64 {
+    #[cfg(feature = "tracy")]
+    if let Some(c) = tracy_client::Client::running() {
+        let span = c.span_alloc(Some(name), "", "", 0, 0);
+        let _ = SPANS.try_with(|s| s.borrow_mut().push(span));
+    }
     let zone = zone_index(name);
     let t = now_ns();
     let parent = CURRENT.with(|c| c.replace(zone));
@@ -129,6 +140,8 @@ fn begin(name: &'static str) -> u64 {
 
 fn end(_name: &'static str, _token: u64) {
     let t = now_ns();
+    #[cfg(feature = "tracy")]
+    let _ = SPANS.try_with(|s| s.borrow_mut().pop());
     with_data(|d| {
         let Some(f) = d.stack.pop() else { return };
         let dur = t.saturating_sub(f.start);
@@ -148,6 +161,11 @@ fn end(_name: &'static str, _token: u64) {
 fn count(name: &'static str, n: i64) { with_data(|d| *d.counters.entry(name).or_insert(0) += n); }
 
 fn sample(name: &'static str, v: f64) {
+    #[cfg(feature = "tracy")]
+    if let Some(c) = tracy_client::Client::running() {
+        // (Tracy plots need a static name: the zone registry keeps them.)
+        if let Some(p) = plot_name(name) { c.plot(p, v); }
+    }
     with_data(|d| {
         let s = d.samples.entry(name).or_insert(Series { n: 0, last: v, min: v, max: v, sum: 0.0 });
         s.n += 1;
@@ -156,6 +174,16 @@ fn sample(name: &'static str, v: f64) {
         s.max = s.max.max(v);
         s.sum += v;
     });
+}
+
+#[cfg(feature = "tracy")]
+fn plot_name(name: &'static str) -> Option<tracy_client::PlotName> {
+    static PLOTS: Mutex<Vec<(&'static str, tracy_client::PlotName)>> = Mutex::new(Vec::new());
+    let mut p = PLOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, n)) = p.iter().find(|(k, _)| *k == name) { return Some(*n); }
+    let n = tracy_client::PlotName::new_leak(name.to_owned());
+    p.push((name, n));
+    Some(n)
 }
 
 static HOOKS: Hooks = Hooks { begin, end, count, sample };

@@ -8,6 +8,7 @@ use std::sync::Once;
 
 use aurastudio_diag::report::{Report, Rules};
 
+pub mod fuzz_raster;
 pub mod scenarios;
 
 /// One measured situation (idle, painting, layers…).

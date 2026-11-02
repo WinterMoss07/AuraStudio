@@ -91,6 +91,22 @@ jobs:
             exit 1
           fi
 
+      # The diagnostic scenarios that need no GPU, on Linux: the report is
+      # an artifact (compare it with an earlier one: diagnose -- dir old.json).
+      - name: Diagnostic report (CPU scenarios)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p diag
+          IDLE_MS=200 cargo run --profile ci -p aurastudio-stress --bin diagnose -- diag | tee diag/summary.txt
+
+      - name: Upload the diagnostic report
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostic-report-${{ github.sha }}
+          path: diag/*
+
       # The version in the file name (aurastudio-0.3.2.exe), so two
       # versions can sit side by side and run at the same time.
       # (Only once the app crate exists again on a rework branch.)

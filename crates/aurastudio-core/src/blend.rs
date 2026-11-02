@@ -113,6 +113,24 @@ pub fn blend_over(dst: &mut Premul, cs: [f32; 3], a_s: f32, mode: BlendMode) {
     dst[3] = a_s + a_b * (1.0 - a_s);
 }
 
+/// `color` at coverages `cov` (0..1 each) over a run of premultiplied
+/// pixels: the mode is chosen once for the run (Normal inline, the others
+/// through one call each), not per pixel.
+pub fn blend_run(dst: &mut [Premul], color: [f32; 3], cov: &[f32], mode: BlendMode) {
+    let n = dst.len().min(cov.len());
+    if mode == BlendMode::Normal {
+        for i in 0..n {
+            let a = cov[i];
+            if a <= 0.0 { continue; }
+            let d = &mut dst[i];
+            for c in 0..3 { d[c] = color[c] * a + d[c] * (1.0 - a); }
+            d[3] = a + d[3] * (1.0 - a);
+        }
+    } else {
+        for i in 0..n { blend_over(&mut dst[i], color, cov[i], mode); }
+    }
+}
+
 /// Color part of blend_over for the non-Normal modes (alpha set by caller).
 #[inline(never)]
 fn blend_over_mode(dst: &mut Premul, cs: [f32; 3], a_s: f32, a_b: f32, mode: BlendMode) {

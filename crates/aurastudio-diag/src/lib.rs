@@ -5,9 +5,10 @@
 //! person) with the most expensive behaviors first and the suspects found.
 
 pub mod alloc;
+pub mod json;
 pub mod os;
 pub mod record;
 pub mod report;
 
 pub use record::{install, snapshot, Snapshot};
-pub use report::{Report, Suspect};
+pub use report::{Delta, Report, Suspect};

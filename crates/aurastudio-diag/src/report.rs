@@ -152,6 +152,53 @@ impl Report {
     }
 }
 
+/// A change against a baseline report, above the run-to-run noise.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Delta {
+    pub scenario: String,
+    /// "zone `x` (thread) p50", "private bytes"…
+    pub what:     String,
+    pub before:   f64,
+    pub after:    f64,
+}
+
+impl Delta {
+    /// After / before.
+    pub fn ratio(&self) -> f64 { if self.before > 0.0 { self.after / self.before } else { f64::INFINITY } }
+}
+
+impl Report {
+    /// What changed against `baseline` (a report's JSON): per scenario,
+    /// each zone's p50 and total, and the memory. A change shows when it is
+    /// above both 10 % and twice the noise measured between this report's
+    /// own runs of the scenario.
+    pub fn compare(&self, baseline: &str) -> Option<Vec<Delta>> {
+        let b = crate::json::Json::parse(baseline)?;
+        let mut out = Vec::new();
+        for r in self.runs.iter().filter(|r| r.run == 1) {
+            let Some(old) = b.get("runs")?.as_arr().iter().find(|x| x.get("scenario").and_then(|s| s.as_str()) == Some(r.scenario.as_str()) && x.get("run").and_then(|v| v.as_f64()) == Some(1.0)) else { continue };
+            let twin = self.runs.iter().find(|x| x.scenario == r.scenario && x.run == 2);
+            for z in &r.snap.zones {
+                let Some(oz) = old.get("zones").map(|v| v.as_arr()).unwrap_or(&[]).iter().find(|x| x.get("zone").and_then(|s| s.as_str()) == Some(z.zone.as_str()) && x.get("thread").and_then(|s| s.as_str()) == Some(z.thread.as_str())) else { continue };
+                let noise = twin.and_then(|t| t.snap.zones.iter().find(|x| x.zone == z.zone && x.thread == z.thread)).map_or(0.0, |t| (t.p50 as f64 - z.p50 as f64).abs() / (z.p50.max(1) as f64));
+                let before = oz.get("p50_ns").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let after = z.p50 as f64;
+                let change = (after - before).abs() / before.max(1.0);
+                if change > 0.10_f64.max(2.0 * noise) {
+                    out.push(Delta { scenario: r.scenario.clone(), what: format!("zone `{}` ({}) p50 ns", z.zone, z.thread), before, after });
+                }
+            }
+            let mem = |j: &crate::json::Json, k: &str| j.get("memory").and_then(|m| m.get(k)).and_then(|v| v.as_f64());
+            if let (Some(before), Some(after)) = (mem(old, "private_bytes"), r.snap.memory.private_bytes.map(|v| v as f64)) {
+                if (after - before).abs() > (4u64 << 20) as f64 && (after - before).abs() / before.max(1.0) > 0.05 {
+                    out.push(Delta { scenario: r.scenario.clone(), what: "private bytes".into(), before, after });
+                }
+            }
+        }
+        Some(out)
+    }
+}
+
 fn ms(ns: u64) -> String {
     if ns >= 1_000_000 { format!("{:.2} ms", ns as f64 / 1e6) } else { format!("{:.1} µs", ns as f64 / 1e3) }
 }
@@ -213,6 +260,21 @@ mod tests {
         assert_eq!(rules.iter().filter(|x| **x == "allocates").count(), 2);
         assert!(rules.contains(&"drift"));
         assert_eq!(r.runs[1].run, 2);
+    }
+
+    #[test]
+    fn a_baseline_shows_what_changed_above_the_noise() {
+        let mut old = Report::default();
+        old.add_run("paint", snap(100 << 20, 1_000));
+        let mut new = Report::default();
+        let mut s = snap(100 << 20, 1_000);
+        s.zones[0].p50 = 3;
+        new.add_run("paint", s.clone());
+        new.add_run("paint", s);
+        let d = new.compare(&old.to_json()).expect("baseline");
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].ratio(), 3.0);
+        assert!(new.compare("not json").is_none());
     }
 
     #[test]

@@ -1,69 +1,102 @@
 //! A surface as bytes, in this crate's own versioned format: `file` keeps
-//! the bytes and never reads inside them. Also the reader of the 0.19
-//! layout (64 px RGBA8 tiles) for older documents and undo steps.
+//! the bytes and never reads inside them. Saving again reuses the bytes of
+//! every tile whose content did not change (by fingerprint), and encodes
+//! the others on all cores. Also the reader of the 0.19 layout (64 px
+//! RGBA8 tiles) for older documents and undo steps.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use aurastudio_core::{Pixel, PixelKind, Rgba8};
+use rayon::prelude::*;
 
-use crate::patch::{slot_bytes, unpack_slot};
-use crate::surface::{Slot, Surface};
+use aurastudio_core::{ByteReader, ByteWriter, Pixel, PixelKind, Rgba8};
 
-/// "AURS" + version, pixel kind, tile size, width, height, fill, count,
-/// then per stored tile: column, row, length, data (as in a patch: one
-/// pixel for a uniform tile, LZ4 of the pixels for a pixel tile).
+use crate::slot::{decode, encode, encoded_max, FullTile, Slot};
+use crate::surface::Surface;
+
+/// "AURT" + version, pixel kind, tile size, width, height, fill, count,
+/// then per stored tile: column, row, encoding.
 const MAGIC: [u8; 4] = *b"AURT";
-const VERSION: u8 = 1;
+const VERSION: u16 = 1;
 
-fn u32_at(b: &[u8], i: usize) -> Option<u32> { Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?)) }
+/// The encodings of the last save, by tile fingerprint: the next save
+/// copies them instead of compressing again (an incremental save).
+#[derive(Default)]
+pub struct SaveCache {
+    tiles: HashMap<u64, Arc<Vec<u8>>>,
+}
+
+impl SaveCache {
+    pub fn len(&self) -> usize { self.tiles.len() }
+    pub fn is_empty(&self) -> bool { self.tiles.is_empty() }
+}
+
+/// What a save did (diagnostics).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaveStats {
+    pub tiles:   usize,
+    pub reused:  usize,
+    pub encoded: usize,
+}
 
 impl<P: Pixel> Surface<P> {
-    pub fn save(&self) -> Vec<u8> {
+    pub fn save(&self) -> Vec<u8> { self.save_with(&mut SaveCache::default()).0 }
+
+    /// Save, reusing `cache`'s encodings of unchanged tiles; `cache` then
+    /// holds this save's encodings only.
+    pub fn save_with(&self, cache: &mut SaveCache) -> (Vec<u8>, SaveStats) {
         aurastudio_core::zone!("raster save");
-        let mut out = Vec::new();
-        out.extend_from_slice(&MAGIC);
-        out.push(VERSION);
-        out.push(P::KIND.code());
-        for v in [self.tile, self.width, self.height] { out.extend_from_slice(&v.to_le_bytes()); }
-        self.fill.write_le(&mut out);
-        let stored: Vec<(usize, &Slot<P>)> = self.slots.iter().enumerate().filter(|(_, s)| !matches!(s, Slot::Fill)).collect();
-        out.extend_from_slice(&(stored.len() as u32).to_le_bytes());
-        for (i, s) in stored {
-            let data = slot_bytes(s).unwrap_or_default();
-            out.extend_from_slice(&(i as u32 % self.cols).to_le_bytes());
-            out.extend_from_slice(&(i as u32 / self.cols).to_le_bytes());
-            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            out.extend_from_slice(&data);
+        let stored: Vec<(u32, u32, &Slot<P>)> = self.slots.iter().enumerate().filter(|(_, s)| !s.is_fill()).map(|(i, s)| (i as u32 % self.cols, i as u32 / self.cols, s)).collect();
+        let parts: Vec<(u64, Arc<Vec<u8>>, bool)> = stored.par_iter().map(|&(tx, ty, s)| {
+            let fp = self.info(tx, ty).fp;
+            match cache.tiles.get(&fp) {
+                Some(b) => (fp, Arc::clone(b), true),
+                None => (fp, Arc::new(encode(s)), false),
+            }
+        }).collect();
+        let mut w = ByteWriter::with_header(&MAGIC, VERSION);
+        w.u8(P::KIND.code()).u32(self.tile).u32(self.width).u32(self.height);
+        let mut fill = Vec::new();
+        self.fill.write_le(&mut fill);
+        w.bytes(&fill).varint(stored.len() as u64);
+        let mut stats = SaveStats { tiles: stored.len(), ..Default::default() };
+        let mut next = HashMap::with_capacity(parts.len());
+        for ((tx, ty, _), (fp, bytes, reused)) in stored.iter().zip(parts) {
+            w.varint(*tx as u64).varint(*ty as u64).blob(&bytes);
+            if reused { stats.reused += 1; } else { stats.encoded += 1; }
+            next.insert(fp, bytes);
         }
-        out
+        cache.tiles = next;
+        aurastudio_core::count!("tiles saved again from cache", stats.reused);
+        (w.finish(), stats)
     }
 
     /// Read what `save` wrote; `None` if damaged, of another pixel kind,
-    /// or larger than `max_side` on a side.
+    /// or larger than `max_side` on a side. Tiles are opened on all cores.
     pub fn load(b: &[u8], max_side: u32) -> Option<Self> {
         aurastudio_core::zone!("raster load");
-        let rest = b.strip_prefix(&MAGIC[..])?;
-        if *rest.first()? != VERSION || PixelKind::from_code(*rest.get(1)?)? != P::KIND { return None; }
-        let rest = &rest[2..];
-        let (tile, width, height) = (u32_at(rest, 0)?, u32_at(rest, 4)?, u32_at(rest, 8)?);
+        let mut r = ByteReader::new(b);
+        if r.header(&MAGIC)? != VERSION || PixelKind::from_code(r.u8()?)? != P::KIND { return None; }
+        let (tile, width, height) = (r.u32()?, r.u32()?, r.u32()?);
         if !tile.is_power_of_two() || !(crate::MIN_TILE..=crate::MAX_TILE).contains(&tile) || width > max_side || height > max_side { return None; }
-        let fill = P::read_le(rest.get(12..)?)?;
-        let mut at = 12 + P::BYTES;
-        let count = u32_at(rest, at)?;
-        at += 4;
+        let fill = P::read_le(r.bytes(P::BYTES)?)?;
         let mut s = Surface::new(width, height, tile, fill);
-        if count > s.cols * s.rows { return None; }
-        let n = (tile * tile) as usize;
+        let count = r.varint()? as usize;
+        if count > (s.cols * s.rows) as usize { return None; }
+        let (n, max) = (s.npx(), encoded_max::<P>(s.npx()));
+        let mut raw = Vec::with_capacity(count);
         for _ in 0..count {
-            let (tx, ty, len) = (u32_at(rest, at)?, u32_at(rest, at + 4)?, u32_at(rest, at + 8)? as usize);
-            at += 12;
-            if tx >= s.cols || ty >= s.rows || len > n * P::BYTES + n * P::BYTES / 255 + 16 { return None; }
-            let slot = unpack_slot::<P>(rest.get(at..at.checked_add(len)?)?, n)?;
-            at += len;
-            let slot = match slot { Slot::Uniform(c) if c == fill => Slot::Fill, other => other };
-            s.set_slot(tx, ty, slot);
+            let (tx, ty) = (u32::try_from(r.varint()?).ok()?, u32::try_from(r.varint()?).ok()?);
+            if tx >= s.cols || ty >= s.rows { return None; }
+            raw.push((tx, ty, r.blob(max)?));
         }
-        (at == rest.len()).then_some(s)
+        if !r.at_end() { return None; }
+        // Opened and settled on all cores, then put in place.
+        let shape = &s;
+        let opened: Option<Vec<(u32, u32, Slot<P>)>> = raw.into_par_iter().map(|(tx, ty, d)| Some((tx, ty, shape.settled_slot(decode::<P>(d, n)?, tx, ty)))).collect();
+        for (tx, ty, slot) in opened? { s.set_slot(tx, ty, slot); }
+        s.drop_table_if_empty();
+        Some(s)
     }
 
     /// Most bytes `save` can give for this shape (to refuse a damaged file
@@ -71,7 +104,7 @@ impl<P: Pixel> Surface<P> {
     pub fn saved_max(width: u32, height: u32, tile: u32) -> u64 {
         let t = tile.clamp(crate::MIN_TILE, crate::MAX_TILE) as u64;
         let tiles = (width as u64).div_ceil(t) * (height as u64).div_ceil(t);
-        tiles * (t * t * P::BYTES as u64 * 257 / 255 + 32) + 64
+        tiles * (encoded_max::<P>((t * t) as usize) as u64 + 24) + 64
     }
 }
 
@@ -82,6 +115,8 @@ pub mod legacy {
 
     pub const TILE: u32 = 64;
     const BYTES: usize = (TILE * TILE * 4) as usize;
+
+    fn u32_at(b: &[u8], i: usize) -> Option<u32> { Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?)) }
 
     /// A 0.19 layer of `width` × `height` with fill `fill`, re-cut into
     /// tiles of `tile`. `None` if damaged.
@@ -96,12 +131,11 @@ pub mod legacy {
             if tx >= old.cols || ty >= old.rows { return None; }
             let data = blob.get(at..at.checked_add(n)?)?;
             at += n;
-            let size = u32_at(data, 0)? as usize;
-            if size != BYTES { return None; }
+            if u32_at(data, 0)? as usize != BYTES { return None; }
             let mut raw = vec![0u8; BYTES];
             if lz4_flex::block::decompress_into(data.get(4..)?, &mut raw).ok()? != BYTES { return None; }
             let px: Vec<Rgba8> = raw.as_chunks::<4>().0.to_vec();
-            old.set_slot(tx, ty, Slot::Full(Arc::new(px)));
+            old.set_slot(tx, ty, Slot::Full(Arc::new(FullTile { px, info: None })));
         }
         if at != blob.len() { return None; }
         old.compact(old.rect());
