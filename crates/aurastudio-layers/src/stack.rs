@@ -267,6 +267,10 @@ impl LayerStack {
     /// The deleted nodes not taken yet (the history keeps them).
     pub fn take_removed(&mut self) -> Vec<Node> { std::mem::take(&mut self.removed) }
 
+    /// A node taken out by another crate's edit (a sheet deleted), kept for
+    /// the history like the deleted ones.
+    pub fn keep_removed(&mut self, n: Node) { self.removed.push(n); }
+
     // --- Onion ghosts -------------------------------------------------
 
     /// The ghosts now (folder → ghosts, far to near).

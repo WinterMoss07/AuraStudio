@@ -12,6 +12,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aurastudio-animation"
+version = "0.19.6"
+dependencies = [
+ "aurastudio-compose",
+ "aurastudio-core",
+ "aurastudio-layers",
+]
+
+[[package]]
 name = "aurastudio-arch"
 version = "0.19.6"
 dependencies = [
