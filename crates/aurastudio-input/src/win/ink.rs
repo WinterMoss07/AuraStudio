@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use crossbeam_queue::SegQueue;
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::UI::Input::Pointer::{GetPointerDeviceRects, GetPointerPenInfo, GetPointerPenInfoHistory, GetPointerType, POINTER_PEN_INFO};
+use windows::Win32::UI::Input::Pointer::{GetPointerDeviceRects, GetPointerPenInfo, GetPointerPenInfoHistory, GetPointerType, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_PEN_INFO};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, PEN_MASK_ROTATION, PEN_MASK_TILT_X, PEN_MASK_TILT_Y,
-    POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_INPUT_TYPE, PT_PEN, WM_POINTERDOWN, WM_POINTERENTER, WM_POINTERLEAVE,
+    POINTER_INPUT_TYPE, PT_PEN, WM_POINTERDOWN, WM_POINTERENTER, WM_POINTERLEAVE,
     WM_POINTERUP, WM_POINTERUPDATE,
 };
 
