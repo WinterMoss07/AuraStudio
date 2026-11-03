@@ -28,6 +28,10 @@ pub struct Uploads {
     queued: u64,
     /// Waits made (for the tests and the report).
     pub flushes: u64,
+    /// Writes kept in one submission (`hold` .. `release`): each submission
+    /// closes the staging buffers it used, so many small writes submitted
+    /// one by one took a buffer each.
+    held:   bool,
 }
 
 impl Uploads {
@@ -71,6 +75,17 @@ impl Uploads {
             self.queued += bytes;
             y += rows;
         }
+        if !self.held { self.submit(queue); }
+    }
+
+    /// Keep the next writes in one submission, until `release`.
+    pub fn hold(&mut self) { self.held = true; }
+
+    pub fn is_held(&self) -> bool { self.held }
+
+    /// Submit the writes held.
+    pub fn release(&mut self, queue: &Queue) {
+        self.held = false;
         self.submit(queue);
     }
 

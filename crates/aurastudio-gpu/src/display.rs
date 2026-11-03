@@ -743,4 +743,35 @@ mod tests {
             }
         }
     }
+
+    /// A photo (every page full) opened in bands, as the app sends it: the
+    /// atlas holds its pages and little more (it once doubled: 32 MB for
+    /// 25 MB of pages).
+    #[test]
+    fn a_photo_takes_about_its_pages() {
+        let Some(g) = gpu() else { return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (2000u32, 3000u32);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        let mut seed = 1u32;
+        for y0 in (0..h).step_by(64) {
+            let r = aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 64.min(h - y0));
+            let px: Vec<aurastudio_core::Rgba8> = (0..r.area()).map(|_| { seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); let b = seed.to_le_bytes(); [b[1], b[2], b[3], 255] }).collect();
+            canvas.upload(device, queue, &mut up, r, &px);
+        }
+        let mut enc = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        canvas.prepare(device, queue, &mut enc, true);
+        queue.submit([enc.finish()]);
+        let c = canvas.count();
+        assert_eq!(c.full, 96);
+        // The staging ring stayed small (each page sent alone took a
+        // buffer of its own: 10 MB).
+        if let Some(r) = device.generate_allocator_report() {
+            let n = r.allocations.iter().filter(|a| a.name.contains("StagingBelt")).count() as u64;
+            assert!(n <= crate::upload::LIMIT / crate::upload::CHUNK + 1, "{n} staging buffers");
+        }
+        let pages = 96 * 256 * 256 * 4;
+        assert!(c.bytes <= pages + pages / 6, "{} MB for {} MB of pages", c.bytes >> 20, pages >> 20);
+    }
 }

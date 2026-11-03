@@ -113,10 +113,15 @@ struct Atlas {
 }
 
 impl Atlas {
+    /// Pages across and down for room for `cap` (as square as can be:
+    /// the room is cols × rows, all of it used).
     fn layout(cap: u32) -> (u32, u32) {
-        let cols = ((cap as f64).sqrt().ceil() as u32).next_power_of_two().max(1);
-        (cols, cap.div_ceil(cols).max(1))
+        let cols = ((cap.max(1) as f64).sqrt().ceil() as u32).max(1);
+        (cols, cap.max(1).div_ceil(cols))
     }
+
+    /// Room kept free past `n` pages in use (no copy for each new page).
+    fn slack(n: u32) -> u32 { (n / 8).max(2) }
 
     fn make(device: &Device, format: TextureFormat, cap: u32, levels: u32) -> (Texture, TextureView, u32) {
         let (cols, rows) = Self::layout(cap);
@@ -140,6 +145,17 @@ impl Atlas {
         Self { format, texture, view, cols, cap: 1, used: vec![false], mip, levels }
     }
 
+    /// At least `n` free slots: the atlas grown (by a quarter at least) if
+    /// not.
+    fn reserve(&mut self, device: &Device, queue: &Queue, n: u32) {
+        let free = self.cap - self.in_use();
+        if free >= n { return; }
+        let want = (self.cap + n - free).max(self.cap + self.cap / 4);
+        let (cols, rows) = Self::layout(want);
+        let keep: Vec<u32> = (0..self.cap).collect();
+        self.relayout(device, queue, cols * rows, &keep);
+    }
+
     fn origin(&self, slot: u32) -> (u32, u32) { ((slot % self.cols) * PAGE, (slot / self.cols) * PAGE) }
 
     fn in_use(&self) -> u32 { self.used.iter().filter(|u| **u).count() as u32 }
@@ -150,17 +166,12 @@ impl Atlas {
         (0..self.levels).map(|l| (w >> l).max(1) * (h >> l).max(1) * bpp).sum()
     }
 
-    /// A free slot, the atlas grown (twice the room) if there is none.
+    /// A free slot, the atlas grown if there is none.
     fn alloc(&mut self, device: &Device, queue: &Queue) -> u32 {
-        if let Some(i) = self.used.iter().position(|u| !*u) {
-            self.used[i] = true;
-            return i as u32;
-        }
-        let old: Vec<u32> = (0..self.cap).collect();
-        self.relayout(device, queue, self.cap * 2, &old);
-        let i = self.cap / 2;
-        self.used[i as usize] = true;
-        i
+        self.reserve(device, queue, 1);
+        let i = self.used.iter().position(|u| !*u).unwrap_or(0);
+        if let Some(u) = self.used.get_mut(i) { *u = true; }
+        i as u32
     }
 
     fn free(&mut self, slot: u32) { if let Some(u) = self.used.get_mut(slot as usize) { *u = false; } }
@@ -197,17 +208,18 @@ impl Atlas {
         self.mip.attach_clean(device, &self.texture);
     }
 
-    /// Room for a quarter used at most: halved, the pages packed at the
-    /// start. Returns old slot -> new slot.
+    /// Much more room than in use: cut to fit (with some slack), the
+    /// pages packed at the start. Returns old slot -> new slot.
     fn shrink(&mut self, device: &Device, queue: &Queue) -> Option<HashMap<u32, u32>> {
         let n = self.in_use();
-        // (Small ones stay, unless nothing is left in them.)
-        if (self.cap <= 4 && n > 0) || self.cap <= 1 || n * 4 > self.cap { return None; }
-        let cap = if n == 0 { 1 } else { (n * 2).next_power_of_two().max(4) };
-        if cap >= self.cap { return None; }
+        // (Nothing left: back to one page of room.)
+        let room = if n == 0 { 1 } else { n + Self::slack(n) };
+        if n > 0 && self.cap <= n + 2 * Self::slack(n) { return None; }
+        let (cols, rows) = Self::layout(room);
+        if cols * rows >= self.cap { return None; }
         let keep: Vec<u32> = (0..self.cap).filter(|&s| self.used[s as usize]).collect();
         let map = keep.iter().enumerate().map(|(new, &old)| (old, new as u32)).collect();
-        self.relayout(device, queue, cap, &keep);
+        self.relayout(device, queue, cols * rows, &keep);
         Some(map)
     }
 
@@ -369,6 +381,12 @@ impl Canvas {
     /// Page `i` is now `px` (all of it, padded): sorted, its slots and the
     /// GPU's pixels changed as needed.
     fn set_page(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, i: usize, px: &[Rgba8], sorted: Sorted) {
+        // An atlas about to grow copies its texture: the writes held
+        // must reach it first.
+        let full = |a: &Atlas| a.in_use() == a.cap;
+        if (matches!(sorted, Sorted::Full) && full(&self.rgba)) || (matches!(sorted, Sorted::Mono { .. }) && full(&self.mono)) {
+            if up.is_held() { up.release(queue); up.hold(); }
+        }
         let old = std::mem::replace(&mut self.pages[i], Page::Uniform([0; 4]));
         let (mono_slot, full_slot) = match old { Page::Mono { slot, .. } => (Some(slot), None), Page::Full { slot } => (None, Some(slot)), Page::Uniform(_) => (None, None) };
         let all = Rect::new(0, 0, PAGE as i32, PAGE as i32);
@@ -396,6 +414,22 @@ impl Canvas {
         self.set_entry(i);
     }
 
+    /// Page `i`, which `rect` covers whole inside the canvas: its pixels
+    /// from `src` (the rows of `rect`), padded.
+    fn whole_page(&self, i: usize, rect: Rect, src: &[Rgba8]) -> Vec<Rgba8> {
+        let pr = self.page_rect(i);
+        let part = pr.intersect(&self.frame());
+        let rw = rect.w() as usize;
+        let mut page = vec![[0; 4]; N];
+        for y in part.y0..part.y1 {
+            let o = (y - rect.y0) as usize * rw + (part.x0 - rect.x0) as usize;
+            let d = (y - pr.y0) as usize * PAGE as usize;
+            page[d..d + part.w() as usize].copy_from_slice(&src[o..o + part.w() as usize]);
+        }
+        self.pad(i, &mut page);
+        page
+    }
+
     /// Copy merged pixels (the rows of `rect`, straight RGBA, inside the
     /// canvas) to the pages.
     pub(crate) fn upload(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, rect: Rect, src: &[Rgba8]) {
@@ -404,9 +438,34 @@ impl Canvas {
         if rect.is_empty() { return; }
         let rw = rect.w() as usize;
         let p = PAGE as i32;
-        for py in rect.y0.div_euclid(p)..(rect.y1 - 1).div_euclid(p) + 1 {
-            for px in rect.x0.div_euclid(p)..(rect.x1 - 1).div_euclid(p) + 1 {
-                let i = (py as u32 * self.cols + px as u32) as usize;
+        // The writes in one submission (released at the end).
+        up.hold();
+        let ids: Vec<usize> = (rect.y0.div_euclid(p)..(rect.y1 - 1).div_euclid(p) + 1)
+            .flat_map(|py| (rect.x0.div_euclid(p)..(rect.x1 - 1).div_euclid(p) + 1).map(move |px| (py, px)))
+            .map(|(py, px)| (py as u32 * self.cols + px as u32) as usize).collect();
+        // Pages covered whole are sorted first: the atlases then grow once
+        // to what they need (a picture opened: one copy, not one per page).
+        let mut sorted: HashMap<usize, Sorted> = HashMap::new();
+        if ids.len() > 1 {
+            let (mut full, mut mono) = (0u32, 0u32);
+            for &i in &ids {
+                let inside = self.page_rect(i).intersect(&self.frame());
+                if inside.intersect(&rect) != inside { continue; }
+                let page = self.whole_page(i, rect, src);
+                let k = sort(&page);
+                match (&k, &self.pages[i]) {
+                    (Sorted::Full, Page::Full { .. }) | (Sorted::Mono { .. }, Page::Mono { .. }) => {}
+                    (Sorted::Full, _) => full += 1,
+                    (Sorted::Mono { .. }, _) => mono += 1,
+                    _ => {}
+                }
+                sorted.insert(i, k);
+            }
+            self.rgba.reserve(device, queue, full);
+            self.mono.reserve(device, queue, mono);
+        }
+        for i in ids {
+            {
                 let pr = self.page_rect(i);
                 let inside = pr.intersect(&self.frame());
                 let part = pr.intersect(&rect);
@@ -422,6 +481,14 @@ impl Canvas {
                     src[(cy - rect.y0) as usize * rw + (cx - rect.x0) as usize]
                 };
                 let whole = part == inside;
+                if let Some(k) = sorted.remove(&i) {
+                    // (Sorted above; a full page's pixels taken again.)
+                    if let Page::Uniform(c) = self.pages[i] { if matches!(k, Sorted::Uniform(u) if u == c) { continue; } }
+                    let page = if matches!(k, Sorted::Full) { self.whole_page(i, rect, src) } else { Vec::new() };
+                    self.building.remove(&i);
+                    self.set_page(device, queue, up, i, &page, k);
+                    continue;
+                }
                 // A two-color page painted with its two colors (ink on
                 // paper): its bytes there, nothing sorted again.
                 if !whole {
@@ -484,6 +551,7 @@ impl Canvas {
                 self.building.remove(&i);
             }
         }
+        up.release(queue);
     }
 
     /// The pages `rect` touches made full (a transform's preview draws into
