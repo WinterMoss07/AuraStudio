@@ -276,3 +276,22 @@ fn split_preview_and_gpu_eligibility() {
     if let Some(Node::Layer(x)) = l.node_mut(low) { x.blend = BlendMode::Multiply; }
     assert!(!gpu_mergeable(&l));
 }
+
+/// Under a stroke on plain paper the cells are one color each: they hold
+/// next to nothing; where the layers under have pixels, 8 bytes a pixel.
+#[test]
+fn the_stroke_cache_keeps_plain_cells_small() {
+    let (w, h) = (1024, 1024);
+    let mut s = LayerStack::new(w, h, 64, Start::Paper);
+    let under = s.add_layer("under");
+    assert!(s.set_layer_rect(under, r(0, 0, 64, 64), &(0..64 * 64).map(|i| [(i % 251) as u8, 9, 9, 255]).collect::<Vec<_>>()));
+    let painted = s.add_layer("ink");
+    let mut cache = StrokeCache::default();
+    let all = r(0, 0, w as i32, h as i32);
+    let cached = cache.merge(&s, painted, all);
+    assert_eq!(cached, merge(&s, all, Opts { ghosts: true, ..Default::default() }));
+    assert_eq!(cache.len(), 256);
+    assert!(cache.bytes() <= 64 * 64 * 8 + 256 * 8, "{} bytes", cache.bytes());
+    cache.clear();
+    assert_eq!((cache.len(), cache.bytes()), (0, 0));
+}

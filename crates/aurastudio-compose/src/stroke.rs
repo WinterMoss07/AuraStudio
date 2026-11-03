@@ -48,11 +48,48 @@ fn normal(n: &Node) -> bool {
     }
 }
 
+/// Bytes the cells may hold; past it, those used longest ago go.
+const BUDGET: usize = 96 << 20;
+
+/// A premultiplied pixel at 16 bits a channel (0..=65535 for 0..1): the
+/// merge's precision kept to well under a level of 8 bits, at half the
+/// size of f32.
+type Px16 = [u16; 4];
+
+#[inline]
+fn pack(p: Premul) -> Px16 { p.map(|v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16) }
+
+#[inline]
+fn unpack(p: Px16) -> Premul { p.map(|v| v as f32 * (1.0 / 65535.0)) }
+
+/// A cell's pixels: one color (paper, empty) or all of them.
+#[derive(Clone)]
+enum Pixels {
+    Uniform(Px16),
+    Each(Arc<Vec<Px16>>),
+}
+
+impl Pixels {
+    fn of(px: &[Premul]) -> Self {
+        let first = px.first().copied().map(pack).unwrap_or([0; 4]);
+        if px.iter().all(|p| pack(*p) == first) { return Pixels::Uniform(first); }
+        Pixels::Each(Arc::new(px.iter().map(|p| pack(*p)).collect()))
+    }
+    fn bytes(&self) -> usize { match self { Pixels::Uniform(_) => 8, Pixels::Each(v) => v.len() * 8 } }
+    fn get(&self, i: usize) -> Px16 { match self { Pixels::Uniform(c) => *c, Pixels::Each(v) => v[i] } }
+}
+
 struct Cell {
     key:   u64,
-    below: Arc<Vec<Premul>>,
+    below: Pixels,
     /// `None`: nothing covers the cell from above.
-    above: Option<Arc<Vec<Premul>>>,
+    above: Option<Pixels>,
+    /// The merge that last used it (the budget drops the oldest).
+    used:  u64,
+}
+
+impl Cell {
+    fn bytes(&self) -> usize { self.below.bytes() + self.above.as_ref().map_or(0, Pixels::bytes) }
 }
 
 /// The under / over merges of the layer being painted, by cell.
@@ -60,6 +97,8 @@ struct Cell {
 pub struct StrokeCache {
     layer: u64,
     cells: HashMap<(i32, i32), Cell>,
+    bytes: usize,
+    tick:  u64,
 }
 
 fn draw_items(items: &[Item], b: &mut Block, ctx: Ctx) {
@@ -98,7 +137,8 @@ impl StrokeCache {
         let opts = crate::Opts { ghosts: true, ..Default::default() };
         if rect.is_empty() { return Vec::new(); }
         aurastudio_core::zone!("merge stroke");
-        if layer != self.layer { self.cells.clear(); self.layer = layer; }
+        if layer != self.layer { self.clear(); self.layer = layer; }
+        self.tick += 1;
         let ghosts = stack.ghosts();
         let mut items = Vec::new();
         flatten(&stack.root, 1.0, ghosts, &mut items);
@@ -143,21 +183,29 @@ impl StrokeCache {
                 draw_items(above_items, &mut a, ctx);
                 a.px
             }).filter(|px| px.iter().any(|p| p[3] > 0.0));
-            ((x, y), Cell { key: k, below: Arc::new(below.px), above: above.map(Arc::new) })
+            ((x, y), Cell { key: k, below: Pixels::of(&below.px), above: above.map(|a| Pixels::of(&a)), used: 0 })
         }).collect();
-        for (c, e) in built { self.cells.insert(c, e); }
+        for (c, e) in built {
+            self.bytes += e.bytes();
+            if let Some(old) = self.cells.insert(c, e) { self.bytes -= old.bytes(); }
+        }
+        for c in &cells { if let Some(e) = self.cells.get_mut(c) { e.used = self.tick; } }
+        self.trim(BUDGET);
         // Below, then the painted layer, then what is over it.
         let cells_ref = &self.cells;
         let rows: Vec<(Rect, Vec<Rgba8>)> = cells.par_iter().filter_map(|&(x, y)| {
             let cr = Rect::new(x, y, x + CELL, y + CELL);
             let part = cr.intersect(&rect);
             let e = cells_ref.get(&(x, y))?;
-            let mut b = Block { rect: cr, w: CELL as usize, px: (*e.below).clone() };
+            let n = (CELL * CELL) as usize;
+            let mut b = Block { rect: cr, w: CELL as usize, px: (0..n).map(|i| unpack(e.below.get(i))).collect() };
             let mut stop = false;
             draw_scaled(painted, &mut b, scale, ctx, &mut stop);
             if let Some(a) = &e.above {
-                for (d, p) in b.px.iter_mut().zip(a.iter()) {
-                    if p[3] <= 0.0 { continue; }
+                for (i, d) in b.px.iter_mut().enumerate() {
+                    let q = a.get(i);
+                    if q[3] == 0 { continue; }
+                    let p = unpack(q);
                     let k = 1.0 - p[3].min(1.0);
                     for c in 0..4 { d[c] = p[c] + d[c] * k; }
                 }
@@ -181,8 +229,24 @@ impl StrokeCache {
         out
     }
 
-    /// Cells held.
+    /// Drop the cells used longest ago until they hold at most `max`
+    /// bytes (those of the last merge stay).
+    pub fn trim(&mut self, max: usize) {
+        if self.bytes <= max { return; }
+        let mut by_age: Vec<((i32, i32), u64)> = self.cells.iter().filter(|(_, e)| e.used < self.tick).map(|(c, e)| (*c, e.used)).collect();
+        by_age.sort_unstable_by_key(|x| x.1);
+        for (c, _) in by_age {
+            if self.bytes <= max { break; }
+            if let Some(e) = self.cells.remove(&c) { self.bytes -= e.bytes(); }
+        }
+    }
+
+    /// Cells held, and their bytes (the memory report).
     pub fn len(&self) -> usize { self.cells.len() }
+    pub fn bytes(&self) -> usize { self.bytes }
     pub fn is_empty(&self) -> bool { self.cells.is_empty() }
-    pub fn clear(&mut self) { self.cells.clear(); }
+    pub fn clear(&mut self) {
+        self.cells = HashMap::new();
+        self.bytes = 0;
+    }
 }

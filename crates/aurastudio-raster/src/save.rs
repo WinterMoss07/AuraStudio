@@ -29,6 +29,8 @@ pub struct SaveCache {
 impl SaveCache {
     pub fn len(&self) -> usize { self.tiles.len() }
     pub fn is_empty(&self) -> bool { self.tiles.is_empty() }
+    /// Bytes of the encodings kept.
+    pub fn bytes(&self) -> usize { self.tiles.values().map(|t| t.capacity()).sum() }
 }
 
 /// What a save did (diagnostics).

@@ -221,6 +221,19 @@ pub fn gpu_sections(r: &GpuReport) -> Vec<MemorySection> {
     out
 }
 
+/// The paint thread's caches (as it last told) and the pixel pool.
+fn paint_thread_section() -> MemorySection {
+    use std::sync::atomic::Ordering::Relaxed;
+    let h = &crate::paint_thread::HELD;
+    let mut s = MemorySection::new("Paint thread: caches", true);
+    s.add("stroke cache (the layers under / over the stroke, 16-bit, while painting)", h.stroke_cache.load(Relaxed));
+    s.add("stroke coverage (the stroke under way)", h.stroke.load(Relaxed));
+    s.add("folder cache (merged folders, 64 MB at most)", h.folder_cache.load(Relaxed));
+    s.add("last save's encodings (incremental saves)", h.saves.load(Relaxed));
+    s.add("pixel pool (tile buffers kept for reuse)", aurastudio_raster::pool::held_bytes() as u64);
+    s
+}
+
 /// A report from its parts.
 pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuReport>) -> MemoryReport {
     let (working_set, private) = process_memory();
@@ -229,6 +242,7 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuReport>
     let mut buffers = MemorySection::new("Buffers", true);
     buffers.add("merged pieces waiting for the GPU", patches_bytes);
     sections.push(buffers);
+    sections.push(paint_thread_section());
     if let Some(g) = gpu { sections.extend(gpu_sections(g)); }
     sections.push(boot_section());
     sections.push(events_section());

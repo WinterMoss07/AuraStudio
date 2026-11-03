@@ -67,6 +67,10 @@ pub struct CoverageMap {
 }
 
 impl CoverageMap {
+    fn bytes(&self) -> usize {
+        self.tiles.values().map(|t| (t.cov.capacity() + t.depth.capacity() + t.col.capacity()) * 4).sum()
+    }
+
     pub fn new(color_channels: usize) -> Self {
         Self { nc: color_channels, ..Default::default() }
     }
@@ -246,6 +250,9 @@ pub struct StrokeRenderer {
 }
 
 impl StrokeRenderer {
+    /// Bytes of its coverage (and dual brush) tiles.
+    pub fn bytes(&self) -> usize { self.cov.bytes() + self.dual.as_ref().map_or(0, CoverageMap::bytes) }
+
     /// `zoom`: the view's, for smoothing.
     pub fn new(brush: &BrushSettings, zoom: f32) -> Self {
         let per_dab_color = brush.color_dynamics.enabled && !brush.erase;

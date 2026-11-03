@@ -71,6 +71,8 @@ pub enum Cmd {
     /// file is written on its own thread; painting goes on meanwhile.
     /// `origin`: autosaves only, the file the work belongs to.
     Save { doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool },
+    /// The document is closed: what was kept for it goes.
+    Forget(DocId),
 }
 
 /// What the worker reports to the main thread (through `notify`).
@@ -147,6 +149,16 @@ struct Painting {
     pace:    StrokePace,
 }
 
+/// What the paint thread holds, for the memory report (set as it works).
+pub struct Held {
+    pub stroke_cache: AtomicU64,
+    pub folder_cache: AtomicU64,
+    pub stroke:       AtomicU64,
+    pub saves:        AtomicU64,
+}
+
+pub static HELD: Held = Held { stroke_cache: AtomicU64::new(0), folder_cache: AtomicU64::new(0), stroke: AtomicU64::new(0), saves: AtomicU64::new(0) };
+
 struct Worker {
     /// Document being worked on.
     doc:        Option<SharedDoc>,
@@ -209,6 +221,16 @@ fn superseded(cmd: &Cmd, queue: &VecDeque<Cmd>) -> bool {
 }
 
 impl Worker {
+    /// Tell the memory report what the caches hold now.
+    fn publish_held(&self) {
+        let o = Ordering::Relaxed;
+        HELD.stroke_cache.store(self.stroke_cache.bytes() as u64, o);
+        HELD.folder_cache.store(self.folder_cache.bytes() as u64, o);
+        HELD.stroke.store(self.stroke.as_ref().map_or(0, |s| s.engine.stroke_bytes()) as u64, o);
+        let saves: usize = self.saves.values().map(|c| c.try_lock().map_or(0, |c| c.bytes())).sum();
+        if saves > 0 || self.saves.is_empty() { HELD.saves.store(saves as u64, o); }
+    }
+
     fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify, stroke: None,
@@ -280,6 +302,14 @@ impl Worker {
                         }
                     }
                     Cmd::Save { doc, path, origin, auto } => self.save(doc, path, origin, auto),
+                    Cmd::Forget(id) => {
+                        self.saves.remove(&id);
+                        if self.doc.as_ref().is_some_and(|d| d.lock().map_or(true, |d| d.id() == id)) {
+                            self.doc = None;
+                            self.stroke_cache.clear();
+                        }
+                        self.publish_held();
+                    }
                 }
                 if flush || t0.elapsed() >= canvas_frame() { break; }
             }
@@ -345,6 +375,7 @@ impl Worker {
         self.report(frame, &done, events);
         if let Some(n) = seq { events.push(Event::TransformShown(n)); }
         self.doc = Some(doc);
+        self.publish_held();
     }
 
     fn sample(&mut self, p: PenSample, events: &mut Vec<Event>) {
@@ -384,8 +415,11 @@ impl Worker {
             d.paint(|s| st.engine.end_stroke(s));
             (d.end_stroke(), d.stack().frame())
         };
-        if done.tree { self.stroke_cache = StrokeCache::default(); }
+        // Each stroke builds its own (a stroke begins with a new one): the
+        // memory goes back now, not at the next stroke.
+        self.stroke_cache.clear();
         self.report(frame, &done, events);
+        self.publish_held();
     }
 
     /// Merge the whole frame again by bands, the document locked for one at
@@ -439,6 +473,7 @@ impl Worker {
             (r, px)
         }).collect();
         if let Some(st) = &mut self.stroke { st.pace.slowest_merge = st.pace.slowest_merge.max(t.elapsed()); }
+        self.publish_held();
         let (w, h) = (s.width, s.height);
         drop(d);
         let mut p = self.projection.lock().unwrap_or_else(|e| e.into_inner());

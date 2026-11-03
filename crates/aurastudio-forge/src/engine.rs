@@ -76,6 +76,9 @@ impl Forge {
 
     pub fn brush(&self) -> &BrushSettings { &self.brush }
 
+    /// Bytes the stroke under way holds (its coverage tiles).
+    pub fn stroke_bytes(&self) -> usize { self.stroke.as_ref().map_or(0, StrokeRenderer::bytes) }
+
 
     /// The view's zoom for the next stroke.
     pub fn set_zoom(&mut self, zoom: f32) { if zoom.is_finite() && zoom > 0.0 { self.zoom = zoom; } }

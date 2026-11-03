@@ -20,6 +20,11 @@ use crate::snapshot::Snapshot;
 #[derive(Default)]
 pub struct SaveCaches(HashMap<u64, SaveCache>);
 
+impl SaveCaches {
+    /// Bytes of the encodings kept for the next save.
+    pub fn bytes(&self) -> usize { self.0.values().map(SaveCache::bytes).sum() }
+}
+
 fn tree(nodes: &[Node]) -> Vec<NodeJson> {
     nodes.iter().map(|n| match n {
         Node::Layer(l) => NodeJson::Layer {

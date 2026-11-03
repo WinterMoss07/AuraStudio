@@ -209,6 +209,7 @@ impl App {
         self.apply_onion_look();
         self.apply_color_management();
         self.workspace.close(old);
+        self.paint.send(Cmd::Forget(old));
         *self.projection.lock().unwrap() = Projection::new(w, h);
         if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
         self.canvas_edit = (w, h);
