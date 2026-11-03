@@ -229,6 +229,30 @@ fn spans_at_once_paint_the_same_as_one_by_one() {
 }
 
 #[test]
+fn spans_of_several_rects_paint_the_same_as_one_by_one() {
+    let mut a = Image::new(150, 90, 16, CLEAR);
+    a.fill_rect(Rect::new(0, 0, 150, 40), [10, 200, 30, 255]);
+    let mut b = a.clone();
+    // Disjoint, not tile-aligned, two in one tile.
+    let rects = [Rect::new(5, 7, 40, 30), Rect::new(40, 7, 44, 12), Rect::new(60, 50, 140, 80), Rect::new(3, 60, 9, 61)];
+    {
+        let mut st = a.begin_stroke(None);
+        for r in rects { dab(&mut st, r, [1, 2, 250], 150); }
+        st.end();
+    }
+    {
+        let mut st = b.begin_stroke(None);
+        let mut buf = Vec::new();
+        assert!(st.spans_in(&rects, &mut buf));
+        let area: usize = buf.iter().map(|s| s.len()).sum();
+        assert_eq!(area as u64, rects.iter().map(Rect::area).sum::<u64>());
+        for s in buf { paint(s, [1, 2, 250], 150); }
+        st.end();
+    }
+    assert!(a == b);
+}
+
+#[test]
 fn the_limit_clips_the_stroke_at_the_source() {
     // Limit: left half fully selected, right half nothing, a soft band.
     let mut limit = Mask::new(120, 60, 32, 0);

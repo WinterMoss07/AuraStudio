@@ -361,8 +361,15 @@ impl App {
             (false, Some(t)) if run_ui => {
                 self.ui_blocked_since = None;
                 if t.elapsed() > Duration::from_millis(100) {
-                    log::warn!("UI waited {:.0} ms for the document (paint thread busy; brush {}, {:.0} px)", t.elapsed().as_secs_f64() * 1000.0,
-                        self.library.presets.get(self.preset).map_or("?", |p| p.name.as_str()), self.brush.size);
+                    // What the paint thread was most likely busy with.
+                    let work = if self.is_drawing {
+                        format!("stroke, brush {} {:.0} px", self.library.presets.get(self.preset).map_or("?", |p| p.name.as_str()), self.brush.size)
+                    } else if self.xf.is_some() || self.xf_pending {
+                        "transform preview".to_owned()
+                    } else {
+                        "an edit".to_owned()
+                    };
+                    log::warn!("UI waited {:.0} ms for the document (paint thread busy: {work})", t.elapsed().as_secs_f64() * 1000.0);
                 }
             }
             _ => {}

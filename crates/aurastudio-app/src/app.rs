@@ -288,6 +288,8 @@ pub struct App {
     pen:        ((f32, f32), f32),
     /// The device drawing the stroke (only its samples go in it).
     stroke_device: Option<Device>,
+    /// The device of the last pointer event (a change resets the cursor).
+    pointer_device: Option<Device>,
     /// Pen samples sent for the current stroke.
     samples_sent: u32,
     modifiers:  ModifiersState,
@@ -453,6 +455,7 @@ impl App {
             pressure:   1.0,
             pen:        ((0.0, 0.0), 0.0),
             stroke_device: None,
+            pointer_device: None,
             samples_sent: 0,
             modifiers:  ModifiersState::empty(),
             display_profile: None,

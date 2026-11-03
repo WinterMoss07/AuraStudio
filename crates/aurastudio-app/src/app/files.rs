@@ -96,7 +96,8 @@ impl App {
             let d = self.doc.lock().unwrap();
             (d.is_modified(), d.name.clone())
         };
-        if modified {
+        // The start screen's stand-in has nothing to save.
+        if modified && !self.home {
             self.pending = Some(action);
             self.ui.show_dialog(Dialog::UnsavedChanges { name });
             self.request_redraw();

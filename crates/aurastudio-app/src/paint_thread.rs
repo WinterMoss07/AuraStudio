@@ -326,19 +326,19 @@ impl Worker {
         let _name = edit.label();
         profiling::scope!("edit", _name);
         let (undo, redo, begin) = (matches!(edit, Edit::Undo), matches!(edit, Edit::Redo), matches!(edit, Edit::TransformBegin(_)));
-        let (done, frame, started) = {
+        let (done, frame, started, lift) = {
             let mut d = doc.lock().unwrap_or_else(|e| e.into_inner());
             let done = d.apply(edit);
             let started = begin.then(|| match done.refused {
                 Some(why) => Err(why),
                 None => d.transform_source().ok_or("Nothing to transform"),
             });
-            if started.as_ref().is_some_and(Result::is_ok) {
-                if let Some(l) = d.transform_lift() { events.push(Event::TransformLift(Box::new(l))); }
-            }
-            (done, d.stack().frame(), started)
+            // The box first: the app takes the lift only for a box it has.
+            let lift = started.as_ref().is_some_and(Result::is_ok).then(|| d.transform_lift()).flatten();
+            (done, d.stack().frame(), started, lift)
         };
         if let Some(s) = started { events.push(Event::TransformStarted(s)); }
+        if let Some(l) = lift { events.push(Event::TransformLift(Box::new(l))); }
         if (undo || redo) && !done.changed() { events.push(Event::Notice(if undo { "Nothing to undo" } else { "Nothing to redo" })); }
         // (A whole merge after a tree step: the caches no longer match.)
         if done.tree || done.region == Region::Whole { self.stroke_cache = StrokeCache::default(); }
@@ -528,6 +528,23 @@ mod tests {
         let mut screen = vec![[0u8; 4]; 64 * 64];
         for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
         assert_eq!(screen[32 * 64 + 30], [0, 0, 0, 255]);
+    }
+
+    /// A big dab (many tiles, painted on all cores): whole, no seams.
+    #[test]
+    fn a_big_brush_paints_every_tile() {
+        let mut d = Document::new(DocId(1), "t", 400, 400, DocType::Illustration);
+        let id = d.apply(Edit::AddLayer("ink".into())).made.unwrap();
+        let doc = Arc::new(Mutex::new(d));
+        let pt = PaintThread::spawn(proj(400, 400), |_| {});
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(150.0)), limit: None, zoom: 1.0 });
+        pt.send(Cmd::Sample(PenSample::new(200.0, 200.0, 1.0, 0.0)));
+        pt.send(Cmd::End);
+        drop(pt);
+        for (x, y) in [(200, 200), (63, 200), (64, 200), (127, 128), (128, 127), (300, 300), (200, 60)] {
+            assert_eq!(pixel(&doc, id, x, y), [0, 0, 0, 255], "({x}, {y})");
+        }
+        assert_eq!(pixel(&doc, id, 5, 5)[3], 0);
     }
 
     /// A pen faster than the canvas frame rate: every sample is painted,

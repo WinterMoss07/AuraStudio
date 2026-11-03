@@ -375,7 +375,7 @@ impl App {
     /// wait, it checks too).
     pub(super) fn paint_refusal(&self) -> Option<&'static str> {
         match self.doc.try_lock() {
-            Ok(doc) if doc.paint_id().is_some() => None,
+            Ok(doc) if doc.can_paint() => None,
             Ok(doc) if doc.stack().active_node().is_some_and(|n| n.is_folder()) => Some("Select a layer to paint (a folder is selected)"),
             Ok(_) => Some("Layer is locked"),
             Err(_) => None,

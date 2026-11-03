@@ -44,6 +44,12 @@ pub trait PaintSurface<P: Pixel = Rgba8> {
     /// dabs (`recycle_spans`).
     fn spans_mut<'a>(&'a mut self, _rect: Rect, _out: &mut Vec<Span<'a, P>>) -> bool { false }
 
+    /// `spans_mut` for several rects at once (disjoint, prepared here):
+    /// a whole stroke's tiles on several cores. `false`: not offered.
+    fn spans_in<'a>(&'a mut self, rects: &[Rect], out: &mut Vec<Span<'a, P>>) -> bool {
+        match rects { [r] => self.spans_mut(*r, out), _ => false }
+    }
+
     /// The pixel at (x, y) as it was before the stroke (smudge and color
     /// sampling read the base around the dab).
     fn base_pixel(&self, x: i32, y: i32) -> P;

@@ -227,10 +227,20 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
     }
 
     fn spans_mut<'a>(&'a mut self, rect: Rect, out: &mut Vec<Span<'a, P>>) -> bool {
-        let Some((tx0, ty0, tx1, ty1)) = self.surf.tiles_of(&rect) else { return true };
+        self.spans_in(std::slice::from_ref(&rect), out)
+    }
+
+    fn spans_in<'a>(&'a mut self, rects: &[Rect], out: &mut Vec<Span<'a, P>>) -> bool {
         // Prepare everything first, then hand out disjoint pieces.
-        for ty in ty0..ty1 { for tx in tx0..tx1 { self.prepare_tile(tx, ty); } }
-        self.prepare_limits(rect);
+        let mut all = Rect::EMPTY;
+        for r in rects {
+            let Some((tx0, ty0, tx1, ty1)) = self.surf.tiles_of(r) else { continue };
+            for ty in ty0..ty1 { for tx in tx0..tx1 { self.prepare_tile(tx, ty); } }
+            self.prepare_limits(*r);
+            all = all.union(&Rect::new(tx0, ty0, tx1, ty1));
+        }
+        if all.is_empty() { return true; }
+        let (tx0, ty0, tx1, ty1) = (all.x0, all.y0, all.x1, all.y1);
         let (t, shift) = (self.surf.tile as i32, self.surf.shift);
         let Stroke { surf, before, flat, opened, mask, limit, .. } = self;
         let limit: Option<&'a Limits> = limit.as_ref();
@@ -251,28 +261,40 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
                 let px = &mut Arc::make_mut(px).px[..];
                 let base = base_of(before, flat, opened, tx, ty);
                 let (bx, by) = (tx * t, ty * t);
-                let part = Rect::new(bx, by, bx + t, by + t).intersect(&rect);
-                if part.is_empty() { continue; }
-                let (a, z) = ((part.x0 - bx) as usize, (part.x1 - bx) as usize);
-                let (ly0, ly1) = ((part.y0 - by) as usize, (part.y1 - by) as usize);
+                let tile_rect = Rect::new(bx, by, bx + t, by + t);
+                let parts: Vec<Rect> = rects.iter().map(|r| tile_rect.intersect(r)).filter(|p| !p.is_empty()).collect();
+                if parts.is_empty() { continue; }
                 let tu = t as usize;
-                for (ly, (prow, mrow)) in px.chunks_mut(tu).zip(m.chunks_mut(tu)).enumerate().take(ly1).skip(ly0) {
+                let mut cuts: Vec<(usize, usize)> = Vec::with_capacity(parts.len());
+                for (ly, (prow, mrow)) in px.chunks_mut(tu).zip(m.chunks_mut(tu)).enumerate() {
                     let y = by + ly as i32;
+                    // This row's pieces, left to right (the rects are disjoint).
+                    cuts.clear();
+                    cuts.extend(parts.iter().filter(|p| p.y0 <= y && y < p.y1).map(|p| ((p.x0 - bx) as usize, (p.x1 - bx) as usize)));
+                    if cuts.is_empty() { continue; }
+                    cuts.sort_unstable();
                     let row_base = base.get(ly << shift..).unwrap_or(&[]);
-                    let (mut p_seg, mut m_seg) = (&mut prow[a..z], &mut mrow[a..z]);
-                    let mut x = part.x0;
-                    while !m_seg.is_empty() {
-                        let len = match limit { Some(l) => (((x >> l.surf.shift) + 1) * l.surf.tile as i32 - x) as usize, None => usize::MAX }.min(m_seg.len());
-                        let (p1, p2) = std::mem::take(&mut p_seg).split_at_mut(len);
-                        let (m1, m2) = std::mem::take(&mut m_seg).split_at_mut(len);
-                        (p_seg, m_seg) = (p2, m2);
-                        let lim = limit_of(limit, x, y, len);
-                        // A selection that covers nothing here: nothing to paint.
-                        if !lim.is_some_and(|l| l.iter().all(|v| *v == 0)) {
-                            let o = (x - bx) as usize;
-                            out.push(Span { x, y, pixels: p1, base: row_base.get(o..o + len).unwrap_or(&[]), mask: m1, limit: lim });
+                    let (mut prest, mut mrest, mut off) = (prow, mrow, 0usize);
+                    for &(a, z) in &cuts {
+                        let (_, p) = std::mem::take(&mut prest).split_at_mut(a - off);
+                        let (_, mm) = std::mem::take(&mut mrest).split_at_mut(a - off);
+                        let (mut p_seg, p_after) = p.split_at_mut(z - a);
+                        let (mut m_seg, m_after) = mm.split_at_mut(z - a);
+                        (prest, mrest, off) = (p_after, m_after, z);
+                        let mut x = bx + a as i32;
+                        while !m_seg.is_empty() {
+                            let len = match limit { Some(l) => (((x >> l.surf.shift) + 1) * l.surf.tile as i32 - x) as usize, None => usize::MAX }.min(m_seg.len());
+                            let (p1, p2) = std::mem::take(&mut p_seg).split_at_mut(len);
+                            let (m1, m2) = std::mem::take(&mut m_seg).split_at_mut(len);
+                            (p_seg, m_seg) = (p2, m2);
+                            let lim = limit_of(limit, x, y, len);
+                            // A selection that covers nothing here: nothing to paint.
+                            if !lim.is_some_and(|l| l.iter().all(|v| *v == 0)) {
+                                let o = (x - bx) as usize;
+                                out.push(Span { x, y, pixels: p1, base: row_base.get(o..o + len).unwrap_or(&[]), mask: m1, limit: lim });
+                            }
+                            x += len as i32;
                         }
-                        x += len as i32;
                     }
                 }
             }

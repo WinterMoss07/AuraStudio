@@ -117,6 +117,10 @@ impl Document {
     /// The paint layer edits go to (clear, filters, transform...).
     pub fn paint_id(&self) -> Option<u64> { self.timeline.paint_id(&self.stack) }
 
+    /// A stroke can start: on a paint layer, or on an animation folder's
+    /// empty frame (the stroke makes the sheet).
+    pub fn can_paint(&self) -> bool { self.timeline.paint_target(&self.stack).is_some() }
+
     /// The layer a filter would change and where, around what it shows
     /// (inside the selection), grown by `margin`: an empty rect on an
     /// empty layer. `None`: nothing can be filtered now.
@@ -148,6 +152,9 @@ impl Document {
         // is now), unless the edit only reads or moves the tree.
         let mut first = Done::default();
         if self.stroke.is_some() && e.changes_pixels() { first = self.end_stroke(); }
+        // How it is viewed (the current frame, onion look/pause): not a
+        // change to save.
+        let view = matches!(e, Edit::SetFrame(_) | Edit::SetOnionLook(_) | Edit::PauseOnion(_));
         let mut done = match e {
             Edit::SetFrame(n) => Done { other: self.timeline.frame() != n.clamp(1, aurastudio_layers::MAX_FRAME), region: self.time(|t, s| t.set_frame(s, n)), ..Done::default() },
             Edit::SetFps(f) => {
@@ -207,7 +214,7 @@ impl Document {
                 Done { region, made, tree, ..Done::default() }
             }
         };
-        if done.changed() {
+        if done.changed() && !view {
             self.revision += 1;
             debug_assert!(self.stack.check_animation(self.timeline.frame()).is_ok(), "{:?}", self.stack.check_animation(self.timeline.frame()));
         }

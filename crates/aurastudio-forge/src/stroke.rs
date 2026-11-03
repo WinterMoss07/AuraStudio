@@ -25,7 +25,8 @@ use crate::{Dab, StrokePoint};
 /// Salt of the per-pixel dither of the coverage.
 const DITHER_SALT: u64 = 0x0000_6469_7468_6572;
 
-/// Pixels from which a stroke's tiles are painted on several cores.
+/// Pixels (all the dirty tiles together) from which a stroke is painted
+/// on several cores.
 const PARALLEL_PIXELS: usize = 128 * 128;
 
 #[derive(Clone, Debug)]
@@ -333,6 +334,26 @@ impl StrokeRenderer {
         if keys.is_empty() { return Rect::EMPTY; }
         let bounds = self.bounds();
         let p = Painter::new(self);
+        // Big strokes: every dirty tile's runs at once, on all cores.
+        let rects: Vec<Rect> = keys.iter()
+            .map(|&(tx, ty)| Rect::new(tx * COV_TILE, ty * COV_TILE, (tx + 1) * COV_TILE, (ty + 1) * COV_TILE).intersect(&bounds))
+            .filter(|r| !r.is_empty() && self.cov.tiles.contains_key(&tile_key((r.x0.div_euclid(COV_TILE), r.y0.div_euclid(COV_TILE)))))
+            .collect();
+        let area: usize = rects.iter().map(|r| r.area() as usize).sum();
+        if area >= PARALLEL_PIXELS {
+            let mut v: Vec<Span<'_, Rgba8>> = Vec::new();
+            if s.spans_in(&rects, &mut v) {
+                use rayon::prelude::*;
+                let tiles = &self.cov.tiles;
+                v.par_iter_mut().with_min_len(16).for_each(|sp| {
+                    let (tx, ty) = (sp.x.div_euclid(COV_TILE), sp.y.div_euclid(COV_TILE));
+                    if let Some(tile) = tiles.get(&tile_key((tx, ty))) {
+                        p.span(&TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE }, sp);
+                    }
+                });
+                return rects.iter().fold(Rect::EMPTY, |a, r| a.union(r));
+            }
+        }
         let mut done = Rect::EMPTY;
         let mut spans: Vec<Span<'_, Rgba8>> = Vec::new();
         for (tx, ty) in keys {
@@ -344,12 +365,7 @@ impl StrokeRenderer {
             let t = TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE };
             let mut v = aurastudio_core::surface::recycle_spans(std::mem::take(&mut spans));
             if s.spans_mut(tr, &mut v) {
-                if tr.area() as usize >= PARALLEL_PIXELS && v.len() > 8 {
-                    use rayon::prelude::*;
-                    v.par_iter_mut().for_each(|sp| p.span(&t, sp));
-                } else {
-                    for sp in &mut v { p.span(&t, sp); }
-                }
+                for sp in &mut v { p.span(&t, sp); }
                 spans = aurastudio_core::surface::recycle_spans(v);
             } else {
                 drop(v);

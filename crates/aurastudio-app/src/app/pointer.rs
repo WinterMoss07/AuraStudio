@@ -47,6 +47,12 @@ impl App {
 
     fn on_pointer(&mut self, e: Event) {
         let pos = (e.x as f32, e.y as f32);
+        // Pen ⇄ mouse: the system shows its own cursor again, ours must be
+        // set anew (else the arrow stays inside the brush outline).
+        if self.pointer_device.replace(e.device) != Some(e.device) || matches!(e.kind, Kind::ProximityIn) {
+            if let Some(c) = &mut self.cursors { c.invalidate(); }
+            self.update_cursor();
+        }
         match e.kind {
             Kind::Down => {
                 self.cursor = pos;

@@ -130,13 +130,16 @@ impl App {
         let Some(at) = self.canvas_at() else { return };
         let (m, mode, keep) = (self.xform_mods(), self.transform_opts.mode, self.transform_opts.keep_aspect);
         let Some(xf) = &mut self.xf else { return };
-        if xf.drag.is_none() { return; }
-        if xf.drag_to(at, m, mode, keep) { self.send_preview(true); }
+        let Some(hit) = xf.drag.as_ref().map(|d| d.hit) else { return };
+        if !xf.drag_to(at, m, mode, keep) { return; }
+        // The pivot moved: the picture didn't, only the box is redrawn.
+        if hit == Hit::Pivot { self.request_redraw(); } else { self.send_preview(true); }
     }
 
     pub(super) fn xform_release(&mut self) {
         let Some(xf) = &mut self.xf else { return };
-        if xf.release() { self.send_preview(false); }
+        let pivot = xf.drag.as_ref().is_some_and(|d| d.hit == Hit::Pivot);
+        if xf.release() && !pivot { self.send_preview(false); }
         self.update_cursor();
     }
 
