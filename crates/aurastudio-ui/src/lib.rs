@@ -131,6 +131,8 @@ pub enum ViewCmd { ZoomIn, ZoomOut, ActualSize, Fit, RotateLeft, RotateRight, Re
 #[derive(Default)]
 pub struct Actions {
     pub resize_to:   Option<(u32, u32)>,
+    /// Brushes > Import: the file dialog for .abr / .brush / .brushset.
+    pub import_brushes: bool,
     pub undo:        bool,
     pub redo:        bool,
     /// Clear the active layer (the app does it, undoable).

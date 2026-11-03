@@ -103,7 +103,7 @@ pub fn new_dialog(ctx: &egui::Context, kind: Kind, m: &Model) -> Option<FilterDi
     Some(FilterDialog {
         target: Target::Layer,
         edit: None,
-        filter: fresh(kind, m.brush.color),
+        filter: fresh(kind, m.brush.color8()),
         preview: true,
         shown: None,
         source: Arc::new(source),

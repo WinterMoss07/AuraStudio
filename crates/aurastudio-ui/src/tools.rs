@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(Group::current(tool, preset, p), Group::Draw);
         mem.select(Group::Paint, &mut tool, &mut preset, p);
         assert_eq!((tool, Group::current(tool, preset, p)), (Tool::Brush, Group::Paint));
-        preset = find("Soft brush");
+        preset = find("Soft Round");
         mem.select(Group::Eraser, &mut tool, &mut preset, p);
         assert_eq!(tool, Tool::Eraser);
         assert_eq!(p[preset].kind, Kind::Eraser);
@@ -830,6 +830,6 @@ mod tests {
         mem.select(Group::Draw, &mut tool, &mut preset, p);
         assert_eq!((tool, preset), (Tool::Brush, find("Pen")));
         mem.select(Group::Paint, &mut tool, &mut preset, p);
-        assert_eq!(preset, find("Soft brush"));
+        assert_eq!(preset, find("Soft Round"));
     }
 }

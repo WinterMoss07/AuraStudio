@@ -1,211 +1,279 @@
-//! The brush engine. For now a placeholder: round dabs (size, hardness,
-//! opacity, blend mode, eraser, pressure to size), painted through
-//! `core::PaintSurface`: each pixel keeps its highest coverage of the
-//! stroke, so overlapping dabs never build up (CSP's stroke opacity).
-//! PhotoCraft's engine takes its place; `Brush`, `PenSample` and the
-//! `Forge` calls are what the app and the interface hold on to.
+//! Forge, the brush engine: Photoshop-grade brushes (computed and sampled
+//! tips, Shape Dynamics, Scattering, Texture, Dual Brush, Color Dynamics,
+//! Transfer, Brush Pose, Noise, Wet Edges, Build-up, Smoothing, the Mixer
+//! Brush), the brush library and the importers (Photoshop .abr, Procreate
+//! .brush / .brushset).
+//!
+//! The model, the dynamics and the tips come from PhotoCraft's brush engine
+//! (MIT OR Apache-2.0, see NOTICE.md). The pixels are AuraStudio's: dabs
+//! build a private coverage buffer ([`render`]), and only its changed
+//! tiles are painted through `core::PaintSurface` (the layer's tiles, the
+//! stroke base kept by `raster`, the selection as a limit, runs on several
+//! cores, 8-bit integer blends where the mode allows).
+//!
+//! Strokes are data ([`StrokePoint`]s and [`BrushSettings`]) so they replay
+//! the same: every jitter is a hash of the brush seed and the dab index
+//! ([`rng`]). Within one stroke coverage builds up with flow toward each
+//! dab's opacity ceiling, and the stroke is painted once at the stroke
+//! opacity (Photoshop's Opacity versus Flow).
 
-use aurastudio_core::blend::paint_pixel_u8;
-use aurastudio_core::{BlendMode, PaintSurface, Rect, Rgba8, Span};
+use aurastudio_core::Point;
+use serde::{Deserialize, Serialize};
 
-/// The settings of the brush in use (the color is global).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Brush {
-    pub color:    [u8; 3],
-    pub opacity:  f32,
-    /// Radius in canvas pixels; 0.5 is a 1 px brush.
-    pub radius:   f32,
-    /// How the brush color combines with what is already on the layer.
-    pub blend:    BlendMode,
-    /// Edge softness, 0..1. 1 = crisp edge (1 px anti-aliasing); lower
-    /// values fade the coverage out from `radius * hardness` to `radius`.
-    pub hardness: f32,
-    /// Eraser: the dabs take opacity away instead of adding color.
-    pub erase:    bool,
-    /// The pen's pressure sets the size (from this share of it at no
-    /// pressure, 0..1).
-    pub min_size: f32,
-    /// Dabs per diameter.
-    pub spacing:  f32,
-}
+pub mod brush;
+pub mod curve;
+pub mod dynamics;
+mod engine;
+pub mod import;
+pub mod library;
+pub mod mixer;
+pub mod mode;
+pub mod outline;
+pub mod presets;
+pub mod procedural;
+pub mod render;
+pub mod stroke;
+pub mod rng;
+pub mod symmetry;
+pub mod tile;
 
-impl Brush {
-    pub fn new() -> Self {
-        Self { color: [0, 0, 0], opacity: 1.0, radius: 25.0, blend: BlendMode::Normal, hardness: 1.0, erase: false, min_size: 0.2, spacing: 0.1 }
-    }
-}
+pub use brush::{
+    BrushPreset, BrushSettings, ColorDynamics, Control, DualBrush, Dynamic, MAX_BRUSH_SIZE, MAX_SCATTER, MaskMode, Pattern, PatternStyle, Pose, PresetCaptures,
+    Scattering, SectionLocks, ShapeDynamics, Smoothing, Texture, TipShape, Transfer,
+};
+pub use curve::ResponseCurve;
+pub use engine::{Forge, PenSample};
+pub use library::{Kind, Library, Preset};
+pub use mixer::{MixerSettings, MixerState};
+pub use mode::PaintMode;
+pub use render::{BrushContext, grid_center, grid_square};
+pub use stroke::StrokeRenderer;
+pub use tile::{GrayTile, StoredTile};
 
-impl Default for Brush {
-    fn default() -> Self { Self::new() }
-}
+/// The settings of a brush (the name the rest of the app uses).
+pub type Brush = BrushSettings;
 
-/// The toolbox group a brush belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Kind { Draw, Paint, Eraser }
-
-/// A named brush (the placeholder set until PhotoCraft's presets).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Preset {
-    pub name:     String,
-    pub kind:     Kind,
-    pub settings: Brush,
-}
-
-impl Preset {
-    /// The built-in brushes.
-    pub fn builtin() -> Vec<Preset> {
-        let b = Brush::new();
-        let p = |name: &str, kind, settings| Preset { name: name.into(), kind, settings };
-        vec![
-            p("Pencil", Kind::Draw, Brush { radius: 2.0, hardness: 0.9, opacity: 0.9, min_size: 0.5, ..b.clone() }),
-            p("Pen", Kind::Draw, Brush { radius: 3.0, hardness: 1.0, min_size: 0.05, ..b.clone() }),
-            p("Marker", Kind::Draw, Brush { radius: 8.0, hardness: 1.0, opacity: 0.6, min_size: 1.0, ..b.clone() }),
-            p("Round brush", Kind::Paint, Brush { radius: 25.0, hardness: 0.85, min_size: 0.3, ..b.clone() }),
-            p("Soft brush", Kind::Paint, Brush { radius: 60.0, hardness: 0.1, opacity: 0.5, min_size: 0.6, ..b.clone() }),
-            p("Hard eraser", Kind::Eraser, Brush { radius: 20.0, hardness: 1.0, erase: true, min_size: 1.0, ..b.clone() }),
-            p("Soft eraser", Kind::Eraser, Brush { radius: 50.0, hardness: 0.1, erase: true, min_size: 1.0, ..b }),
-        ]
-    }
-}
-
-/// One pen position: canvas pixels, pressure 0..1, time in seconds.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PenSample {
-    pub x:        f32,
-    pub y:        f32,
+/// One input sample. Missing stylus data defaults to "mouse": full pressure, no tilt/rotation.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StrokePoint {
+    pub x: f64,
+    pub y: f64,
+    /// 0..1, 1 for mouse.
     pub pressure: f32,
-    pub time:     f64,
+    /// Degrees -90..90 (W3C Pointer Events `tiltX`/`tiltY`).
+    pub tilt_x: f32,
+    pub tilt_y: f32,
+    /// Barrel rotation in degrees 0..360.
+    pub rotation: f32,
+    /// Airbrush stylus wheel 0..1.
+    pub wheel: f32,
+    /// Timestamp in milliseconds (airbrush build-up and smoothing catch-up).
+    pub time: f64,
 }
 
-impl PenSample {
-    pub fn new(x: f32, y: f32, pressure: f32, time: f64) -> Self { Self { x, y, pressure: pressure.clamp(0.0, 1.0), time } }
-}
-
-/// A stroke being painted.
-pub struct Forge {
-    brush: Brush,
-    last:  Option<PenSample>,
-    /// Distance walked since the last dab (px).
-    rest:  f32,
-}
-
-impl Forge {
-    pub fn new(brush: Brush) -> Self { Self { brush, last: None, rest: 0.0 } }
-
-    pub fn brush(&self) -> &Brush { &self.brush }
-
-    /// New settings for the next stroke.
-    pub fn sync_from(&mut self, b: &Brush) { self.brush = b.clone(); }
-
-    /// Radius of a dab at pressure `p`.
-    fn radius(&self, p: f32) -> f32 {
-        let b = &self.brush;
-        (b.radius * (b.min_size + (1.0 - b.min_size) * p)).max(0.5)
+impl Default for StrokePoint {
+    fn default() -> Self {
+        Self { x: 0.0, y: 0.0, pressure: 1.0, tilt_x: 0.0, tilt_y: 0.0, rotation: 0.0, wheel: 1.0, time: 0.0 }
     }
+}
 
-    /// Paint from the last sample to `p` (the first one: a dab there).
-    /// Returns the area painted.
-    pub fn stroke_to<S: PaintSurface>(&mut self, s: &mut S, p: PenSample) -> Option<Rect> {
-        let Some(last) = self.last.replace(p) else {
-            self.rest = 0.0;
-            return self.dab(s, p.x, p.y, self.radius(p.pressure));
-        };
-        let (dx, dy) = (p.x - last.x, p.y - last.y);
-        let len = dx.hypot(dy);
-        let mut area: Option<Rect> = None;
-        let mut t = 0.0;
-        loop {
-            let pr = last.pressure + (p.pressure - last.pressure) * (t / len.max(1e-6)).min(1.0);
-            let step = (2.0 * self.radius(pr) * self.brush.spacing).max(0.5);
-            let need = step - self.rest;
-            if t + need > len { self.rest += len - t; break; }
-            t += need;
-            self.rest = 0.0;
-            let k = t / len;
-            if let Some(r) = self.dab(s, last.x + dx * k, last.y + dy * k, self.radius(pr)) { area = Some(area.map_or(r, |a| a.union(&r))); }
+impl StrokePoint {
+    pub fn new(x: f64, y: f64, pressure: f32) -> Self {
+        Self { x, y, pressure, ..Default::default() }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Stroke {
+    pub brush: BrushSettings,
+    pub points: Vec<StrokePoint>,
+}
+
+/// A dab placed along the stroke (after dynamics).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dab {
+    pub center: Point,
+    pub radius: f32,
+    /// Flow: per-dab build-up amount.
+    pub alpha: f32,
+    /// Radians, counter-clockwise.
+    pub angle: f32,
+    pub roundness: f32,
+    pub flip_x: bool,
+    pub flip_y: bool,
+    /// Opacity ceiling this dab builds up to (Transfer › Opacity).
+    pub opacity: f32,
+    /// Straight RGBA paint colour (Color Dynamics).
+    pub color: [f32; 4],
+    /// Texture depth for per-tip texturing.
+    pub depth: f32,
+    /// Position in the stroke (0 = first).
+    pub index: u64,
+    /// Brush Projection: direction (radians, counter-clockwise, y up) along which the tip is
+    /// foreshortened, and the factor (1 = no projection).
+    pub proj_angle: f32,
+    pub proj_scale: f32,
+    /// Mixer Brush multipliers of Wet and Mix (Transfer › Wetness/Mix Jitter), 1 = as set.
+    pub wet: f32,
+    pub mix: f32,
+}
+
+impl Dab {
+    /// A plain round dab.
+    pub fn round(center: Point, radius: f32, alpha: f32) -> Self {
+        Self {
+            center,
+            radius,
+            alpha,
+            angle: 0.0,
+            roundness: 1.0,
+            flip_x: false,
+            flip_y: false,
+            opacity: 1.0,
+            color: [0.0, 0.0, 0.0, 1.0],
+            depth: 1.0,
+            index: 0,
+            proj_angle: 0.0,
+            proj_scale: 1.0,
+            wet: 1.0,
+            mix: 1.0,
         }
-        area
-    }
-
-    /// The stroke is over: the next one starts afresh.
-    pub fn end_stroke<S: PaintSurface>(&mut self, _s: &mut S) -> Option<Rect> {
-        self.last = None;
-        self.rest = 0.0;
-        None
-    }
-
-    /// One round dab at (x, y).
-    fn dab<S: PaintSurface>(&self, s: &mut S, x: f32, y: f32, r: f32) -> Option<Rect> {
-        let b = &self.brush;
-        let rect = Rect::around((x - r - 1.0) as f64, (y - r - 1.0) as f64, (x + r + 1.0) as f64, (y + r + 1.0) as f64);
-        if rect.is_empty() { return None; }
-        s.prepare(rect);
-        let inner = (r * b.hardness.clamp(0.0, 1.0)).min(r - 0.5).max(0.0);
-        let fade = (r - inner).max(0.5);
-        let opacity = b.opacity.clamp(0.0, 1.0) * 255.0;
-        let paint = |sp: &mut Span<'_, Rgba8>| {
-            let fy = sp.y as f32 + 0.5 - y;
-            for i in 0..sp.len() {
-                let fx = sp.x as f32 + i as f32 + 0.5 - x;
-                let d = fx.hypot(fy);
-                let c = ((r + 0.5 - d) / (fade + 0.5)).clamp(0.0, 1.0);
-                let cov = (c * opacity + 0.5) as u8;
-                if cov == 0 { continue; }
-                let m = sp.cover(i, cov);
-                if m == 0 { continue; }
-                let base = sp.base[i];
-                sp.pixels[i] = if b.erase {
-                    [base[0], base[1], base[2], aurastudio_core::math::mul255(base[3], 255 - m)]
-                } else {
-                    paint_pixel_u8(base, b.color, m, b.blend)
-                };
-            }
-        };
-        let mut spans = Vec::new();
-        if s.spans_mut(rect, &mut spans) {
-            use rayon::prelude::*;
-            if spans.len() > 64 { spans.par_iter_mut().for_each(paint); } else { spans.iter_mut().for_each(paint); }
-        } else {
-            for yy in rect.y0..rect.y1 {
-                let mut xx = rect.x0;
-                while xx < rect.x1 {
-                    let mut sp = s.span_mut(xx, yy, (rect.x1 - xx) as usize);
-                    let n = sp.len();
-                    if n == 0 { break; }
-                    paint(&mut sp);
-                    xx += n as i32;
-                }
-            }
-        }
-        Some(rect)
     }
 }
+
+/// All primary dabs of a stroke (smoothing, pose, spacing, build-up and dynamics applied).
+pub fn dabs(stroke: &Stroke) -> Vec<Dab> {
+    let mut g = dynamics::DabGenerator::new(&stroke.brush, 1.0);
+    let (mut out, mut dual) = (Vec::new(), Vec::new());
+    g.push(&stroke.points, &mut out, &mut dual);
+    g.finish(&mut out, &mut dual);
+    out
+}
+
+/// Photoshop's round tip, measured (Photoshop 27.11, single dabs at Spacing 1000 %, hardness 0–100
+/// at 40 px and checked at 100, 9 and 3 px): a solid core of radius `r0 · R`, then a Gaussian
+/// shoulder `exp(-((d − r0) / s)²)` of width `s · R`, both by hardness (0, 0.1, … 1). A soft tip
+/// reaches well past its nominal radius (hardness 0 is a Gaussian of σ ≈ 0.47 R: 8 % at 1.05 R).
+const TIP_SHAPE: [(f32, f32); 11] =
+    [(0.00, 0.664), (0.14, 0.58), (0.28, 0.50), (0.40, 0.44), (0.52, 0.36), (0.63, 0.29), (0.70, 0.24), (0.78, 0.19), (0.84, 0.15), (0.89, 0.11), (1.00, 0.0)];
+
+/// Photoshop's anti-aliased edge: the shoulder never narrows below this many pixels, and the core
+/// stays this far inside the radius (a hardness-100 tip is a disc with a ~1 px soft edge at any size).
+const TIP_EDGE_PX: f32 = 1.2;
+
+/// The core radius and shoulder width (both in pixels) of a round tip of `radius` and `hardness`.
+#[inline]
+pub fn tip_shape(radius: f32, hardness: f32) -> (f32, f32) {
+    let h = if hardness.is_nan() { 0.0 } else { hardness.clamp(0.0, 1.0) } * 10.0;
+    let i = (h.floor() as usize).min(9);
+    let t = h - i as f32;
+    let (a, b) = (TIP_SHAPE[i], TIP_SHAPE[i + 1]);
+    let (r0, s) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+    let radius = if radius.is_finite() { radius.max(0.0) } else { 0.0 };
+    // A tip of a few pixels keeps a narrower edge, so a small hard dab stays solid in the middle.
+    // Never sharper than a quarter pixel, the small-tip supersampling step.
+    let edge = TIP_EDGE_PX.min(0.3 * radius).max(0.25);
+    ((r0 * radius).min(radius - edge).max(0.0), (s * radius).max(edge).max(1e-3))
+}
+
+/// Dab-invariant round-tip geometry, shared by all pixels and subpixel samples.
+#[derive(Clone, Copy)]
+pub(crate) struct TipProfile {
+    core: f32,
+    shoulder: f32,
+    reach: f32,
+}
+
+impl TipProfile {
+    #[inline]
+    pub(crate) fn new(radius: f32, hardness: f32) -> Self {
+        let (core, shoulder) = tip_shape(radius, hardness);
+        Self { core, shoulder, reach: core + 2.6 * shoulder }
+    }
+
+    #[inline]
+    pub(crate) fn reach(self) -> f32 {
+        self.reach
+    }
+
+    #[inline]
+    pub(crate) fn falloff(self, d: f32) -> f32 {
+        if d <= self.core {
+            return 1.0;
+        }
+        // Keep division: multiplying by a cached reciprocal changes coverage bits.
+        let x = (d - self.core) / self.shoulder;
+        soft_exp(x * x)
+    }
+
+    #[inline]
+    pub(crate) fn coverage(self, d: f32) -> f32 {
+        if d.is_nan() || d >= self.reach + 0.5 {
+            return 0.0;
+        }
+        self.falloff(d)
+    }
+}
+
+/// `exp(-u)` as `(1 − u/64)⁶⁴` by six squarings: within 1/255 of `exp` where it matters, exact
+/// arithmetic (the same on every platform) and exactly 0 from `u = 64`.
+#[inline]
+fn soft_exp(u: f32) -> f32 {
+    let mut g = (1.0 - u / 64.0).clamp(0.0, 1.0);
+    for _ in 0..6 {
+        g *= g;
+    }
+    g
+}
+
+/// Opacity of a round tip at distance `d` from its centre, edge included (see [`tip_shape`]).
+#[inline]
+pub fn tip_falloff(d: f32, radius: f32, hardness: f32) -> f32 {
+    TipProfile::new(radius, hardness).falloff(d)
+}
+
+/// How far from its centre a round tip still paints (where [`tip_falloff`] drops below ~0.1 %).
+#[inline]
+pub fn tip_reach(radius: f32, hardness: f32) -> f32 {
+    let (r0, s) = tip_shape(radius, hardness);
+    r0 + 2.6 * s
+}
+
+/// Distance from the centre where [`tip_falloff`] drops to 50 %: the contour Preferences ›
+/// Cursors › Normal Brush Tip outlines. `(1 − u/64)⁶⁴ = ½` at `u = 64 (1 − ½^(1/64))`.
+#[inline]
+pub fn half_coverage_radius(radius: f32, hardness: f32) -> f32 {
+    let (r0, s) = tip_shape(radius, hardness);
+    let u = 64.0 * (1.0 - 0.5f32.powf(1.0 / 64.0));
+    r0 + s * u.sqrt()
+}
+
+/// Coverage of a round dab at distance `d` from its centre.
+#[inline]
+pub fn dab_coverage(d: f32, radius: f32, hardness: f32) -> f32 {
+    TipProfile::new(radius, hardness).coverage(d)
+}
+
+/// Exponential moving-average smoothing of input points (Photoshop's "Smoothing" %, simplified).
+pub fn smooth(points: &[StrokePoint], amount: f32) -> Vec<StrokePoint> {
+    let a = (1.0 - amount.clamp(0.0, 0.95)) as f64;
+    let mut out = Vec::with_capacity(points.len());
+    let mut cur: Option<StrokePoint> = None;
+    for p in points {
+        let n = match cur {
+            None => *p,
+            Some(c) => StrokePoint { x: c.x + (p.x - c.x) * a, y: c.y + (p.y - c.y) * a, ..*p },
+        };
+        out.push(n);
+        cur = Some(n);
+    }
+    if let (Some(last), Some(end)) = (out.last_mut(), points.last()) {
+        *last = *end;
+    }
+    out
+}
+
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use aurastudio_core::FlatSurface;
-
-    #[test]
-    fn a_stroke_paints_without_building_up() {
-        let mut s = FlatSurface::new(100, 40, [255, 255, 255, 0]);
-        let mut f = Forge::new(Brush { radius: 5.0, opacity: 0.5, color: [10, 20, 30], ..Brush::new() });
-        f.stroke_to(&mut s, PenSample::new(10.0, 20.0, 1.0, 0.0));
-        let r = f.stroke_to(&mut s, PenSample::new(90.0, 20.0, 1.0, 0.1)).unwrap();
-        assert!(r.contains(50, 20));
-        f.end_stroke(&mut s);
-        let p = s.pixel(50, 20);
-        assert_eq!(&p[..3], &[10, 20, 30]);
-        assert!((p[3] as i32 - 128).abs() <= 1, "{p:?}");
-        assert_eq!(s.pixel(50, 35)[3], 0);
-    }
-
-    #[test]
-    fn the_eraser_takes_alpha_away() {
-        let mut s = FlatSurface::new(20, 20, [9, 9, 9, 255]);
-        let mut f = Forge::new(Brush { radius: 4.0, erase: true, ..Brush::new() });
-        f.stroke_to(&mut s, PenSample::new(10.0, 10.0, 1.0, 0.0));
-        assert_eq!(s.pixel(10, 10)[3], 0);
-        assert_eq!(s.pixel(1, 1)[3], 255);
-    }
-}
+mod brush_tests;

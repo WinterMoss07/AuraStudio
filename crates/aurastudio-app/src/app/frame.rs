@@ -196,7 +196,7 @@ impl App {
         // Alt + right drag: the brush's hardness and the value set.
         let brush_drag = self.size_drag.as_ref().and_then(|d| Some(aurastudio_ui::BrushDrag {
             center:   self.window_to_canvas(d.anchor.0, d.anchor.1)?,
-            radius:   self.brush.radius,
+            radius:   self.brush.size / 2.0,
             hardness: self.brush.hardness,
             pointer:  self.window_to_canvas(self.cursor.0, self.cursor.1)?,
             label:    d.label(),
@@ -221,7 +221,7 @@ impl App {
         let ui_state   = &mut self.ui;
         let doc        = &self.doc;
         let brush      = &mut self.brush;
-        let presets    = &self.presets[..];
+        let presets    = &self.library.presets[..];
         let preset_before = self.preset;
         let mut preset = self.preset;
         let canvas_edit = &mut self.canvas_edit;
@@ -362,7 +362,7 @@ impl App {
                 self.ui_blocked_since = None;
                 if t.elapsed() > Duration::from_millis(100) {
                     log::warn!("UI waited {:.0} ms for the document (paint thread busy; brush {}, {:.0} px)", t.elapsed().as_secs_f64() * 1000.0,
-                        self.presets.get(self.preset).map_or("?", |p| p.name.as_str()), self.brush.radius * 2.0);
+                        self.library.presets.get(self.preset).map_or("?", |p| p.name.as_str()), self.brush.size);
                 }
             }
             _ => {}
@@ -385,7 +385,7 @@ impl App {
             let tool = std::mem::replace(&mut self.tool, tool_before);
             self.set_tool(tool);
         }
-        self.tool_memory.remember(self.tool, self.preset, &self.presets);
+        self.tool_memory.remember(self.tool, self.preset, &self.library.presets);
         if let Some(cmd) = actions.select { self.select(cmd); }
         if let Some(cmd) = actions.transform { self.transform_cmd(cmd); }
         // Warp: its grid shows as soon as the mode is chosen.
@@ -398,6 +398,7 @@ impl App {
         }
         self.follow_transform_targets();
         if let Some(cmd) = actions.edit { self.edit_cmd(cmd); }
+        if actions.import_brushes { self.import_brushes(); }
         if let Some(action) = actions.filter {
             use aurastudio_ui::FilterAction as F;
             let edit = match action { F::Preview(f) => Edit::FilterPreview(f), F::Apply(f) => Edit::FilterApply(f), F::Cancel => Edit::FilterCancel };

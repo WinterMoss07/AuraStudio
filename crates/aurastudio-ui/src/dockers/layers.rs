@@ -231,7 +231,7 @@ pub fn special_folder_entries(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
 /// A new filter layer above the active node, its dialog opened (Cancel
 /// there removes it again).
 pub fn new_filter_layer(st: &mut LayersState, kind: aurastudio_filters::Kind, m: &mut Model) {
-    let Some(id) = m.apply(Edit::AddFilterLayer(crate::filters::fresh(kind, m.brush.color))).made else { return };
+    let Some(id) = m.apply(Edit::AddFilterLayer(crate::filters::fresh(kind, m.brush.color8()))).made else { return };
     st.selected.clear();
     st.edit_filter = Some((id, true));
 }

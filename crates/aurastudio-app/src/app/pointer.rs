@@ -115,6 +115,7 @@ impl App {
             self.begin_nav(NavButton::Left);
         } else if !self.home && self.gesture.is_none() {
             self.pressure = e.pressure;
+            self.pen = (e.tilt, e.rotation);
             self.stroke_device = Some(e.device);
             self.tool_press(e);
         }
@@ -135,7 +136,7 @@ impl App {
         if let Some(d) = &mut self.size_drag {
             let scale = self.gpu.as_ref().map_or(1.0, Screen::winit_scale).max(0.1);
             d.moved((self.cursor.0 / scale, self.cursor.1 / scale));
-            self.brush.radius = d.size() / 2.0;
+            self.brush.resize_with_dual_brush(d.size().max(1.0));
             self.brush.hardness = d.hardness();
             self.update_outline();
             // The slider and the readout follow.
@@ -152,6 +153,7 @@ impl App {
             if let Some(at) = self.canvas_at() { self.arc_move(at); }
         } else if self.is_drawing && self.stroke_device == Some(e.device) && e.kind == Kind::Move {
             self.pressure = e.pressure;
+            self.pen = (e.tilt, e.rotation);
             self.draw_at(self.cursor, e.time.0 as f64 / 1e6);
             self.request_canvas_frame();
         }
@@ -186,7 +188,7 @@ impl App {
                 self.size_drag = Some(crate::size_drag::SizeDrag::new(
                     self.cursor,
                     (self.cursor.0 / scale, self.cursor.1 / scale),
-                    (self.brush.radius * 2.0).round(),
+                    (self.brush.size).round(),
                     self.brush.hardness,
                     aurastudio_ui::MAX_BRUSH_SIZE as f32,
                     true,
@@ -301,14 +303,14 @@ impl App {
         // Alt + right drag: the brush stays where the drag started.
         if let Some(d) = &self.size_drag {
             self.outline_shown = true;
-            if let Some(gpu) = &mut self.gpu { let r = self.brush.radius * gpu.zoom(); gpu.set_brush_cursor(Some((d.anchor, r))); }
+            if let Some(gpu) = &mut self.gpu { let r = self.brush.outline_radius() * gpu.zoom(); gpu.set_brush_cursor(Some((d.anchor, r))); }
             return;
         }
         let show = !self.home && self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
             && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none() && self.prefs.brush_outline;
         self.outline_shown = show;
         if let Some(gpu) = &mut self.gpu {
-            let outline = show.then(|| (self.cursor, self.brush.radius * gpu.zoom()));
+            let outline = show.then(|| (self.cursor, self.brush.outline_radius() * gpu.zoom()));
             gpu.set_brush_cursor(outline);
         }
     }
@@ -394,11 +396,15 @@ impl App {
     }
 
     /// Open a stroke on the paint thread with the current brush.
-    pub(super) fn send_begin(&self, erase: bool) {
+    pub(super) fn send_begin(&mut self, erase: bool) {
+        // Each stroke its own jitter (a brush with a seed of its own keeps it).
+        self.strokes += 1;
+        let seed = if self.brush.seed != 0 { self.brush.seed } else { aurastudio_core::Fnv::default().u64(self.strokes).u64(0xF0E6E).finish().max(1) };
         self.paint.send(Cmd::Begin {
             doc:   Arc::clone(&self.doc),
-            brush: Brush { erase: erase || self.brush.erase, ..self.brush.clone() },
+            brush: Box::new(Brush { erase: erase || self.brush.erase, seed, ..self.brush.clone() }),
             limit: self.stroke_limit(),
+            zoom:  self.zoom(),
         });
     }
 
@@ -422,7 +428,7 @@ impl App {
     fn draw_at(&mut self, at: (f32, f32), time: f64) {
         let Some((x, y)) = self.window_to_canvas(at.0, at.1) else { return };
         self.samples_sent += 1;
-        self.paint.send(Cmd::Sample(PenSample::new(x, y, self.pressure, time)));
+        self.paint.send(Cmd::Sample(PenSample::new(x, y, self.pressure, time).with_pen(self.pen.0, self.pen.1)));
     }
 
     /// The window lost focus (Alt+Tab...): key releases now go elsewhere,

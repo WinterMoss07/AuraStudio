@@ -391,10 +391,11 @@ mod size_curve {
 /// Brush size as a diameter: 1..1000 px, 100 at the middle.
 pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
     let max = crate::MAX_BRUSH_SIZE as f32;
-    let d = (brush.radius * 2.0).round().clamp(1.0, max);
+    let d = brush.size.round().clamp(1.0, max);
     if let Some(v) = fill_slider(ui, id, pixels("Size", 1.0..=max, Some(100.0)), d, width) {
-        // Whole diameters, odd ones included (1, 3, 5 px...).
-        brush.radius = v.round().max(1.0) / 2.0;
+        // Whole diameters, odd ones included (1, 3, 5 px...); a Dual
+        // Brush keeps its proportion.
+        brush.resize_with_dual_brush(v.round().max(1.0));
     }
 }
 
@@ -412,14 +413,39 @@ pub fn hardness_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brus
     }
 }
 
-pub fn blend_combo(ui: &mut Ui, id: &str, mode: &mut crate::BlendMode, width: f32) -> bool {
+pub fn flow_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
+    let f = (brush.flow * 100.0).round();
+    if let Some(v) = fill_slider(ui, id, percent("Flow"), f, width) {
+        brush.flow = v / 100.0;
+    }
+}
+
+/// Dab spacing, in % of the diameter (Photoshop's 1..1000 %).
+pub fn spacing_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
+    let sp = (brush.spacing * 100.0).round().clamp(1.0, 1000.0);
+    if let Some(v) = fill_slider(ui, id, Fill { label: "Spacing", range: 1.0..=1000.0, mid: Some(25.0), format: &|v| format!("{v:.0} %") }, sp, width) {
+        brush.spacing = v.round().max(1.0) / 100.0;
+    }
+}
+
+pub fn smoothing_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
+    let s = &mut brush.smoothing;
+    let a = if s.enabled { (s.amount * 100.0).round() } else { 0.0 };
+    if let Some(v) = fill_slider(ui, id, percent("Smoothing"), a, width) {
+        s.amount = v / 100.0;
+        s.enabled = v > 0.0;
+    }
+}
+
+/// The brush's blend modes (Photoshop's, then paint.net's).
+pub fn paint_mode_combo(ui: &mut Ui, id: &str, mode: &mut aurastudio_forge::PaintMode, width: f32) -> bool {
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
-        .selected_text(mode.name())
+        .selected_text(mode.label())
         .width(width)
         .show_ui(ui, |ui| {
-            for m in crate::BlendMode::ALL {
-                changed |= ui.selectable_value(mode, m, m.name()).changed();
+            for m in aurastudio_forge::PaintMode::all() {
+                changed |= ui.selectable_value(mode, m, m.label()).changed();
             }
         });
     changed

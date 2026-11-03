@@ -100,7 +100,7 @@ impl App {
             }
             Tool::Fill => {
                 let Some((x, y)) = at.and_then(|p| pixel_in(p, self.canvas_size())) else { return };
-                let [r, g, b] = self.brush.color;
+                let [r, g, b] = self.brush.color8();
                 self.send_edit(Edit::Fill { x, y, color: [r, g, b, 255], params: self.fill });
             }
             Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect => {
@@ -392,8 +392,8 @@ impl App {
         let px = d.merged(aurastudio_core::Rect::new(x, y, x + 1, y + 1), aurastudio_layers::Pick::ALL);
         drop(d);
         let Some(px) = px.first() else { return };
-        if self.brush.color != [px[0], px[1], px[2]] {
-            self.brush.color = [px[0], px[1], px[2]];
+        if self.brush.color8() != [px[0], px[1], px[2]] {
+            self.brush.set_color8([px[0], px[1], px[2]]);
             self.request_redraw();
         }
     }
@@ -403,10 +403,10 @@ impl App {
     pub(super) fn select_group(&mut self, g: Group) {
         if self.is_drawing || self.gesture.is_some() || self.nav.is_some() { return; }
         let (mut tool, mut preset) = (self.tool, self.preset);
-        self.tool_memory.select(g, &mut tool, &mut preset, &self.presets);
+        self.tool_memory.select(g, &mut tool, &mut preset, &self.library.presets);
         self.select_preset(preset);
         self.set_tool(tool);
-        self.tool_memory.remember(self.tool, self.preset, &self.presets);
+        self.tool_memory.remember(self.tool, self.preset, &self.library.presets);
     }
 
     pub(super) fn set_tool(&mut self, tool: Tool) {
@@ -428,11 +428,47 @@ impl App {
     /// brush has its own size, opacity, blend...), the new one brings its
     /// own. The color stays.
     pub(super) fn select_preset(&mut self, index: usize) {
-        if index == self.preset || index >= self.presets.len() { return; }
+        if index == self.preset || index >= self.library.presets.len() { return; }
         let color = self.brush.color;
-        self.presets[self.preset].settings = self.brush.clone();
-        self.brush = self.presets[index].settings.clone();
+        if let Some(old) = self.library.presets.get_mut(self.preset) { old.settings = self.brush.clone(); }
+        let mut b = self.library.presets[index].settings.clone();
+        // An imported bitmap is read from the disk when its brush is picked.
+        self.library.load_tips(&mut b);
+        self.library.trim_tips(&b);
+        self.brush = b;
         self.brush.color = color;
         self.preset = index;
+    }
+
+    /// Brushes > Import: Photoshop .abr, Procreate .brush / .brushset, each
+    /// file a new group of the library (kept on disk).
+    pub(super) fn import_brushes(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .set_title("Import brushes")
+            .add_filter("Brushes (Photoshop, Procreate)", &aurastudio_forge::import::BrushFile::EXTENSIONS)
+            .pick_files()
+            .unwrap_or_default();
+        if picked.is_empty() { return; }
+        let (mut added, mut failed) = (0, Vec::new());
+        for path in &picked {
+            match self.library.import(path) {
+                Ok(i) => {
+                    log::info!("brushes imported from {}: {} in \"{}\"", path.display(), i.count, i.group);
+                    for w in &i.warnings { log::info!("  {w}"); }
+                    added += i.count;
+                }
+                Err(e) => {
+                    log::warn!("brush import {}: {e}", path.display());
+                    failed.push(format!("{}: {e}", path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())));
+                }
+            }
+        }
+        let msg = match (added, failed.first()) {
+            (0, Some(e)) => format!("Import failed: {e}"),
+            (n, None) => format!("{n} brush(es) imported"),
+            (n, Some(e)) => format!("{n} brush(es) imported; {e}"),
+        };
+        self.ui.notify(&msg);
+        self.request_redraw();
     }
 }

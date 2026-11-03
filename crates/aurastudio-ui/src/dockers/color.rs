@@ -29,8 +29,8 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
 
     // The brush color may have changed elsewhere: resync the HSV master,
     // keeping the hue (and saturation) when they become undefined.
-    if to_u8(hsv_to_rgb(st.hsv)) != m.brush.color {
-        let [h, s, v] = rgb_to_hsv(to_f(m.brush.color));
+    if to_u8(hsv_to_rgb(st.hsv)) != m.brush.color8() {
+        let [h, s, v] = rgb_to_hsv(to_f(m.brush.color8()));
         let h = if s > 0.0 && v > 0.0 { h } else { st.hsv[0] };
         let s = if v > 0.0 { s } else { st.hsv[1] };
         st.hsv = [h, s, v];
@@ -50,17 +50,17 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
                 channel_row(ui, w, "V", &mut new[2], 100.0, &|t| hsv_to_color32([h, s, t]));
                 if new != st.hsv {
                     st.hsv = new;
-                    m.brush.color = to_u8(hsv_to_rgb(new));
+                    m.brush.set_color8(to_u8(hsv_to_rgb(new)));
                 }
             }
             Mode::Rgb => {
-                let [r, g, b] = to_f(m.brush.color);
+                let [r, g, b] = to_f(m.brush.color8());
                 let mut new = [r, g, b];
                 channel_row(ui, w, "R", &mut new[0], 255.0, &|t| rgb_to_color32([t, g, b]));
                 channel_row(ui, w, "G", &mut new[1], 255.0, &|t| rgb_to_color32([r, t, b]));
                 channel_row(ui, w, "B", &mut new[2], 255.0, &|t| rgb_to_color32([r, g, t]));
                 if new != [r, g, b] {
-                    m.brush.color = to_u8(new);
+                    m.brush.set_color8(to_u8(new));
                 }
             }
         }
@@ -69,7 +69,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
     ui.add_space(6.0);
     {
         // Swatch + hex field, split by hand so the field never overflows.
-        let [r, g, b] = m.brush.color;
+        let [r, g, b] = m.brush.color8();
         let hex_w = 74.0;
         let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
         let swatch = Rect::from_min_max(row.min, pos2(row.right() - hex_w - 4.0, row.bottom()));
@@ -80,7 +80,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         let edit = ui.put(field, egui::TextEdit::singleline(&mut st.hex).align(egui::Align2::CENTER_TOP));
         if edit.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && edit.has_focus() {
             if let Some(c) = parse_hex(&st.hex) {
-                m.brush.color = c;
+                m.brush.set_color8(c);
             }
         }
         if !edit.has_focus() {

@@ -339,7 +339,15 @@ name = "aurastudio-forge"
 version = "0.19.6"
 dependencies = [
  "aurastudio-core",
+ "crc32fast",
+ "flate2",
+ "image",
  "rayon",
+ "roxmltree",
+ "rustc-hash 1.1.0",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

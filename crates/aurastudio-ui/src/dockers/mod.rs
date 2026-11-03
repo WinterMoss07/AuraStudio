@@ -111,7 +111,7 @@ impl TabViewer for Viewer<'_, '_> {
         let content = ui.scope(|ui| match tab {
             Tab::Color       => color::show(ui, self.color, self.m),
             Tab::ToolOptions => tool_options::show(ui, self.m, self.a),
-            Tab::Tools       => tool_list::show(ui, self.tool_list, self.m),
+            Tab::Tools       => tool_list::show(ui, self.tool_list, self.m, self.a),
             Tab::Layers | Tab::Canvas | Tab::CelTemplate if self.m.home => {
                 ui.label(egui::RichText::new("No document").color(crate::theme::TEXT_WEAK));
             }

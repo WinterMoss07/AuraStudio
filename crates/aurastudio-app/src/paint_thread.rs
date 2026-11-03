@@ -55,7 +55,8 @@ const BAND: u32 = 128;
 pub enum Cmd {
     /// A stroke on the layer strokes go to now; `limit`: stay inside the
     /// lines, the area these fill settings find from the first sample.
-    Begin { doc: SharedDoc, brush: Brush, limit: Option<FillParams> },
+    /// `zoom`: the view's (smoothing measures its string on screen).
+    Begin { doc: SharedDoc, brush: Box<Brush>, limit: Option<FillParams>, zoom: f32 },
     /// One pen sample.
     Sample(PenSample),
     End,
@@ -250,13 +251,15 @@ impl Worker {
             while let Some(cmd) = queue.pop_front() {
                 if superseded(&cmd, &queue) { continue; }
                 match cmd {
-                    Cmd::Begin { doc, brush, limit } => {
+                    Cmd::Begin { doc, brush, limit, zoom } => {
                         // A stroke still open (its End never came, e.g. the
                         // window lost focus): finished first, recorded for
                         // undo like any other.
                         if self.stroke.is_some() { self.finish_stroke(&mut events); }
                         self.doc = Some(doc);
-                        self.stroke = Some(Painting { engine: Forge::new(brush), begun: false, limit, layer: 0, whole: None, pace: StrokePace::default() });
+                        let mut engine = Forge::new(*brush);
+                        engine.set_zoom(zoom);
+                        self.stroke = Some(Painting { engine, begun: false, limit, layer: 0, whole: None, pace: StrokePace::default() });
                     }
                     Cmd::Sample(p) => {
                         let t = Instant::now();
@@ -501,10 +504,10 @@ mod tests {
 
     fn pixel(doc: &SharedDoc, id: u64, x: i32, y: i32) -> [u8; 4] { doc.lock().unwrap().stack().image(id).unwrap().pixel(x, y) }
 
-    fn brush(r: f32) -> Brush { Brush { radius: r, min_size: 1.0, ..Brush::new() } }
+    fn brush(r: f32) -> Brush { Brush { size: r * 2.0, hardness: 1.0, pressure_size: false, color: [0.0, 0.0, 0.0, 1.0], ..Brush::default() } }
 
     fn stroke(pt: &PaintThread, doc: &SharedDoc, y: f32) {
-        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush: brush(4.0), limit: None });
+        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush: Box::new(brush(4.0)), limit: None, zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, y, 1.0, 0.0)));
         pt.send(Cmd::Sample(PenSample::new(50.0, y, 1.0, 0.01)));
         pt.send(Cmd::End);
@@ -539,7 +542,7 @@ mod tests {
         let (doc, id) = doc_with_layer();
         let (ev_tx, ev_rx) = channel();
         let pt = PaintThread::spawn(proj(64, 64), move |e| { if matches!(e, Event::Painted) { let _ = ev_tx.send(Instant::now()); } });
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush(2.0), limit: None });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(2.0)), limit: None, zoom: 1.0 });
         let (n, t0) = (200, Instant::now());
         for i in 0..n {
             let x = 4.0 + 56.0 * i as f32 / n as f32;
@@ -576,7 +579,7 @@ mod tests {
         let other = doc.lock().unwrap().apply(Edit::AddLayer("other".into())).made.unwrap();
         doc.lock().unwrap().apply(Edit::SetActive(id));
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush(4.0), limit: None });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(4.0)), limit: None, zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, 50.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         doc.lock().unwrap().apply(Edit::SetActive(other));
@@ -595,14 +598,14 @@ mod tests {
         let (doc, id) = doc_with_layer();
         let n = doc.lock().unwrap().history().undo_len();
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush(4.0), limit: None });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(4.0)), limit: None, zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         stroke(&pt, &doc, 40.0);
         drop(pt);
         assert_eq!(doc.lock().unwrap().history().undo_len(), n + 2);
 
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: brush(4.0), limit: None });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(4.0)), limit: None, zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         {
@@ -682,12 +685,12 @@ mod tests {
         };
         let p = FillParams { tolerance: 32, expand: 0, ..Default::default() };
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Brush { color: [200, 0, 0], ..brush(4.0) }, limit: Some(p) });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(Brush { color: [200.0 / 255.0, 0.0, 0.0, 1.0], ..brush(4.0) }), limit: Some(p), zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, 20.0, 1.0, 0.0)));
         pt.send(Cmd::Sample(PenSample::new(55.0, 20.0, 1.0, 0.01)));
         pt.send(Cmd::End);
         // Started on the line: free.
-        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Brush { color: [200, 0, 0], ..brush(4.0) }, limit: Some(p) });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(Brush { color: [200.0 / 255.0, 0.0, 0.0, 1.0], ..brush(4.0) }), limit: Some(p), zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(31.0, 45.0, 1.0, 0.0)));
         pt.send(Cmd::Sample(PenSample::new(55.0, 45.0, 1.0, 0.01)));
         pt.send(Cmd::End);

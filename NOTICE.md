@@ -14,53 +14,6 @@ codebase, per the project's "inspired rewrite" approach.
 
 Full original source: https://docs.rs/efude-input/0.1.0/src/efude_input/lib.rs.html
 
-## assets/brushes/mypaint — MyPaint brush collection
-
-The brushes (`.myb` files and their `_prev.png` previews) come from
-https://github.com/mypaint/mypaint-brushes and are released under
-**CC0 1.0** (public domain dedication), see `assets/brushes/mypaint/LICENSES.dep5`.
-Authors: Martin Renold and the MyPaint Development Team (classic,
-experimental), David Revoy (deevad), Ramón Miranda (ramon), Marcelo "Tanda"
-Cerviño (tanda), Guillaume Loussarévian (kaerhon_v1), Brien Dieterle
-(Dieterle). Thank you! AuraStudio ships 56 of them, chosen and renamed in
-`assets/brushes/catalog.txt`; the others stay in the folder.
-
-## hokusai — the core of Forge
-
-Forge, AuraStudio's brush engine (`crates/aurastudio-forge/src/forge`),
-is built on the code of `hokusai-core` 0.3.0 and `hokusai-brush` 0.3.0
-(https://github.com/reearth/hokusai, © Re:Earth and contributors, MIT OR
-Apache-2.0), a Rust port of libmypaint (https://github.com/mypaint/libmypaint,
-ISC): brush settings, inputs and curves, the stroke path, libmypaint's dab
-blending and the `.myb` reader. Changed since: Krita-style curve modes,
-wash painting, auto spacing, a dab on press, path clipping to the canvas,
-speedups that keep MyPaint brushes' output identical (the spectral mix
-takes the brush color's logarithms once per dab, `wgm_mix`; the speed
-inputs' constants once per event; the dab mask buffer kept), only the
-pixels the dabs reach written back, and hokusai's .myb writer, debug
-traces and unused state removed.
-
-The MIT license of hokusai:
-
-> Permission is hereby granted, free of charge, to any person obtaining a
-> copy of this software and associated documentation files (the
-> "Software"), to deal in the Software without restriction, including
-> without limitation the rights to use, copy, modify, merge, publish,
-> distribute, sublicense, and/or sell copies of the Software, and to
-> permit persons to whom the Software is furnished to do so, subject to
-> the following conditions:
->
-> The above copyright notice and this permission notice shall be included
-> in all copies or substantial portions of the Software.
->
-> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-> OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-> MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-> IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-> CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-> TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-> SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 ## vendor/egui_dock — egui_dock 0.21.1, patched
 
 Copy of `egui_dock` 0.21.1 (https://github.com/Adanos020/egui_dock), ©
@@ -103,7 +56,7 @@ feather as GIMP's), `KisColorSelectionPolicies.h` (the wand's threshold),
 `kis_selection_modifier_mapper.cc` (Shift add, Alt subtract, Shift+Alt
 intersect). AuraStudio's code for them is its own or PhotoCraft's (below).
 
-## PhotoCraft — filters and their dialogs
+## PhotoCraft — filters, their dialogs and the brush engine
 
 Parts of `crates/aurastudio-filters` and of the filter dialogs
 (`crates/aurastudio-ui/src/filters/`) are adapted from PhotoCraft
@@ -135,6 +88,26 @@ here under MIT):
   `crates/ui-egui/src/transform_tool.rs`. Changes: 8-bit tiled coverage,
   a pyramid instead of a resize for reductions, our own threads, a
   Catmull-Rom warp grid, Krita's and CSP's modifiers.
+
+- Forge, the brush engine (`crates/aurastudio-forge`, 0.20): the brush
+  model (computed and sampled tips, Shape Dynamics, Scattering, Texture,
+  Dual Brush, Color Dynamics, Transfer, Brush Pose, Noise, Wet Edges,
+  Build-up, Smoothing, the Mixer Brush), the dynamics (points to dabs,
+  hash jitter), the tip rasterization, the response curves, the stroke's
+  coverage build-up, the blend modes, the built-in presets and procedural
+  textures, the brush outline, symmetry, from `crates/paint/src/`; the
+  Photoshop `.abr` reader (descriptors, PackBits planes, patterns) from
+  `crates/psd/src/`, its mapping to brushes from `crates/io/src/abr_map.rs`;
+  the Procreate `.brush` / `.brushset` reader (binary plists) from the
+  `procreate-brush-import` work (`crates/io/src/procreate.rs`); the ZIP
+  reader from `crates/format/src/zip.rs`; the preset library's layout from
+  `crates/engine/src/preset_store.rs`. Changes: the stroke is painted
+  through AuraStudio's tiles (the stroke base and mask kept by `raster`,
+  the selection as a limit, only the changed pixels, 8-bit integer blends
+  where the mode allows, dithered coverage, several cores for big
+  brushes), the Mixer Brush on the layer's runs, the readers trimmed to
+  what brush files use, imported tips kept on disk and read when their
+  brush is picked.
 
 The ArtCraft name and logos are not used. PhotoCraft's MIT license:
 

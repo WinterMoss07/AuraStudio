@@ -24,7 +24,7 @@ use winit::{
 use aurastudio_core::{DocType, Point};
 use aurastudio_document::{Document, Edit, SelectMode, SharedDoc, Workspace};
 use aurastudio_file::EXTENSION;
-use aurastudio_forge::{Brush, Preset};
+use aurastudio_forge::{Brush, Library};
 use aurastudio_gpu::GpuState;
 use aurastudio_input::{Device, Input};
 use aurastudio_layers::FillParams;
@@ -66,6 +66,13 @@ enum Pending { Create(aurastudio_ui::NewDoc), Open(PathBuf), Close, Quit }
 pub fn recovery_path() -> Option<PathBuf> {
     let name = format!("autosave-{}.{EXTENSION}", env!("CARGO_PKG_VERSION"));
     dirs::data_dir().map(|d| d.join("AuraStudio").join("recovery").join(name))
+}
+
+/// Where imported brushes are kept (AURASTUDIO_BRUSH_DIR, else
+/// %APPDATA%\AuraStudio\brushes and the like).
+fn brush_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("AURASTUDIO_BRUSH_DIR") { return Some(PathBuf::from(dir)); }
+    dirs::data_dir().map(|d| d.join("AuraStudio").join("brushes"))
 }
 
 /// The list of recently used files, one path per line.
@@ -228,8 +235,10 @@ pub struct App {
     /// Pen, mouse and touch (aurastudio-input).
     input:  Input,
 
-    /// The brushes (built-in until the brush engine brings its presets).
-    presets:      Vec<Preset>,
+    /// The brushes: built-ins and imported files (kept on disk).
+    library:      Library,
+    /// Strokes begun: each one's jitter seed.
+    strokes:      u64,
     /// Selected preset.
     preset:       usize,
     /// Working settings of the selected preset (copied back into it when
@@ -274,6 +283,9 @@ pub struct App {
     /// Alt + right drag: brush size / hardness (size_drag.rs).
     size_drag:  Option<crate::size_drag::SizeDrag>,
     pressure:   f32,
+    /// The pen's tilt (degrees toward +x / +y) and barrel rotation at the
+    /// last sample.
+    pen:        ((f32, f32), f32),
     /// The device drawing the stroke (only its samples go in it).
     stroke_device: Option<Device>,
     /// Pen samples sent for the current stroke.
@@ -381,7 +393,14 @@ pub struct App {
 
 impl App {
     pub fn new(proxy: EventLoopProxy<AppEvent>) -> Self {
-        let presets = Preset::builtin();
+        let library = match brush_dir() {
+            Some(dir) => {
+                let (lib, warnings) = Library::open(dir);
+                for w in warnings { log::warn!("brush library: {w}"); }
+                lib
+            }
+            None => Library::builtin(),
+        };
         let mut workspace = Workspace::new();
         let doc = workspace.new_document("", PLACEHOLDER.0, PLACEHOLDER.1, DocType::Illustration);
         let projection = Arc::new(std::sync::Mutex::new(Projection::new(PLACEHOLDER.0, PLACEHOLDER.1)));
@@ -400,15 +419,16 @@ impl App {
             });
         });
         // Start with the pen.
-        let first = presets.iter().position(|p| p.name == "Pen").unwrap_or(0);
+        let first = library.presets.iter().position(|p| p.name == "Pen").unwrap_or(0);
         Self {
             proxy,
             window: None,
             gpu:    None,
             input:  Input::new(env!("CARGO_PKG_VERSION")),
 
-            brush:       presets[first].settings.clone(),
-            presets,
+            brush:       library.presets[first].settings.clone(),
+            library,
+            strokes:     0,
             preset:      first,
 
             workspace,
@@ -431,6 +451,7 @@ impl App {
             is_drawing: false,
             size_drag:  None,
             pressure:   1.0,
+            pen:        ((0.0, 0.0), 0.0),
             stroke_device: None,
             samples_sent: 0,
             modifiers:  ModifiersState::empty(),
