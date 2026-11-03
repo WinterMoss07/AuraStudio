@@ -396,7 +396,7 @@ fn fill_refers_to_what_it_is_given() {
     // Paint it.
     let c = s.add_layer("color");
     let a = flood(&Merged(&s, true), frame, 5, 5, 10, 0, None).unwrap();
-    assert_eq!(s.fill_area(c, &a, [200, 10, 10, 255], None), Some(a.bbox()));
+    assert_eq!(s.fill_area(c, &a, [200, 10, 10, 255], None, false), Some(a.bbox()));
     assert_eq!(s.image(c).unwrap().pixel(20, 5), [200, 10, 10, 255]);
     assert_eq!(s.image(c).unwrap().pixel(40, 5)[3], 0);
     // Everywhere alike (no contiguity): both sides of the ink.

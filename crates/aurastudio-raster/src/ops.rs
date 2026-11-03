@@ -81,7 +81,14 @@ impl<P: Pixel> Surface<P> {
     /// `color` over the pixels of `rect` with coverage `cov` (one byte per
     /// pixel of `rect`, rows packed): the fill tool. Fully covered tiles
     /// of an opaque color become that color (no pixels).
-    pub fn fill_mask(&mut self, rect: Rect, cov: &[u8], color: P) {
+    pub fn fill_mask(&mut self, rect: Rect, cov: &[u8], color: P) { self.fill_mask_as(rect, cov, color, false) }
+
+    /// `fill_mask` behind what is there (paint behind): the soft edge of a
+    /// line in the area keeps its shading, toward `color` instead of
+    /// toward transparent.
+    pub fn fill_mask_behind(&mut self, rect: Rect, cov: &[u8], color: P) { self.fill_mask_as(rect, cov, color, true) }
+
+    fn fill_mask_as(&mut self, rect: Rect, cov: &[u8], color: P, behind: bool) {
         let rw = rect.w() as usize;
         if cov.len() != rw * rect.h() as usize { return; }
         let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&rect) else { return };
@@ -91,7 +98,7 @@ impl<P: Pixel> Surface<P> {
                 let part = tr.intersect(&rect);
                 let crow = |y: i32| { let s = (y - rect.y0) as usize * rw + (part.x0 - rect.x0) as usize; &cov[s..s + part.w() as usize] };
                 if (part.y0..part.y1).all(|y| crow(y).iter().all(|c| *c == 0)) { continue; }
-                if part == tr && color.opaque() && (part.y0..part.y1).all(|y| crow(y).iter().all(|c| *c == 255)) {
+                if !behind && part == tr && color.opaque() && (part.y0..part.y1).all(|y| crow(y).iter().all(|c| *c == 255)) {
                     self.set_slot(tx, ty, if color == self.fill { Slot::Fill } else { Slot::Uniform(color) });
                     continue;
                 }
@@ -101,7 +108,8 @@ impl<P: Pixel> Surface<P> {
                 for (k, cr) in rows.into_iter().enumerate() {
                     let d = (((part.y0 + k as i32 - tr.y0) << shift) + (part.x0 - tr.x0)) as usize;
                     for (p, c) in px[d..d + cr.len()].iter_mut().zip(cr) {
-                        if *c > 0 { *p = p.over(color, *c); }
+                        if *c == 0 { continue; }
+                        *p = if behind { P::default().over(color, *c).over(*p, 255) } else { p.over(color, *c) };
                     }
                 }
                 self.settle(tx, ty);

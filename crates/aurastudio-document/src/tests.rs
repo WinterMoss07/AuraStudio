@@ -264,6 +264,27 @@ fn the_wand_and_the_fill_pick_like_pixels() {
     assert_eq!(d.history().undo_len(), n);
 }
 
+/// A fill around a soft line on the same layer: the line's soft edge
+/// shades into the fill (paint behind), the line itself stays.
+#[test]
+fn the_fill_keeps_the_soft_edge_of_lines() {
+    let mut d = doc(64, 64);
+    let id = add_layer(&mut d);
+    // A ring: its outer edge soft (half alpha), the inside empty.
+    paint(&mut d, Rect::new(10, 10, 50, 50), [0, 0, 0, 255]);
+    d.apply(Edit::Select(SelectOp::Shape { shape: Shape::Rect(Rect::new(14, 14, 46, 46)), mode: Mode::Replace, aa: false, feather: 0.0 }));
+    d.apply(Edit::ClearActive);
+    d.apply(Edit::Select(SelectOp::None));
+    paint(&mut d, Rect::new(13, 14, 14, 46), [0, 0, 0, 128]);
+    let params = FillParams { refer: aurastudio_layers::Refer::Layer, expand: 1, ..FillParams::default() };
+    d.apply(Edit::Fill { x: 30, y: 30, color: [255, 0, 0, 255], params });
+    assert_eq!(px(&d, id, 30, 30), [255, 0, 0, 255]);
+    assert_eq!(px(&d, id, 12, 30), [0, 0, 0, 255], "the line stays");
+    let edge = px(&d, id, 13, 30);
+    assert_eq!(edge[3], 255, "the soft edge is filled behind");
+    assert!(edge[0] > 100 && edge[0] < 160 && edge[1] == 0, "shaded from line to fill: {edge:?}");
+}
+
 #[test]
 fn copy_paste_selected_pixels() {
     let mut d = doc(64, 64);

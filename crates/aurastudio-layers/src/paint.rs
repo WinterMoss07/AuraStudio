@@ -61,16 +61,18 @@ impl LayerStack {
         true
     }
 
-    /// Paint `color` over the pixels of `area` in paint layer `id` (the
-    /// fill tool), as much as `sel` selects them. Returns what changed.
-    pub fn fill_area(&mut self, id: u64, area: &Area, color: Rgba8, sel: Option<&Mask>) -> Option<Rect> {
+    /// Paint `color` over (`behind`: behind) the pixels of `area` in paint
+    /// layer `id` (the fill tool), as much as `sel` selects them. Returns
+    /// what changed.
+    pub fn fill_area(&mut self, id: u64, area: &Area, color: Rgba8, sel: Option<&Mask>, behind: bool) -> Option<Rect> {
         let r = area.bbox();
         if r.is_empty() { return None; }
         let mut cov = area.coverage(r);
         if let Some(m) = sel {
             for (c, s) in cov.iter_mut().zip(m.read(r)) { *c = aurastudio_core::math::mul255(*c, s); }
         }
-        self.image_mut(id)?.fill_mask(r, &cov, color);
+        let img = self.image_mut(id)?;
+        if behind { img.fill_mask_behind(r, &cov, color) } else { img.fill_mask(r, &cov, color) }
         Some(r)
     }
 

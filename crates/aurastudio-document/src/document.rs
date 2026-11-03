@@ -478,7 +478,11 @@ impl Document {
         let Some(area) = area else { self.drop_new_sheet(&mut done); return done };
         let Some(before) = self.before(id) else { return done };
         let sel = self.selection.as_ref().map(Selection::as_mask);
-        self.stack.fill_area(id, &area, color, sel);
+        // Filling an empty part of the layer (the lines on it, or on
+        // another): behind its pixels, so a line's soft edge shades into
+        // the fill. Recoloring a painted area: over.
+        let behind = self.stack.image(id).is_some_and(|i| i.pixel(x, y)[3] < 255);
+        self.stack.fill_area(id, &area, color, sel, behind);
         self.end_paint("Fill", id, before, &mut done);
         done
     }
