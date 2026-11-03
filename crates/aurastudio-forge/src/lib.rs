@@ -222,13 +222,14 @@ fn soft_exp(u: f32) -> f32 {
 }
 
 /// Opacity of a round tip at distance `d` from its centre, edge included (see [`tip_shape`]).
-pub fn tip_falloff(d: f32, radius: f32, hardness: f32) -> f32 {
+#[cfg(test)]
+pub(crate) fn tip_falloff(d: f32, radius: f32, hardness: f32) -> f32 {
     TipProfile::new(radius, hardness).falloff(d)
 }
 
 /// How far from its centre a round tip still paints (where its falloff drops below ~0.1 %).
 #[inline]
-pub fn tip_reach(radius: f32, hardness: f32) -> f32 {
+pub(crate) fn tip_reach(radius: f32, hardness: f32) -> f32 {
     let (r0, s) = tip_shape(radius, hardness);
     r0 + 2.6 * s
 }

@@ -174,6 +174,7 @@ impl App {
 
     #[profiling::function]
     pub(super) fn render_frame(&mut self) {
+        self.wakes.frames += 1;
         self.update_outline();
         let preview = self.shape_preview();
         let drawing = self.gesture_outline();
@@ -344,7 +345,7 @@ impl App {
             self.repaint_at = Some(self.repaint_at.map_or(at, |t| t.min(at)));
         }
         match gpu.take_repaint_delay() {
-            Some(d) if d.is_zero() => want_frame = true,
+            Some(d) if d.is_zero() => { want_frame = true; self.wakes.egui += 1; }
             // egui says "never" with a huge delay.
             Some(d) if d < Duration::from_secs(3600) => {
                 let at = Instant::now() + d;

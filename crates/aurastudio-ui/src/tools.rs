@@ -619,7 +619,13 @@ fn draw_brush_drag(painter: &egui::Painter, b: &BrushDrag, pt: &dyn Fn((f32, f32
     // then its falloff.
     let c = pt(b.center);
     let zoom = (pt((b.center.0 + 1.0, b.center.1)) - c).length();
-    tip_preview(painter, c, b.radius, zoom, b.hardness, Color32::from_rgba_unmultiplied(255, 0, 0, 110));
+    let r = b.radius * zoom;
+    tip_preview(painter, c, r, b.hardness, Color32::from_rgba_unmultiplied(255, 0, 0, 110));
+    // The brush's circle: the preview stays inside it (Photoshop).
+    if r >= 1.0 {
+        painter.circle_stroke(c, r + 0.5, Stroke::new(1.0_f32, Color32::from_black_alpha(140)));
+        painter.circle_stroke(c, r, Stroke::new(1.0_f32, Color32::from_white_alpha(220)));
+    }
     // The readout, below right of the pointer (as a tooltip).
     let font = egui::FontId::proportional(13.0);
     let galley = painter.layout_no_wrap(b.label.clone(), font, theme::TEXT);
@@ -629,28 +635,29 @@ fn draw_brush_drag(painter: &egui::Painter, b: &BrushDrag, pt: &dyn Fn((f32, f32
     painter.galley(rect.min + vec2(7.0, 4.0), galley, theme::TEXT);
 }
 
-/// The round tip as the brush engine paints it: `radius` canvas pixels at
-/// `zoom` points per pixel, solid out to its core, then the engine's
-/// falloff out to its reach. One mesh of rings (its cost doesn't grow with
-/// the brush). From PhotoCraft.
-fn tip_preview(painter: &egui::Painter, c: Pos2, radius: f32, zoom: f32, hardness: f32, color: Color32) {
-    /// Rings across the falloff: linear steps between them are close.
+/// The tip's hardness inside the brush's circle (Photoshop, PhotoCraft):
+/// solid out to `hardness` of the radius `r` (points), then fading to
+/// nothing at the circle; the disc never grows past it. One mesh of rings
+/// (its cost doesn't grow with the brush).
+fn tip_preview(painter: &egui::Painter, c: Pos2, r: f32, hardness: f32, color: Color32) {
+    /// Rings across the fade: linear steps between them are close.
     const RINGS: usize = 16;
-    if !(radius.is_finite() && zoom.is_finite() && radius > 0.0 && zoom > 0.0) { return; }
-    let (core, _) = aurastudio_forge::tip_shape(radius, hardness);
-    let reach = aurastudio_forge::tip_reach(radius, hardness).max(core);
-    let outer = reach * zoom;
-    if !painter.clip_rect().expand(outer).contains(c) { return; }
+    if !(r.is_finite() && r > 0.0) { return; }
+    if !painter.clip_rect().expand(r).contains(c) { return; }
+    let core = r * hardness.clamp(0.0, 1.0);
     // Enough segments for a smooth edge, capped for huge brushes.
-    let n = ((outer * 0.5) as usize).clamp(24, 160);
+    let n = ((r * 0.5) as usize).clamp(24, 160);
     let mut mesh = egui::Mesh::default();
     mesh.colored_vertex(c, color);
     for k in 0..=RINGS {
-        let d = core + (reach - core) * k as f32 / RINGS as f32;
-        let tint = if k == RINGS { Color32::TRANSPARENT } else { color.gamma_multiply(aurastudio_forge::tip_falloff(d, radius, hardness)) };
+        let t = k as f32 / RINGS as f32;
+        let d = core + (r - core) * t;
+        // Smooth from solid to nothing.
+        let a = 1.0 - t * t * (3.0 - 2.0 * t);
+        let tint = color.gamma_multiply(a);
         for j in 0..n {
-            let a = j as f32 / n as f32 * std::f32::consts::TAU;
-            mesh.colored_vertex(c + vec2(a.cos(), a.sin()) * d * zoom, tint);
+            let ang = j as f32 / n as f32 * std::f32::consts::TAU;
+            mesh.colored_vertex(c + vec2(ang.cos(), ang.sin()) * d, tint);
         }
     }
     let n = n as u32;

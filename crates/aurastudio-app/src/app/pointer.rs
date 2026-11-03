@@ -48,9 +48,24 @@ impl App {
     fn on_pointer(&mut self, e: Event) {
         let pos = (e.x as f32, e.y as f32);
         // Pen ⇄ mouse: the system shows its own cursor again, ours must be
-        // set anew (else the arrow stays inside the brush outline).
-        if self.pointer_device.replace(e.device) != Some(e.device) || matches!(e.kind, Kind::ProximityIn) {
+        // set anew (else the arrow stays inside the brush outline). Only on
+        // a real switch: the pen arriving, or the mouse used once the pen
+        // is away (Windows sends mouse events for the pen too: reset on
+        // each, the cursor flickered while painting).
+        match e.kind {
+            Kind::ProximityIn => self.pen_near = true,
+            Kind::ProximityOut => self.pen_near = false,
+            _ => {}
+        }
+        let for_mouse = match e.device {
+            Device::Mouse if !self.pen_near => true,
+            Device::Pen | Device::Eraser => false,
+            _ => self.cursor_for_mouse,
+        };
+        if for_mouse != self.cursor_for_mouse || matches!(e.kind, Kind::ProximityIn) {
+            self.cursor_for_mouse = for_mouse;
             if let Some(c) = &mut self.cursors { c.invalidate(); }
+            self.cursor = pos;
             self.update_cursor();
         }
         match e.kind {

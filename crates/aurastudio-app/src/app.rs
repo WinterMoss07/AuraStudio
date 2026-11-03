@@ -288,8 +288,10 @@ pub struct App {
     pen:        ((f32, f32), f32),
     /// The device drawing the stroke (only its samples go in it).
     stroke_device: Option<Device>,
-    /// The device of the last pointer event (a change resets the cursor).
-    pointer_device: Option<Device>,
+    /// The pen is near the tablet (between ProximityIn and Out), and the
+    /// cursor was last set for the mouse (a switch resets it).
+    pen_near:       bool,
+    cursor_for_mouse: bool,
     /// Pen samples sent for the current stroke.
     samples_sent: u32,
     modifiers:  ModifiersState,
@@ -391,6 +393,38 @@ pub struct App {
     ui_saw_canvas: bool,
     /// Delayed frame asked by egui (tooltip, notice fade-out).
     repaint_at:   Option<Instant>,
+    /// Why the app woke up and drew without being touched (logged when it
+    /// does so often: an idle app should sleep).
+    wakes:        Wakes,
+}
+
+/// Frames drawn while nobody touches the app, by what asked for them,
+/// over 10 s.
+#[derive(Default)]
+struct Wakes {
+    since:    Option<Instant>,
+    /// Pointer, keys, window events seen in the window of time.
+    touched:  bool,
+    frames:   u32,
+    delayed:  u32,
+    deferred: u32,
+    egui:     u32,
+    other:    u32,
+}
+
+impl Wakes {
+    /// Each wake: log the last 10 s if they drew more than a few frames
+    /// untouched.
+    fn tick(&mut self) {
+        let now = Instant::now();
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since) < Duration::from_secs(10) { return; }
+        if !self.touched && self.frames > 10 {
+            log::info!("idle but drawing: {} frames in 10 s (egui asked {}, delayed repaints {}, deferred frames {}, other {})",
+                self.frames, self.egui, self.delayed, self.deferred, self.other);
+        }
+        *self = Wakes { since: Some(now), ..Wakes::default() };
+    }
 }
 
 impl App {
@@ -455,7 +489,8 @@ impl App {
             pressure:   1.0,
             pen:        ((0.0, 0.0), 0.0),
             stroke_device: None,
-            pointer_device: None,
+            pen_near: false,
+            cursor_for_mouse: true,
             samples_sent: 0,
             modifiers:  ModifiersState::empty(),
             display_profile: None,
@@ -509,6 +544,7 @@ impl App {
             memory_at:    None,
             ui_saw_canvas: false,
             repaint_at:   None,
+            wakes:        Wakes::default(),
         }
     }
 
@@ -657,15 +693,18 @@ impl ApplicationHandler<AppEvent> for App {
         self.tick_memory();
         self.update_title();
 
+        self.wakes.tick();
         if self.repaint_at.is_some_and(|t| Instant::now() >= t) {
             self.repaint_at = None;
             self.ui_dirty = true;
             self.redraw_wanted = true;
+            self.wakes.delayed += 1;
         }
         let now = Instant::now();
         if self.deferred_frame.is_some_and(|t| now >= t) {
             self.deferred_frame = None;
             self.redraw_wanted = true;
+            self.wakes.deferred += 1;
         }
         if std::mem::take(&mut self.redraw_wanted) {
             // New paint as soon as merged; while drawing, the brush outline
@@ -790,6 +829,7 @@ impl ApplicationHandler<AppEvent> for App {
         // egui says when it needs a frame. RedrawRequested must not ask for
         // another (that looped: 1.6 cores idle over a docker).
         let ui_needs_frame = self.gpu.as_mut().is_some_and(|gpu| gpu.egui_handle_event(&event));
+        if !matches!(event, WindowEvent::RedrawRequested) { self.wakes.touched = true; }
         if let WindowEvent::CursorMoved { position, .. } = &event {
             self.cursor = (position.x as f32, position.y as f32);
             self.cursor_in_window = true;

@@ -249,7 +249,7 @@ pub fn toolbar(root: &mut egui::Ui, m: &mut Model, a: &mut Actions) {
 /// The status bar at the bottom: what the document is, how it is viewed.
 pub fn status_bar(root: &mut egui::Ui, m: &mut Model) {
     egui::Panel::bottom("status_bar")
-        .exact_size(22.0)
+        .exact_size(18.0)
         .show_separator_line(false)
         .frame(Frame::NONE.fill(theme::PANEL).inner_margin(Margin::symmetric(10, 0)))
         .show(root, |ui| {
