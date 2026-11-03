@@ -1,0 +1,64 @@
+[package]
+name = "aurastudio"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "aurastudio"
+path = "src/main.rs"
+
+[features]
+default = ["mimalloc"]
+# The app's allocator: mimalloc, or the system's without this feature
+# (--no-default-features), to compare them (README, Profiling).
+mimalloc = ["dep:mimalloc"]
+# Tracy profiler: zones, frames and plots for the Tracy window (README,
+# Profiling). Off: the profiling macros compile to nothing.
+profile = ["profiling/profile-with-tracy", "dep:tracy-client"]
+# Diagnostic build: zone timers and the report (never shipped).
+diag = ["aurastudio-core/diag", "dep:aurastudio-diag"]
+
+[dependencies]
+profiling = "1"
+# Same version as the one profiling uses (one Tracy client).
+tracy-client = { version = "0.18", optional = true }
+aurastudio-core      = { path = "../aurastudio-core" }
+aurastudio-diag      = { path = "../aurastudio-diag", optional = true }
+aurastudio-input     = { path = "../aurastudio-input" }
+aurastudio-raster    = { path = "../aurastudio-raster" }
+aurastudio-filters   = { path = "../aurastudio-filters" }
+aurastudio-transform = { path = "../aurastudio-transform" }
+aurastudio-tools     = { path = "../aurastudio-tools" }
+aurastudio-selection = { path = "../aurastudio-selection" }
+aurastudio-color     = { path = "../aurastudio-color" }
+aurastudio-layers    = { path = "../aurastudio-layers" }
+aurastudio-compose   = { path = "../aurastudio-compose" }
+aurastudio-animation = { path = "../aurastudio-animation" }
+aurastudio-document  = { path = "../aurastudio-document" }
+aurastudio-file      = { path = "../aurastudio-file" }
+aurastudio-gpu       = { path = "../aurastudio-gpu" }
+aurastudio-forge     = { path = "../aurastudio-forge" }
+aurastudio-ui        = { path = "../aurastudio-ui" }
+winit             = "0.30"
+pollster          = "0.3"
+env_logger        = "0.11"
+log               = "0.4"
+raw-window-handle = "0.6"
+egui       = "0.37"
+egui-wgpu  = "0.37"
+egui-winit = "0.37"
+dirs = "7"
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# System clipboard: images copied to / from other apps.
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
+mimalloc = { version = "0.1", optional = true }
+
+# The .exe icon (Windows resource), see build.rs.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+# Memory report (working set, private bytes); the window's DPI, Alt menu.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Memory", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

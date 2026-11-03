@@ -224,6 +224,9 @@ impl GpuState {
     /// width, height. Set from the interface's layout each frame.
     pub fn set_viewport(&mut self, area: Area) { self.viewport = area; }
 
+    /// The canvas area now (x, y, width, height).
+    pub fn viewport(&self) -> Area { self.viewport }
+
     /// `pos` (physical pixels) is in the canvas area.
     pub fn in_viewport(&self, pos: (f32, f32)) -> bool {
         let [vx, vy, vw, vh] = self.viewport;

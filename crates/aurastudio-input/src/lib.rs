@@ -114,6 +114,10 @@ impl Input {
     /// The mouse bounce filter's window (0: off).
     pub fn set_debounce(&mut self, window: Duration) { self.debounce.window = window; }
 
+    /// When a mouse release held back by the bounce filter comes due (the
+    /// app's loop wakes then and polls).
+    pub fn deadline(&self) -> Option<Instant> { self.debounce.deadline() }
+
     /// Each frame: where the canvas is and whether the interface wants
     /// the pointer.
     pub fn set_frame(&mut self, f: FrameInfo) { self.machine.frame = f; }

@@ -20,6 +20,7 @@ members = [
     "crates/aurastudio-gpu",
     "crates/aurastudio-forge",
     "crates/aurastudio-ui",
+    "crates/aurastudio-app",
     "crates/aurastudio-diag",
     "crates/aurastudio-stress",
 ]
