@@ -929,6 +929,6 @@ fn upload_all(doc: &Document, gpu: &mut GpuState) {
     let (w, h) = (s.width, s.height);
     for y0 in (0..h).step_by(64) {
         let r = aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 64.min(h - y0));
-        gpu.upload(r, &doc.merged(r, aurastudio_layers::Pick::ALL));
+        gpu.upload(r, &doc.screen(r));
     }
 }

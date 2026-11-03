@@ -692,4 +692,55 @@ mod tests {
             }
         }
     }
+
+    /// Pieces of every shape sent over and over (bands, strokes, a whole
+    /// page, past pages' edges, ink, color, back to paper): after each,
+    /// the picture is exactly what was sent.
+    #[test]
+    fn any_sequence_of_uploads_shows_what_was_sent() {
+        let Some(g) = gpu() else { return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (700u32, 530u32);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        let mut want = vec![[0u8; 4]; (w * h) as usize];
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let flat = |v: &[aurastudio_core::Rgba8]| v.iter().flatten().copied().collect::<Vec<u8>>();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = |n: u32| { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed % n as u64) as u32 };
+        let rect = |x: u32, y: u32, rw: u32, rh: u32| aurastudio_core::Rect::new(x as i32, y as i32, (x + rw).min(w) as i32, (y + rh).min(h) as i32);
+        // The app's first upload: bands of 64 rows of paper.
+        let mut steps: Vec<(aurastudio_core::Rect, u8)> = (0..h).step_by(64).map(|y| (rect(0, y, w, 64), 0)).collect();
+        for _ in 0..40 {
+            let kind = rnd(5) as u8;
+            let r = match kind {
+                0 => rect(0, rnd(h), w, 128),                       // a band of a whole merge
+                1 => rect(rnd(w), rnd(h), 1 + rnd(90), 1 + rnd(90)), // a stroke's piece
+                2 => rect(rnd(3) * 256, rnd(2) * 256, 256, 256),     // a whole page
+                _ => rect(rnd(w), rnd(h), 1 + rnd(300), 1 + rnd(300)),
+            };
+            steps.push((r, kind));
+        }
+        for (k, (r, kind)) in steps.into_iter().enumerate() {
+            if r.is_empty() { continue; }
+            for y in r.y0..r.y1 { for x in r.x0..r.x1 {
+                let i = (y as u32 * w + x as u32) as usize;
+                let v = ((x * 7 + y * 3) % 256) as u8;
+                want[i] = match kind {
+                    0 => [255, 255, 255, 255],
+                    1 => [v, v, v, 255],
+                    2 => if (x / 40 + y / 40) % 2 == 0 { [255; 4] } else { [0, 0, 0, 255] },
+                    3 => [200, (x % 256) as u8, 30, 255],
+                    _ => [255, 255, 255, 255],
+                };
+            } }
+            let px: Vec<_> = (r.y0..r.y1).flat_map(|y| (r.x0..r.x1).map(move |x| (x, y))).map(|(x, y)| want[(y as u32 * w + x as u32) as usize]).collect();
+            canvas.upload(device, queue, &mut up, r, &px);
+            let got = render(&g, &mut canvas, &one, (w, h), true);
+            if got != flat(&want) {
+                let bad = (0..(w * h) as usize).find(|&i| got[i * 4..i * 4 + 4] != want[i]).unwrap();
+                panic!("step {k} ({r:?}, kind {kind}): pixel ({}, {}) is {:?}, sent {:?}; pages {:?}", bad as u32 % w, bad as u32 / w, &got[bad * 4..bad * 4 + 4], want[bad], canvas.count());
+            }
+        }
+    }
 }

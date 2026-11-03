@@ -438,7 +438,7 @@ impl Worker {
             let px = {
                 let d = doc.lock().unwrap_or_else(|e| e.into_inner());
                 if (d.stack().width, d.stack().height) != (w, h) { break; }
-                aurastudio_compose::merge(d.stack(), r, Opts { cache: Some(&self.folder_cache), ..Default::default() })
+                aurastudio_compose::merge(d.stack(), r, Opts { cache: Some(&self.folder_cache), ghosts: true, ..Default::default() })
             };
             let mut p = self.projection.lock().unwrap_or_else(|e| e.into_inner());
             if (p.width, p.height) != (w, h) { break; }
@@ -468,7 +468,7 @@ impl Worker {
             let px = match layer {
                 // Mid-stroke: the layers under and over it from the cache.
                 Some(l) => self.stroke_cache.merge(s, l, r),
-                None => aurastudio_compose::merge(s, r, Opts { cache: Some(&self.folder_cache), ..Default::default() }),
+                None => aurastudio_compose::merge(s, r, Opts { cache: Some(&self.folder_cache), ghosts: true, ..Default::default() }),
             };
             (r, px)
         }).collect();
@@ -563,6 +563,58 @@ mod tests {
         let mut screen = vec![[0u8; 4]; 64 * 64];
         for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
         assert_eq!(screen[32 * 64 + 30], [0, 0, 0, 255]);
+    }
+
+    /// The onion skin reaches the screen: the merge for it draws the
+    /// ghosts (the sheet before, red).
+    #[test]
+    fn the_screen_shows_the_onion_skin() {
+        let mut d = Document::new(DocId(1), "a", 64, 64, DocType::Animation);
+        let a = d.stack().root.iter().find(|n| n.is_animation()).unwrap().id();
+        d.apply(Edit::SetActive(a));
+        d.apply(Edit::SetFrame(1));
+        let ink = |d: &mut Document, r: Rect| { d.stroke("Brush stroke", |s| { use aurastudio_core::PaintSurface; s.prepare(r); let mut v = Vec::new(); s.spans_mut(r, &mut v); for sp in v { sp.pixels.fill([0, 0, 0, 255]); sp.mask.fill(255); } }); };
+        ink(&mut d, Rect::new(4, 4, 12, 12));
+        d.apply(Edit::SetFrame(3));
+        d.apply(Edit::SetActive(a));
+        ink(&mut d, Rect::new(40, 40, 50, 50));
+        let doc = Arc::new(Mutex::new(d));
+        let projection = proj(64, 64);
+        let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
+        let mut o = aurastudio_animation::Onion { enabled: true, ..Default::default() };
+        o.mobile.insert(-1, Some(1.0));
+        edit(&pt, &doc, Edit::SetOnion(o));
+        drop(pt);
+        let mut screen = vec![[0u8; 4]; 64 * 64];
+        for (r, px) in &projection.lock().unwrap().take_patches() { blit(&mut screen, 64, *r, px); }
+        let g = screen[8 * 64 + 8];
+        assert!(g[0] > 200 && g[1] < 60, "the sheet before, red: {g:?}");
+    }
+
+    /// The first stroke in an animation folder makes its first sheet:
+    /// every piece merged for the screen meanwhile is the paper and the
+    /// ink, never a hole (it showed as a black block).
+    #[test]
+    fn the_first_sheet_shows_no_hole() {
+        let mut d = Document::new(DocId(1), "a", 300, 200, DocType::Animation);
+        let a = d.stack().root.iter().find(|n| n.is_animation()).unwrap().id();
+        d.apply(Edit::SetActive(a));
+        let doc = Arc::new(Mutex::new(d));
+        let projection = proj(300, 200);
+        let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(20.0)), limit: None, zoom: 1.0 });
+        for i in 0..30 {
+            pt.send(Cmd::Sample(PenSample::new(20.0 + i as f32 * 8.0, 100.0, 1.0, i as f64 * 0.01)));
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        pt.send(Cmd::End);
+        drop(pt);
+        let patches = projection.lock().unwrap().take_patches();
+        assert!(!patches.is_empty());
+        for (r, px) in &patches {
+            let holes = px.iter().filter(|p| p[3] < 255).count();
+            assert_eq!(holes, 0, "piece {r:?}: {holes} pixels not opaque");
+        }
     }
 
     /// A big dab (many tiles, painted on all cores): whole, no seams.

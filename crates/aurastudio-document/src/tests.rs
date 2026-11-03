@@ -569,3 +569,29 @@ fn a_stroke_set_aside_between_samples_is_one_step() {
     assert_eq!(px(&d, id, 5, 45), [5, 5, 5, 255]);
     assert_eq!(px(&d, id, 20, 45)[3], 0);
 }
+
+/// The onion skin shows the sheet before on screen (red), and after the
+/// sheet is painted on a later frame too.
+#[test]
+fn the_onion_skin_shows_the_sheets_around() {
+    let mut d = Document::new(DocId(1), "a", 32, 32, DocType::Animation);
+    let a = d.stack().root.iter().find(|n| n.is_animation()).unwrap().id();
+    d.apply(Edit::SetActive(a));
+    d.apply(Edit::SetFrame(1));
+    paint(&mut d, Rect::new(2, 2, 6, 6), [0, 0, 0, 255]);
+    d.apply(Edit::SetFrame(3));
+    d.apply(Edit::SetActive(a));
+    paint(&mut d, Rect::new(20, 20, 24, 24), [0, 0, 0, 255]);
+    let mut o = aurastudio_animation::Onion { enabled: true, ..Default::default() };
+    o.mobile.insert(-1, Some(1.0));
+    o.mobile.insert(1, Some(1.0));
+    let done = d.apply(Edit::SetOnion(o));
+    assert!(done.changed() && !done.region.is_nothing(), "the ghosts' area is merged again: {:?}", done.region);
+    let screen = |d: &Document, x, y| aurastudio_compose::merge(d.stack(), Rect::new(x, y, x + 1, y + 1), aurastudio_compose::Opts { ghosts: true, ..Default::default() })[0];
+    let g = screen(&d, 3, 3);
+    assert!(g[0] > 200 && g[1] < 60, "the sheet before, red: {g:?}");
+    assert_eq!(screen(&d, 21, 21)[..3], [0, 0, 0], "the current sheet");
+    d.apply(Edit::SetFrame(1));
+    let g = screen(&d, 21, 21);
+    assert!(g[1] > 200 && g[0] < 60, "the sheet after, green: {g:?}");
+}

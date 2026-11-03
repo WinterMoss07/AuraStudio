@@ -142,6 +142,12 @@ impl Document {
         aurastudio_compose::merge(&self.stack, rect, aurastudio_compose::Opts { pick, ..Default::default() })
     }
 
+    /// `rect` as the screen shows it: every visible layer, the onion
+    /// skin's ghosts too.
+    pub fn screen(&self, rect: aurastudio_core::Rect) -> Vec<Rgba8> {
+        aurastudio_compose::merge(&self.stack, rect, aurastudio_compose::Opts { ghosts: true, ..Default::default() })
+    }
+
     // --- Changing ----------------------------------------------------------
 
     /// Do `e`. The only way the document changes.

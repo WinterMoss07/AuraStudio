@@ -821,6 +821,15 @@ fn mobile_off(m: &Model, f: u32) -> Option<i32> {
     (off != 0).then_some(off as i32)
 }
 
+/// The frame a fixed mark at frame `f` of the fixed lane pins: the first
+/// frame of the sheet shown there (a drawing, not any frame). None:
+/// no sheet there, or the current one.
+fn fixed_frame(m: &Model, f: u32) -> Option<u32> {
+    let (sheets, cur) = onion_drawings(m)?;
+    let i = sheets.iter().rposition(|x| x.0 <= f)?;
+    (i != cur).then(|| sheets[i].0)
+}
+
 /// Where mobile mark `off` sits on the lane: that frame, or the frame
 /// the sheet it shows is exposed from.
 fn mobile_frame(m: &Model, off: i32) -> Option<u32> {
@@ -836,7 +845,7 @@ fn mobile_frame(m: &Model, off: i32) -> Option<u32> {
 /// The mark the onion strip has at frame `f` (of that lane), if any.
 fn onion_mark_at(m: &Model, fixed: bool, f: u32) -> Option<OnionMark> {
     let o = m.onion();
-    if fixed { return o.fixed.contains_key(&f).then_some(OnionMark::Fixed(f)); }
+    if fixed { let f = fixed_frame(m, f)?; return o.fixed.contains_key(&f).then_some(OnionMark::Fixed(f)); }
     let off = mobile_off(m, f)?;
     o.mobile.contains_key(&off).then_some(OnionMark::Mobile(off))
 }
@@ -850,11 +859,14 @@ fn onion_set(m: &mut Model, o: aurastudio_animation::Onion) {
 
 /// Turn the mark of frame `f` on its lane on or off (`to`: that state;
 /// None: the other one). Returns the state it got (None: nothing there,
-/// the current sheet or its hold). Turning a mark on turns the onion
+/// the current sheet or its hold). A fixed mark pins a sheet: the one
+/// shown at `f`, by its first frame. Turning a mark on turns the onion
 /// skin on.
 fn onion_toggle(m: &mut Model, fixed: bool, f: u32, to: Option<bool>) -> Option<bool> {
     let mut o = m.onion().clone();
     let on = if fixed {
+        // (Pinned: the sheet shown there, by its first frame.)
+        let f = fixed_frame(m, f)?;
         let on = to.unwrap_or(!o.fixed.contains_key(&f));
         if on { o.fixed.entry(f).or_insert(None); } else { o.fixed.remove(&f); }
         on
@@ -929,7 +941,7 @@ fn draw_onion(p: &egui::Painter, g: &Grid, m: &Model, lanes: OnionLanes, f0: u32
     // The hint: the lane and frame under the pointer (not on the switch).
     let hint = hint.map(|q| (lanes.fixed.contains(q), g.frame_at(q))).filter(|h| h.1 != t);
     // (Counting sheets, a frame of the mobile lane marks the sheet it shows.)
-    let hint_at = hint.and_then(|(fixed, f)| if fixed { Some((true, f)) } else { mobile_off(m, f).and_then(|off| mobile_frame(m, off)).map(|n| (false, n)) });
+    let hint_at = hint.and_then(|(fixed, f)| if fixed { fixed_frame(m, f).map(|n| (true, n)) } else { mobile_off(m, f).and_then(|off| mobile_frame(m, off)).map(|n| (false, n)) });
     // Mobile marks.
     let (mut lo, mut hi) = (t, t);
     for (&off, op_v) in &o.mobile {
