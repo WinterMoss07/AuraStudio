@@ -1,9 +1,9 @@
-//! Canvas mipmaps (thin lines stay visible zoomed out), rebuilt on the GPU
-//! only where the canvas changed (a tile-granular dirty set: a diagonal
+//! Mipmaps of a texture (thin lines stay visible zoomed out), rebuilt on
+//! the GPU only where it changed (a tile-granular dirty set: a diagonal
 //! stroke no longer rebuilds its whole box); 2×2 averages of the stored
-//! values. Made the first time a zoomed-out view needs them.
+//! values. The canvas pages' atlases (their pages are 256-aligned: a page's
+//! levels never mix with its neighbors') and the transform's sources.
 
-use crate::Canvas;
 use aurastudio_core::Rect;
 use aurastudio_raster::DirtyTiles;
 use wgpu::*;
@@ -43,7 +43,7 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
 "#;
 
 impl MipGen {
-    pub fn new(device: &Device, canvas: &Canvas) -> Self {
+    pub fn new(device: &Device, texture: &Texture) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label:  Some("mip"),
             source: ShaderSource::Wgsl(SHADER.into()),
@@ -66,7 +66,7 @@ impl MipGen {
             vertex: VertexState { module: &module, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(FragmentState {
                 module: &module, entry_point: Some("fs"), compilation_options: Default::default(),
-                targets: &[Some(ColorTargetState { format: Canvas::FORMAT, blend: None, write_mask: ColorWrites::ALL })],
+                targets: &[Some(ColorTargetState { format: texture.format(), blend: None, write_mask: ColorWrites::ALL })],
             }),
             primitive: PrimitiveState::default(),
             depth_stencil: None,
@@ -81,14 +81,15 @@ impl MipGen {
             ..Default::default()
         });
         let mut g = Self { pipeline, layout, sampler, levels: Vec::new(), dirty: DirtyTiles::new(CELL) };
-        g.attach(device, canvas);
+        g.attach(device, texture);
         g
     }
 
-    /// A new canvas texture (resize): rebuild the views, everything dirty.
-    pub fn attach(&mut self, device: &Device, canvas: &Canvas) {
-        let n = canvas.texture.mip_level_count();
-        let view = |l: u32| canvas.texture.create_view(&TextureViewDescriptor {
+    /// A new texture (of the same format): rebuild the views, everything
+    /// dirty.
+    pub fn attach(&mut self, device: &Device, texture: &Texture) {
+        let n = texture.mip_level_count();
+        let view = |l: u32| texture.create_view(&TextureViewDescriptor {
             base_mip_level: l, mip_level_count: Some(1), ..Default::default()
         });
         self.levels = (0..n).map(|l| {
@@ -103,21 +104,28 @@ impl MipGen {
             (view(l), bind)
         }).collect();
         self.dirty.clear();
-        self.dirty.insert(Rect::of_size(canvas.width, canvas.height));
+        self.dirty.insert(Rect::of_size(texture.width(), texture.height()));
+    }
+
+    /// A new texture whose changed parts the caller marks itself.
+    pub fn attach_clean(&mut self, device: &Device, texture: &Texture) {
+        self.attach(device, texture);
+        self.dirty.clear();
     }
 
     /// `rect` of level 0 changed.
     pub fn mark(&mut self, rect: Rect) { if self.levels.len() > 1 { self.dirty.insert(rect); } }
 
     /// Rebuild the changed areas of every level, into `enc`.
-    pub fn rebuild(&mut self, enc: &mut CommandEncoder, canvas: &Canvas) {
+    pub fn rebuild(&mut self, enc: &mut CommandEncoder, texture: &Texture) {
         if self.dirty.is_empty() { return; }
         aurastudio_core::zone!("gpu mipmaps");
-        let dirty = self.dirty.rects_in(Rect::of_size(canvas.width, canvas.height));
+        let (width, height) = (texture.width(), texture.height());
+        let dirty = self.dirty.rects_in(Rect::of_size(width, height));
         self.dirty.clear();
         for (l, (target, bind)) in self.levels.iter().enumerate().skip(1) {
             let Some(bind) = bind else { continue };
-            let (w, h) = ((canvas.width >> l).max(1), (canvas.height >> l).max(1));
+            let (w, h) = ((width >> l).max(1), (height >> l).max(1));
             let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
                 label: Some("mip"),
                 color_attachments: &[Some(RenderPassColorAttachment {

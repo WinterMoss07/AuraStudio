@@ -1,12 +1,12 @@
-//! wgpu: the device, the window's swapchain, the canvas texture and how it
+//! wgpu: the device, the window's swapchain, the canvas (in pages) and how it
 //! is shown (view, display table, quality), uploads through a staging
 //! ring, the transform's live preview, the brush outline. Knows no
 //! window system, document or interface: the app hands it pixels and a
 //! window.
 //!
 //! `view`: zoom / rotation / pan and the methods using them; `display`:
-//! the canvas shader, its pipelines, the display table; `mip`: mipmaps on
-//! demand; `upload`: the staging ring; `lift`: the transform preview.
+//! the canvas shader, its pipelines, the display table; `canvas`: the
+//! canvas's pages; `mip`: mipmaps on demand; `upload`: the staging ring; `lift`: the transform preview.
 
 mod canvas;
 mod display;
@@ -21,7 +21,7 @@ use aurastudio_core::{DisplayLut, Rect, Rgba8};
 use wgpu::util::DeviceExt;
 use wgpu::*;
 
-pub use canvas::Canvas;
+pub use canvas::{Canvas, PageCount, PAGE};
 pub use display::CanvasQuality;
 pub use lift::{Lift, Pieces, GRID as LIFT_GRID};
 pub use view::{wrap_angle, CanvasView, ViewSnapshot};
@@ -136,17 +136,6 @@ pub struct GpuMemory {
     pub shaders:     String,
 }
 
-/// Bytes of a 2D RGBA8 texture of `w` × `h` with all its mip levels.
-fn mipped_bytes(w: u32, h: u32) -> u64 {
-    let (mut w, mut h, mut total) = (w.max(1) as u64, h.max(1) as u64, 0u64);
-    loop {
-        total += w * h * 4;
-        if w == 1 && h == 1 { return total; }
-        w = (w / 2).max(1);
-        h = (h / 2).max(1);
-    }
-}
-
 pub struct GpuState {
     backend:         Backend,
     adapter_info:    String,
@@ -184,13 +173,10 @@ pub struct GpuState {
     /// Something was uploaded since the last frame (a live transform
     /// preview draws again over it).
     uploaded:        bool,
-    /// Keeps the canvas texture's mipmaps up to date (when it has some).
-    mip:             mip::MipGen,
     view_buffer:     Buffer,
-    nearest_sampler: Sampler,
     view_bind_group: BindGroup,
-    /// Same with nearest sampling, for strong zoom.
-    nearest_bind_group: BindGroup,
+    /// The canvas's textures the bind group was made with.
+    bound:           u64,
     canvas_bgl:      BindGroupLayout,
     /// Zoom / rotation / pan of the canvas.
     pub view:        CanvasView,
@@ -316,25 +302,16 @@ impl GpuState {
         let (cursor_pipeline, cursor_buffer, cursor_bind) = cursor_pipeline(&device, format);
         // No mipmaps yet: made the first time a zoomed-out view needs them.
         let canvas = Canvas::new(&device, canvas_size.0.max(1), canvas_size.1.max(1), false);
-        let nearest_sampler = device.create_sampler(&SamplerDescriptor {
-            label:          Some("canvas_sampler_nearest"),
-            address_mode_u: AddressMode::ClampToEdge,
-            address_mode_v: AddressMode::ClampToEdge,
-            mag_filter:     FilterMode::Nearest,
-            min_filter:     FilterMode::Linear,
-            ..Default::default()
-        });
-        let mip = mip::MipGen::new(&device, &canvas);
-        let view_bind_group = display::bind_group(&device, &canvas_bgl, &canvas, &canvas.sampler, &view_buffer, &lut);
-        let nearest_bind_group = display::bind_group(&device, &canvas_bgl, &canvas, &nearest_sampler, &view_buffer, &lut);
+        let view_bind_group = display::bind_group(&device, &canvas_bgl, &canvas, &view_buffer, &lut);
+        let bound = canvas.generation();
         Ok(Self {
             backend, adapter_info, shader_compiler: shader_compiler(backend).1,
             surface, device, queue, config,
             swapchain_rebuilt: false, swapchain_builds: 1, size_pending: false,
             dpi_scale, pixel_exact: false,
             canvas_pipeline, canvas_high, high_ms, quality, smooth_zoom_in: false, vsync, surface_caps: caps,
-            uploads: upload::Uploads::default(), uploaded: false, mip,
-            view_buffer, nearest_sampler, view_bind_group, nearest_bind_group, canvas_bgl,
+            uploads: upload::Uploads::default(), uploaded: false,
+            view_buffer, view_bind_group, bound, canvas_bgl,
             view: CanvasView::default(), lut, color_managed: false,
             cursor_pipeline, cursor_buffer, cursor_bind, brush_cursor: None,
             canvas,
@@ -370,11 +347,11 @@ impl GpuState {
     pub fn memory(&self) -> GpuMemory {
         let mut m = GpuMemory { backend: format!("{:?}", self.backend), adapter: self.adapter_info.clone(), ..Default::default() };
         let (w, h) = (self.canvas.width, self.canvas.height);
-        if self.canvas.texture.mip_level_count() > 1 {
-            m.known.push((format!("canvas texture {w}x{h} with mipmaps"), mipped_bytes(w, h)));
-        } else {
-            m.known.push((format!("canvas texture {w}x{h}"), w as u64 * h as u64 * 4));
-        }
+        let c = self.canvas.count();
+        m.known.push((format!(
+            "canvas {w}x{h} in pages of {PAGE}: {} one-color (no pixels), {} two-color (1 byte a pixel), {} full (4 bytes){}; a single texture would be {:.1} MB",
+            c.uniform, c.mono, c.full, if self.canvas.mipmaps() { ", with mipmaps" } else { "" }, (w as u64 * h as u64 * 4) as f64 / 1048576.0,
+        ), c.bytes));
         let lut = self.lut.size as u64;
         m.known.push((format!("display lookup table {lut}^3"), lut * lut * lut * 8));
         let images = swapchain_images(self.config.present_mode);
@@ -400,8 +377,9 @@ impl GpuState {
     /// to each frame and drops it when the transform ends.
     pub fn lift_begin(&mut self, pieces: Pieces<'_>) -> Option<Lift> {
         let aniso = if self.backend == Backend::OpenGl { 1 } else { 16 };
+        let size = self.canvas_size();
         let pipes = self.lift_pipes.get_or_insert_with(|| lift::Pipes::new(&self.device, aniso));
-        Lift::new(&self.device, &self.queue, pipes, &self.canvas, pieces, &mut self.uploads)
+        Lift::new(&self.device, &self.queue, pipes, size, pieces, &mut self.uploads)
     }
 
     /// Show the mesh `verts` ((LIFT_GRID + 1)² points: canvas x, y, texture
@@ -411,7 +389,7 @@ impl GpuState {
 
     // --- Settings ----------------------------------------------------------
 
-    /// How the canvas is drawn. The pixels are copied into a texture with
+    /// How the canvas is drawn. The pages are copied into textures with
     /// or without mipmaps (nothing to send again).
     pub fn set_quality(&mut self, quality: CanvasQuality) {
         if quality == self.quality { return; }
@@ -422,22 +400,11 @@ impl GpuState {
 
     pub fn quality(&self) -> CanvasQuality { self.quality }
 
-    /// The canvas texture with or without mipmaps (level 0 copied over).
+    /// The canvas pages with or without mipmaps (level 0 copied over).
     fn set_mipmaps(&mut self, on: bool) {
-        if (self.canvas.texture.mip_level_count() > 1) == on { return; }
+        if self.canvas.mipmaps() == on { return; }
         aurastudio_core::zone!("gpu mipmaps on / off");
-        let (w, h) = (self.canvas.width, self.canvas.height);
-        let canvas = Canvas::new(&self.device, w, h, on);
-        let mut enc = self.device.create_command_encoder(&CommandEncoderDescriptor { label: Some("quality") });
-        enc.copy_texture_to_texture(
-            TexelCopyTextureInfo { texture: &self.canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-            TexelCopyTextureInfo { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-            Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
-        self.queue.submit(std::iter::once(enc.finish()));
-        self.canvas = canvas;
-        self.mip.attach(&self.device, &self.canvas);
-        self.rebuild_bind_groups();
+        self.canvas.set_mipmaps(&self.device, &self.queue, on);
     }
 
     /// Above 100 %: canvas pixels blended (true) or sharp squares.
@@ -459,14 +426,13 @@ impl GpuState {
     /// merge. The view fits it whole.
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
         self.canvas = Canvas::new(&self.device, width.max(1), height.max(1), false);
-        self.mip.attach(&self.device, &self.canvas);
         self.rebuild_bind_groups();
         self.view.fit_to_area();
     }
 
     fn rebuild_bind_groups(&mut self) {
-        self.view_bind_group = display::bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.canvas.sampler, &self.view_buffer, &self.lut);
-        self.nearest_bind_group = display::bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.nearest_sampler, &self.view_buffer, &self.lut);
+        self.view_bind_group = display::bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.view_buffer, &self.lut);
+        self.bound = self.canvas.generation();
     }
 
     /// Display color management of the canvas: the table from `color`;
@@ -503,22 +469,10 @@ impl GpuState {
     // --- Pixels and frames ---------------------------------------------------
 
     /// Copy merged pixels (the rows of `rect`, straight RGBA) to the canvas
-    /// texture. A rect past the canvas is cut to it.
+    /// pages. A rect past the canvas is cut to it.
     pub fn upload(&mut self, rect: Rect, px: &[Rgba8]) {
-        let frame = Rect::of_size(self.canvas.width, self.canvas.height);
-        let c = rect.intersect(&frame);
-        if c.is_empty() || px.len() as u64 != rect.area() { return; }
-        if c == rect {
-            self.uploads.write(&self.device, &self.queue, &self.canvas.texture, (c.x0 as u32, c.y0 as u32), (c.w(), c.h()), px.as_flattened());
-        } else {
-            let mut cut = Vec::with_capacity(c.area() as usize);
-            for y in c.y0..c.y1 {
-                let row = ((y - rect.y0) as u32 * rect.w()) as usize;
-                cut.extend_from_slice(&px[row + (c.x0 - rect.x0) as usize..row + (c.x1 - rect.x0) as usize]);
-            }
-            self.uploads.write(&self.device, &self.queue, &self.canvas.texture, (c.x0 as u32, c.y0 as u32), (c.w(), c.h()), cut.as_flattened());
-        }
-        self.mip.mark(c);
+        if rect.is_empty() || px.len() as u64 != rect.area() { return; }
+        self.canvas.upload(&self.device, &self.queue, &mut self.uploads, rect, px);
         self.uploaded = true;
     }
 
@@ -528,7 +482,10 @@ impl GpuState {
         let (c, a) = (self.canvas_size(), self.viewport);
         self.view.update_fit(c, a);
         let cm = [if self.color_managed { 1.0 } else { 0.0 }, self.lut.size as f32, 0.0, 0.0];
-        let uniform = display::view_uniform(&self.view, c, a, cm, self.smooth_zoom_in);
+        let high = self.quality == CanvasQuality::High && matches!(self.canvas_high, display::HighPipeline::Ready(_));
+        let sharp = !high && !self.smooth_zoom_in && self.view.zoom >= NEAREST_FROM_ZOOM;
+        let levels = if self.canvas.mipmaps() { canvas::PAGE_LEVELS } else { 1 };
+        let uniform = display::view_uniform(&self.view, c, a, cm, self.smooth_zoom_in, levels, sharp);
         self.queue.write_buffer(&self.view_buffer, 0, bytemuck::cast_slice(&[uniform]));
     }
 
@@ -559,11 +516,17 @@ impl GpuState {
         let mut enc = self.device.create_command_encoder(&CommandEncoderDescriptor { label: Some("frame") });
         // A transform's live preview, into the canvas (again over uploads).
         let uploaded = std::mem::take(&mut self.uploaded);
+        let lifting = lift.is_some();
         if let (Some(l), Some(p)) = (lift, &self.lift_pipes) {
             if uploaded { l.uploaded(); }
-            if let Some(r) = l.draw(&mut enc, p, &self.canvas) { self.mip.mark(r); }
+            if let Some(r) = l.wanted() {
+                let pages = self.canvas.full_pages(&self.device, &self.queue, &mut self.uploads, r);
+                let size = self.canvas_size();
+                for (slot, part) in l.draw(&self.device, &self.queue, &mut enc, p, size, (self.canvas.rgba_texture(), &pages)) { self.canvas.mark_full(slot, part); }
+            }
         }
-        self.mip.rebuild(&mut enc, &self.canvas);
+        self.canvas.prepare(&self.device, &self.queue, &mut enc, !lifting);
+        if self.canvas.generation() != self.bound { self.rebuild_bind_groups(); }
         {
             let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
                 label: Some("canvas_pass"),
@@ -590,8 +553,7 @@ impl GpuState {
             // Until the High pipeline is ready, the Standard one draws.
             let high = self.quality == CanvasQuality::High && exact.is_some();
             pass.set_pipeline(match exact { Some(p) if high => p, _ => &self.canvas_pipeline });
-            let sharp = !high && !self.smooth_zoom_in && self.view.zoom >= NEAREST_FROM_ZOOM;
-            pass.set_bind_group(0, if sharp { &self.nearest_bind_group } else { &self.view_bind_group }, &[]);
+            pass.set_bind_group(0, &self.view_bind_group, &[]);
             pass.draw(0..6, 0..1);
         }
         Some(Frame { encoder: enc, view, output, suboptimal })
@@ -707,19 +669,4 @@ fn cursor_pipeline(device: &Device, format: TextureFormat) -> (RenderPipeline, B
         cache: None,
     });
     (pipeline, buffer, bind)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::mipped_bytes;
-
-    #[test]
-    fn mip_chain_is_a_third_bigger() {
-        assert_eq!(mipped_bytes(1, 1), 4);
-        assert_eq!(mipped_bytes(2, 2), 16 + 4);
-        assert_eq!(mipped_bytes(4, 2), 32 + 8 + 4);
-        let full = 4096u64 * 4096 * 4;
-        let all = mipped_bytes(4096, 4096);
-        assert!(all > full && all < full * 4 / 3 + 64, "{all}");
-    }
 }

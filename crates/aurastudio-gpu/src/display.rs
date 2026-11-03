@@ -40,7 +40,8 @@ pub(crate) struct ViewUniform {
     /// Screen pixel -> canvas pixel (rows, xyz used).
     pub inv0:        [f32; 4],
     pub inv1:        [f32; 4],
-    /// x: rotated (not by a multiple of 90°), w: smooth zoom-in.
+    /// x: rotated (not by a multiple of 90°), y: the last mip level, z:
+    /// sharp pixels close up, w: smooth zoom-in.
     pub q:           [f32; 4],
 }
 
@@ -63,7 +64,9 @@ pub(crate) fn screen_to_canvas(view: &CanvasView, canvas: (u32, u32), area: Area
 }
 
 /// What the canvas shader needs this frame.
-pub(crate) fn view_uniform(view: &CanvasView, canvas: (u32, u32), area: Area, cm: [f32; 4], smooth_zoom_in: bool) -> ViewUniform {
+/// `levels`: the pages' mip levels; `sharp`: canvas pixels as squares
+/// close up (Standard).
+pub(crate) fn view_uniform(view: &CanvasView, canvas: (u32, u32), area: Area, cm: [f32; 4], smooth_zoom_in: bool, levels: u32, sharp: bool) -> ViewUniform {
     let [m0, m1] = view.ndc_matrix(canvas, area);
     let inv = screen_to_canvas(view, canvas, area);
     let row = |r: [f64; 3]| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
@@ -71,7 +74,7 @@ pub(crate) fn view_uniform(view: &CanvasView, canvas: (u32, u32), area: Area, cm
     ViewUniform {
         m0, m1, canvas_size: [canvas.0 as f32, canvas.1 as f32], _pad: [0.0; 2], cm,
         inv0: row(inv[0]), inv1: row(inv[1]),
-        q: [if tilted(view.angle) { 1.0 } else { 0.0 }, 0.0, 0.0, if smooth { 1.0 } else { 0.0 }],
+        q: [if tilted(view.angle) { 1.0 } else { 0.0 }, levels.saturating_sub(1) as f32, if sharp { 1.0 } else { 0.0 }, if smooth { 1.0 } else { 0.0 }],
     }
 }
 
@@ -84,11 +87,16 @@ pub(crate) fn canvas_bgl(device: &Device) -> BindGroupLayout {
     let sampler = |binding| BindGroupLayoutEntry {
         binding, visibility: ShaderStages::FRAGMENT, ty: BindingType::Sampler(SamplerBindingType::Filtering), count: None,
     };
+    let unfiltered = |binding, sample_type| BindGroupLayoutEntry {
+        binding, visibility: ShaderStages::FRAGMENT,
+        ty: BindingType::Texture { multisampled: false, view_dimension: TextureViewDimension::D2, sample_type },
+        count: None,
+    };
     device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label:   Some("canvas_bgl"),
         entries: &[
-            texture(0, TextureViewDimension::D2),
-            sampler(1),
+            unfiltered(0, TextureSampleType::Float { filterable: false }),
+            unfiltered(1, TextureSampleType::Float { filterable: false }),
             BindGroupLayoutEntry {
                 binding:    2,
                 visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
@@ -97,6 +105,7 @@ pub(crate) fn canvas_bgl(device: &Device) -> BindGroupLayout {
             },
             texture(3, TextureViewDimension::D3),
             sampler(4),
+            unfiltered(5, TextureSampleType::Uint),
         ],
     })
 }
@@ -176,17 +185,20 @@ impl LutTexture {
     }
 }
 
-/// The canvas pass's bind group: the canvas, a sampler, the view, the table.
-pub(crate) fn bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas, sampler: &Sampler, view_buffer: &Buffer, lut: &LutTexture) -> BindGroup {
+/// The canvas pass's bind group: the canvas pages, the view, the display
+/// table.
+pub(crate) fn bind_group(device: &Device, layout: &BindGroupLayout, canvas: &Canvas, view_buffer: &Buffer, lut: &LutTexture) -> BindGroup {
+    let (full, mono, table) = canvas.views();
     device.create_bind_group(&BindGroupDescriptor {
         label:   Some("view_bind_group"),
         layout,
         entries: &[
-            BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&canvas.view) },
-            BindGroupEntry { binding: 1, resource: BindingResource::Sampler(sampler) },
+            BindGroupEntry { binding: 0, resource: BindingResource::TextureView(full) },
+            BindGroupEntry { binding: 1, resource: BindingResource::TextureView(mono) },
             BindGroupEntry { binding: 2, resource: view_buffer.as_entire_binding() },
             BindGroupEntry { binding: 3, resource: BindingResource::TextureView(&lut.view) },
             BindGroupEntry { binding: 4, resource: BindingResource::Sampler(&lut.sampler) },
+            BindGroupEntry { binding: 5, resource: BindingResource::TextureView(table) },
         ],
     })
 }
@@ -371,23 +383,34 @@ mod tests {
     /// The real shader's picture of `img` in a `sw` × `sh` frame.
     fn shader_picture(g: &Gpu, img: &[u8], (w, h): (u32, u32), view: &CanvasView, (sw, sh): (u32, u32), high: bool) -> Vec<u8> {
         let (device, queue) = (&g.device, &g.queue);
-        let canvas = crate::Canvas::new(device, w, h, !high);
-        queue.write_texture(
-            TexelCopyTextureInfo { texture: &canvas.texture, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-            img,
-            TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
-            Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        );
+        let mut canvas = crate::Canvas::new(device, w, h, !high);
+        let mut up = crate::upload::Uploads::default();
+        let px: Vec<aurastudio_core::Rgba8> = img.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+        // In bands, as the app sends a whole merge.
+        for y0 in (0..h).step_by(64) {
+            let r = aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 64.min(h - y0));
+            canvas.upload(device, queue, &mut up, r, &px[(y0 * w) as usize..((y0 + r.h()) * w) as usize]);
+        }
+        render(g, &mut canvas, view, (sw, sh), high)
+    }
+
+    /// The real shader's picture of `canvas` in a `sw` × `sh` frame.
+    fn render(g: &Gpu, canvas: &mut crate::Canvas, view: &CanvasView, (sw, sh): (u32, u32), high: bool) -> Vec<u8> {
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (canvas.width, canvas.height);
+        let mut prep = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        canvas.prepare(device, queue, &mut prep, true);
+        queue.submit([prep.finish()]);
         let format = TextureFormat::Rgba8Unorm;
         let bgl = canvas_bgl(device);
         let (standard, exact) = canvas_pipelines(device, &bgl, format);
         let area = [0.0, 0.0, sw as f32, sh as f32];
-        let u = view_uniform(view, (w, h), area, [0.0, 2.0, 0.0, 0.0], false);
+        let u = view_uniform(view, (w, h), area, [0.0, 2.0, 0.0, 0.0], false, if high { 1 } else { crate::canvas::PAGE_LEVELS }, false);
         let buffer = util::DeviceExt::create_buffer_init(device, &util::BufferInitDescriptor {
             label: None, contents: bytemuck::cast_slice(&[u]), usage: BufferUsages::UNIFORM,
         });
         let lut = LutTexture::new(device, queue, &DisplayLut::identity(2));
-        let bind = bind_group(device, &bgl, &canvas, &canvas.sampler, &buffer, &lut);
+        let bind = bind_group(device, &bgl, canvas, &buffer, &lut);
         let target = device.create_texture(&TextureDescriptor {
             label: None, size: Extent3d { width: sw, height: sh, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: TextureDimension::D2, format, usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC, view_formats: &[],
@@ -511,5 +534,162 @@ mod tests {
         let view = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
         let got = shader_picture(&g, &img, (w, h), &view, (w, h), true);
         assert_eq!(got, img);
+    }
+
+    /// Line art: white paper, soft black lines, a flat block. Most pages
+    /// one-color or two-color.
+    fn line_art(w: u32, h: u32) -> Vec<u8> {
+        let mut px = vec![255u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let k = ((y * w + x) * 4) as usize;
+                // A diagonal line, soft over 3 px.
+                let d = ((x as f32 - y as f32 * 1.3 - 20.0).abs() - 1.0).max(0.0);
+                let ink = (255.0 * (1.0 - d / 2.0).clamp(0.0, 1.0)) as u8;
+                for c in 0..3 { px[k + c] = 255 - ink; }
+                if x >= w - 40 && y < 60 { px[k..k + 4].copy_from_slice(&[30, 90, 200, 255]); }
+            }
+        }
+        px
+    }
+
+    /// Line art goes in small pages and shows as it is: exact at 1:1, the
+    /// exact average zoomed out and tilted.
+    #[test]
+    fn two_color_and_one_color_pages_show_the_picture() {
+        let Some(g) = gpu() else { return };
+        let (w, h) = (600u32, 520u32);
+        let img = line_art(w, h);
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        assert_eq!(shader_picture(&g, &img, (w, h), &one, (w, h), true), img);
+        for (zoom, angle) in [(0.33, 0.0), (0.12, 0.7)] {
+            let view = view_at(zoom, angle);
+            let (sw, sh) = (((w as f32 * zoom) as u32 + 8), ((h as f32 * zoom) as u32 + 8));
+            let got = shader_picture(&g, &img, (w, h), &view, (sw, sh), true);
+            let inv = screen_to_canvas(&view, (w, h), [0.0, 0.0, sw as f32, sh as f32]);
+            let mut worst = 0.0f64;
+            for y in 0..sh { for x in 0..sw {
+                let center = (inv[0][0] * (x as f64 + 0.5) + inv[0][1] * (y as f64 + 0.5) + inv[0][2], inv[1][0] * (x as f64 + 0.5) + inv[1][1] * (y as f64 + 0.5) + inv[1][2]);
+                if !(center.0 > 0.1 && center.1 > 0.1 && center.0 < w as f64 - 0.1 && center.1 < h as f64 - 0.1) { continue; }
+                let Some(want) = judge(&img, w, h, inv, x, y) else { continue };
+                let k = ((y * sw + x) * 4) as usize;
+                for c in 0..4 { worst = worst.max((got[k + c] as f64 - want[c]).abs()); }
+            } }
+            assert!(worst <= 2.0, "zoom {zoom}: off by {worst}");
+        }
+        // Standard (mipmaps) at 1:1: the pixels too.
+        assert_eq!(shader_picture(&g, &img, (w, h), &one, (w, h), false), img);
+    }
+
+    /// Pages change kind as they are painted, and go back to small ones
+    /// (the atlases shrinking) when a whole merge makes them plain again;
+    /// what shows is always the pixels sent.
+    #[test]
+    fn pages_follow_the_paint() {
+        let Some(g) = gpu() else { return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (700u32, 300u32);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        let mut want = vec![[255u8; 4]; (w * h) as usize];
+        let all = aurastudio_core::Rect::of_size(w, h);
+        let mut send = |canvas: &mut crate::Canvas, want: &[aurastudio_core::Rgba8], r: aurastudio_core::Rect| {
+            let px: Vec<_> = (r.y0..r.y1).flat_map(|y| (r.x0..r.x1).map(move |x| (x, y))).map(|(x, y)| want[(y as u32 * w + x as u32) as usize]).collect();
+            canvas.upload(device, queue, &mut up, r, &px);
+        };
+        send(&mut canvas, &want, all);
+        let c = canvas.count();
+        assert_eq!((c.uniform, c.mono, c.full), (6, 0, 0));
+        // Gray ink, partly: two colors there.
+        let ink = aurastudio_core::Rect::new(100, 50, 300, 60);
+        for y in ink.y0..ink.y1 { for x in ink.x0..ink.x1 { want[(y as u32 * w + x as u32) as usize] = [(x % 200) as u8, (x % 200) as u8, (x % 200) as u8, 255]; } }
+        send(&mut canvas, &want, ink);
+        let c = canvas.count();
+        assert_eq!((c.uniform, c.mono, c.full), (4, 2, 0));
+        // Red over part of it (gray, red and white: full pages), and red
+        // on paper elsewhere, at the canvas's right edge too (two colors).
+        for r in [aurastudio_core::Rect::new(250, 40, 270, 280), aurastudio_core::Rect::new(690, 0, 700, 300)] {
+            for y in r.y0..r.y1 { for x in r.x0..r.x1 { want[(y as u32 * w + x as u32) as usize] = [220, 20, 20, 255]; } }
+            send(&mut canvas, &want, r);
+        }
+        let c = canvas.count();
+        assert_eq!((c.uniform, c.mono, c.full), (0, 4, 2));
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let flat = |v: &[aurastudio_core::Rgba8]| v.iter().flatten().copied().collect::<Vec<u8>>();
+        assert!(render(&g, &mut canvas, &one, (w, h), true) == flat(&want), "the picture after painting");
+        // A whole merge (bands of 128 rows) back to blank paper: one-color
+        // pages, the atlases small again.
+        let big = canvas.count().bytes;
+        want.fill([255; 4]);
+        for y0 in (0..h).step_by(128) { send(&mut canvas, &want, aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 128.min(h - y0))); }
+        assert!(render(&g, &mut canvas, &one, (w, h), true) == flat(&want), "the picture after the merge");
+        let c = canvas.count();
+        assert_eq!((c.uniform, c.mono, c.full), (6, 0, 0));
+        assert!(c.bytes < big, "{} then {}", big, c.bytes);
+    }
+
+    /// A transform's preview drawn into the pages it covers (across a
+    /// page edge): what moves shows where it goes, what was under it
+    /// where it was.
+    #[test]
+    fn the_transform_preview_draws_into_the_pages() {
+        let Some(g) = gpu() else { return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (600u32, 300u32);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        let white = vec![[255u8; 4]; (w * h) as usize];
+        canvas.upload(device, queue, &mut up, aurastudio_core::Rect::of_size(w, h), &white);
+        let src = aurastudio_core::Rect::new(100, 100, 200, 150);
+        let (sw, sh) = (src.w() + 2, src.h() + 2);
+        let piece: Vec<aurastudio_core::Rgba8> = (0..sh).flat_map(|y| (0..sw).map(move |x| if x == 0 || y == 0 || x == sw - 1 || y == sh - 1 { [0; 4] } else { [200, 0, 0, 255] })).collect();
+        let pipes = crate::lift::Pipes::new(device, 1);
+        let layers = [(&piece[..], 1.0f32)];
+        let mut lift = crate::Lift::new(device, queue, &pipes, (w, h), crate::Pieces { src, below: &white, above: None, layers: &layers }, &mut up).expect("a lift");
+        // Moved right by 130: from 230 to 330, over the page edge at 256.
+        let n = crate::LIFT_GRID;
+        let verts: Vec<[f32; 4]> = (0..=n).flat_map(|j| (0..=n).map(move |i| (i, j))).map(|(i, j)| {
+            let (pu, pv) = (i as f32 / n as f32 * sw as f32 - 1.0, j as f32 / n as f32 * sh as f32 - 1.0);
+            [src.x0 as f32 + pu + 130.0, src.y0 as f32 + pv, (pu + 1.0) / sw as f32, (pv + 1.0) / sh as f32]
+        }).collect();
+        lift.show(queue, &verts, true, false);
+        let r = lift.wanted().expect("something to draw");
+        let pages = canvas.full_pages(device, queue, &mut up, r);
+        assert!(pages.len() >= 2, "across a page edge");
+        let mut enc = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        for (slot, part) in lift.draw(device, queue, &mut enc, &pipes, (w, h), (canvas.rgba_texture(), &pages)) { canvas.mark_full(slot, part); }
+        queue.submit([enc.finish()]);
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let got = render(&g, &mut canvas, &one, (w, h), true);
+        let at = |x: u32, y: u32| { let k = ((y * w + x) * 4) as usize; [got[k], got[k + 1], got[k + 2], got[k + 3]] };
+        for (x, y) in [(235, 110), (255, 120), (256, 120), (325, 145)] { assert_eq!(at(x, y), [200, 0, 0, 255], "moved to ({x}, {y})"); }
+        for (x, y) in [(150, 120), (225, 120), (335, 120), (300, 90), (300, 160)] { assert_eq!(at(x, y), [255; 4], "({x}, {y})"); }
+    }
+
+    /// Standard zoomed out samples the pages' mipmaps: close to the exact
+    /// average (the mipmaps blur a little more), seamless across pages.
+    #[test]
+    fn standard_zoomed_out_is_close_to_the_average() {
+        let Some(g) = gpu() else { return };
+        let (w, h) = (600u32, 520u32);
+        for img in [line_art(w, h), picture(w, h)] {
+            for (zoom, angle) in [(0.25, 0.0), (0.4, 0.3)] {
+                let view = view_at(zoom, angle);
+                let (sw, sh) = (((w as f32 * zoom) as u32 + 8), ((h as f32 * zoom) as u32 + 8));
+                let got = shader_picture(&g, &img, (w, h), &view, (sw, sh), false);
+                let inv = screen_to_canvas(&view, (w, h), [0.0, 0.0, sw as f32, sh as f32]);
+                let (mut sum, mut n) = (0.0f64, 0);
+                for y in 0..sh { for x in 0..sw {
+                    let c = (inv[0][0] * (x as f64 + 0.5) + inv[0][1] * (y as f64 + 0.5) + inv[0][2], inv[1][0] * (x as f64 + 0.5) + inv[1][1] * (y as f64 + 0.5) + inv[1][2]);
+                    if !(c.0 > 4.0 && c.1 > 4.0 && c.0 < w as f64 - 4.0 && c.1 < h as f64 - 4.0) { continue; }
+                    let Some(want) = judge(&img, w, h, inv, x, y) else { continue };
+                    let k = ((y * sw + x) * 4) as usize;
+                    for c in 0..3 { sum += (got[k + c] as f64 - want[c]).abs(); }
+                    n += 3;
+                } }
+                let mean = sum / n as f64;
+                assert!(mean < 12.0, "zoom {zoom} angle {angle}: {mean:.1} / 255 off on average");
+            }
+        }
     }
 }

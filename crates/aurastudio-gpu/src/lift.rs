@@ -1,25 +1,33 @@
 //! A transform's live preview, put together on the GPU while a handle is
 //! dragged (Photoshop, Procreate): the canvas under the moved layers, what
 //! moves (its own mipmaps: shrunk, it stays smooth) drawn through a fine
-//! mesh, and what is over them. Drawn straight into the canvas texture,
-//! so the view, the mipmaps and the color management work as for paint.
+//! mesh, and what is over them. Drawn straight into the canvas pages it
+//! covers (made full for it), so the view, the mipmaps and the color
+//! management work as for paint.
 //! The paint thread then sends the exact result, which takes its place.
 //! A `Lift` is the caller's: made by `GpuState::lift_begin`, lent to each
 //! frame, dropped when the transform ends.
 
-use crate::Canvas;
 use aurastudio_core::{Rect, Rgba8};
 use wgpu::util::DeviceExt;
 use wgpu::*;
 
+use crate::canvas::FullPage;
 use crate::mip::MipGen;
 use crate::upload::Uploads;
+
+/// What is drawn into: RGBA8.
+const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
 /// Cells of the mesh each way.
 pub const GRID: u32 = 48;
 
 const SHADER: &str = r#"
 @group(0) @binding(0) var t: texture_2d<f32>;
+// Canvas pixel + shift = pixel of the target (the page's place in its
+// atlas); size: the atlas's.
+struct Page { shift: vec2<f32>, size: vec2<f32> }
+@group(1) @binding(0) var<uniform> page: Page;
 
 @vertex
 fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -30,13 +38,13 @@ fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 // Same pixel of a canvas-sized texture.
 @fragment
 fn fs_copy(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureLoad(t, vec2<i32>(pos.xy), 0);
+    return textureLoad(t, vec2<i32>(pos.xy - page.shift), 0);
 }
 
 // Straight RGBA, drawn over (premultiplied blending).
 @fragment
 fn fs_over(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(t, vec2<i32>(pos.xy), 0);
+    let c = textureLoad(t, vec2<i32>(pos.xy - page.shift), 0);
     return vec4(c.rgb * c.a, c.a);
 }
 
@@ -49,7 +57,8 @@ struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
 @vertex
 fn vs_mesh(@location(0) p: vec2<f32>, @location(1) uv: vec2<f32>) -> V {
     var o: V;
-    o.pos = vec4(p.x / u.size.x * 2.0 - 1.0, 1.0 - p.y / u.size.y * 2.0, 0.0, 1.0);
+    let q = p + page.shift;
+    o.pos = vec4(q.x / page.size.x * 2.0 - 1.0, 1.0 - q.y / page.size.y * 2.0, 0.0, 1.0);
     o.uv = uv;
     return o;
 }
@@ -68,6 +77,7 @@ pub(crate) struct Pipes {
     mesh:      RenderPipeline,
     full_bgl:  BindGroupLayout,
     mesh_bgl:  BindGroupLayout,
+    page_bgl:  BindGroupLayout,
     linear:    Sampler,
     nearest:   Sampler,
     indices:   Buffer,
@@ -94,15 +104,23 @@ impl Pipes {
                 },
             ],
         });
+        let page_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("lift_page"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0, visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: BufferSize::new(16) },
+                count: None,
+            }],
+        });
         let pipe = |bgl: &BindGroupLayout, vs: &str, fs: &str, blend: Option<BlendState>, buffers: &[Option<VertexBufferLayout>]| {
-            let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("lift"), bind_group_layouts: &[Some(bgl)], immediate_size: 0 });
+            let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("lift"), bind_group_layouts: &[Some(bgl), Some(&page_bgl)], immediate_size: 0 });
             device.create_render_pipeline(&RenderPipelineDescriptor {
                 label: Some("lift"),
                 layout: Some(&layout),
                 vertex: VertexState { module: &module, entry_point: Some(vs), buffers, compilation_options: Default::default() },
                 fragment: Some(FragmentState {
                     module: &module, entry_point: Some(fs), compilation_options: Default::default(),
-                    targets: &[Some(ColorTargetState { format: Canvas::FORMAT, blend, write_mask: ColorWrites::ALL })],
+                    targets: &[Some(ColorTargetState { format: FORMAT, blend, write_mask: ColorWrites::ALL })],
                 }),
                 primitive: PrimitiveState::default(),
                 depth_stencil: None,
@@ -137,13 +155,13 @@ impl Pipes {
             [a, a + 1, a + n, a + 1, a + n + 1, a + n]
         })).collect();
         let indices = device.create_buffer_init(&util::BufferInitDescriptor { label: Some("lift_idx"), contents: bytemuck::cast_slice(&idx), usage: BufferUsages::INDEX });
-        Self { copy, over, mesh, full_bgl, mesh_bgl, linear: sampler(FilterMode::Linear, anisotropy), nearest: sampler(FilterMode::Nearest, 1), indices }
+        Self { copy, over, mesh, full_bgl, mesh_bgl, page_bgl, linear: sampler(FilterMode::Linear, anisotropy), nearest: sampler(FilterMode::Nearest, 1), indices }
     }
 }
 
 struct Source {
     // (Kept alive for the bind groups.)
-    _canvas:  Canvas,
+    _texture: Texture,
     _uniform: Buffer,
     linear:  BindGroup,
     nearest: BindGroup,
@@ -169,7 +187,12 @@ pub struct Lift {
     dirty:      bool,
     /// Textures kept alive for the bind groups.
     _keep:      Vec<Texture>,
+    /// Each page's shift (dynamic offsets), and its bind group.
+    pages:      Option<(Buffer, BindGroup, usize)>,
 }
+
+/// Bytes between two pages' shifts (the dynamic offset alignment).
+const SHIFT_STRIDE: u64 = 256;
 
 /// What a live preview is made of. `below`, `above`: canvas-sized RGBA
 /// (straight); `layers`: what moves, (source + 2)² premultiplied, and
@@ -183,10 +206,9 @@ pub struct Pieces<'a> {
 
 impl Lift {
     /// `uploads`: the pixels go through it (bands, staging memory capped).
-    pub(crate) fn new(device: &Device, queue: &Queue, pipes: &Pipes, canvas: &Canvas, p: Pieces, uploads: &mut Uploads) -> Option<Self> {
+    pub(crate) fn new(device: &Device, queue: &Queue, pipes: &Pipes, (w, h): (u32, u32), p: Pieces, uploads: &mut Uploads) -> Option<Self> {
         aurastudio_core::zone!("gpu lift begin");
         let Pieces { src, below, above, layers } = p;
-        let (w, h) = (canvas.width, canvas.height);
         if below.len() != (w * h) as usize || above.is_some_and(|a| a.len() != below.len()) || src.is_empty() { return None; }
         let (sw, sh) = (src.w() + 2, src.h() + 2);
         let mut full = |data: &[Rgba8]| {
@@ -195,7 +217,7 @@ impl Lift {
                 size: Extent3d { width: w, height: h, depth_or_array_layers: 1 },
                 mip_level_count: 1, sample_count: 1,
                 dimension: TextureDimension::D2,
-                format: Canvas::FORMAT,
+                format: FORMAT,
                 usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
                 view_formats: &[],
             });
@@ -213,10 +235,19 @@ impl Lift {
         let mut sources = Vec::new();
         for &(px, opacity) in layers {
             if px.len() != (sw * sh) as usize { return None; }
-            let c = Canvas::new(device, sw, sh, true);
-            uploads.write(device, queue, &c.texture, (0, 0), (sw, sh), px.as_flattened());
+            let c = device.create_texture(&TextureDescriptor {
+                label: Some("lift_source"),
+                size: Extent3d { width: sw, height: sh, depth_or_array_layers: 1 },
+                mip_level_count: 32 - sw.max(sh).max(1).leading_zeros(), sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: FORMAT,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            uploads.write(device, queue, &c, (0, 0), (sw, sh), px.as_flattened());
             match &mut mip { Some(m) => m.attach(device, &c), None => mip = Some(MipGen::new(device, &c)) }
             if let Some(m) = &mut mip { m.rebuild(&mut enc, &c); }
+            let view = c.create_view(&TextureViewDescriptor::default());
             let uniform = device.create_buffer_init(&util::BufferInitDescriptor {
                 label: Some("lift_u"),
                 contents: bytemuck::cast_slice(&[w as f32, h as f32, opacity.clamp(0.0, 1.0), 0.0]),
@@ -226,18 +257,18 @@ impl Lift {
                 label: Some("lift_src"),
                 layout: &pipes.mesh_bgl,
                 entries: &[
-                    BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&c.view) },
+                    BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&view) },
                     BindGroupEntry { binding: 1, resource: BindingResource::Sampler(s) },
                     BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
                 ],
             });
             let (linear, nearest) = (bind(&pipes.linear), bind(&pipes.nearest));
-            sources.push(Source { _canvas: c, _uniform: uniform, linear, nearest });
+            sources.push(Source { _texture: c, _uniform: uniform, linear, nearest });
         }
         queue.submit(std::iter::once(enc.finish()));
         let n = (GRID + 1) * (GRID + 1);
         let verts = device.create_buffer(&BufferDescriptor { label: Some("lift_v"), size: n as u64 * 16, usage: BufferUsages::VERTEX | BufferUsages::COPY_DST, mapped_at_creation: false });
-        Some(Self { src, size: (w, h), below, above, sources, verts, last: Vec::new(), total: None, shown: None, live: false, dirty: false, _keep: keep })
+        Some(Self { src, size: (w, h), below, above, sources, verts, last: Vec::new(), total: None, shown: None, live: false, dirty: false, _keep: keep, pages: None })
     }
 
     /// The mesh to draw now: (GRID + 1)² points, row by row, each canvas
@@ -288,15 +319,38 @@ impl Lift {
         }
     }
 
-    /// Draw into the canvas texture if needed; returns the area drawn
-    /// (its mipmaps to rebuild).
-    pub(crate) fn draw(&mut self, enc: &mut CommandEncoder, pipes: &Pipes, canvas: &Canvas) -> Option<Rect> {
-        if !std::mem::take(&mut self.dirty) { return None; }
-        let (r, nearest) = self.shown?;
-        // (The canvas texture is the one of now: a quality change during the
-        // transform made a new one.)
-        if (canvas.width, canvas.height) != self.size { return None; }
-        let target = canvas.texture.create_view(&TextureViewDescriptor { base_mip_level: 0, mip_level_count: Some(1), ..Default::default() });
+    /// The canvas area to draw again now, if any (the pages there are
+    /// made full for `draw`).
+    pub(crate) fn wanted(&self) -> Option<Rect> { if self.dirty { self.shown.map(|s| s.0) } else { None } }
+
+    /// Draw into the full pages `pages` (canvas rect, place in `atlas`,
+    /// slot) if needed; returns the area drawn and the pages' parts (their
+    /// mipmaps to rebuild).
+    pub(crate) fn draw(&mut self, device: &Device, queue: &Queue, enc: &mut CommandEncoder, pipes: &Pipes, canvas: (u32, u32), (atlas, pages): (&Texture, &[FullPage])) -> Vec<(u32, Rect)> {
+        if !std::mem::take(&mut self.dirty) { return Vec::new(); }
+        let Some((r, nearest)) = self.shown else { return Vec::new() };
+        // (A canvas of another size since: nothing.)
+        if canvas != self.size || pages.is_empty() { return Vec::new(); }
+        // Each page's shift, at its dynamic offset.
+        let need = pages.len();
+        if self.pages.as_ref().is_none_or(|p| p.2 < need) {
+            let n = need.next_power_of_two();
+            let buffer = device.create_buffer(&BufferDescriptor { label: Some("lift_pages"), size: n as u64 * SHIFT_STRIDE, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false });
+            let bind = device.create_bind_group(&BindGroupDescriptor {
+                label: Some("lift_pages"), layout: &pipes.page_bgl,
+                entries: &[BindGroupEntry { binding: 0, resource: BindingResource::Buffer(BufferBinding { buffer: &buffer, offset: 0, size: BufferSize::new(16) }) }],
+            });
+            self.pages = Some((buffer, bind, n));
+        }
+        let Some((buffer, bind, _)) = &self.pages else { return Vec::new() };
+        let (aw, ah) = (atlas.width() as f32, atlas.height() as f32);
+        let mut data = vec![0u8; need * SHIFT_STRIDE as usize];
+        for (k, (pr, (ax, ay), _)) in pages.iter().enumerate() {
+            let v = [*ax as f32 - pr.x0 as f32, *ay as f32 - pr.y0 as f32, aw, ah];
+            data[k * SHIFT_STRIDE as usize..k * SHIFT_STRIDE as usize + 16].copy_from_slice(bytemuck::cast_slice(&v));
+        }
+        queue.write_buffer(buffer, 0, &data);
+        let target = atlas.create_view(&TextureViewDescriptor { base_mip_level: 0, mip_level_count: Some(1), ..Default::default() });
         let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
             label: Some("lift"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -308,23 +362,30 @@ impl Lift {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_viewport(0.0, 0.0, self.size.0 as f32, self.size.1 as f32, 0.0, 1.0);
-        pass.set_scissor_rect(r.x0 as u32, r.y0 as u32, r.w(), r.h());
-        pass.set_pipeline(&pipes.copy);
-        pass.set_bind_group(0, &self.below, &[]);
-        pass.draw(0..3, 0..1);
-        pass.set_pipeline(&pipes.mesh);
-        pass.set_vertex_buffer(0, self.verts.slice(..));
-        pass.set_index_buffer(pipes.indices.slice(..), IndexFormat::Uint32);
-        for s in &self.sources {
-            pass.set_bind_group(0, if nearest { &s.nearest } else { &s.linear }, &[]);
-            pass.draw_indexed(0..GRID * GRID * 6, 0, 0..1);
-        }
-        if let Some(a) = &self.above {
-            pass.set_pipeline(&pipes.over);
-            pass.set_bind_group(0, a, &[]);
+        let mut drawn = Vec::new();
+        for (k, (pr, (ax, ay), slot)) in pages.iter().enumerate() {
+            let part = pr.intersect(&r);
+            if part.is_empty() { continue; }
+            let (x, y) = (ax + (part.x0 - pr.x0) as u32, ay + (part.y0 - pr.y0) as u32);
+            pass.set_scissor_rect(x, y, part.w(), part.h());
+            pass.set_bind_group(1, bind, &[(k as u64 * SHIFT_STRIDE) as u32]);
+            pass.set_pipeline(&pipes.copy);
+            pass.set_bind_group(0, &self.below, &[]);
             pass.draw(0..3, 0..1);
+            pass.set_pipeline(&pipes.mesh);
+            pass.set_vertex_buffer(0, self.verts.slice(..));
+            pass.set_index_buffer(pipes.indices.slice(..), IndexFormat::Uint32);
+            for s in &self.sources {
+                pass.set_bind_group(0, if nearest { &s.nearest } else { &s.linear }, &[]);
+                pass.draw_indexed(0..GRID * GRID * 6, 0, 0..1);
+            }
+            if let Some(a) = &self.above {
+                pass.set_pipeline(&pipes.over);
+                pass.set_bind_group(0, a, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            drawn.push((*slot, Rect::new(part.x0 - pr.x0, part.y0 - pr.y0, part.x1 - pr.x0, part.y1 - pr.y0)));
         }
-        Some(r)
+        drawn
     }
 }

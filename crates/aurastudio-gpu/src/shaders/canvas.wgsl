@@ -12,16 +12,67 @@ struct View {
     inv0:        vec4<f32>,
     inv1:        vec4<f32>,
     // x: the view is rotated (not by a multiple of 90°): the footprint of
-    // a screen pixel is a tilted square; w: smooth zoom-in (bilinear).
+    // a screen pixel is a tilted square; y: the pages' last mip level (0:
+    // none); z: sharp canvas pixels (nearest) close up; w: smooth zoom-in
+    // (bilinear).
     q:           vec4<f32>,
 }
 
-@group(0) @binding(0) var t_canvas: texture_2d<f32>;
-@group(0) @binding(1) var s_canvas: sampler;
+// The canvas in pages of 256 (see canvas.rs): the full ones in an RGBA
+// atlas, the two-color ones in an R8 atlas, and the page table: x the
+// kind (0 one color, 1 two colors, 2 full), y the page's place in its
+// atlas (x | y << 16, in pages), z and w the colors.
+@group(0) @binding(0) var t_full: texture_2d<f32>;
+@group(0) @binding(1) var t_mono: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> view: View;
 // sRGB -> monitor lookup table (3D: r, g, b), see aurastudio-color.
 @group(0) @binding(3) var t_lut: texture_3d<f32>;
 @group(0) @binding(4) var s_lut: sampler;
+@group(0) @binding(5) var t_table: texture_2d<u32>;
+
+const PAGE: i32 = 256;
+
+// Canvas pixels across and down at level `l` (rounded up).
+fn level_size(l: u32) -> vec2<i32> {
+    let s = vec2<i32>(view.canvas_size);
+    return max((s + vec2((1 << l) - 1)) >> vec2(l), vec2(1));
+}
+
+// The canvas texel (i, j) of level `l`.
+fn texel(ij: vec2<i32>, l: u32) -> vec4<f32> {
+    let p = clamp(ij, vec2(0), level_size(l) - 1);
+    let ps = PAGE >> l;
+    let page = p / ps;
+    let e = textureLoad(t_table, page, 0);
+    if (e.x == 0u) { return unpack4x8unorm(e.z); }
+    let at = vec2<i32>(i32(e.y & 0xffffu), i32(e.y >> 16u)) * ps + (p - page * ps);
+    if (e.x == 1u) {
+        return mix(unpack4x8unorm(e.z), unpack4x8unorm(e.w), textureLoad(t_mono, at, i32(l)).r);
+    }
+    return textureLoad(t_full, at, i32(l));
+}
+
+// Level 0's texel (i, j) inside the canvas, the page's entry kept in
+// `e` while the next texels are on the same page (`at`: its page).
+fn texel_on(ij: vec2<i32>, at: ptr<function, vec2<i32>>, e: ptr<function, vec4<u32>>) -> vec4<f32> {
+    let page = ij / PAGE;
+    if (any(page != *at)) { *at = page; *e = textureLoad(t_table, page, 0); }
+    let k = *e;
+    if (k.x == 0u) { return unpack4x8unorm(k.z); }
+    let p = vec2<i32>(i32(k.y & 0xffffu), i32(k.y >> 16u)) * PAGE + (ij - page * PAGE);
+    if (k.x == 1u) { return mix(unpack4x8unorm(k.z), unpack4x8unorm(k.w), textureLoad(t_mono, p, 0).r); }
+    return textureLoad(t_full, p, 0);
+}
+
+// Bilinear at level `l`, `p` in canvas pixels of level 0.
+fn bilinear(p: vec2<f32>, l: u32) -> vec4<f32> {
+    let q = p / f32(1u << l) - 0.5;
+    let i = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    let a = mix(texel(i, l), texel(i + vec2(1, 0), l), f.x);
+    let b = mix(texel(i + vec2(0, 1), l), texel(i + vec2(1, 1), l), f.x);
+    return mix(a, b, f.y);
+}
 
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
@@ -52,10 +103,21 @@ fn display(c: vec4<f32>) -> vec4<f32> {
     return vec4(select(c.rgb, managed, view.cm.x > 0.5), c.a);
 }
 
-// Standard: the mipmaps (trilinear), or nearest close up (the sampler).
+// Standard: the mipmaps (trilinear), or sharp pixels close up.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return display(textureSample(t_canvas, s_canvas, in.uv));
+    let p = in.uv * view.canvas_size;
+    // Canvas pixels per screen pixel: the level (as a sampler picks it).
+    let rho = max(length(dpdx(p)), length(dpdy(p)));
+    let lod = clamp(log2(max(rho, 1e-6)), 0.0, view.q.y);
+    if (lod <= 0.0) {
+        if (view.q.z > 0.5 && rho < 1.0) { return display(texel(vec2<i32>(floor(p)), 0u)); }
+        return display(bilinear(p, 0u));
+    }
+    let l = u32(floor(lod));
+    let f = lod - floor(lod);
+    let c = mix(bilinear(p, l), bilinear(p, min(l + 1u, u32(view.q.y))), f);
+    return display(c);
 }
 
 // --- High: the exact average of the canvas under each screen pixel ------------
@@ -159,6 +221,8 @@ fn exact(p: vec2<f32>) -> vec4<f32> {
     let i1 = vec2<i32>(ceil(hi));
     var sum = vec4(0.0);
     var total = 0.0;
+    var at = vec2(-1);
+    var e = vec4(0u);
     if (view.q.x < 0.5) {
         // Upright: the footprint is a box, each pixel weighs the product
         // of its overlaps along x and y.
@@ -169,7 +233,7 @@ fn exact(p: vec2<f32>) -> vec4<f32> {
                 let wx = min(f32(i + 1), hi.x) - max(f32(i), lo.x);
                 if (wx <= 0.0) { continue; }
                 let w = wx * wy;
-                sum += textureLoad(t_canvas, vec2(i, j), 0) * w;
+                sum += texel_on(vec2(i, j), &at, &e) * w;
                 total += w;
             }
         }
@@ -190,7 +254,7 @@ fn exact(p: vec2<f32>) -> vec4<f32> {
                     w = clipped_area(c0 - o, c1 - o, c2 - o, c3 - o, s);
                 }
                 if (w <= 0.0) { continue; }
-                sum += textureLoad(t_canvas, vec2(i, j), 0) * w;
+                sum += texel_on(vec2(i, j), &at, &e) * w;
                 total += w;
             }
         }
@@ -204,7 +268,7 @@ fn fs_high(in: VertexOutput) -> @location(0) vec4<f32> {
     var c: vec4<f32>;
     if (view.q.w > 0.5) {
         // Close up, smooth: bilinear between canvas pixels.
-        c = textureSampleLevel(t_canvas, s_canvas, in.uv, 0.0);
+        c = bilinear(in.uv * view.canvas_size, 0u);
     } else {
         c = exact(in.pos.xy);
     }

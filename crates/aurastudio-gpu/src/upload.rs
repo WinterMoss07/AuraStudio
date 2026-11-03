@@ -31,14 +31,16 @@ pub struct Uploads {
 }
 
 impl Uploads {
-    /// Write `rgba` (rows of `size`, tightly packed) at `origin` of level 0
-    /// of `texture`, in pieces of at most one chunk. The copies are
+    /// Write `rgba` (rows of `size`, tightly packed, in the texture's
+    /// format: 4 bytes a pixel for RGBA8, 1 for R8...) at `origin` of level
+    /// 0 of `texture`, in pieces of at most one chunk. The copies are
     /// submitted before this returns (ahead of the next frame).
     pub fn write(&mut self, device: &Device, queue: &Queue, texture: &Texture, origin: (u32, u32), size: (u32, u32), rgba: &[u8]) {
         aurastudio_core::zone!("gpu upload");
         let (w, h) = size;
-        if w == 0 || h == 0 || rgba.len() != w as usize * h as usize * 4 { return; }
-        let row = w as usize * 4;
+        let bpp = texture.format().block_copy_size(Some(TextureAspect::All)).unwrap_or(4) as usize;
+        if w == 0 || h == 0 || rgba.len() != w as usize * h as usize * bpp { return; }
+        let row = w as usize * bpp;
         let padded = row.next_multiple_of(COPY_BYTES_PER_ROW_ALIGNMENT as usize);
         let band = ((CHUNK as usize / padded).max(1) as u32).min(h);
         let mut y = 0;
