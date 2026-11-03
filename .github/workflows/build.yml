@@ -18,9 +18,17 @@ on:
         description: "Also build the Tracy profiler version (Windows)"
         type: boolean
         default: false
+      pdb:
+        description: "Windows: ship the .pdb (function names in crash reports)"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
+  # The .pdb (file and line tables, profile "ci" inherits them from
+  # release) only when asked or for the Tracy build: the rest of the time
+  # the build skips it.
+  WITH_PDB: ${{ github.event_name == 'workflow_dispatch' && (inputs.pdb || inputs.profile) }}
 
 jobs:
   build:
@@ -70,23 +78,28 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # Windows: the .exe names its .pdb with the version (copied
-          # beside it below), so crash reports and Tracy find it.
-          if [ "$RUNNER_OS" = Windows ]; then
-            v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-            export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/PDBALTPATH:aurastudio-$v.pdb"
+          # With the .pdb (Windows): the .exe names it with the version
+          # (copied beside it below), so crash reports and Tracy find it.
+          if [ "$WITH_PDB" = true ]; then
+            if [ "$RUNNER_OS" = Windows ]; then
+              v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+              export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/PDBALTPATH:aurastudio-$v.pdb"
+            fi
+          else
+            export CARGO_PROFILE_CI_DEBUG=false
           fi
           if ! cargo build --profile ci --workspace 2>&1 | tee build.log; then
             grep -E "^(error|warning: build failed)|panicked|--> " -A3 build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           fi
 
-      # Unit tests of every crate (the long fuzz runs are #[ignore]).
+      # Unit tests of every crate (the long fuzz runs are #[ignore]), in
+      # the "ci-test" profile: no LTO, no debug info (fast to link).
       - name: Tests
         shell: bash
         run: |
           set -o pipefail
-          if ! cargo test --profile ci --workspace 2>&1 | tee test.log; then
+          if ! cargo test --profile ci-test --workspace 2>&1 | tee test.log; then
             grep -E "^(error|test .* FAILED)|panicked" -A3 test.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           fi
@@ -98,7 +111,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p diag
-          IDLE_MS=200 cargo run --profile ci -p aurastudio-stress --bin diagnose -- diag | tee diag/summary.txt
+          IDLE_MS=200 cargo run --profile ci-test -p aurastudio-stress --bin diagnose -- diag | tee diag/summary.txt
 
       - name: Upload the diagnostic report
         if: runner.os == 'Linux'
@@ -119,7 +132,7 @@ jobs:
           mkdir dist
           if [ -f target/ci/aurastudio.exe ]; then
             cp target/ci/aurastudio.exe "dist/aurastudio-$v.exe"
-            cp target/ci/aurastudio.pdb "dist/aurastudio-$v.pdb"
+            if [ "$WITH_PDB" = true ]; then cp target/ci/aurastudio.pdb "dist/aurastudio-$v.pdb"; fi
           else
             cp target/ci/aurastudio "dist/aurastudio-$v"
           fi

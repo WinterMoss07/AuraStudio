@@ -343,8 +343,10 @@ A crash writes `crash-<date>.txt` (version, graphics, pen backend, panic
 message, backtrace) in `%APPDATA%\AuraStudio\crashes` (Linux:
 `~/.local/share/AuraStudio/crashes`); the message shown names the file.
 The 20 newest are kept. Release builds keep file and line tables: keep
-the `.pdb` beside the `.exe` (the CI build ships it) so the backtrace
-names the functions.
+the `.pdb` beside the `.exe` so the backtrace names the functions. The CI
+build ships it only when asked (Run workflow, "ship the .pdb"; the
+Tracy build always has it): without it, the backtrace has addresses
+only.
 
 Benchmarks:
 

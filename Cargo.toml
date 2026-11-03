@@ -52,6 +52,15 @@ inherits      = "release"
 lto           = "thin"
 codegen-units = 16
 
+# CI tests: optimized, but no LTO and no debug info: each test binary is
+# linked fast (with the "ci" profile, linking twenty test binaries with
+# LTO and a .pdb each took longer than the app's build).
+[profile.ci-test]
+inherits      = "release"
+lto           = false
+codegen-units = 256
+debug         = false
+
 [workspace.package]
 # One version for the whole app (see README, Versioning).
 version = "0.20.1"
