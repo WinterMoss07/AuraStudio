@@ -244,43 +244,120 @@ fn magnifier(scale: f32) -> Pixmap {
     pixmap
 }
 
-/// Where the pipette's tip is, grid units.
-const PIPETTE_TIP: (f32, f32) = (3.0, 28.0);
+/// Lucide's pipette (ISC, see the ui crate's icons/LICENSE-lucide), on its
+/// 24 grid.
+const PIPETTE_PATHS: [&str; 3] = [
+    "m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12",
+    "m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z",
+    "m2 22 .414-.414",
+];
+/// Lucide's grid in ours.
+const LUCIDE: f32 = SIZE as f32 / 24.0;
+/// Where the pipette's tip is, grid units (the pixel taken).
+const PIPETTE_TIP: (f32, f32) = (2.0 * LUCIDE, 22.0 * LUCIDE);
 
-/// An eyedropper, tip at the bottom left (the pixel taken).
+/// An eyedropper (Lucide's), tip at the bottom left.
 fn pipette(scale: f32) -> Pixmap {
     let (mut pixmap, t) = canvas(scale);
-    let (tx, ty) = PIPETTE_TIP;
-    // Along the tube, toward the top right.
-    let k = std::f32::consts::FRAC_1_SQRT_2;
-    let at = |d: f32, side: f32| (tx + (d + side) * k, ty - (d - side) * k);
+    let t = t.pre_scale(LUCIDE, LUCIDE);
+    let paths: Vec<_> = PIPETTE_PATHS.iter().filter_map(|d| svg_path(d)).collect();
     outline_then_fill(&mut pixmap, |pm, paint, extra| {
-        // The glass tube, thin at the tip.
-        let mut pb = PathBuilder::new();
-        let (a, b, c) = (at(0.0, 0.0), at(17.0, -2.2), at(17.0, 2.2));
-        pb.move_to(a.0, a.1);
-        pb.line_to(at(3.0, -1.4).0, at(3.0, -1.4).1);
-        pb.line_to(b.0, b.1);
-        pb.line_to(c.0, c.1);
-        pb.line_to(at(3.0, 1.4).0, at(3.0, 1.4).1);
-        pb.close();
-        let tube = pb.finish().unwrap();
-        let stroke = Stroke { width: 0.8 + extra, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
-        pm.fill_path(&tube, paint, FillRule::Winding, t, None);
-        pm.stroke_path(&tube, paint, &stroke, t, None);
-        // The collar across it.
-        let collar = Stroke { width: 3.0 + extra, line_cap: LineCap::Round, ..Default::default() };
-        let mut pb = PathBuilder::new();
-        let (p, q) = (at(17.5, -4.6), at(17.5, 4.6));
-        pb.move_to(p.0, p.1);
-        pb.line_to(q.0, q.1);
-        pm.stroke_path(&pb.finish().unwrap(), paint, &collar, t, None);
-        // The bulb.
-        let (bx, by) = at(23.5, 0.0);
-        let bulb = PathBuilder::from_circle(bx, by, 3.8 + extra / 2.0).unwrap();
-        pm.fill_path(&bulb, paint, FillRule::Winding, t, None);
+        let stroke = Stroke { width: 1.9 + extra / LUCIDE, line_cap: LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+        for p in &paths { pm.stroke_path(p, paint, &stroke, t, None); }
     });
     pixmap
+}
+
+/// An SVG path's `d` (the commands M L H V A Z, absolute or relative),
+/// arcs as short lines.
+fn svg_path(d: &str) -> Option<tiny_skia::Path> {
+    // Tokens: command letters and numbers ("-3", ".4", "1.414-.586").
+    let mut toks: Vec<Result<char, f32>> = Vec::new();
+    let b = d.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i] as char;
+        if c.is_ascii_alphabetic() { toks.push(Ok(c)); i += 1; continue; }
+        if c == ' ' || c == ',' { i += 1; continue; }
+        let start = i;
+        if c == '-' || c == '+' { i += 1; }
+        let mut dot = false;
+        while i < b.len() && (b[i].is_ascii_digit() || (b[i] == b'.' && !dot)) { dot |= b[i] == b'.'; i += 1; }
+        toks.push(Err(d[start..i].parse().ok()?));
+        if i == start { return None; }
+    }
+    let mut pb = PathBuilder::new();
+    let (mut x, mut y, mut sx, mut sy) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut k = 0;
+    let mut cmd = 'M';
+    let num = |k: &mut usize| -> Option<f32> { let v = toks.get(*k)?.err()?; *k += 1; Some(v) };
+    while k < toks.len() {
+        if let Ok(c) = toks[k] { cmd = c; k += 1; }
+        let rel = cmd.is_ascii_lowercase();
+        let (ox, oy) = if rel { (x, y) } else { (0.0, 0.0) };
+        match cmd.to_ascii_uppercase() {
+            'M' => {
+                (x, y) = (ox + num(&mut k)?, oy + num(&mut k)?);
+                pb.move_to(x, y);
+                (sx, sy) = (x, y);
+                // Further pairs are lines.
+                cmd = if rel { 'l' } else { 'L' };
+            }
+            'L' => { (x, y) = (ox + num(&mut k)?, oy + num(&mut k)?); pb.line_to(x, y); }
+            'H' => { x = ox + num(&mut k)?; pb.line_to(x, y); }
+            'V' => { y = oy + num(&mut k)?; pb.line_to(x, y); }
+            'A' => {
+                let (rx, ry, rot, large, sweep) = (num(&mut k)?, num(&mut k)?, num(&mut k)?, num(&mut k)? != 0.0, num(&mut k)? != 0.0);
+                let (ex, ey) = (ox + num(&mut k)?, oy + num(&mut k)?);
+                arc(&mut pb, (x, y), (ex, ey), (rx, ry), rot, large, sweep);
+                (x, y) = (ex, ey);
+            }
+            'Z' => { pb.close(); (x, y) = (sx, sy); }
+            _ => return None,
+        }
+    }
+    pb.finish()
+}
+
+/// An SVG elliptical arc from `a` to `b` (SVG 1.1, appendix F.6), as lines.
+fn arc(pb: &mut PathBuilder, a: (f32, f32), b: (f32, f32), r: (f32, f32), rot: f32, large: bool, sweep: bool) {
+    let (mut rx, mut ry) = (r.0.abs(), r.1.abs());
+    if rx < 1e-6 || ry < 1e-6 || a == b { pb.line_to(b.0, b.1); return; }
+    let (s, c) = rot.to_radians().sin_cos();
+    let (dx, dy) = ((a.0 - b.0) / 2.0, (a.1 - b.1) / 2.0);
+    let (x1, y1) = (c * dx + s * dy, -s * dx + c * dy);
+    // Radii too small for the chord: scaled up.
+    let l = (x1 * x1) / (rx * rx) + (y1 * y1) / (ry * ry);
+    if l > 1.0 { rx *= l.sqrt(); ry *= l.sqrt(); }
+    let num = (rx * rx * ry * ry - rx * rx * y1 * y1 - ry * ry * x1 * x1).max(0.0);
+    let den = rx * rx * y1 * y1 + ry * ry * x1 * x1;
+    let mut f = (num / den).sqrt();
+    if large == sweep { f = -f; }
+    let (cx1, cy1) = (f * rx * y1 / ry, -f * ry * x1 / rx);
+    let (cx, cy) = (c * cx1 - s * cy1 + (a.0 + b.0) / 2.0, s * cx1 + c * cy1 + (a.1 + b.1) / 2.0);
+    let ang = |ux: f32, uy: f32| uy.atan2(ux);
+    let t1 = ang((x1 - cx1) / rx, (y1 - cy1) / ry);
+    let mut dt = ang((-x1 - cx1) / rx, (-y1 - cy1) / ry) - t1;
+    let tau = std::f32::consts::TAU;
+    if sweep && dt < 0.0 { dt += tau; }
+    if !sweep && dt > 0.0 { dt -= tau; }
+    let n = ((dt.abs() / tau * 32.0).ceil() as usize).max(2);
+    for i in 1..=n {
+        let t = t1 + dt * i as f32 / n as f32;
+        let (px, py) = (rx * t.cos(), ry * t.sin());
+        pb.line_to(c * px - s * py + cx, s * px + c * py + cy);
+    }
+}
+
+#[cfg(test)]
+mod pipette_tests {
+    #[test]
+    fn the_pipette_paths_parse() {
+        for d in super::PIPETTE_PATHS { assert!(super::svg_path(d).is_some(), "{d}"); }
+        let p = super::svg_path(super::PIPETTE_PATHS[1]).unwrap();
+        let b = p.bounds();
+        assert!(b.left() > 10.0 && b.right() < 23.0 && b.top() > 0.5 && b.bottom() < 15.0, "{b:?}");
+    }
 }
 
 /// A thin cross with an open middle (the pixel stays visible), and the

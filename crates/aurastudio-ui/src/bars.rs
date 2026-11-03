@@ -167,16 +167,23 @@ pub fn menu_bar(root: &mut egui::Ui, state: &mut UiState, m: &mut Model, a: &mut
                     }
                 });
 
-                // The app's name, then the room the window is moved by.
+                // The room the window is moved by, the app's name centered.
                 ui.add_space(14.0);
-                let from = ui.cursor().min.x;
-                ui.label(RichText::new("AuraStudio").color(theme::TEXT_WEAK));
+                let (from, bar) = (ui.cursor().min.x, ui.max_rect());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (cmd, tip) in [(WindowCmd::Close, "Close"), (WindowCmd::ToggleMaximize, if m.maximized { "Restore" } else { "Maximize" }), (WindowCmd::Minimize, "Minimize")] {
                         if window_button(ui, cmd, m.maximized).on_hover_text(tip).clicked() { a.window = Some(cmd); }
                     }
                     let room = Rect::from_min_max(pos2(from, ui.max_rect().top()), pos2(ui.cursor().max.x, ui.max_rect().bottom()));
+                    // Centered on the window, unless the menus reach there.
+                    let font = egui::FontId::proportional(14.0);
+                    let galley = ui.painter().layout_no_wrap("AuraStudio".to_owned(), font, theme::TEXT);
+                    let w = galley.size().x;
+                    let x = (bar.center().x - w / 2.0).max(from).min(room.right() - w);
+                    if x >= from {
+                        ui.painter().galley(pos2(x, bar.center().y - galley.size().y / 2.0), galley, theme::TEXT);
+                    }
                     if room.width() > 0.0 {
                         let r = ui.interact(room, egui::Id::unique("title_bar_room"), Sense::click_and_drag());
                         if r.double_clicked() { a.window = Some(WindowCmd::ToggleMaximize); }
@@ -216,8 +223,8 @@ fn window_button(ui: &mut egui::Ui, cmd: WindowCmd, maximized: bool) -> egui::Re
     resp
 }
 
-/// Toolbar under the menu: fixed actions, and the notices on the right.
-pub fn toolbar(root: &mut egui::Ui, notice: &mut Notice, m: &mut Model, a: &mut Actions) {
+/// Toolbar under the menu: fixed actions.
+pub fn toolbar(root: &mut egui::Ui, m: &mut Model, a: &mut Actions) {
     use crate::icons::Icon;
     use crate::widgets::icon_button;
     egui::Panel::top("options_bar")
@@ -235,25 +242,46 @@ pub fn toolbar(root: &mut egui::Ui, notice: &mut Notice, m: &mut Model, a: &mut 
                 if icon_button(ui, Icon::Copy, "Copy (Ctrl+C)", doc) { a.edit = Some(crate::EditCmd::Copy); }
                 if icon_button(ui, Icon::Paste, "Paste (Ctrl+V)", doc) { a.edit = Some(crate::EditCmd::Paste); }
 
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if !m.home {
-                        let n = m.layers().layer_count();
-                        // Angle shown only when the canvas is turned.
-                        let angle = if m.view_angle.abs() >= 0.05 { format!("  ·  {:.0}°", m.view_angle) } else { String::new() };
-                        // Animation: the current frame first.
-                        let frame = if m.doc_kind() == aurastudio_core::DocType::Animation { format!("Frame {}  ·  ", m.time()) } else { String::new() };
-                        ui.label(RichText::new(format!(
-                            "{}  ·  {frame}{}  ·  {} × {} px  ·  {} layer{}  ·  {:.0} %{}",
-                            m.doc.name, m.doc_kind().name(), m.layers().width, m.layers().height, n, layers::plural(n),
-                            m.view_zoom * 100.0, angle,
-                        )).small().color(theme::TEXT_WEAK));
-                    }
-                    if let Some((text, left)) = notice.current() {
-                        ui.add_space(12.0);
-                        ui.label(RichText::new(text).color(theme::TEXT));
-                        ui.ctx().request_repaint_after(left);
-                    }
-                });
             });
         });
+}
+
+/// The status bar at the bottom: what the document is, how it is viewed.
+pub fn status_bar(root: &mut egui::Ui, m: &mut Model) {
+    egui::Panel::bottom("status_bar")
+        .exact_size(22.0)
+        .show_separator_line(false)
+        .frame(Frame::NONE.fill(theme::PANEL).inner_margin(Margin::symmetric(10, 0)))
+        .show(root, |ui| {
+            ui.horizontal_centered(|ui| {
+                if m.home { return; }
+                let n = m.layers().layer_count();
+                // Angle shown only when the canvas is turned.
+                let angle = if m.view_angle.abs() >= 0.05 { format!("  ·  {:.0}°", m.view_angle) } else { String::new() };
+                // Animation: the current frame first.
+                let frame = if m.doc_kind() == aurastudio_core::DocType::Animation { format!("Frame {}  ·  ", m.time()) } else { String::new() };
+                ui.label(RichText::new(format!(
+                    "{}  ·  {frame}{}  ·  {} × {} px  ·  {} layer{}  ·  {:.0} %{}",
+                    m.doc.name, m.doc_kind().name(), m.layers().width, m.layers().height, n, layers::plural(n),
+                    m.view_zoom * 100.0, angle,
+                )).small().color(theme::TEXT_WEAK));
+            });
+        });
+}
+
+/// The notice of the moment, over the canvas at its top left (Krita).
+pub fn notice_overlay(ctx: &egui::Context, canvas: Rect, notice: &mut Notice) {
+    let Some((text, left)) = notice.current() else { return };
+    egui::Area::new(egui::Id::unique("canvas_notice"))
+        .fixed_pos(canvas.min + vec2(12.0, 12.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            Frame::NONE
+                .fill(egui::Color32::from_black_alpha(190))
+                .corner_radius(4)
+                .inner_margin(Margin::symmetric(10, 6))
+                .show(ui, |ui| { ui.label(RichText::new(text).color(theme::TEXT)); });
+        });
+    ctx.request_repaint_after(left);
 }

@@ -263,6 +263,9 @@ pub struct UiState {
     /// The New dialog's tab last used (Painting, Animation, Comics).
     new_category:  usize,
     recent:        Vec<RecentFile>,
+    /// The dock column's width, and since when its edge is hovered.
+    dock_width:    f32,
+    dock_edge_since: Option<f64>,
 }
 
 impl Default for UiState {
@@ -292,6 +295,8 @@ impl UiState {
             new_form:      None,
             new_category:  0,
             recent:        Vec::new(),
+            dock_width: 300.0,
+            dock_edge_since: None,
         }
     }
 
@@ -402,7 +407,8 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
     state.anim.rect = None;
 
     bars::menu_bar(root, state, model, actions);
-    bars::toolbar(root, &mut state.notice, model, actions);
+    bars::toolbar(root, model, actions);
+    bars::status_bar(root, model);
 
     if let Some(tab) = state.focus_tab.take() {
         // (Hidden from the Window menu: shown again.)
@@ -412,16 +418,17 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
         }
     }
 
+    // (Resized by our own edge below: egui's lit up and changed the
+    // cursor at every pass from the canvas to the dockers.)
     egui::Panel::right("dock")
-        // Grayed out with no document open: its width stays too.
-        .resizable(!model.home)
+        .resizable(false)
         .show_separator_line(false)
-        .default_size(300.0)
-        .size_range(240.0..=600.0)
+        .exact_size(state.dock_width)
         // A little room on the left: the tabs no longer touch the canvas.
         .frame(Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin { left: 6, ..Default::default() }))
         .show(root, |ui| {
             aurastudio_core::zone!("dockers");
+            if !model.home { dock_edge(ui, &mut state.dock_width, &mut state.dock_edge_since); }
             // No document open: grayed out, like the toolbox.
             if model.home { ui.disable(); }
             let style = theme::dock_style(ui.style());
@@ -458,6 +465,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
 
     memory::window(ctx, &mut state.memory_open, state.memory.as_ref());
 
+    bars::notice_overlay(ctx, root.available_rect_before_wrap(), &mut state.notice);
     if let Some(card) = canvas_card(ctx, root.available_rect_before_wrap(), model) {
         if model.home {
             home::start_screen(ctx, card, &mut state.recent, actions);
@@ -601,6 +609,26 @@ fn select_dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
 
 /// egui memory key of the canvas rect (points), read by the GPU crate to
 /// place the canvas viewport.
+/// The dock column's left edge (in its margin): dragged, it resizes the
+/// column. The resize cursor shows only once the pointer stays a moment
+/// (or presses), the line only while dragging.
+fn dock_edge(ui: &mut egui::Ui, width: &mut f32, since: &mut Option<f64>) {
+    const GRAB: f32 = 4.0;
+    const DELAY: f64 = 0.25;
+    let outer = ui.max_rect().left() - 6.0;
+    let r = egui::Rect::from_x_y_ranges(outer..=outer + GRAB, ui.max_rect().y_range());
+    let resp = ui.interact(r, egui::Id::unique("dock_edge"), egui::Sense::drag());
+    let now = ui.input(|i| i.time);
+    *since = if resp.hovered() || resp.dragged() { Some(since.unwrap_or(now)) } else { None };
+    let shown = resp.dragged() || resp.is_pointer_button_down_on() || since.is_some_and(|t| now - t >= DELAY);
+    if resp.hovered() && !shown { ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(DELAY)); }
+    if shown { ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal); }
+    if resp.dragged() {
+        *width = (*width - resp.drag_delta().x).clamp(240.0, 600.0);
+        ui.painter().vline(outer + 1.0, r.y_range(), egui::Stroke::new(2.0, theme::ACCENT));
+    }
+}
+
 pub const CANVAS_RECT_ID: &str = "aurastudio_canvas_rect";
 
 /// The canvas card: what is left of the window, rounded (the UI surface is
