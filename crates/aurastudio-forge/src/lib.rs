@@ -20,35 +20,29 @@
 use aurastudio_core::Point;
 use serde::{Deserialize, Serialize};
 
-pub mod brush;
-pub mod curve;
-pub mod dynamics;
+mod brush;
+mod curve;
+mod dynamics;
 mod engine;
 pub mod import;
-pub mod library;
-pub mod mixer;
-pub mod mode;
-pub mod outline;
-pub mod presets;
-pub mod procedural;
-pub mod render;
-pub mod stroke;
-pub mod rng;
-pub mod symmetry;
-pub mod tile;
+mod library;
+mod mixer;
+mod mode;
+mod presets;
+mod procedural;
+mod render;
+mod stroke;
+mod rng;
+mod tile;
 
-pub use brush::{
-    BrushPreset, BrushSettings, ColorDynamics, Control, DualBrush, Dynamic, MAX_BRUSH_SIZE, MAX_SCATTER, MaskMode, Pattern, PatternStyle, Pose, PresetCaptures,
-    Scattering, SectionLocks, ShapeDynamics, Smoothing, Texture, TipShape, Transfer,
-};
-pub use curve::ResponseCurve;
+pub use brush::{BrushSettings, TipShape};
+pub(crate) use brush::{BrushPreset, Control, DualBrush, Dynamic, MAX_BRUSH_SIZE, MAX_SCATTER, MaskMode, Pattern, PatternStyle, Pose, ShapeDynamics, Transfer};
+pub(crate) use curve::ResponseCurve;
+pub(crate) use mixer::MixerSettings;
+pub(crate) use tile::GrayTile;
 pub use engine::{Forge, PenSample};
 pub use library::{Kind, Library, Preset};
-pub use mixer::{MixerSettings, MixerState};
 pub use mode::PaintMode;
-pub use render::{BrushContext, grid_center, grid_square};
-pub use stroke::StrokeRenderer;
-pub use tile::{GrayTile, StoredTile};
 
 /// The settings of a brush (the name the rest of the app uses).
 pub type Brush = BrushSettings;
@@ -228,50 +222,25 @@ fn soft_exp(u: f32) -> f32 {
 }
 
 /// Opacity of a round tip at distance `d` from its centre, edge included (see [`tip_shape`]).
-#[inline]
-pub fn tip_falloff(d: f32, radius: f32, hardness: f32) -> f32 {
+#[cfg(test)]
+pub(crate) fn tip_falloff(d: f32, radius: f32, hardness: f32) -> f32 {
     TipProfile::new(radius, hardness).falloff(d)
 }
 
-/// How far from its centre a round tip still paints (where [`tip_falloff`] drops below ~0.1 %).
+/// How far from its centre a round tip still paints (where its falloff drops below ~0.1 %).
 #[inline]
-pub fn tip_reach(radius: f32, hardness: f32) -> f32 {
+pub(crate) fn tip_reach(radius: f32, hardness: f32) -> f32 {
     let (r0, s) = tip_shape(radius, hardness);
     r0 + 2.6 * s
 }
 
-/// Distance from the centre where [`tip_falloff`] drops to 50 %: the contour Preferences ›
+/// Distance from the centre where a round tip drops to 50 %: the contour Preferences ›
 /// Cursors › Normal Brush Tip outlines. `(1 − u/64)⁶⁴ = ½` at `u = 64 (1 − ½^(1/64))`.
 #[inline]
-pub fn half_coverage_radius(radius: f32, hardness: f32) -> f32 {
+pub(crate) fn half_coverage_radius(radius: f32, hardness: f32) -> f32 {
     let (r0, s) = tip_shape(radius, hardness);
     let u = 64.0 * (1.0 - 0.5f32.powf(1.0 / 64.0));
     r0 + s * u.sqrt()
-}
-
-/// Coverage of a round dab at distance `d` from its centre.
-#[inline]
-pub fn dab_coverage(d: f32, radius: f32, hardness: f32) -> f32 {
-    TipProfile::new(radius, hardness).coverage(d)
-}
-
-/// Exponential moving-average smoothing of input points (Photoshop's "Smoothing" %, simplified).
-pub fn smooth(points: &[StrokePoint], amount: f32) -> Vec<StrokePoint> {
-    let a = (1.0 - amount.clamp(0.0, 0.95)) as f64;
-    let mut out = Vec::with_capacity(points.len());
-    let mut cur: Option<StrokePoint> = None;
-    for p in points {
-        let n = match cur {
-            None => *p,
-            Some(c) => StrokePoint { x: c.x + (p.x - c.x) * a, y: c.y + (p.y - c.y) * a, ..*p },
-        };
-        out.push(n);
-        cur = Some(n);
-    }
-    if let (Some(last), Some(end)) = (out.last_mut(), points.last()) {
-        *last = *end;
-    }
-    out
 }
 
 

@@ -69,6 +69,7 @@ impl CoverageMap {
     pub fn new(color_channels: usize) -> Self {
         Self { nc: color_channels, ..Default::default() }
     }
+    #[cfg(test)]
     pub fn bounds(&self) -> Rect {
         self.bounds
     }
@@ -80,6 +81,7 @@ impl CoverageMap {
 
     /// Wet Edges depth at a pixel (see [`CovTile::depth`]); `None` when the stroke has none.
     #[inline]
+    #[cfg(test)]
     pub fn depth(&self, x: i32, y: i32) -> Option<f32> {
         let (tx, ty) = (x.div_euclid(COV_TILE), y.div_euclid(COV_TILE));
         self.tiles.get(&tile_key((tx, ty))).and_then(|t| t.depth.get(((y - ty * COV_TILE) * COV_TILE + (x - tx * COV_TILE)) as usize).copied())
@@ -262,14 +264,14 @@ impl StrokeRenderer {
     }
 
     /// Keep a copy of every primary dab (tests).
+    #[cfg(test)]
     pub fn record_dabs(mut self) -> Self {
         self.all_dabs = Some(Vec::new());
         self
     }
 
+    #[cfg(test)]
     pub fn dabs(&self) -> &[Dab] { self.all_dabs.as_deref().unwrap_or(&[]) }
-
-    pub fn dab_count(&self) -> usize { self.dabs_done }
 
     /// Union of the dab rectangles so far.
     pub fn bounds(&self) -> Rect { self.cov.bounds }
@@ -304,12 +306,6 @@ impl StrokeRenderer {
         self.dual_buf = duals;
     }
 
-    /// See [`DabGenerator::wants_time`].
-    pub fn wants_time(&self) -> bool { self.generator.wants_time() }
-
-    /// The string between the brush and the pointer while smoothing lags.
-    pub fn smoothing_string(&self) -> Option<([f64; 2], [f64; 2])> { self.generator.smoothing_string() }
-
     /// Feed input points (any chunking gives the same result).
     pub fn push(&mut self, pts: &[StrokePoint]) {
         self.generator.push(pts, &mut self.dab_buf, &mut self.dual_buf);
@@ -322,17 +318,9 @@ impl StrokeRenderer {
         self.raster_pending();
     }
 
-    /// Final stroke coverage at a pixel (stroke-level masks applied, before opacity).
-    pub fn coverage_at(&self, x: i32, y: i32) -> f32 {
-        let c = self.cov.get(x, y);
-        if c <= 0.0 { return 0.0; }
-        self.ctx.stroke_mask_wet(c, self.cov.depth(x, y), self.dual.as_ref().map(|d| d.get(x, y)), x, y)
-    }
-
     /// Paint the coverage tiles changed since the last call (`all`: every
-    /// tile) onto `s`. `lock_alpha`: the layer's transparent pixels stay
-    /// as they are (source atop). Returns the area painted.
-    pub fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, all: bool, lock_alpha: bool) -> Rect {
+    /// tile) onto `s`. Returns the area painted.
+    pub fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, all: bool) -> Rect {
         let keys: Vec<(i32, i32)> = if all {
             self.cov.dirty.clear();
             let mut k: Vec<_> = self.cov.tiles.keys().copied().map(tile_coords).collect();
@@ -344,7 +332,7 @@ impl StrokeRenderer {
         if let Some(d) = self.dual.as_mut() { d.dirty.clear(); }
         if keys.is_empty() { return Rect::EMPTY; }
         let bounds = self.bounds();
-        let p = Painter::new(self, lock_alpha);
+        let p = Painter::new(self);
         let mut done = Rect::EMPTY;
         let mut spans: Vec<Span<'_, Rgba8>> = Vec::new();
         for (tx, ty) in keys {
@@ -399,13 +387,12 @@ struct Painter<'a> {
     fast:     Option<aurastudio_core::BlendMode>,
     erase:    bool,
     behind:   bool,
-    lock:     bool,
     dither:   bool,
     seed:     u64,
 }
 
 impl<'a> Painter<'a> {
-    fn new(r: &'a StrokeRenderer, lock: bool) -> Self {
+    fn new(r: &'a StrokeRenderer) -> Self {
         let b = &r.ctx.brush;
         let c = b.color.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 });
         Self {
@@ -417,7 +404,6 @@ impl<'a> Painter<'a> {
             fast: b.mode.core(),
             erase: b.erase,
             behind: b.behind,
-            lock,
             // Aliased strokes paint every pixel by the same amount: no gradient to dither.
             dither: !b.aliased,
             seed: b.seed,
@@ -468,14 +454,10 @@ impl<'a> Painter<'a> {
     /// `base` (the pixel before the stroke) painted at coverage `m`.
     #[inline(always)]
     fn pixel(&self, t: &TileRef<'_>, x: i32, y: i32, base: Rgba8, m: u8) -> Rgba8 {
-        if self.erase {
-            if self.lock { return base; }
-            return [base[0], base[1], base[2], mul255(base[3], 255 - m)];
-        }
-        if self.lock && base[3] == 0 { return base; }
+        if self.erase { return [base[0], base[1], base[2], mul255(base[3], 255 - m)]; }
         let per_pixel = self.r.per_dab_color;
         if self.behind {
-            if self.lock || base[3] == 255 { return base; }
+            if base[3] == 255 { return base; }
             let c = if per_pixel { self.color_at(t, x, y) } else { [self.color[0], self.color[1], self.color[2]] };
             let da = from8(base[3]);
             let under = from8(m) * (1.0 - da);
@@ -483,13 +465,13 @@ impl<'a> Painter<'a> {
             let mix = |b: u8, c: f32| to8((from8(b) * da + c * under) / a);
             return [mix(base[0], c[0]), mix(base[1], c[1]), mix(base[2], c[2]), to8(a)];
         }
-        if let (Some(fast), false, false) = (self.fast, per_pixel, self.lock) {
+        if let (Some(fast), false) = (self.fast, per_pixel) {
             return aurastudio_core::blend::paint_pixel_u8(base, self.color8, m, fast);
         }
         let c = if per_pixel { self.color_at(t, x, y) } else { [self.color[0], self.color[1], self.color[2]] };
         let b = [from8(base[0]), from8(base[1]), from8(base[2]), from8(base[3])];
         let src = [c[0], c[1], c[2], 1.0];
-        let o = if self.lock { mode::composite_atop(self.mode, b, src, from8(m)) } else { mode::composite(self.mode, b, src, from8(m)) };
+        let o = mode::composite(self.mode, b, src, from8(m));
         [to8(o[0]), to8(o[1]), to8(o[2]), to8(o[3])]
     }
 }

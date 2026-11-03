@@ -12,7 +12,7 @@ pub const PANEL:        Color32 = Color32::from_rgb(0x53, 0x53, 0x53);
 /// Same surface (kept as a name for "behind everything").
 pub const BACKDROP:     Color32 = PANEL;
 /// Behind the picture: around the image in the canvas (GPU clear color),
-/// the layer list, the stroke previews.
+/// the layer list.
 pub const DESK:         Color32 = Color32::from_rgb(0x28, 0x28, 0x28);
 /// Inset areas inside a dock (layer list): the desk's dark.
 pub const SURFACE:      Color32 = DESK;

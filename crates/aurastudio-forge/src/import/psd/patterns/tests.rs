@@ -17,7 +17,7 @@ fn pat(depth: u16, alpha: bool) -> PsdPattern {
     }
 }
 
-/// #9318 review: a name the reader refuses (more than 65,536 UTF-16 units with its NUL) is
+/// a name the reader refuses (more than 65,536 UTF-16 units with its NUL) is
 /// refused on write, so a saved library can't become a file that loads nothing.
 #[test]
 fn a_name_the_reader_refuses_is_refused_on_write() {
@@ -27,7 +27,7 @@ fn a_name_the_reader_refuses_is_refused_on_write() {
     assert_eq!(parse_pat_file(&write_pat_file(std::slice::from_ref(&longest)).unwrap()).unwrap(), [longest]);
 }
 
-/// #9318 review: more patterns than a `.pat` holds are refused on write, and a file claiming
+/// more patterns than a `.pat` holds are refused on write, and a file claiming
 /// more is refused on read rather than silently cut to the first 100,000.
 #[test]
 fn more_patterns_than_a_pat_file_holds_are_refused() {
@@ -52,47 +52,6 @@ fn block_and_pat_file_round_trip_at_every_depth() {
             // Re-serialising is byte-stable.
             assert_eq!(write_pattern_block(&parse_pattern_block(&blk).unwrap()).unwrap(), blk);
         }
-    }
-}
-
-/// Offsets of the virtual memory arrays of a one-pattern block (each at its "written" flag),
-/// with whether each is written, and the end of the array list.
-fn vma_slots(block: &[u8], p: &PsdPattern) -> (Vec<(usize, bool)>, usize) {
-    let rect = pattern_vma_rect_offset(4, p);
-    let end = rect + u32::from_be_bytes(block[rect - 4..rect].try_into().unwrap()) as usize;
-    let (mut at, mut slots) = (rect + 20, Vec::new());
-    while at < end {
-        let written = u32::from_be_bytes(block[at..at + 4].try_into().unwrap()) != 0;
-        slots.push((at, written));
-        at += 4;
-        if written {
-            at += 4 + u32::from_be_bytes(block[at..at + 4].try_into().unwrap()) as usize;
-        }
-    }
-    (slots, end)
-}
-
-#[test]
-fn transparency_goes_in_the_sheet_mask_array_like_photoshop() {
-    // #8054: transparency in the user mask array (slot 24) made Photoshop refuse the file;
-    // Photoshop keeps it in the sheet mask array (slot 25).
-    for depth in [8, 16, 32] {
-        let p = pat(depth, true);
-        let mut block = write_pattern_block(std::slice::from_ref(&p)).unwrap();
-        let (slots, end) = vma_slots(&block, &p);
-        let written: Vec<usize> = slots.iter().enumerate().filter(|(_, s)| s.1).map(|(i, _)| i).collect();
-        assert_eq!((slots.len(), written), (26, vec![0, 1, 2, 25]), "{depth}-bit");
-        assert!(!block_has_user_mask(&block));
-        // The layout older PhotoCraft builds wrote still opens, and is detected.
-        block[slots[24].0..end].rotate_left(4);
-        let (slots, _) = vma_slots(&block, &p);
-        assert!(slots[24].1 && !slots[25].1);
-        assert!(block_has_user_mask(&block));
-        assert_eq!(parse_pattern_block(&block).unwrap(), vec![p]);
-    }
-    assert!(!block_has_user_mask(&write_pattern_block(&[pat(8, false)]).unwrap()));
-    for junk in [&[][..], &[0, 0, 0, 9, 1], &[0xff; 64]] {
-        assert!(!block_has_user_mask(junk));
     }
 }
 

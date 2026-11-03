@@ -51,15 +51,6 @@ pub fn grid_center(x: f64, y: f64, diameter: f32) -> (f32, f32) {
     (snap(x) as f32, snap(y) as f32)
 }
 
-/// The whole-pixel square `[x0, y0, x1, y1]` an aliased dab of `diameter` pixels at (`x`, `y`)
-/// can touch (see [`grid_center`]): the Pencil's cursor.
-pub fn grid_square(x: f64, y: f64, diameter: f32) -> [f64; 4] {
-    let n = if diameter.is_finite() { f64::from(diameter.round().clamp(1.0, 100_000.0)) } else { 1.0 };
-    let (cx, cy) = grid_center(x, y, n as f32);
-    let h = n / 2.0;
-    [f64::from(cx) - h, f64::from(cy) - h, f64::from(cx) + h, f64::from(cy) + h]
-}
-
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -104,12 +95,12 @@ pub fn mask_combine(mode: MaskMode, v: f32, t: f32, d: f32) -> f32 {
 }
 
 /// How far a Height-mode dab at full depth and coverage reaches into the pattern, in pattern
-/// ranges (measured against Photoshop, #3340).
+/// ranges (measured against Photoshop).
 const HEIGHT_REACH: f32 = 12.0;
 
 /// Combine brush coverage `v` with a Texture pattern value `t` at `depth` (Brush Settings ›
 /// Texture). Where it differs from [`mask_combine`] (still used for the Dual Brush) it follows
-/// Photoshop as measured with single dabs over a grey ramp (#3340):
+/// Photoshop as measured with single dabs over a grey ramp:
 /// - Subtract takes `depth × t` away, so a white pattern removes the most paint.
 /// - Color Dodge and Color Burn move the pattern toward their neutral colour as depth falls.
 /// - Height treats the pattern as a height field the brush presses into: the paint reaches
@@ -166,7 +157,7 @@ fn prepare_pattern(b: &BrushSettings) -> Option<Arc<PatternImage>> {
 
 /// The pixel rectangle `reach` (plus 1 px of anti-aliasing slack) around a dab's centre. The casts
 /// saturate and the arithmetic saturates, so a far or non-finite centre or reach from a direct
-/// caller gives a (possibly empty) rectangle instead of an `i32` overflow (#977).
+/// caller gives a (possibly empty) rectangle instead of an `i32` overflow.
 pub(crate) fn rect_around(d: &Dab, reach: f32) -> Rect {
     let rr = (reach.ceil() as i32).saturating_add(1);
     let (cx, cy) = (d.center.x.floor() as i32, d.center.y.floor() as i32);
@@ -375,12 +366,6 @@ impl BrushContext {
         }
     }
 
-
-    /// Stroke-level masks applied to accumulated coverage `c` at a pixel.
-    #[inline]
-    pub fn stroke_mask(&self, c: f32, dual: Option<f32>, x: i32, y: i32) -> f32 {
-        self.stroke_mask_wet(c, None, dual, x, y)
-    }
 
     /// [`stroke_mask`](Self::stroke_mask) with Wet Edges from the stroke's depth at the pixel
     /// (the deepest any dab reaches it, see [`CoverageMap::depth`]).

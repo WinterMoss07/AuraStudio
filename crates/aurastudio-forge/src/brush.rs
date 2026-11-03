@@ -19,7 +19,7 @@ pub const MAX_BRUSH_SIZE: f32 = 5000.0;
 
 /// Largest Scatter amount (primary and Dual Brush): 10 = 1000 %, the Brush Settings slider's top.
 /// Beyond it a dab could land arbitrarily far away, and an unbounded amount overflowed the dab
-/// centre to infinity (#977).
+/// centre to infinity.
 pub const MAX_SCATTER: f32 = 10.0;
 
 /// What drives a dynamic parameter (Photoshop's "Control" pop-ups).
@@ -122,14 +122,6 @@ impl TipShape {
             TipShape::Round => None,
             TipShape::Sampled(g) => Some(g),
             TipShape::Stored(r) => Some(r.bitmap()),
-        }
-    }
-    /// The tip's real pixel size (a stored tip's, not its preview's); `None` for a computed tip.
-    pub fn bitmap_size(&self) -> Option<(u32, u32)> {
-        match self {
-            TipShape::Round => None,
-            TipShape::Sampled(g) => Some((g.width, g.height)),
-            TipShape::Stored(r) => Some((r.width, r.height)),
         }
     }
 }
@@ -288,7 +280,7 @@ pub struct Texture {
 
 impl Texture {
     /// A pattern value (0..1) after Brightness, Contrast and Invert: the value the mode combines
-    /// with the brush. Measured against Photoshop (#3340): Brightness shifts the pattern by
+    /// with the brush. Measured against Photoshop: Brightness shifts the pattern by
     /// `brightness / 255` (±150 moves it 150 levels of 255, not all the way to white or black);
     /// positive Contrast steepens it around mid-grey by `1 / (1 − c/100)` after the shift (100 is
     /// a threshold), negative Contrast flattens it by `1 + c/100` before the shift; Invert is last.
@@ -568,7 +560,7 @@ pub struct BrushSettings {
     /// Straight RGBA colour (display RGB). Commands fill it from the foreground colour.
     pub color: [f32; 4],
     /// The inks `color` was picked as (its sRGB colour, the CMYK values), for a CMYK target: the
-    /// stroke paints exactly these, since an sRGB round trip does not give them back (#4344).
+    /// stroke paints exactly these, since an sRGB round trip does not give them back.
     /// Only valid while `color` is that sRGB colour; ignored with Color Dynamics.
     #[serde(skip)]
     pub color_cmyk: Option<([f32; 3], [f32; 4])>,
@@ -689,7 +681,7 @@ impl BrushSettings {
     /// As in Photoshop, the dual diameter is multiplied by the size ratio unrounded and only capped
     /// at the top ([`MAX_BRUSH_SIZE`]): a 100 px brush with a 20 px dual tip shrunk to 1 px has a
     /// 0.2 px dual tip and grows back to exactly 20 px. A sub-pixel floor here would lose the
-    /// proportion on the way back up (#4809); rendering bounds the diameter itself
+    /// proportion on the way back up; rendering bounds the diameter itself
     /// ([`Self::bounded_for_render`]).
     pub fn resize_with_dual_brush(&mut self, new_size: f32) {
         if self.dual_brush.enabled && self.size.is_finite() && self.size > 0.0 && new_size.is_finite() && new_size > 0.0 {
@@ -707,7 +699,7 @@ impl BrushSettings {
     ///
     /// Engine commands reject out-of-range values; this is a final guard for direct users of the
     /// infallible paint API, which must not turn malformed brush dimensions into giant allocations,
-    /// nor a huge Scatter amount into non-finite dab centres (#977).
+    /// nor a huge Scatter amount into non-finite dab centres.
     pub fn bounded_for_render(&self) -> Self {
         let safe_size = |size: f32| {
             if size.is_finite() { size.clamp(0.5, MAX_BRUSH_SIZE) } else { 0.5 }
@@ -828,21 +820,4 @@ impl PresetCaptures {
 }
 
 impl BrushPreset {
-    /// The tool's brush once this preset is picked while `current` is the tool's brush: the
-    /// preset's brush ([`BrushSettings::picked_over`]), with the size and tool settings it didn't
-    /// capture left as they were.
-    pub fn picked_over(&self, current: &BrushSettings) -> BrushSettings {
-        let mut b = self.brush.clone().picked_over(current);
-        if !self.captures.size {
-            b.resize_with_dual_brush(current.size);
-        }
-        if !self.captures.tool_settings {
-            b.mode = current.mode;
-            b.opacity = current.opacity;
-            b.flow = current.flow;
-            b.pressure_size = current.pressure_size;
-            b.pressure_opacity = current.pressure_opacity;
-        }
-        b
-    }
 }

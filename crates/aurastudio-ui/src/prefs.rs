@@ -50,8 +50,6 @@ pub struct Prefs {
     // Interface.
     /// Size of the interface (1.0 = the system's scaling).
     pub ui_scale:         f32,
-    /// The Tools docker shows each brush's stroke (off: names only).
-    pub brush_previews:   bool,
     /// The window opens maximized.
     pub open_maximized:   bool,
     // Canvas and display.
@@ -103,7 +101,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Self {
-            ui_scale: 1.0, brush_previews: true, open_maximized: true,
+            ui_scale: 1.0, open_maximized: true,
             hidpi_scaling: true, color_managed: true, perceptual: true, renderer: Renderer::default(),
             canvas_quality: CanvasQuality::High, smooth_zoom_in: false, vsync: false, canvas_fps: 60,
             brush_outline: true, debounce_ms: 20,
@@ -129,7 +127,6 @@ impl Prefs {
             let b = v != "false";
             match k.trim() {
                 "ui_scale" => if let Ok(v) = v.parse::<f32>() { p.ui_scale = v.clamp(0.5, 2.0) },
-                "brush_previews" => p.brush_previews = b,
                 "open_maximized" => p.open_maximized = b,
                 "hidpi_image_scaling" => p.hidpi_scaling = b,
                 "color_managed" => p.color_managed = b,
@@ -155,8 +152,8 @@ impl Prefs {
 
     pub fn to_text(&self) -> String {
         format!(
-            "ui_scale={}\nbrush_previews={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\ncanvas_fps={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\nonion_by={}\n",
-            self.ui_scale, self.brush_previews, self.open_maximized, self.hidpi_scaling, self.color_managed,
+            "ui_scale={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\ncanvas_fps={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\nonion_by={}\n",
+            self.ui_scale, self.open_maximized, self.hidpi_scaling, self.color_managed,
             self.perceptual, self.renderer.key(),
             if self.canvas_quality == CanvasQuality::Standard { "standard" } else { "high" }, self.smooth_zoom_in, self.vsync, self.canvas_fps,
             self.brush_outline, self.debounce_ms, self.autosave_minutes,
@@ -262,8 +259,6 @@ fn interface(ui: &mut Ui, p: &mut Prefs, reset_docks: &mut bool) {
         }
     });
     note(ui, "On top of the system's display scaling.");
-    title(ui, "Tools docker");
-    ui.checkbox(&mut p.brush_previews, "Show brush strokes");
     title(ui, "Window");
     ui.checkbox(&mut p.open_maximized, "Open maximized");
     ui.add_space(6.0);
@@ -363,7 +358,7 @@ mod tests {
 
     #[test]
     fn prefs_round_trip_and_old_files_read() {
-        let p = Prefs { ui_scale: 1.25, brush_previews: false, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl,
+        let p = Prefs { ui_scale: 1.25, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl,
             canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true, canvas_fps: 144,
             onion_before: [12, 200, 255], onion_after: [250, 128, 0], onion_thickness: 73, onion_playback: true, onion_by_frames: true, ..Prefs::default() };
         assert_eq!(Prefs::from_text(&p.to_text()), p);

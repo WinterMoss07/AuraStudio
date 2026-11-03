@@ -36,8 +36,11 @@
 use crate::import::psd::compression::{Compression, PlaneLayout, decode_planes};
 #[cfg(test)]
 use crate::import::psd::compression::encode_planes;
+#[cfg(test)]
+use crate::import::psd::io::WriteExt;
 use crate::import::psd::descriptor::{Descriptor, Value, VersionedDescriptor};
 use crate::import::psd::error::{PsdError, Result};
+use crate::import::psd::io::Reader as Rd;
 use crate::import::psd::patterns::{PatternBudget, PsdPattern, parse_pattern_block_with};
 #[cfg(test)]
 use crate::import::psd::patterns::write_pattern_block;
@@ -132,46 +135,7 @@ pub struct AbrFile {
     pub warnings: Vec<String>,
 }
 
-struct Rd<'a> {
-    b: &'a [u8],
-    p: usize,
-}
 
-impl<'a> Rd<'a> {
-    fn new(b: &'a [u8]) -> Self {
-        Rd { b, p: 0 }
-    }
-    fn left(&self) -> usize {
-        self.b.len().saturating_sub(self.p)
-    }
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.p.checked_add(n).ok_or(PsdError::LimitExceeded("abr length overflow"))?;
-        let s = self.b.get(self.p..end).ok_or(PsdError::UnexpectedEof { offset: self.p, needed: end.saturating_sub(self.b.len()) })?;
-        self.p = end;
-        Ok(s)
-    }
-    fn arr<const N: usize>(&mut self) -> Result<[u8; N]> {
-        let s = self.take(N)?;
-        let mut a = [0u8; N];
-        a.copy_from_slice(s);
-        Ok(a)
-    }
-    fn u8(&mut self) -> Result<u8> {
-        Ok(self.arr::<1>()?[0])
-    }
-    fn u16(&mut self) -> Result<u16> {
-        Ok(u16::from_be_bytes(self.arr()?))
-    }
-    fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_be_bytes(self.arr()?))
-    }
-    fn i32(&mut self) -> Result<i32> {
-        Ok(i32::from_be_bytes(self.arr()?))
-    }
-    fn skip(&mut self, n: usize) -> Result<()> {
-        self.take(n).map(|_| ())
-    }
-}
 
 /// Bytes budget shared by all samples of one file.
 struct Budget(usize);
@@ -207,7 +171,7 @@ fn read_sample_body(r: &mut Rd, id: String, budget: &mut Budget) -> Result<AbrSa
     };
     let layout = PlaneLayout { planes: 1, width: w as usize, height: h as usize, depth };
     budget.spend(layout.decoded_len()?)?;
-    let rest = r.take(r.left())?;
+    let rest = r.bytes(r.remaining())?;
     let data = decode_planes(compression, rest, &layout)?;
     Ok(AbrSample { id, width: w, height: h, depth, data })
 }
@@ -217,7 +181,7 @@ fn read_ucs2(r: &mut Rd) -> Result<String> {
     if n > 4096 {
         return Err(PsdError::LimitExceeded("abr name length"));
     }
-    let units: Vec<u16> = r.take(n * 2)?.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect();
+    let units: Vec<u16> = r.bytes(n * 2)?.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes(*c)).collect();
     Ok(String::from_utf16_lossy(&units).trim_end_matches('\0').to_string())
 }
 
@@ -225,13 +189,13 @@ fn parse_v12(r: &mut Rd, version: u16, out: &mut AbrFile) -> Result<()> {
     let count = r.u16()?;
     let mut budget = Budget(MAX_TOTAL_BYTES);
     for i in 0..count {
-        if r.left() == 0 {
+        if r.remaining() == 0 {
             out.warnings.push(format!("file ends after {i} of {count} brushes"));
             break;
         }
         let ty = r.u16()?;
         let len = r.u32()? as usize;
-        let body = match r.take(len) {
+        let body = match r.bytes(len) {
             Ok(b) => b,
             Err(_) => {
                 out.warnings.push(format!("brush {}: truncated", i + 1));
@@ -277,7 +241,7 @@ fn parse_v12(r: &mut Rd, version: u16, out: &mut AbrFile) -> Result<()> {
 
 fn read_samp(data: &[u8], subversion: u16, out: &mut AbrFile, budget: &mut Budget) -> Result<()> {
     let mut r = Rd::new(data);
-    while r.left() >= 4 {
+    while r.remaining() >= 4 {
         if out.samples.len() >= MAX_BRUSHES {
             out.warnings.push("too many sampled tips; the rest were skipped".into());
             break;
@@ -287,7 +251,7 @@ fn read_samp(data: &[u8], subversion: u16, out: &mut AbrFile, budget: &mut Budge
             break;
         }
         let padded = len.checked_add(3).ok_or(PsdError::LimitExceeded("abr sample length"))? & !3;
-        let body = match r.take(padded.min(r.left())) {
+        let body = match r.bytes(padded.min(r.remaining())) {
             Ok(b) if b.len() >= len => b,
             _ => {
                 out.warnings.push(format!("sampled tip {}: truncated", out.samples.len() + 1));
@@ -297,7 +261,7 @@ fn read_samp(data: &[u8], subversion: u16, out: &mut AbrFile, budget: &mut Budge
         let mut b = Rd::new(body);
         let parsed = (|| -> Result<AbrSample> {
             let n = b.u8()? as usize;
-            let id = String::from_utf8_lossy(b.take(n)?).to_string();
+            let id = String::from_utf8_lossy(b.bytes(n)?).to_string();
             b.skip(if subversion == 1 { 10 } else { 264 })?;
             read_sample_body(&mut b, id, budget)
         })();
@@ -439,25 +403,25 @@ fn parse_v6_within(r: &mut Rd, out: &mut AbrFile, budget: &mut Budget) -> Result
     }
     let mut hierarchy = None;
     let mut patterns = PatternBudget::default();
-    while r.left() >= 12 {
-        let sig = r.arr::<4>()?;
+    while r.remaining() >= 12 {
+        let sig = r.array::<4>()?;
         if &sig != b"8BIM" {
-            out.warnings.push(format!("unexpected data at offset {} ignored", r.p - 4));
+            out.warnings.push(format!("unexpected data at offset {} ignored", r.pos() - 4));
             break;
         }
-        let key = r.arr::<4>()?;
+        let key = r.array::<4>()?;
         let len = r.u32()? as usize;
-        let data = match r.take(len) {
+        let data = match r.bytes(len) {
             Ok(d) => d,
             Err(_) => {
                 out.warnings.push(format!("section {} truncated", String::from_utf8_lossy(&key)));
-                r.take(r.left())?
+                r.bytes(r.remaining())?
             }
         };
         // Sections are padded to 4 bytes; tolerate writers that don't pad.
         let pad = (4 - len % 4) % 4;
-        if pad > 0 && r.b.get(r.p..r.p + 4) != Some(b"8BIM") && r.b.get(r.p + pad..r.p + pad + 4) == Some(b"8BIM") {
-            r.p += pad;
+        if pad > 0 && r.peek(0, 4) != Some(b"8BIM") && r.peek(pad, 4) == Some(b"8BIM") {
+            r.skip(pad)?;
         }
         match &key {
             b"samp" => read_samp(data, out.subversion, out, budget)?,
@@ -507,14 +471,6 @@ pub fn parse(data: &[u8]) -> Result<AbrFile> {
 
 // ------------------------------------------------------------------ writing
 
-#[cfg(test)]
-fn put_u16(o: &mut Vec<u8>, v: u16) {
-    o.extend_from_slice(&v.to_be_bytes());
-}
-#[cfg(test)]
-fn put_u32(o: &mut Vec<u8>, v: u32) {
-    o.extend_from_slice(&v.to_be_bytes());
-}
 
 #[cfg(test)]
 fn write_sample_body(o: &mut Vec<u8>, s: &AbrSample, rle: bool) -> Result<()> {
@@ -524,7 +480,7 @@ fn write_sample_body(o: &mut Vec<u8>, s: &AbrSample, rle: bool) -> Result<()> {
     for v in [0, 0, s.height as i32, s.width as i32] {
         o.extend_from_slice(&v.to_be_bytes());
     }
-    put_u16(o, s.depth);
+    o.put_u16(s.depth);
     o.push(u8::from(rle));
     let layout = PlaneLayout { planes: 1, width: s.width as usize, height: s.height as usize, depth: s.depth };
     o.extend_from_slice(&encode_planes(if rle { Compression::Rle } else { Compression::Raw }, &s.data, &layout)?);
@@ -538,37 +494,37 @@ pub fn write_v12(version: u16, brushes: &[LegacyBrush], rle: bool) -> Result<Vec
         return Err(PsdError::Unsupported(format!("writing brush file version {version}")));
     }
     let mut o = Vec::new();
-    put_u16(&mut o, version);
-    put_u16(&mut o, brushes.len() as u16);
+    o.put_u16(version);
+    o.put_u16(brushes.len() as u16);
     for b in brushes {
         let mut body = Vec::new();
-        put_u32(&mut body, 0);
-        put_u16(&mut body, b.spacing);
+        body.put_u32(0);
+        body.put_u16(b.spacing);
         let ty = match &b.tip {
             LegacyTip::Computed { diameter, hardness, angle, roundness } => {
                 for v in [*diameter, *roundness, *angle as u16, *hardness] {
-                    put_u16(&mut body, v);
+                    body.put_u16(v);
                 }
                 1
             }
             LegacyTip::Sampled(s) => {
                 if version == 2 {
                     let units: Vec<u16> = b.name.encode_utf16().chain(std::iter::once(0)).collect();
-                    put_u32(&mut body, units.len() as u32);
+                    body.put_u32(units.len() as u32);
                     for u in units {
-                        put_u16(&mut body, u);
+                        body.put_u16(u);
                     }
                 }
                 body.push(u8::from(b.anti_alias));
                 for v in [0u16, 0, s.height.min(0xffff) as u16, s.width.min(0xffff) as u16] {
-                    put_u16(&mut body, v);
+                    body.put_u16(v);
                 }
                 write_sample_body(&mut body, s, rle)?;
                 2
             }
         };
-        put_u16(&mut o, ty);
-        put_u32(&mut o, body.len() as u32);
+        o.put_u16(ty);
+        o.put_u32(body.len() as u32);
         o.extend_from_slice(&body);
     }
     Ok(o)
@@ -579,7 +535,7 @@ fn section(o: &mut Vec<u8>, key: &[u8; 4], data: &[u8]) {
     o.extend_from_slice(b"8BIM");
     o.extend_from_slice(key);
     let pad = (4 - data.len() % 4) % 4;
-    put_u32(o, (data.len() + pad) as u32);
+    o.put_u32((data.len() + pad) as u32);
     o.extend_from_slice(data);
     o.extend(std::iter::repeat_n(0u8, pad));
 }
@@ -655,8 +611,8 @@ pub fn write_v6_folders(
         return Err(PsdError::Unsupported(format!("brush file subversion {subversion}")));
     }
     let mut o = Vec::new();
-    put_u16(&mut o, 6);
-    put_u16(&mut o, subversion);
+    o.put_u16(6);
+    o.put_u16(subversion);
     let mut samp = Vec::new();
     for s in samples {
         let mut e = Vec::new();
@@ -666,7 +622,7 @@ pub fn write_v6_folders(
         e.extend_from_slice(&id[..n]);
         e.extend(std::iter::repeat_n(0u8, if subversion == 1 { 10 } else { 264 }));
         write_sample_body(&mut e, s, rle)?;
-        put_u32(&mut samp, e.len() as u32);
+        samp.put_u32(e.len() as u32);
         let pad = (4 - e.len() % 4) % 4;
         samp.extend_from_slice(&e);
         samp.extend(std::iter::repeat_n(0u8, pad));

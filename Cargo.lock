@@ -339,7 +339,6 @@ name = "aurastudio-forge"
 version = "0.19.6"
 dependencies = [
  "aurastudio-core",
- "crc32fast",
  "flate2",
  "image",
  "rayon",
@@ -348,6 +347,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "zip",
 ]
 
 [[package]]
@@ -4654,6 +4654,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "crc32fast",
+ "flate2",
  "indexmap",
  "memchr",
  "nix",

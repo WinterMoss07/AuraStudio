@@ -24,14 +24,13 @@ use aurastudio_layers::{FillParams, LayerStack};
 use egui::Frame;
 use egui_dock::{DockArea, DockState};
 
-pub use aurastudio_core::BlendMode;
-pub use dockers::Tab;
 pub use dockers::layers::LayerCmd;
+use dockers::Tab;
 pub use filters::FilterAction;
 pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
 pub use home::{NewDoc, RecentFile};
-pub use tools::{BrushDrag, Group, Loupe, Overlay, PickerOptions, SelectCmd, SelectOptions, LOUPE_SIDE, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
+pub use tools::{BrushDrag, Group, Loupe, Overlay, PickerOptions, SelectCmd, SelectOptions, LOUPE_SIDE, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformOptions, TransformOverlay};
 pub use prefs::{CanvasQuality, Renderer};
 pub use widgets::set_display_transform;
 
@@ -358,8 +357,6 @@ impl UiState {
         self.layers.invalidate(layer_id, rect);
     }
 
-    /// Show a docker (as the Window menu does).
-    pub fn show_docker(&mut self, tab: dockers::Tab) { dockers::set_shown(&mut self.dock, tab, true); }
 
     /// Every layer changed (canvas resize...).
     pub fn invalidate_all_thumbnails(&mut self) {
@@ -371,13 +368,6 @@ impl UiState {
         if self.prefs_open.is_none() { self.prefs_open = Some(prefs::Section::default()); }
     }
 
-    /// Open the dialog of filter `n` (any number: taken modulo their count)
-    /// on the active layer, as its menu entry does. For the fuzz test.
-    #[doc(hidden)]
-    pub fn open_filter_dialog(&mut self, ctx: &egui::Context, n: usize, m: &Model) {
-        let kinds: Vec<aurastudio_filters::Kind> = aurastudio_filters::Kind::all().collect();
-        if self.filter.is_none() { self.filter = filters::new_dialog(ctx, kinds[n % kinds.len()], m); }
-    }
 
     /// A layer command from its shortcut (Ctrl+G...), done next frame.
     pub fn layer_shortcut(&mut self, cmd: LayerCmd) { self.layers.shortcut(cmd); }

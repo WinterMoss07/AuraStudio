@@ -1,34 +1,24 @@
-//! Bounds-checked big-endian reader and writer helpers.
+//! Bounds-checked big-endian reading (and writing, for the tests).
 
 use crate::import::psd::error::{PsdError, Result};
 
-/// A cursor over a byte slice. Every read is bounds checked. Integers are big-endian (the PSD
-/// byte order) unless the reader was made with [`Reader::new_little`], which only the TIFF
-/// byte-order transcoder uses ([`crate::tiff`]).
+/// A cursor over a byte slice, big-endian (Photoshop's byte order). Every
+/// read is bounds checked.
 #[derive(Debug, Clone)]
 pub(crate) struct Reader<'a> {
     data: &'a [u8],
-    pos: usize,
-    little: bool,
+    pos:  usize,
 }
 
 impl<'a> Reader<'a> {
-    pub(crate) fn new(data: &'a [u8]) -> Self {
-        Reader { data, pos: 0, little: false }
-    }
+    pub(crate) fn new(data: &'a [u8]) -> Self { Reader { data, pos: 0 } }
 
-    pub(crate) fn pos(&self) -> usize {
-        self.pos
-    }
+    pub(crate) fn pos(&self) -> usize { self.pos }
 
-    pub(crate) fn remaining(&self) -> usize {
-        self.data.len() - self.pos
-    }
+    pub(crate) fn remaining(&self) -> usize { self.data.len() - self.pos }
 
     #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.remaining() == 0
-    }
+    pub(crate) fn is_empty(&self) -> bool { self.remaining() == 0 }
 
     pub(crate) fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
         if n > self.remaining() {
@@ -45,9 +35,12 @@ impl<'a> Reader<'a> {
         self.bytes(n)
     }
 
-    #[cfg(test)]
-    pub(crate) fn skip(&mut self, n: usize) -> Result<()> {
-        self.bytes(n).map(|_| ())
+    pub(crate) fn skip(&mut self, n: usize) -> Result<()> { self.bytes(n).map(|_| ()) }
+
+    /// The `n` bytes `ahead` bytes from here, without moving.
+    pub(crate) fn peek(&self, ahead: usize, n: usize) -> Option<&'a [u8]> {
+        let at = self.pos.checked_add(ahead)?;
+        self.data.get(at..at.checked_add(n)?)
     }
 
     pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
@@ -57,34 +50,14 @@ impl<'a> Reader<'a> {
         Ok(out)
     }
 
-    pub(crate) fn u8(&mut self) -> Result<u8> {
-        Ok(self.array::<1>()?[0])
-    }
-    pub(crate) fn u16(&mut self) -> Result<u16> {
-        let b = self.array()?;
-        Ok(if self.little { u16::from_le_bytes(b) } else { u16::from_be_bytes(b) })
-    }
+    pub(crate) fn u8(&mut self) -> Result<u8> { Ok(self.array::<1>()?[0]) }
+    pub(crate) fn u16(&mut self) -> Result<u16> { Ok(u16::from_be_bytes(self.array()?)) }
     #[cfg(test)]
-    pub(crate) fn i16(&mut self) -> Result<i16> {
-        let b = self.array()?;
-        Ok(if self.little { i16::from_le_bytes(b) } else { i16::from_be_bytes(b) })
-    }
-    pub(crate) fn u32(&mut self) -> Result<u32> {
-        let b = self.array()?;
-        Ok(if self.little { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
-    }
-    pub(crate) fn i32(&mut self) -> Result<i32> {
-        let b = self.array()?;
-        Ok(if self.little { i32::from_le_bytes(b) } else { i32::from_be_bytes(b) })
-    }
-    pub(crate) fn i64(&mut self) -> Result<i64> {
-        let b = self.array()?;
-        Ok(if self.little { i64::from_le_bytes(b) } else { i64::from_be_bytes(b) })
-    }
-    pub(crate) fn f64(&mut self) -> Result<f64> {
-        let b = self.array()?;
-        Ok(if self.little { f64::from_le_bytes(b) } else { f64::from_be_bytes(b) })
-    }
+    pub(crate) fn i16(&mut self) -> Result<i16> { Ok(i16::from_be_bytes(self.array()?)) }
+    pub(crate) fn u32(&mut self) -> Result<u32> { Ok(u32::from_be_bytes(self.array()?)) }
+    pub(crate) fn i32(&mut self) -> Result<i32> { Ok(i32::from_be_bytes(self.array()?)) }
+    pub(crate) fn i64(&mut self) -> Result<i64> { Ok(i64::from_be_bytes(self.array()?)) }
+    pub(crate) fn f64(&mut self) -> Result<f64> { Ok(f64::from_be_bytes(self.array()?)) }
 
     /// Returns `Err` unless `count * min_item_size` bytes remain. Used to
     /// validate element counts before allocating.

@@ -57,16 +57,6 @@ pub mod stream {
     pub const MIX: u64 = 20;
 }
 
-/// Seed derived from arbitrary bytes (FNV-1a then mixed), for commands without an explicit seed.
-pub fn seed_from_bytes(b: &[u8]) -> u64 {
-    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
-    for &x in b {
-        h ^= u64::from(x);
-        h = h.wrapping_mul(0x0000_0100_0000_01B3);
-    }
-    mix64(h)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

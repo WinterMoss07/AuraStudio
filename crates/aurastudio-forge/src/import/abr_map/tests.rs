@@ -298,7 +298,6 @@ fn v1_v2_brushes_become_presets() {
     ];
     for version in [1, 2] {
         let imp = read_abr(&write_v12(version, &brushes, true).unwrap(), "Old").unwrap();
-        assert_eq!(imp.version, version);
         assert_eq!(imp.presets.len(), 2);
         let c = &imp.presets[0];
         assert_eq!(c.name, "13 px Round");
@@ -386,7 +385,7 @@ fn paint(b: &crate::BrushSettings, pts: &[crate::StrokePoint]) -> Painted {
     let mut r = crate::stroke::StrokeRenderer::new(b, 1.0);
     r.push(pts);
     r.finish();
-    r.paint(&mut s, true, false);
+    r.paint(&mut s, true);
     Painted(s)
 }
 
@@ -425,7 +424,7 @@ fn sampled_tip_paints_the_brush_colour_never_black() {
     assert!(painted < 64 * 64, "the tip covered everything - coverage was treated as solid colour");
 }
 
-/// #3340: Photoshop's texture Contrast runs -50..100; the model maps -50..0 and 0..100 onto
+/// Photoshop's texture Contrast runs -50..100; the model maps -50..0 and 0..100 onto
 /// -1..0 and 0..1 (as Brush Settings shows it), so +24 must not read back as +48.
 #[test]
 fn texture_contrast_maps_both_halves() {
@@ -442,7 +441,7 @@ fn texture_contrast_maps_both_halves() {
     }
 }
 
-/// #3340: a Height-mode brush at a low depth with a darkened pattern (how Photoshop's own
+/// a Height-mode brush at a low depth with a darkened pattern (how Photoshop's own
 /// "Pen" presets in the reported file are set up) imported but painted nothing.
 #[test]
 fn low_depth_height_texture_brush_paints() {
@@ -468,7 +467,7 @@ fn low_depth_height_texture_brush_paints() {
     }
 }
 
-/// #4809: Photoshop CC presets store the dual tip's spacing in `dualBrush › Brsh › Spcn` and a
+/// Photoshop CC presets store the dual tip's spacing in `dualBrush › Brsh › Spcn` and a
 /// `Spcn` of 100 % on the `dualBrush` object beside it; the tip's value is the panel's. A tip
 /// without one still takes the outer value.
 #[test]

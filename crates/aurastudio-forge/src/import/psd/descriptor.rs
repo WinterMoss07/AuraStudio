@@ -19,11 +19,13 @@ pub struct UnicodeString(pub Vec<u16>);
 
 impl UnicodeString {
     /// Encodes `s` as UTF-16 without a trailing NUL.
+    #[cfg(test)]
     pub fn new(s: &str) -> Self {
         UnicodeString(s.encode_utf16().collect())
     }
     /// Encodes `s` as UTF-16 followed by a NUL terminator (as Photoshop
     /// commonly writes in descriptors).
+    #[cfg(test)]
     pub fn new_nul(s: &str) -> Self {
         let mut v: Vec<u16> = s.encode_utf16().collect();
         v.push(0);
@@ -264,6 +266,7 @@ impl Descriptor {
     }
 
     /// Builder-style item append.
+    #[cfg(test)]
     pub fn with(mut self, key: &str, value: Value) -> Self {
         self.items.push((Id::new(key), value));
         self

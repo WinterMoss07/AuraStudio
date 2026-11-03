@@ -1,8 +1,8 @@
-//! Error type for every fallible operation in this crate.
+//! The readers' error type.
 
 use thiserror::Error;
 
-/// Errors produced while parsing, decoding, encoding or writing PSD/PSB data.
+/// Errors produced while reading brush files.
 ///
 /// Parsers never panic on malformed input; every failure is reported through
 /// this type.
@@ -26,10 +26,6 @@ pub enum PsdError {
         /// The bytes that were found.
         found: [u8; 4],
     },
-    /// Header version is neither 1 (PSD) nor 2 (PSB).
-    #[error("unsupported file version {0}")]
-    #[cfg(test)]
-    UnsupportedVersion(u16),
     /// A dimension, count or allocation exceeded the configured safety limits.
     #[error("limit exceeded: {0}")]
     LimitExceeded(&'static str),
@@ -43,10 +39,6 @@ pub enum PsdError {
     /// A compressed stream could not be decoded.
     #[error("decompression failed: {0}")]
     Decompress(String),
-    /// Reading from a [`crate::source::ReadAt`] source failed.
-    #[error("read failed: {0}")]
-    #[cfg(test)]
-    Read(String),
     /// An operation is not supported for this data (e.g. unknown compression).
     #[error("unsupported: {0}")]
     Unsupported(String),

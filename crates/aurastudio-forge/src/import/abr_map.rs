@@ -9,7 +9,6 @@
 
 use std::collections::BTreeSet;
 
-use super::{Cancelled, Interrupt};
 
 use crate::{
     BrushPreset, BrushSettings, Control, DualBrush, Dynamic, GrayTile, MaskMode, MixerSettings, Pattern, PatternStyle, Pose, ShapeDynamics, TipShape, Transfer,
@@ -28,47 +27,22 @@ pub const MAX_PATTERN_EDGE: u32 = 1024;
 pub struct AbrImport {
     pub presets: Vec<BrushPreset>,
     pub warnings: Vec<String>,
-    /// File version (1, 2, 6…).
-    pub version: u16,
 }
 
 /// Parse an `.abr` file into presets in group `group` (usually the file name). The file's own
 /// folders (Photoshop CC's preset hierarchy) become each preset's [`BrushPreset::folder`] inside
 /// that group, the way Photoshop's Import Brushes puts them in a folder named after the file.
 pub fn read_abr(bytes: &[u8], group: &str) -> Result<AbrImport, String> {
-    read_abr_with(bytes, group, &Interrupt::NONE)
-}
-
-/// [`read_abr`] that checks `ctl` before each brush (and reports progress): a cancelled import
-/// fails with "cancelled".
-pub fn read_abr_with(bytes: &[u8], group: &str, ctl: &Interrupt) -> Result<AbrImport, String> {
     let f = abr::parse(bytes).map_err(|e| format!("not a readable brush file (.abr): {e}"))?;
-    // Parsing is the small part; mapping (tip decoding) reports 10–100 %.
-    ctl.progress(0.1);
-    let cancel = || ctl.cancelled();
-    let progress = |p: f32| ctl.progress(0.1 + 0.9 * p);
-    map_file_with(&f, group, &Interrupt::new(&cancel, &progress)).map_err(|e| e.to_string())
+    Ok(map_file(&f, group))
 }
 
-/// Map a parsed file.
-pub fn map_file(f: &AbrFile, group: &str) -> AbrImport {
-    // Never cancelled, so always `Ok`.
-    map_file_with(f, group, &Interrupt::NONE).unwrap_or_default()
-}
-
-/// [`map_file`] that checks `ctl` before each brush.
-pub fn map_file_with(f: &AbrFile, group: &str, ctl: &Interrupt) -> Result<AbrImport, Cancelled> {
-    let mut out = AbrImport { version: f.version, warnings: f.warnings.clone(), ..Default::default() };
+/// The presets of a parsed file.
+fn map_file(f: &AbrFile, group: &str) -> AbrImport {
+    let mut out = AbrImport { warnings: f.warnings.clone(), ..Default::default() };
     let mut m = Mapper { file: f, warnings: BTreeSet::new(), unknown: BTreeSet::new(), tips: Default::default() };
-    let total = f.legacy.len().max(f.samples.len()).max(f.presets.len()).max(1) as f32;
-    let step = |i: usize| -> Result<(), Cancelled> {
-        ctl.check()?;
-        ctl.progress(i as f32 / total);
-        Ok(())
-    };
     if !f.legacy.is_empty() {
         for (i, b) in f.legacy.iter().enumerate() {
-            step(i)?;
             let spacing = if b.spacing == 0 { 0.25 } else { f32::from(b.spacing) / 100.0 };
             let base = BrushSettings { pressure_size: false, spacing, ..Default::default() };
             let (brush, default_name) = match &b.tip {
@@ -93,7 +67,6 @@ pub fn map_file_with(f: &AbrFile, group: &str, ctl: &Interrupt) -> Result<AbrImp
     } else if f.presets.is_empty() {
         // Tips without a settings section (early v6 files): one preset per tip.
         for (i, s) in f.samples.iter().enumerate() {
-            step(i)?;
             let (tip, size) = m.tip(s);
             let brush = BrushSettings { pressure_size: false, spacing: 0.25, size, tip, ..Default::default() };
             out.presets.push(BrushPreset {
@@ -107,7 +80,6 @@ pub fn map_file_with(f: &AbrFile, group: &str, ctl: &Interrupt) -> Result<AbrImp
         }
     } else {
         for (i, d) in f.presets.iter().enumerate() {
-            step(i)?;
             let name = text(d, "Nm  ").filter(|n| !n.trim().is_empty()).map(|n| n.trim().to_string()).unwrap_or_else(|| format!("Brush {}", i + 1));
             match m.preset(d) {
                 // The file's folders nest inside `group`, as Photoshop nests them inside a folder
@@ -124,10 +96,9 @@ pub fn map_file_with(f: &AbrFile, group: &str, ctl: &Interrupt) -> Result<AbrImp
     }
     out.warnings.extend(m.warnings);
     if !m.unknown.is_empty() {
-        out.warnings.push(format!("settings without a PhotoCraft equivalent were ignored: {}", m.unknown.into_iter().collect::<Vec<_>>().join(", ")));
+        out.warnings.push(format!("settings with no equivalent here were left out: {}", m.unknown.into_iter().collect::<Vec<_>>().join(", ")));
     }
-    ctl.progress(1.0);
-    Ok(out)
+    out
 }
 
 // ------------------------------------------------------------------ descriptor helpers
@@ -442,7 +413,7 @@ impl Mapper<'_> {
             dual.flip = boolean(db, "Flip").unwrap_or(false);
             // The dual tip's own spacing (`Brsh › Spcn`) is what Photoshop's Dual Brush panel
             // shows. The `Spcn` beside it on the `dualBrush` object reads 100 % in Photoshop CC
-            // presets whatever the panel says (#4809), so it only stands in for a tip without one.
+            // presets whatever the panel says, so it only stands in for a tip without one.
             if obj(db, "Brsh").and_then(|t| pct(t, "Spcn")).is_none()
                 && let Some(v) = pct(db, "Spcn")
             {

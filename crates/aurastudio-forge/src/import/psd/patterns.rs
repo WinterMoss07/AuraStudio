@@ -20,12 +20,13 @@
 //! ag-psd (MIT) we take the first written arrays as the colour channels and the next one as
 //! transparency. Photoshop stores a pattern's transparency in the last (sheet mask) array and
 //! leaves the user mask unwritten (psd-tools multichannel-pattern-fill.psd, Photoshop CC 2019); a
-//! file with transparency in the user mask array is refused by Photoshop (#8054).
+//! file with transparency in the user mask array is refused by Photoshop.
 
 use crate::import::psd::compression::{Compression, MAX_DECODED_BYTES, PlaneLayout, decode_planes};
 #[cfg(test)]
 use crate::import::psd::compression::encode_planes;
 use crate::import::psd::error::{PsdError, Result};
+use crate::import::psd::io::Reader as Rd;
 
 /// Largest pattern edge accepted (Photoshop's own limit is far lower).
 const MAX_EDGE: u32 = 30_000;
@@ -104,10 +105,6 @@ pub fn mode_channels(mode: u32) -> usize {
     }
 }
 
-struct Rd<'a> {
-    b: &'a [u8],
-    p: usize,
-}
 
 struct PatternChannel<'a> {
     data: &'a [u8],
@@ -118,34 +115,8 @@ struct PatternChannel<'a> {
     y: usize,
 }
 
-impl<'a> Rd<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
-        let end = self.p.checked_add(n).ok_or(PsdError::LimitExceeded("pattern length overflow"))?;
-        if end > self.b.len() {
-            return Err(PsdError::UnexpectedEof { offset: self.p, needed: end - self.b.len() });
-        }
-        let s = &self.b[self.p..end];
-        self.p = end;
-        Ok(s)
-    }
-    fn u8(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
-    }
-    fn u16(&mut self) -> Result<u16> {
-        let s = self.take(2)?;
-        Ok(u16::from_be_bytes([s[0], s[1]]))
-    }
-    fn u32(&mut self) -> Result<u32> {
-        let s = self.take(4)?;
-        Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
-    }
-    fn i32(&mut self) -> Result<i32> {
-        Ok(self.u32()? as i32)
-    }
-    fn rect(&mut self) -> Result<[i32; 4]> {
-        Ok([self.i32()?, self.i32()?, self.i32()?, self.i32()?])
-    }
-}
+
+fn rect(r: &mut Rd) -> Result<[i32; 4]> { Ok([r.i32()?, r.i32()?, r.i32()?, r.i32()?]) }
 
 /// A pattern's mode, name, id and palette, up to its virtual memory array list.
 struct PatternHeader {
@@ -167,15 +138,15 @@ fn read_header(r: &mut Rd) -> Result<PatternHeader> {
     if n > 65_536 {
         return Err(PsdError::LimitExceeded("pattern name length"));
     }
-    let units: Vec<u16> = r.take(n * 2)?.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = r.bytes(n * 2)?.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
     let name = String::from_utf16_lossy(&units).trim_end_matches('\0').to_string();
     let idl = r.u8()? as usize;
-    let id = String::from_utf8_lossy(r.take(idl)?).to_string();
+    let id = String::from_utf8_lossy(r.bytes(idl)?).to_string();
     let palette = if mode == 2 {
-        let p = r.take(768)?.to_vec();
+        let p = r.bytes(768)?.to_vec();
         // Some writers follow the palette with 4 extra bytes (ag-psd skips them).
-        if r.b.get(r.p..r.p + 4).is_some_and(|v| v != [0, 0, 0, 3]) {
-            r.take(4)?;
+        if r.peek(0, 4).is_some_and(|v| v != [0, 0, 0, 3]) {
+            r.bytes(4)?;
         }
         Some(p)
     } else {
@@ -191,14 +162,14 @@ fn read_vma_body<'a>(r: &mut Rd<'a>) -> Result<&'a [u8]> {
         return Err(PsdError::invalid(format!("virtual memory array list version {vver}")));
     }
     let len = r.u32()? as usize;
-    r.take(len)
+    r.bytes(len)
 }
 
 fn read_pattern(r: &mut Rd, budget: &mut PatternBudget) -> Result<PsdPattern> {
     let PatternHeader { mode, name, id, palette } = read_header(r)?;
     let body = read_vma_body(r)?;
-    let mut v = Rd { b: body, p: 0 };
-    let [top, left, bottom, right] = v.rect()?;
+    let mut v = Rd::new(body);
+    let [top, left, bottom, right] = rect(&mut v)?;
     let w = right.checked_sub(left).ok_or(PsdError::LimitExceeded("pattern width overflow"))?;
     let h = bottom.checked_sub(top).ok_or(PsdError::LimitExceeded("pattern height overflow"))?;
     if w <= 0 || h <= 0 || w as u32 > MAX_EDGE || h as u32 > MAX_EDGE {
@@ -217,7 +188,7 @@ fn read_pattern(r: &mut Rd, budget: &mut PatternBudget) -> Result<PsdPattern> {
     let mut channels = Vec::new();
     let mut first_depth: Option<u16> = None;
     for _ in 0..count + 2 {
-        if v.p >= body.len() {
+        if v.remaining() == 0 {
             break;
         }
         if v.u32()? == 0 {
@@ -231,10 +202,10 @@ fn read_pattern(r: &mut Rd, budget: &mut PatternBudget) -> Result<PsdPattern> {
             return Err(PsdError::invalid("short virtual memory array"));
         }
         let d32 = v.u32()?;
-        let [ct, cl, cb, cr] = v.rect()?;
+        let [ct, cl, cb, cr] = rect(&mut v)?;
         let d16 = v.u16()?;
         let comp = v.u8()?;
-        let data = v.take(alen - 23)?;
+        let data = v.bytes(alen - 23)?;
         let d = if matches!(d16, 1 | 8 | 16 | 32) { d16 } else { d32 as u16 };
         if !matches!(d, 1 | 8 | 16 | 32) {
             return Err(PsdError::invalid(format!("pattern depth {d}")));
@@ -440,7 +411,7 @@ fn write_pattern(p: &PsdPattern, out: &mut Vec<u8>) -> Result<()> {
     for _ in nc..SLOTS as usize {
         body.extend_from_slice(&0u32.to_be_bytes());
     }
-    // User mask slot: unused; sheet mask slot: transparency, where Photoshop keeps it (#8054).
+    // User mask slot: unused; sheet mask slot: transparency, where Photoshop keeps it.
     body.extend_from_slice(&0u32.to_be_bytes());
     match &p.alpha {
         Some(a) => array(a, &mut body)?,
@@ -461,63 +432,19 @@ pub fn parse_pattern_block(data: &[u8]) -> Result<Vec<PsdPattern>> {
 /// [`parse_pattern_block`] charging `budget`, so several blocks of one document share one limit.
 /// Charges are monotonic even when a later record in the block fails.
 pub fn parse_pattern_block_with(data: &[u8], budget: &mut PatternBudget) -> Result<Vec<PsdPattern>> {
-    let mut r = Rd { b: data, p: 0 };
+    let mut r = Rd::new(data);
     let mut out = Vec::new();
-    while r.p + 4 <= data.len() {
+    while r.remaining() >= 4 {
         let len = r.u32()? as usize;
         if len == 0 {
             break;
         }
-        let body = r.take(len)?;
-        out.push(read_pattern(&mut Rd { b: body, p: 0 }, budget)?);
+        let body = r.bytes(len)?;
+        out.push(read_pattern(&mut Rd::new(body), budget)?);
         let pad = (4 - len % 4) % 4;
-        r.p = (r.p + pad).min(data.len());
+        r.skip(pad.min(r.remaining()))?;
     }
     Ok(out)
-}
-
-/// Whether `Patt` / `Pat2` / `Pat3` block data keeps a pattern's transparency in the user mask
-/// array, as PhotoCraft wrote it before #8054. Photoshop refuses such a file, so a save must
-/// rewrite the block rather than keep it. Unreadable data counts as `false`.
-#[cfg(test)]
-pub fn block_has_user_mask(data: &[u8]) -> bool {
-    let mut r = Rd { b: data, p: 0 };
-    while r.p + 4 <= data.len() {
-        let Ok(len) = r.u32() else { return false };
-        if len == 0 {
-            break;
-        }
-        let Ok(body) = r.take(len as usize) else { return false };
-        if pattern_has_user_mask(&mut Rd { b: body, p: 0 }).unwrap_or(false) {
-            return true;
-        }
-        let pad = (4 - len as usize % 4) % 4;
-        r.p = (r.p + pad).min(data.len());
-    }
-    false
-}
-
-#[cfg(test)]
-fn pattern_has_user_mask(r: &mut Rd) -> Result<bool> {
-    read_header(r)?;
-    let mut v = Rd { b: read_vma_body(r)?, p: 0 };
-    v.rect()?;
-    let count = v.u32()?;
-    // Every array takes at least 4 bytes, so the body bounds this loop whatever `count` says.
-    for i in 0..count.saturating_add(2) {
-        if v.p >= v.b.len() {
-            break;
-        }
-        if v.u32()? == 0 {
-            continue;
-        }
-        let alen = v.u32()? as usize;
-        if i == count && alen != 0 {
-            return Ok(true);
-        }
-        v.take(alen)?;
-    }
-    Ok(false)
 }
 
 /// Serializes patterns as `Patt` / `Pat2` / `Pat3` block data.
@@ -542,8 +469,8 @@ pub const MAX_PAT_PATTERNS: usize = 100_000;
 /// Parses a `.pat` pattern file.
 #[cfg(test)]
 pub fn parse_pat_file(data: &[u8]) -> Result<Vec<PsdPattern>> {
-    let mut r = Rd { b: data, p: 0 };
-    let sig = r.take(4)?;
+    let mut r = Rd::new(data);
+    let sig = r.bytes(4)?;
     if sig != b"8BPT" {
         return Err(PsdError::InvalidSignature { expected: "8BPT", found: [sig[0], sig[1], sig[2], sig[3]] });
     }

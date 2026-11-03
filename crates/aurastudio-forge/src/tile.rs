@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// A grayscale bitmap, row-major, 1 = full.
 ///
 /// The samples are shared: cloning a tile (brush settings are cloned on every pointer event of a
-/// stroke, #4534) copies a pointer, not a sampled tip that may be thousands of pixels across.
+/// stroke) copies a pointer, not a sampled tip that may be thousands of pixels across.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrayTile {
     pub width: u32,
@@ -77,7 +77,7 @@ impl GrayTile {
 pub const PREVIEW_SIDE: u32 = 96;
 
 /// A tip or texture bitmap kept outside the brush settings by its owner and loaded only when the
-/// brush is used (#1843): the desktop preset store keeps imported tips on disk, so a library of a
+/// brush is used: the desktop preset store keeps imported tips on disk, so a library of a
 /// thousand big sampled brushes costs a few small previews in memory, not gigabytes of bitmaps.
 ///
 /// `preview` is a small copy ([`GrayTile::preview`]) for thumbnails and stroke previews; `full`
@@ -102,9 +102,6 @@ impl StoredTile {
     /// The full bitmap when loaded, else the preview.
     pub fn bitmap(&self) -> &GrayTile {
         self.full.as_deref().unwrap_or(&self.preview)
-    }
-    pub fn is_loaded(&self) -> bool {
-        self.full.is_some()
     }
 }
 
@@ -310,7 +307,7 @@ mod tests {
     use super::*;
 
     /// Cloning a tile (and the brush settings holding it, on every pointer event of a stroke)
-    /// shares its samples instead of copying them (#4534).
+    /// shares its samples instead of copying them.
     #[test]
     fn clones_share_their_samples() {
         let t = GrayTile::from_fn(64, 32, |x, y| ((x + y) % 7) as f32 / 6.0);

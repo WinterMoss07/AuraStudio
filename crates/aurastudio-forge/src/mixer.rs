@@ -43,10 +43,6 @@ impl MixerSettings {
         self.wet.clamp(0.0, 1.0) * dab.wet.clamp(0.0, 1.0)
     }
 
-    /// Whether this dab can update the pickup well from the canvas.
-    pub fn samples_canvas(&self, dab: &crate::Dab) -> bool {
-        self.effective_wet(dab) > 0.0
-    }
 }
 
 /// Paint carried between strokes (session tool state).
@@ -124,37 +120,4 @@ impl MixerState {
         }
         self.color = Some(color);
     }
-    /// The reservoir color the next stroke in `color` starts with (the Current Brush Load
-    /// swatch); None = a clean brush.
-    pub fn next_load(&self, color: [f32; 4]) -> Option<[f32; 4]> {
-        if self.color != Some(color) { Some(color) } else { self.reservoir }
-    }
-}
-
-/// Sample a spatial load at a dab pixel using the dab's rotation, aspect and flips.
-/// Keeping the reservoir in tip coordinates lets it follow subsequent brush poses.
-pub fn load_at(load: &[[f32; 4]], dab: &crate::Dab, x: f32, y: f32) -> [f32; 4] {
-    let mut dx = x - dab.center.x as f32;
-    let mut dy = y - dab.center.y as f32;
-    if dab.proj_scale < 0.999 {
-        let (sin, cos) = dab.proj_angle.sin_cos();
-        let along = (dx * cos - dy * sin) * (1.0 / dab.proj_scale.max(0.05) - 1.0);
-        dx += along * cos;
-        dy -= along * sin;
-    }
-    let (sin, cos) = dab.angle.sin_cos();
-    let mut u = (dx * cos - dy * sin) / dab.radius.max(0.01);
-    let mut v = (dx * sin + dy * cos) / (dab.radius * dab.roundness).max(0.5);
-    if dab.flip_x {
-        u = -u;
-    }
-    if dab.flip_y {
-        v = -v;
-    }
-    if !(-1.0..1.0).contains(&u) || !(-1.0..1.0).contains(&v) {
-        return [0.0; 4];
-    }
-    let col = ((u + 1.0) * 32.0) as usize;
-    let row = ((v + 1.0) * 32.0) as usize;
-    load.get(row * 64 + col).copied().unwrap_or([0.0; 4])
 }

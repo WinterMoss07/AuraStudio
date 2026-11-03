@@ -14,7 +14,8 @@ use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Str
 
 use crate::atlas::{Atlas, Region};
 use crate::widgets::*;
-use crate::{theme, Actions, BlendMode, Model, Notice};
+use aurastudio_core::BlendMode;
+use crate::{theme, Actions, Model, Notice};
 
 const THUMB: f32 = 28.0;
 const ROW_H: f32 = 34.0;

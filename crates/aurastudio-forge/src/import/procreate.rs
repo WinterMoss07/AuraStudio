@@ -16,7 +16,7 @@
 //! Grain becomes a texture on every stamp, fixed to the canvas as Procreate's Texturized grain
 //! is. Procreate stores sizes relative to its largest brush, not in pixels ([`SIZE_SCALE`]),
 //! and Stroke Path › Jitter is taken as a scatter of that many tip radii; neither has been
-//! measured against Procreate. Settings without a PhotoCraft equivalent are listed in
+//! measured against Procreate. Settings with no equivalent here are listed in
 //! [`ProcreateImport::warnings`].
 
 mod bplist;
@@ -25,9 +25,10 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap};
 
-use super::zip::{ZipReader, ZipWriter};
+use super::zip::ZipReader;
+#[cfg(test)]
+use super::zip::ZipWriter;
 use crate::{BrushPreset, BrushSettings, Control, GrayTile, MAX_BRUSH_SIZE, MAX_SCATTER, Pattern, ResponseCurve, TipShape};
-use super::Interrupt;
 
 use super::abr_map::{MAX_PATTERN_EDGE, MAX_TIP_EDGE, fit};
 use bplist::{Obj, Plist};
@@ -66,12 +67,6 @@ pub struct ProcreateImport {
 
 /// Read a `.brush` or `.brushset` into presets in group `group` (usually the file name).
 pub fn read_procreate(bytes: &[u8], group: &str) -> Result<ProcreateImport, String> {
-    read_procreate_with(bytes, group, &Interrupt::NONE)
-}
-
-/// [`read_procreate`] that checks `ctl` before each brush (and reports progress): a cancelled
-/// import fails with "cancelled".
-pub fn read_procreate_with(bytes: &[u8], group: &str, ctl: &Interrupt) -> Result<ProcreateImport, String> {
     let zip = ZipReader::new(bytes).map_err(|e| format!("not a Procreate brush file (.brush, .brushset): {e}"))?;
     let mut out = ProcreateImport::default();
     // A `.brush` keeps its files at the top; a `.brushset` has a folder per brush.
@@ -82,8 +77,6 @@ pub fn read_procreate_with(bytes: &[u8], group: &str, ctl: &Interrupt) -> Result
     let mut m = Mapper { zip: &zip, unmapped: BTreeSet::new(), kept: 0 };
     let (mut unreadable, mut noted) = (0usize, 0usize);
     for (i, dir) in dirs.iter().enumerate() {
-        ctl.check().map_err(|e| e.to_string())?;
-        ctl.progress(i as f32 / dirs.len() as f32);
         let mut notes = Vec::new();
         match m.brush(dir, i, &mut notes) {
             Ok(Some(brush)) => {
@@ -126,9 +119,8 @@ pub fn read_procreate_with(bytes: &[u8], group: &str, ctl: &Interrupt) -> Result
     }
     if !m.unmapped.is_empty() {
         out.warnings
-            .push(format!("Procreate settings without a PhotoCraft equivalent were left out: {}", m.unmapped.into_iter().collect::<Vec<_>>().join(", ")));
+            .push(format!("Procreate settings with no equivalent here were left out: {}", m.unmapped.into_iter().collect::<Vec<_>>().join(", ")));
     }
-    ctl.progress(1.0);
     Ok(out)
 }
 
@@ -538,6 +530,7 @@ impl Mapper<'_> {
 /// A field for [`write_archive`].
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq)]
+#[cfg(test)]
 pub enum Field {
     Num(f64),
     Flag(bool),
@@ -548,6 +541,7 @@ pub enum Field {
 
 /// A `Brush.archive` with `fields`, in the shape Procreate writes. Exposed for tests.
 #[doc(hidden)]
+#[cfg(test)]
 pub fn write_archive(fields: &[(&str, Field)]) -> Vec<u8> {
     use bplist::Value as V;
     let class = |name: &str| V::Dict(vec![("$classname".into(), V::Str(name.into())), ("$classes".into(), V::Array(vec![V::Str(name.into())]))]);
@@ -587,11 +581,13 @@ pub fn write_archive(fields: &[(&str, Field)]) -> Vec<u8> {
 /// One brush of a [`write_brushset`] set: `Brush.archive` bytes, then optional `Shape.png` and
 /// `Grain.png` bytes. Exposed for tests.
 #[doc(hidden)]
+#[cfg(test)]
 pub type BrushFiles = (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
 
 /// A `.brushset` named `name` holding `brushes`, each in a folder named after its position.
 /// Exposed for tests.
 #[doc(hidden)]
+#[cfg(test)]
 pub fn write_brushset(name: &str, brushes: &[BrushFiles]) -> Vec<u8> {
     let ids: Vec<String> = (0..brushes.len()).map(|i| format!("00000000-0000-0000-0000-{i:012}")).collect();
     let list: String = ids.iter().map(|id| format!("\t\t<string>{id}</string>\n")).collect();

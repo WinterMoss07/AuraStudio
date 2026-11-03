@@ -34,7 +34,7 @@ fn paint(b: &BrushSettings, pts: &[StrokePoint], w: i32, h: i32) -> FlatSurface 
     let mut r = StrokeRenderer::new(b, 1.0);
     r.push(pts);
     r.finish();
-    r.paint(&mut s, true, false);
+    r.paint(&mut s, true);
     s
 }
 
@@ -354,7 +354,7 @@ fn unbounded_brush_dimensions_are_safe_in_the_public_renderer() {
 
 /// Texture Brightness and Contrast as Photoshop applies them, measured by stroking a 0..255 grey
 /// ramp pattern in Multiply mode at 100 % depth (the stroke's opacity is then the pattern value):
-/// (setting, ramp value, opacity read back), in levels of 255 (#3340).
+/// (setting, ramp value, opacity read back), in levels of 255.
 #[test]
 fn texture_brightness_and_contrast_match_photoshop() {
     let level = |brightness: f32, contrast: f32, invert: bool, v: f32| {
@@ -470,7 +470,7 @@ fn smoothing_modes() {
 
 #[test]
 fn smoothing_string_runs_from_the_lagging_brush_to_the_pointer() {
-    // #3479: the canvas draws the line between the brush and the pointer.
+    // the canvas draws the line between the brush and the pointer.
     let cfg = Smoothing { amount: 0.8, ..Default::default() };
     let mut s = Smoother::new(&cfg, 1.0);
     let mut out = Vec::new();
@@ -531,7 +531,7 @@ fn smoothing_without_catch_up_stops_while_the_pointer_pauses() {
 
 #[test]
 fn a_smoothed_brush_keeps_the_pressure_of_where_it_is_when_the_pen_lifts() {
-    // #5713: a fast stroke at full pressure, lifted in the last sample. The brush trails far
+    // a fast stroke at full pressure, lifted in the last sample. The brush trails far
     // behind the pointer; it used to take the lift's pressure there, and the end catch-up drew
     // a hairline from the trailing brush to the pointer.
     let pts: Vec<StrokePoint> =
@@ -563,7 +563,7 @@ fn a_pulled_string_brush_takes_the_pose_along_the_string() {
 
 #[test]
 fn a_smoothed_brush_catches_up_with_a_pen_lifted_in_place() {
-    // #7747: only the pressure changes while the pointer stands still. The brush lags in pose,
+    // only the pressure changes while the pointer stands still. The brush lags in pose,
     // so catch-up must keep running and the stroke end at the pen's last pressure.
     let cfg = Smoothing { amount: 0.8, ..Default::default() };
     let mut s = Smoother::new(&cfg, 1.0);
@@ -583,7 +583,7 @@ fn a_smoothed_brush_catches_up_with_a_pen_lifted_in_place() {
 
 #[test]
 fn catch_up_on_stroke_end_finishes_the_pose_of_a_still_pen() {
-    // #7747: tilt, rotation and wheel changed in place; the end catch-up lands on all of them.
+    // tilt, rotation and wheel changed in place; the end catch-up lands on all of them.
     let cfg = Smoothing { amount: 0.8, ..Default::default() };
     let a = StrokePoint { rotation: 350.0, ..StrokePoint::new(50.0, 50.0, 1.0) };
     let b = StrokePoint { time: 16.0, tilt_x: 40.0, tilt_y: -20.0, rotation: 10.0, wheel: 0.5, ..StrokePoint::new(50.0, 50.0, 1.0) };
@@ -858,7 +858,7 @@ fn all_dabs(b: &BrushSettings, pts: &[StrokePoint]) -> (Vec<Dab>, Vec<Dab>) {
     (dabs, duals)
 }
 
-/// Control: an ordinary Scatter amount above 100 % still scatters, unchanged by the cap (#977).
+/// Control: an ordinary Scatter amount above 100 % still scatters, unchanged by the cap.
 #[test]
 fn ordinary_scatter_is_unchanged_by_the_cap() {
     let b = BrushSettings {
@@ -923,7 +923,7 @@ fn the_tip_matches_photoshops_measured_dabs() {
 #[test]
 fn half_coverage_radius_is_the_tips_50_percent_contour() {
     use crate::{half_coverage_radius, tip_falloff};
-    // The Normal Brush Tip cursor ring (#2744): where the soft falloff crosses 50 %.
+    // The Normal Brush Tip cursor ring: where the soft falloff crosses 50 %.
     for h in [0.0, 0.25, 0.5, 0.75, 0.99] {
         let d = half_coverage_radius(10.5, h);
         assert!((tip_falloff(d, 10.5, h) - 0.5).abs() < 1e-3, "hardness {h}: ring at {d}");
@@ -935,7 +935,7 @@ fn half_coverage_radius_is_the_tips_50_percent_contour() {
 
 /// Photoshop (measured): a 100 px brush with a 20 px Dual Brush tip resized to 50 / 2 / 1 px has a
 /// 10 / 0.4 / 0.2 px dual tip, unrounded and with no floor, and back at 100 px it is 20 px again; past
-/// 5000 px the dual tip is capped there and the proportion is lost (#4809).
+/// 5000 px the dual tip is capped there and the proportion is lost.
 #[test]
 fn resizing_scales_the_dual_tip_like_photoshop() {
     let mut b = BrushSettings { size: 100.0, ..brush() };

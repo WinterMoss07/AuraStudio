@@ -11,6 +11,7 @@ use crate::brush::{
 use crate::procedural::{bristle_tip, chalk_tip, charcoal_tip, grass_tip, leaf_tip, rake_tip, spatter_tip, sponge_tip, star_tip};
 
 /// Preset groups, in panel order.
+#[cfg(test)]
 pub const GROUPS: [&str; 4] = ["General", "Dry Media", "Wet Media", "Special Effects"];
 
 fn preset(group: &str, name: &str, brush: BrushSettings) -> BrushPreset {
@@ -39,7 +40,7 @@ fn paper(seed: u32, depth: f32) -> Texture {
 
 fn general(base: &BrushSettings) -> Vec<BrushPreset> {
     let g = |n: &str, b: BrushSettings| preset("General", n, b);
-    // Dense dabs keep large hard-round outlines and pressure-opacity tapers continuous (#8842).
+    // Dense dabs keep large hard-round outlines and pressure-opacity tapers continuous.
     let hard_round = BrushSettings { spacing: 0.05, ..base.clone() };
     vec![
         g("Hard Round", BrushSettings { size: 30.0, hardness: 1.0, ..hard_round.clone() }),
@@ -109,7 +110,7 @@ fn dry_media(base: &BrushSettings) -> Vec<BrushPreset> {
                 spacing: 0.12,
                 shape_dynamics: ShapeDynamics { enabled: true, size: pressure_min(0.5), angle: Dynamic::controlled(Control::Direction), ..Default::default() },
                 transfer: transfer(pressure_min(0.3), Dynamic::default()),
-                // Subtract takes paint away where the pattern is light (#3340); inverting keeps
+                // Subtract takes paint away where the pattern is light; inverting keeps
                 // these presets as they were designed, with the dark parts taking it away.
                 texture: Texture { mode: MaskMode::Subtract, invert: true, ..paper(5, 0.7) },
                 ..base.clone()
@@ -449,6 +450,7 @@ pub fn builtin() -> Vec<BrushPreset> {
 }
 
 /// Find a preset by name (case-insensitive).
+#[cfg(test)]
 pub fn find<'a>(presets: &'a [BrushPreset], name: &str) -> Option<&'a BrushPreset> {
     presets.iter().find(|p| p.name.eq_ignore_ascii_case(name))
 }

@@ -377,7 +377,7 @@ fn settings_without_an_equivalent_are_listed_once() {
     assert_eq!(
         imp.warnings,
         [
-            "Procreate settings without a PhotoCraft equivalent were left out: Blend Mode, Pressure Taper, Randomized, Rotation against the stroke, Speed dynamics, Wet Mix"
+            "Procreate settings with no equivalent here were left out: Blend Mode, Pressure Taper, Randomized, Rotation against the stroke, Speed dynamics, Wet Mix"
         ]
     );
 }
@@ -413,7 +413,9 @@ fn bad_files_fail_cleanly() {
     huge.extend_from_slice(&100_000u32.to_be_bytes());
     huge.extend_from_slice(&100_000u32.to_be_bytes());
     huge.extend_from_slice(&[8, 0, 0, 0, 0]);
-    let crc = crate::import::zip::crc32(&huge[12..]);
+    let mut crc = flate2::Crc::new();
+    crc.update(&huge[12..]);
+    let crc = crc.sum();
     huge.extend_from_slice(&crc.to_be_bytes());
     let err = read_procreate(&brush_zip(&write_archive(&[]), Some(&huge), None), "g").unwrap_err();
     assert!(err.contains("Shape.png"), "{err}");
@@ -434,10 +436,3 @@ fn damaged_sets_never_panic() {
     }
 }
 
-#[test]
-fn a_cancelled_import_stops() {
-    let set = write_brushset("s", &[(write_archive(&[]), Some(bar()), None)]);
-    let (cancel, progress) = (|| true, |_: f32| {});
-    let err = read_procreate_with(&set, "g", &Interrupt::new(&cancel, &progress)).unwrap_err();
-    assert_eq!(err, "cancelled");
-}

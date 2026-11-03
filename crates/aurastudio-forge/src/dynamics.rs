@@ -64,7 +64,7 @@ fn lerp_pt(a: &StrokePoint, b: &StrokePoint, f: f64) -> StrokePoint {
 /// (pressure, tilt, rotation, wheel) moves with it, so the lagging brush paints with the pose the
 /// pen had along the way, not the pointer's newest one. Taking the pointer's pressure made a fast
 /// stroke's lift thin the brush while it still trailed far behind, and the end catch-up a hairline
-/// (#5713). Time is the pointer's.
+///. Time is the pointer's.
 fn pull(brush: &StrokePoint, p: &StrokePoint, f: f64) -> StrokePoint {
     let ff = f as f32;
     // Barrel rotation takes the shorter way round.
@@ -83,7 +83,7 @@ fn pull(brush: &StrokePoint, p: &StrokePoint, f: f64) -> StrokePoint {
 
 /// Does the brush's pose (pressure, tilt, rotation, wheel) differ from `p`'s by more than `eps`?
 /// [`pull`] moves the pose with the position, so a pen that only changes pressure or tilt in place
-/// leaves the brush behind too (#7747).
+/// leaves the brush behind too.
 fn pose_differs(brush: &StrokePoint, p: &StrokePoint, eps: f32) -> bool {
     let dr = (p.rotation - brush.rotation + 540.0).rem_euclid(360.0) - 180.0;
     (p.pressure - brush.pressure).abs() > eps
@@ -168,6 +168,7 @@ impl Smoother {
 
     /// Is Stroke Catch-Up still pulling the brush towards a pointer that has stopped? Then the
     /// stroke needs time to keep passing (repeats of the last point) while the pointer is held.
+    #[cfg(test)]
     pub fn lagging(&self) -> bool {
         match (self.active() && self.cfg.catch_up && !self.cfg.pulled_string, self.pos, self.last_input) {
             (true, Some(pos), Some(last)) => (pos.x - last.x).abs() + (pos.y - last.y).abs() > 0.01 || pose_differs(&pos, &last, 1e-3),
@@ -178,6 +179,7 @@ impl Smoother {
     /// The string between the brush and the pointer: `(brush, pointer)` document positions while
     /// smoothing holds the brush back from the last input point, `None` when they coincide (or
     /// smoothing is off). The canvas draws it, as Photoshop does for Pulled String Mode.
+    #[cfg(test)]
     pub fn string(&self) -> Option<([f64; 2], [f64; 2])> {
         let (pos, last) = (self.pos?, self.last_input?);
         (self.active() && (pos.x != last.x || pos.y != last.y)).then_some(([pos.x, pos.y], [last.x, last.y]))
@@ -199,6 +201,7 @@ impl Smoother {
 }
 
 /// Smooth a whole point list with the brush's smoothing settings.
+#[cfg(test)]
 pub fn smooth_points(cfg: &Smoothing, zoom: f32, pts: &[StrokePoint]) -> Vec<StrokePoint> {
     let mut s = Smoother::new(cfg, zoom);
     let mut out = Vec::with_capacity(pts.len());
@@ -244,7 +247,7 @@ pub struct PathWalker {
     /// Pixel-grid stepping for small aliased tips: the dab-centre offset inside a pixel (see
     /// [`PathWalker::pixel_grid`]).
     grid: Option<f64>,
-    /// The grid cell of the last pixel-grid step, so the next segment joins it (#8040).
+    /// The grid cell of the last pixel-grid step, so the next segment joins it.
     cell: Option<(f64, f64)>,
 }
 
@@ -271,10 +274,10 @@ impl PathWalker {
     /// `render::grid_center` snaps) of the pixel the segment's line crosses at that column (or
     /// row, when steep). A small aliased tip (the Pencil) then draws a clean 8-connected
     /// staircase: stepping by distance put two dabs in a row wherever the line crossed a pixel
-    /// corner (#2139). The line is sampled where it really runs, not between the pixels holding
+    /// corner. The line is sampled where it really runs, not between the pixels holding
     /// the segment's ends, so a straight line split into pieces (by Smoothing, or the pointer
     /// samples of a ⇧-drag) paints the pixels of the whole line, whichever end it starts from
-    /// (#6336).
+    ///.
     pub fn pixel_grid(mut self, offset: f64) -> Self {
         self.grid = Some(offset);
         self
@@ -309,7 +312,7 @@ impl PathWalker {
 
     /// Fills the pixels between the last grid step and `q` when they don't touch. Each segment
     /// samples its own line, so where a freehand stroke turns, the last pixel of one segment and
-    /// the first of the next can sit two pixels apart, and the 1 px Pencil line breaks (#8040).
+    /// the first of the next can sit two pixels apart, and the 1 px Pencil line breaks.
     fn bridge(&mut self, q: &StrokePoint, out: &mut impl FnMut(StepInput)) {
         let Some((mut x, mut y)) = self.cell else { return };
         // Only a turn's small gap: a step cut off by the walker's budget is not filled in.
@@ -771,23 +774,13 @@ pub struct DabGenerator {
 }
 
 impl DabGenerator {
-    /// Does the stroke change with time while the pointer is held still (airbrush Build-up, or
-    /// smoothing still catching up)? The canvas then keeps feeding it the held point.
-    pub fn wants_time(&self) -> bool {
-        self.walker.interval.is_some() || self.smoother.lagging()
-    }
-
-    /// See [`Smoother::string`].
-    pub fn smoothing_string(&self) -> Option<([f64; 2], [f64; 2])> {
-        self.smoother.string()
-    }
 
     pub fn new(brush: &BrushSettings, zoom: f32) -> Self {
         let brush = brush.bounded_for_render();
         let interval = brush.build_up.then(|| 1000.0 / f64::from(brush.build_up_rate.clamp(0.1, 1000.0)));
         let dual_on = brush.dual_brush.enabled;
         let mut walker = if brush.spacing_enabled { PathWalker::new(interval) } else { PathWalker::new(interval).speed_spacing(SPEED_SPACING_MS) };
-        // A small aliased tip whose dabs are at most a pixel apart steps pixel by pixel (#2139).
+        // A small aliased tip whose dabs are at most a pixel apart steps pixel by pixel.
         if brush.aliased && brush.size * brush.spacing.max(0.01) <= 1.0 {
             walker = walker.pixel_grid(f64::from(crate::render::grid_center(0.0, 0.0, brush.size).0));
         }

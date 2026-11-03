@@ -125,9 +125,6 @@ impl PaintMode {
 
 
 
-    pub fn is_separable(self) -> bool {
-        !matches!(self, PaintMode::Hue | PaintMode::Saturation | PaintMode::Color | PaintMode::Luminosity | PaintMode::DarkerColor | PaintMode::LighterColor)
-    }
 }
 
 /// Separable per-channel blend function `B(cb, cs)`.
@@ -273,8 +270,7 @@ fn hard_light(cb: f32, cs: f32) -> f32 {
 
 /// Photoshop's Soft Light: the W3C/PDF curve. In the upper half (`cs > 0.5`) the backdrop moves
 /// towards `D(cb)`, which is `sqrt(cb)` above a quarter and the cubic `((16·cb − 12)·cb + 4)·cb`
-/// below it; with `sqrt` throughout, dark backdrops came out up to 20 levels too light (#8804,
-/// measured on psd-tools `blend-modes/rgb-blend-modes.psd`).
+/// below it; with `sqrt` throughout, dark backdrops came out up to 20 levels too light (measured on psd-tools `blend-modes/rgb-blend-modes.psd`).
 #[inline]
 fn soft_light_ps(cb: f32, cs: f32) -> f32 {
     if cs <= 0.5 {
@@ -321,12 +317,6 @@ fn clip_color(c: [f32; 3], top: f32) -> [f32; 3] {
         }
     }
     out
-}
-
-/// `c` with its luminosity ([`lum`]) moved to `l`, clipped back into gamut towards grey (the
-/// Luminosity blend mode's SetLum + ClipColor).
-pub fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
-    set_lum_within(c, l, 1.0)
 }
 
 /// [`set_lum`] clipping at `top` instead of 1 (see [`blend_rgb_within`]).
@@ -412,22 +402,6 @@ pub fn composite(mode: PaintMode, backdrop: [f32; 4], source: [f32; 4], opacity:
     out
 }
 
-/// [`composite`] with the backdrop's alpha kept (Lock Transparent Pixels, Fill's Preserve
-/// Transparency): "source atop", `Co = (1−αs)·Cb + αs·B(Cb,Cs)`, `αo = αb`. Unlike source-over
-/// followed by restoring the alpha, a half-transparent backdrop takes the new colour by `αs` alone.
-pub fn composite_atop(mode: PaintMode, backdrop: [f32; 4], source: [f32; 4], opacity: f32) -> [f32; 4] {
-    let as_ = source[3] * opacity;
-    if as_ <= 0.0 {
-        return backdrop;
-    }
-    let b = blend_rgb(mode, [backdrop[0], backdrop[1], backdrop[2]], [source[0], source[1], source[2]]);
-    let mut out = backdrop;
-    for i in 0..3 {
-        out[i] = (1.0 - as_) * backdrop[i] + as_ * b[i];
-    }
-    out
-}
-
 
 impl PaintMode {
     /// The layers' mode with the same formula: the 8-bit fast paths.
@@ -449,23 +423,4 @@ impl PaintMode {
         })
     }
 
-    /// From the layers' mode.
-    pub fn from_core(m: aurastudio_core::BlendMode) -> PaintMode {
-        use aurastudio_core::BlendMode as B;
-        match m {
-            B::Normal => PaintMode::Normal,
-            B::Multiply => PaintMode::Multiply,
-            B::Screen => PaintMode::Screen,
-            B::Overlay => PaintMode::Overlay,
-            B::Darken => PaintMode::Darken,
-            B::Lighten => PaintMode::Lighten,
-            B::ColorDodge => PaintMode::ColorDodge,
-            B::ColorBurn => PaintMode::ColorBurn,
-            B::HardLight => PaintMode::HardLight,
-            B::SoftLight => PaintMode::SoftLight,
-            B::Difference => PaintMode::Difference,
-            B::Add => PaintMode::LinearDodge,
-            B::Subtract => PaintMode::Subtract,
-        }
-    }
 }

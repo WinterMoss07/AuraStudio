@@ -144,8 +144,6 @@ struct Painting {
     begun:   bool,
     limit:   Option<FillParams>,
     layer:   u64,
-    /// What it painted since the last merge for the screen, and in all.
-    whole:   Option<Rect>,
     pace:    StrokePace,
 }
 
@@ -259,7 +257,7 @@ impl Worker {
                         self.doc = Some(doc);
                         let mut engine = Forge::new(*brush);
                         engine.set_zoom(zoom);
-                        self.stroke = Some(Painting { engine, begun: false, limit, layer: 0, whole: None, pace: StrokePace::default() });
+                        self.stroke = Some(Painting { engine, begun: false, limit, layer: 0, pace: StrokePace::default() });
                     }
                     Cmd::Sample(p) => {
                         let t = Instant::now();
@@ -372,10 +370,7 @@ impl Worker {
         // The layer gone: nothing left to paint on (the stroke stops).
         let Some(r) = d.paint(|s| st.engine.stroke_to(s, p)) else { return };
         drop(d);
-        if let Some(r) = r {
-            st.whole = Some(st.whole.map_or(r, |w| w.union(&r)));
-            add_rect(&mut self.pending, r.intersect(&frame));
-        }
+        if let Some(r) = r { add_rect(&mut self.pending, r.intersect(&frame)); }
         self.stroke = Some(st);
     }
 

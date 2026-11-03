@@ -14,9 +14,6 @@
 //!   its own (`fits`); when the pages are full, `alloc` says None and the
 //!   caller keeps showing what it had or tries again later (it never
 //!   remembers the failure).
-//!
-//! Stroke preview strips are not here: they are all the same size and
-//! wider than a page, see `strip_pool`.
 
 use std::time::{Duration, Instant};
 

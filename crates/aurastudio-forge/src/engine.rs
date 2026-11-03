@@ -65,27 +65,20 @@ pub struct Forge {
     state:   MixerState,
     /// The view's zoom (smoothing measures its string on screen).
     zoom:    f32,
-    /// The layer's transparent pixels stay transparent.
-    lock:    bool,
     /// Strokes painted: each one's jitter seed.
     strokes: u64,
 }
 
 impl Forge {
     pub fn new(brush: BrushSettings) -> Self {
-        Self { brush, stroke: None, mixer: None, state: MixerState::default(), zoom: 1.0, lock: false, strokes: 0 }
+        Self { brush, stroke: None, mixer: None, state: MixerState::default(), zoom: 1.0, strokes: 0 }
     }
 
     pub fn brush(&self) -> &BrushSettings { &self.brush }
 
-    /// New settings for the next stroke.
-    pub fn sync_from(&mut self, b: &BrushSettings) { self.brush = b.clone(); }
 
     /// The view's zoom for the next stroke.
     pub fn set_zoom(&mut self, zoom: f32) { if zoom.is_finite() && zoom > 0.0 { self.zoom = zoom; } }
-
-    /// Keep the layer's transparent pixels (Lock Alpha).
-    pub fn set_lock_alpha(&mut self, on: bool) { self.lock = on; }
 
     /// A Mixer Brush's paint (Load / Clean, the swatch).
     pub fn mixer_state(&mut self) -> &mut MixerState { &mut self.state }
@@ -118,10 +111,9 @@ impl Forge {
             let b = self.stroke_brush();
             self.stroke = Some(StrokeRenderer::new(&b, self.zoom));
         }
-        let lock = self.lock;
         let st = self.stroke.as_mut()?;
         st.push(&[pt]);
-        let r = st.paint(s, false, lock);
+        let r = st.paint(s, false);
         (!r.is_empty()).then_some(r)
     }
 
@@ -139,7 +131,7 @@ impl Forge {
         }
         let mut st = self.stroke.take()?;
         st.finish();
-        let r = st.paint(s, false, self.lock);
+        let r = st.paint(s, false);
         (!r.is_empty()).then_some(r)
     }
 
@@ -153,7 +145,7 @@ impl Forge {
             let rect = run.ctx.dab_rect(d, false);
             if rect.is_empty() { continue; }
             run.ctx.rasterize(d, false, rect, &mut run.cov);
-            mixer_dab(s, &run.cov, rect, d, &run.ctx.brush, &mut self.state, self.lock);
+            mixer_dab(s, &run.cov, rect, d, &run.ctx.brush, &mut self.state);
             done = done.union(&rect);
         }
         run.dabs = dabs;
@@ -180,7 +172,7 @@ fn for_runs<S: PaintSurface<Rgba8>>(s: &mut S, rect: Rect, mut f: impl FnMut(&mu
 /// pickup well toward its color by Wet, then the reservoir and the pickup,
 /// mixed by Mix, land at Flow. PhotoCraft's model (see NOTICE.md) on the
 /// layer's runs; a selection scales the paint by its limit.
-fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab, b: &BrushSettings, state: &mut MixerState, lock: bool) {
+fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab, b: &BrushSettings, state: &mut MixerState) {
     let m = &b.mixer;
     s.prepare(rect);
     let w = rect.w() as usize;
@@ -229,12 +221,9 @@ fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab
                 let k8 = (k.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
                 if k8 == 0 { continue; }
                 let px = sp.pixels[i];
-                if lock && px[3] == 0 { continue; }
                 // (The mask says the pixel changed; the paint itself builds on what is there.)
                 sp.cover(i, 255);
-                let mut out = aurastudio_core::blend::paint_pixel_u8(px, paint8, k8, aurastudio_core::BlendMode::Normal);
-                if lock { out[3] = px[3]; }
-                sp.pixels[i] = out;
+                sp.pixels[i] = aurastudio_core::blend::paint_pixel_u8(px, paint8, k8, aurastudio_core::BlendMode::Normal);
             }
         });
     }

@@ -4,47 +4,13 @@
 //! reader bounds-checks its input and never panics; what has no equivalent
 //! here is listed in the import's warnings, never dropped silently.
 
-pub mod abr_map;
-pub mod procreate;
+mod abr_map;
+mod procreate;
 pub(crate) mod psd;
-pub mod zip;
+mod zip;
 
-pub use abr_map::{read_abr, AbrImport};
-pub use procreate::{read_procreate, ProcreateImport};
-
-/// A long import was cancelled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Cancelled;
-
-impl std::fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("cancelled") }
-}
-
-impl std::error::Error for Cancelled {}
-
-/// What a long import checks between brushes: cancel, and its progress.
-#[derive(Clone, Copy)]
-pub struct Interrupt<'a> {
-    cancel:   &'a (dyn Fn() -> bool + Sync),
-    progress: &'a (dyn Fn(f32) + Sync),
-}
-
-fn never() -> bool { false }
-
-fn ignore(_: f32) {}
-
-impl<'a> Interrupt<'a> {
-    /// Never cancelled, no progress.
-    pub const NONE: Interrupt<'static> = Interrupt { cancel: &never, progress: &ignore };
-
-    pub fn new(cancel: &'a (dyn Fn() -> bool + Sync), progress: &'a (dyn Fn(f32) + Sync)) -> Self { Self { cancel, progress } }
-
-    pub fn cancelled(&self) -> bool { (self.cancel)() }
-
-    pub fn check(&self) -> Result<(), Cancelled> { if self.cancelled() { Err(Cancelled) } else { Ok(()) } }
-
-    pub fn progress(&self, p: f32) { (self.progress)(p.clamp(0.0, 1.0)) }
-}
+pub(crate) use abr_map::read_abr;
+pub(crate) use procreate::read_procreate;
 
 /// What a brush file is, by its name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

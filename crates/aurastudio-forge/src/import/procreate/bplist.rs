@@ -155,6 +155,7 @@ impl<'a> Plist<'a> {
 
 /// A value for [`write`]: what Procreate's archives hold.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg(test)]
 pub enum Value {
     Bool(bool),
     Int(i64),
@@ -166,6 +167,7 @@ pub enum Value {
 }
 
 /// Write `top` as a binary property list (every value its own object). Exposed for tests.
+#[cfg(test)]
 pub fn write(top: &Value) -> Vec<u8> {
     fn add(objects: &mut Vec<Vec<u8>>, v: &Value) -> usize {
         let index = objects.len();
