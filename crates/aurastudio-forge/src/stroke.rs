@@ -29,19 +29,28 @@ const DITHER_SALT: u64 = 0x0000_6469_7468_6572;
 /// on several cores.
 const PARALLEL_PIXELS: usize = 128 * 128;
 
+/// Coverage (and depth, colour) kept at 16 bits: 0..=65535 for 0..1, a
+/// 65535th apart everywhere (half floats lose the small steps near full
+/// coverage that low-flow build-up adds). Half the memory of f32.
+#[inline(always)]
+fn q16(v: f32) -> u16 { (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16 }
+
+#[inline(always)]
+fn f16(v: u16) -> f32 { v as f32 * (1.0 / 65535.0) }
+
 #[derive(Clone, Debug)]
 struct CovTile {
-    cov: Vec<f32>,
+    cov: Vec<u16>,
     /// Wet Edges: the deepest any dab reaches each pixel (`1 − rn` of the nearest dab), empty
     /// without Wet Edges. The stroke's interior is deep, its rim shallow, whatever the dabs' overlap.
-    depth: Vec<f32>,
+    depth: Vec<u16>,
     /// Premultiplied native colour channels (`nc` per pixel), empty without per-dab colour.
-    col: Vec<f32>,
+    col: Vec<u16>,
 }
 
 impl CovTile {
     fn new() -> Self {
-        Self { cov: vec![0.0; (COV_TILE * COV_TILE) as usize], depth: Vec::new(), col: Vec::new() }
+        Self { cov: vec![0; (COV_TILE * COV_TILE) as usize], depth: Vec::new(), col: Vec::new() }
     }
 }
 
@@ -68,7 +77,7 @@ pub struct CoverageMap {
 
 impl CoverageMap {
     fn bytes(&self) -> usize {
-        self.tiles.values().map(|t| (t.cov.capacity() + t.depth.capacity() + t.col.capacity()) * 4).sum()
+        self.tiles.values().map(|t| (t.cov.capacity() + t.depth.capacity() + t.col.capacity()) * 2).sum()
     }
 
     pub fn new(color_channels: usize) -> Self {
@@ -81,7 +90,7 @@ impl CoverageMap {
     #[inline]
     pub fn get(&self, x: i32, y: i32) -> f32 {
         let (tx, ty) = (x.div_euclid(COV_TILE), y.div_euclid(COV_TILE));
-        self.tiles.get(&tile_key((tx, ty))).map_or(0.0, |t| t.cov[((y - ty * COV_TILE) * COV_TILE + (x - tx * COV_TILE)) as usize])
+        self.tiles.get(&tile_key((tx, ty))).map_or(0.0, |t| f16(t.cov[((y - ty * COV_TILE) * COV_TILE + (x - tx * COV_TILE)) as usize]))
     }
 
     /// Wet Edges depth at a pixel (see [`CovTile::depth`]); `None` when the stroke has none.
@@ -89,7 +98,7 @@ impl CoverageMap {
     #[cfg(test)]
     pub fn depth(&self, x: i32, y: i32) -> Option<f32> {
         let (tx, ty) = (x.div_euclid(COV_TILE), y.div_euclid(COV_TILE));
-        self.tiles.get(&tile_key((tx, ty))).and_then(|t| t.depth.get(((y - ty * COV_TILE) * COV_TILE + (x - tx * COV_TILE)) as usize).copied())
+        self.tiles.get(&tile_key((tx, ty))).and_then(|t| t.depth.get(((y - ty * COV_TILE) * COV_TILE + (x - tx * COV_TILE)) as usize).map(|v| f16(*v)))
     }
 
     /// Accumulate dab values over `rect`: flow builds up towards the dab's opacity ceiling
@@ -191,10 +200,10 @@ impl DabValues<'_> {
     fn prepare(self, tile: &mut CovTile) {
         let n = (COV_TILE * COV_TILE) as usize;
         if self.color.is_some() && tile.col.is_empty() {
-            tile.col = vec![0.0; n * self.nc];
+            tile.col = vec![0; n * self.nc];
         }
         if self.depth.is_some() && tile.depth.is_empty() {
-            tile.depth = vec![0.0; n];
+            tile.depth = vec![0; n];
         }
     }
 
@@ -212,21 +221,21 @@ impl DabValues<'_> {
                 }
                 let ti = trow + (x - tx * COV_TILE) as usize;
                 if let (Some(dv), Some(slot)) = (depth.and_then(|dp| dp.get(row + (x - rect.x0) as usize)), tile.depth.get_mut(ti)) {
-                    *slot = slot.max(*dv);
+                    *slot = (*slot).max(q16(*dv));
                 }
-                let c = tile.cov[ti];
+                let c = f16(tile.cov[ti]);
                 let nv = if ceil > c { c + v * (ceil - c) } else { c };
-                if nv <= c {
+                if q16(nv) <= tile.cov[ti] {
                     continue;
                 }
                 if let Some(col) = color {
                     let k = if c < 1.0 { (nv - c) / (1.0 - c) } else { 0.0 };
                     let p = &mut tile.col[ti * nc..(ti + 1) * nc];
                     for i in 0..nc {
-                        p[i] = col[i] * k + p[i] * (1.0 - k);
+                        p[i] = q16(col[i] * k + f16(p[i]) * (1.0 - k));
                     }
                 }
-                tile.cov[ti] = nv;
+                tile.cov[ti] = q16(nv);
             }
         }
     }
@@ -437,9 +446,9 @@ impl<'a> Painter<'a> {
     #[inline(always)]
     fn coverage(&self, t: &TileRef<'_>, x: i32, y: i32) -> u8 {
         let ti = ((y - t.y0) * COV_TILE + (x - t.x0)) as usize;
-        let c = t.tile.cov[ti];
+        let c = f16(t.tile.cov[ti]);
         if c <= 0.0 { return 0; }
-        let m = self.r.ctx.stroke_mask_wet(c, t.tile.depth.get(ti).copied(), self.r.dual.as_ref().map(|d| d.get(x, y)), x, y);
+        let m = self.r.ctx.stroke_mask_wet(c, t.tile.depth.get(ti).map(|v| f16(*v)), self.r.dual.as_ref().map(|d| d.get(x, y)), x, y);
         let mut k = (m * self.opacity).min(1.0);
         if k <= 0.0 { return 0; }
         if self.mode == PaintMode::Dissolve {
@@ -454,9 +463,9 @@ impl<'a> Painter<'a> {
     fn color_at(&self, t: &TileRef<'_>, x: i32, y: i32) -> [f32; 3] {
         let ti = ((y - t.y0) * COV_TILE + (x - t.x0)) as usize;
         if self.r.per_dab_color && !t.tile.col.is_empty() {
-            let c = t.tile.cov[ti].max(1e-6);
+            let c = f16(t.tile.cov[ti]).max(1e-6);
             let p = &t.tile.col[ti * 3..ti * 3 + 3];
-            return [(p[0] / c).clamp(0.0, 1.0), (p[1] / c).clamp(0.0, 1.0), (p[2] / c).clamp(0.0, 1.0)];
+            return [(f16(p[0]) / c).clamp(0.0, 1.0), (f16(p[1]) / c).clamp(0.0, 1.0), (f16(p[2]) / c).clamp(0.0, 1.0)];
         }
         [self.color[0], self.color[1], self.color[2]]
     }

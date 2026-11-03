@@ -71,19 +71,21 @@ fn apply_oracle(oracle: &mut HashMap<(i32, i32), OraclePixel>, dab: &DabInput) {
             }
             let p = oracle.entry((x, y)).or_default();
             if let Some(depth) = dab.depth.as_ref().and_then(|d| d.get(i)) {
-                p.depth = Some(p.depth.map_or(*depth, |old| old.max(*depth)));
+                let d = f16(q16(*depth));
+                p.depth = Some(p.depth.map_or(d, |old| old.max(d)));
             }
             let old = p.cov;
             let new = if dab.ceil > old { old + v * (dab.ceil - old) } else { old };
-            if new > old {
+            // (Kept at 16 bits, as the map does.)
+            if q16(new) > q16(old) {
                 if let Some(color) = &dab.color {
                     let k = (new - old) / (1.0 - old);
                     for (channel, out) in p.color.iter_mut().enumerate() {
-                        *out = color[channel] * k + *out * (1.0 - k);
+                        *out = f16(q16(color[channel] * k + *out * (1.0 - k)));
                     }
                     p.has_color = true;
                 }
-                p.cov = new;
+                p.cov = f16(q16(new));
             }
         }
     }
@@ -131,11 +133,11 @@ fn overlapping_accumulation_matches_dense_pixel_oracle_and_serial_path() {
             let a = actual.tiles.get(&tile_key((tx, ty)));
             let b = expected_serial.tiles.get(&tile_key((tx, ty)));
             if let (Some(a), Some(b)) = (a, b) {
-                assert_eq!(a.cov[i].to_bits(), b.cov[i].to_bits(), "coverage at ({x}, {y})");
-                assert_eq!(a.depth.get(i).map(|v| v.to_bits()), b.depth.get(i).map(|v| v.to_bits()), "depth at ({x}, {y})");
+                assert_eq!(a.cov[i], b.cov[i], "coverage at ({x}, {y})");
+                assert_eq!(a.depth.get(i), b.depth.get(i), "depth at ({x}, {y})");
                 assert_eq!(
-                    a.col.get(i * 2..i * 2 + 2).map(|s| [s[0].to_bits(), s[1].to_bits()]),
-                    b.col.get(i * 2..i * 2 + 2).map(|s| [s[0].to_bits(), s[1].to_bits()]),
+                    a.col.get(i * 2..i * 2 + 2).map(|s| [s[0], s[1]]),
+                    b.col.get(i * 2..i * 2 + 2).map(|s| [s[0], s[1]]),
                     "color at ({x}, {y})"
                 );
             } else {
@@ -148,8 +150,8 @@ fn overlapping_accumulation_matches_dense_pixel_oracle_and_serial_path() {
             assert_eq!(actual.depth(x, y).unwrap_or(0.0).to_bits(), expected_depth.to_bits(), "dense oracle depth at ({x}, {y})");
             if let Some(p) = p.filter(|p| p.has_color) {
                 let color = &actual.tiles[&tile_key((tx, ty))].col;
-                assert_eq!(color[i * 2].to_bits(), p.color[0].to_bits(), "dense oracle color at ({x}, {y})");
-                assert_eq!(color[i * 2 + 1].to_bits(), p.color[1].to_bits(), "dense oracle color at ({x}, {y})");
+                assert_eq!(color[i * 2], q16(p.color[0]), "dense oracle color at ({x}, {y})");
+                assert_eq!(color[i * 2 + 1], q16(p.color[1]), "dense oracle color at ({x}, {y})");
             }
         }
     }
@@ -161,8 +163,8 @@ fn overlapping_accumulation_matches_dense_pixel_oracle_and_serial_path() {
     repeated.accumulate(Rect::new(x, y, x + 1, y + 1), &values, 0.5, None, None);
     repeated.accumulate(Rect::new(x, y, x + 1, y + 1), &values, 0.5, None, Some(&[0.2]));
     repeated.accumulate(Rect::new(x, y, x + 1, y + 1), &values, 0.5, None, Some(&[0.8]));
-    assert_eq!(repeated.get(x, y), 0.5);
-    assert_eq!(repeated.depth(x, y), Some(0.8));
+    assert_eq!(repeated.get(x, y), f16(q16(0.5)));
+    assert_eq!(repeated.depth(x, y), Some(f16(q16(0.8))));
 }
 
 fn pixel_index_for_tile(x: i32, y: i32) -> usize {
