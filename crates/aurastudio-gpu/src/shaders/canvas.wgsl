@@ -52,18 +52,6 @@ fn texel(ij: vec2<i32>, l: u32) -> vec4<f32> {
     return textureLoad(t_full, at, i32(l));
 }
 
-// Level 0's texel (i, j) inside the canvas, the page's entry kept in
-// `e` while the next texels are on the same page (`at`: its page).
-fn texel_on(ij: vec2<i32>, at: ptr<function, vec2<i32>>, e: ptr<function, vec4<u32>>) -> vec4<f32> {
-    let page = ij / PAGE;
-    if (any(page != *at)) { *at = page; *e = textureLoad(t_table, page, 0); }
-    let k = *e;
-    if (k.x == 0u) { return unpack4x8unorm(k.z); }
-    let p = vec2<i32>(i32(k.y & 0xffffu), i32(k.y >> 16u)) * PAGE + (ij - page * PAGE);
-    if (k.x == 1u) { return mix(unpack4x8unorm(k.z), unpack4x8unorm(k.w), textureLoad(t_mono, p, 0).r); }
-    return textureLoad(t_full, p, 0);
-}
-
 // Bilinear at level `l`, `p` in canvas pixels of level 0.
 fn bilinear(p: vec2<f32>, l: u32) -> vec4<f32> {
     let q = p / f32(1u << l) - 0.5;
@@ -221,8 +209,6 @@ fn exact(p: vec2<f32>) -> vec4<f32> {
     let i1 = vec2<i32>(ceil(hi));
     var sum = vec4(0.0);
     var total = 0.0;
-    var at = vec2(-1);
-    var e = vec4(0u);
     if (view.q.x < 0.5) {
         // Upright: the footprint is a box, each pixel weighs the product
         // of its overlaps along x and y.
@@ -233,7 +219,7 @@ fn exact(p: vec2<f32>) -> vec4<f32> {
                 let wx = min(f32(i + 1), hi.x) - max(f32(i), lo.x);
                 if (wx <= 0.0) { continue; }
                 let w = wx * wy;
-                sum += texel_on(vec2(i, j), &at, &e) * w;
+                sum += texel(vec2(i, j), 0u) * w;
                 total += w;
             }
         }
@@ -254,7 +240,7 @@ fn exact(p: vec2<f32>) -> vec4<f32> {
                     w = clipped_area(c0 - o, c1 - o, c2 - o, c3 - o, s);
                 }
                 if (w <= 0.0) { continue; }
-                sum += texel_on(vec2(i, j), &at, &e) * w;
+                sum += texel(vec2(i, j), 0u) * w;
                 total += w;
             }
         }
