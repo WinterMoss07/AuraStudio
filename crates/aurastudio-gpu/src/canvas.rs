@@ -384,9 +384,8 @@ impl Canvas {
         // An atlas about to grow copies its texture: the writes held
         // must reach it first.
         let full = |a: &Atlas| a.in_use() == a.cap;
-        if (matches!(sorted, Sorted::Full) && full(&self.rgba)) || (matches!(sorted, Sorted::Mono { .. }) && full(&self.mono)) {
-            if up.is_held() { up.release(queue); up.hold(); }
-        }
+        let grows = (matches!(sorted, Sorted::Full) && full(&self.rgba)) || (matches!(sorted, Sorted::Mono { .. }) && full(&self.mono));
+        if grows && up.is_held() { up.release(queue); up.hold(); }
         let old = std::mem::replace(&mut self.pages[i], Page::Uniform([0; 4]));
         let (mono_slot, full_slot) = match old { Page::Mono { slot, .. } => (Some(slot), None), Page::Full { slot } => (None, Some(slot)), Page::Uniform(_) => (None, None) };
         let all = Rect::new(0, 0, PAGE as i32, PAGE as i32);
