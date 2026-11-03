@@ -3,6 +3,35 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.20.2 — 2026-11-03
+
+Second round of the 0.20 review.
+
+**Animation**
+- The onion skin shows again (the merges for the screen drew no ghosts).
+- A fixed onion mark pins a drawing (the sheet shown there), not any
+  frame.
+
+**Memory**
+- The canvas pages on the GPU take what they hold: a 2000 × 3000 photo
+  takes ~26 MB instead of 32 (the room for pages doubled).
+- Sending pixels to the GPU keeps its staging memory at ~4 MB (opening a
+  photo left 10 MB).
+- A stroke under way keeps its coverage at 16 bits: half the memory.
+- A transform's live preview holds the area around what moves, grown as
+  it moves, not two images of the whole canvas.
+
+**Fixes**
+- The cursor no longer flickers while painting (pen and mouse events
+  both reset it).
+- Alt + right drag: the hardness shows inside the brush's circle, as in
+  Photoshop.
+- Deleting a layer (or anything that merges the whole canvas) shows at
+  once, not in two halves.
+- Status bar a bit thinner.
+- The log tells when the app keeps drawing untouched (to find what kept
+  the CPU at 1 % after launch).
+
 ## 0.20.1 — 2026-11-03
 
 First fixes of the 0.20 review, and memory.

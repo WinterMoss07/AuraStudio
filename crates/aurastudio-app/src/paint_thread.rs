@@ -73,6 +73,9 @@ pub enum Cmd {
     Save { doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool },
     /// The document is closed: what was kept for it goes.
     Forget(DocId),
+    /// The transform's live preview over `area` (it moved past the one it
+    /// had).
+    Lift { doc: SharedDoc, area: Rect },
 }
 
 /// What the worker reports to the main thread (through `notify`).
@@ -302,6 +305,12 @@ impl Worker {
                         }
                     }
                     Cmd::Save { doc, path, origin, auto } => self.save(doc, path, origin, auto),
+                    Cmd::Lift { doc, area } => {
+                        if self.stroke.is_some() { self.finish_stroke(&mut events); }
+                        let lift = doc.lock().unwrap_or_else(|e| e.into_inner()).transform_lift(Some(area));
+                        if let Some(l) = lift { events.push(Event::TransformLift(Box::new(l))); }
+                        self.doc = Some(doc);
+                    }
                     Cmd::Forget(id) => {
                         self.saves.remove(&id);
                         if self.doc.as_ref().is_some_and(|d| d.lock().map_or(true, |d| d.id() == id)) {
@@ -364,7 +373,7 @@ impl Worker {
                 None => d.transform_source().ok_or("Nothing to transform"),
             });
             // The box first: the app takes the lift only for a box it has.
-            let lift = started.as_ref().is_some_and(Result::is_ok).then(|| d.transform_lift()).flatten();
+            let lift = started.as_ref().is_some_and(Result::is_ok).then(|| d.transform_lift(None)).flatten();
             (done, d.stack().frame(), started, lift)
         };
         if let Some(s) = started { events.push(Event::TransformStarted(s)); }

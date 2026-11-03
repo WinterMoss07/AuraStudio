@@ -25,8 +25,8 @@ pub const GRID: u32 = 48;
 const SHADER: &str = r#"
 @group(0) @binding(0) var t: texture_2d<f32>;
 // Canvas pixel + shift = pixel of the target (the page's place in its
-// atlas); size: the atlas's.
-struct Page { shift: vec2<f32>, size: vec2<f32> }
+// atlas); size: the atlas's; area: where below / above start (canvas).
+struct Page { shift: vec2<f32>, size: vec2<f32>, area: vec2<f32>, pad: vec2<f32> }
 @group(1) @binding(0) var<uniform> page: Page;
 
 @vertex
@@ -38,13 +38,13 @@ fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 // Same pixel of a canvas-sized texture.
 @fragment
 fn fs_copy(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureLoad(t, vec2<i32>(pos.xy - page.shift), 0);
+    return textureLoad(t, vec2<i32>(pos.xy - page.shift - page.area), 0);
 }
 
 // Straight RGBA, drawn over (premultiplied blending).
 @fragment
 fn fs_over(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(t, vec2<i32>(pos.xy - page.shift), 0);
+    let c = textureLoad(t, vec2<i32>(pos.xy - page.shift - page.area), 0);
     return vec4(c.rgb * c.a, c.a);
 }
 
@@ -108,7 +108,7 @@ impl Pipes {
             label: Some("lift_page"),
             entries: &[BindGroupLayoutEntry {
                 binding: 0, visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: BufferSize::new(16) },
+                ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: BufferSize::new(32) },
                 count: None,
             }],
         });
@@ -170,6 +170,9 @@ struct Source {
 /// One transform's preview.
 pub struct Lift {
     pub src:    Rect,
+    /// The part of the canvas below / above cover: the preview draws
+    /// there only (`covers` says when a bigger one is needed).
+    pub area:   Rect,
     size:       (u32, u32),
     below:      BindGroup,
     above:      Option<BindGroup>,
@@ -194,11 +197,12 @@ pub struct Lift {
 /// Bytes between two pages' shifts (the dynamic offset alignment).
 const SHIFT_STRIDE: u64 = 256;
 
-/// What a live preview is made of. `below`, `above`: canvas-sized RGBA
-/// (straight); `layers`: what moves, (source + 2)² premultiplied, and
-/// its opacity.
+/// What a live preview is made of. `below`, `above`: RGBA (straight) of
+/// `area` of the canvas; `layers`: what moves, (source + 2)² premultiplied,
+/// and its opacity.
 pub struct Pieces<'a> {
     pub src:    Rect,
+    pub area:   Rect,
     pub below:  &'a [Rgba8],
     pub above:  Option<&'a [Rgba8]>,
     pub layers: &'a [(&'a [Rgba8], f32)],
@@ -208,8 +212,11 @@ impl Lift {
     /// `uploads`: the pixels go through it (bands, staging memory capped).
     pub(crate) fn new(device: &Device, queue: &Queue, pipes: &Pipes, (w, h): (u32, u32), p: Pieces, uploads: &mut Uploads) -> Option<Self> {
         aurastudio_core::zone!("gpu lift begin");
-        let Pieces { src, below, above, layers } = p;
-        if below.len() != (w * h) as usize || above.is_some_and(|a| a.len() != below.len()) || src.is_empty() { return None; }
+        let Pieces { src, area, below, above, layers } = p;
+        let area = area.intersect(&Rect::of_size(w, h));
+        if area.is_empty() || below.len() != area.area() as usize || above.is_some_and(|a| a.len() != below.len()) || src.is_empty() { return None; }
+        let (canvas_w, canvas_h) = (w, h);
+        let (w, h) = (area.w(), area.h());
         let (sw, sh) = (src.w() + 2, src.h() + 2);
         let mut full = |data: &[Rgba8]| {
             let t = device.create_texture(&TextureDescriptor {
@@ -250,7 +257,7 @@ impl Lift {
             let view = c.create_view(&TextureViewDescriptor::default());
             let uniform = device.create_buffer_init(&util::BufferInitDescriptor {
                 label: Some("lift_u"),
-                contents: bytemuck::cast_slice(&[w as f32, h as f32, opacity.clamp(0.0, 1.0), 0.0]),
+                contents: bytemuck::cast_slice(&[canvas_w as f32, canvas_h as f32, opacity.clamp(0.0, 1.0), 0.0]),
                 usage: BufferUsages::UNIFORM,
             });
             let bind = |s: &Sampler| device.create_bind_group(&BindGroupDescriptor {
@@ -268,7 +275,7 @@ impl Lift {
         queue.submit(std::iter::once(enc.finish()));
         let n = (GRID + 1) * (GRID + 1);
         let verts = device.create_buffer(&BufferDescriptor { label: Some("lift_v"), size: n as u64 * 16, usage: BufferUsages::VERTEX | BufferUsages::COPY_DST, mapped_at_creation: false });
-        Some(Self { src, size: (w, h), below, above, sources, verts, last: Vec::new(), total: None, shown: None, live: false, dirty: false, _keep: keep, pages: None })
+        Some(Self { src, area, size: (canvas_w, canvas_h), below, above, sources, verts, last: Vec::new(), total: None, shown: None, live: false, dirty: false, _keep: keep, pages: None })
     }
 
     /// The mesh to draw now: (GRID + 1)² points, row by row, each canvas
@@ -298,16 +305,31 @@ impl Lift {
         if b[0] > b[2] && !nearest_changed && self.shown.is_some() { self.live = live; return; }
         if nearest_changed { for p in verts { grow(&mut b, p); } }
         queue.write_buffer(&self.verts, 0, bytemuck::cast_slice(verts));
+        let first = self.last.len() != verts.len();
         self.last = verts.to_vec();
         // Whole pixels, one more for the filter.
         let c = |v: f32, max: u32| (v.max(0.0) as u32).min(max) as i32;
         let a = Rect::new(c(b[0].floor() - 2.0, self.size.0), c(b[1].floor() - 2.0, self.size.1), c(b[2].ceil() + 2.0, self.size.0), c(b[3].ceil() + 2.0, self.size.1));
+        // (Taking over from a smaller lift: what that one drew too.)
+        let a = match (first, self.total) { (true, Some(t)) => a.union(&t), _ => a };
         if !a.is_empty() {
             self.total = Some(self.total.map_or(a, |t| t.union(&a)));
             self.shown = Some((a, nearest));
             self.dirty = true;
         }
         self.live = live;
+    }
+
+    /// The preview can draw all of `r` (canvas pixels): else a lift over
+    /// a bigger area is needed.
+    pub fn covers(&self, r: Rect) -> bool {
+        let r = r.intersect(&Rect::of_size(self.size.0, self.size.1));
+        r.is_empty() || self.area.contains_rect(&r)
+    }
+
+    /// Takes over from `old` (a bigger area): what it drew is drawn again.
+    pub fn take_over(&mut self, old: &Lift) {
+        if let Some(t) = old.total { self.total = Some(self.total.map_or(t, |x| x.union(&t))); }
     }
 
     /// Something was uploaded to the canvas: everything drawn again over
@@ -338,7 +360,7 @@ impl Lift {
             let buffer = device.create_buffer(&BufferDescriptor { label: Some("lift_pages"), size: n as u64 * SHIFT_STRIDE, usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, mapped_at_creation: false });
             let bind = device.create_bind_group(&BindGroupDescriptor {
                 label: Some("lift_pages"), layout: &pipes.page_bgl,
-                entries: &[BindGroupEntry { binding: 0, resource: BindingResource::Buffer(BufferBinding { buffer: &buffer, offset: 0, size: BufferSize::new(16) }) }],
+                entries: &[BindGroupEntry { binding: 0, resource: BindingResource::Buffer(BufferBinding { buffer: &buffer, offset: 0, size: BufferSize::new(32) }) }],
             });
             self.pages = Some((buffer, bind, n));
         }
@@ -346,8 +368,8 @@ impl Lift {
         let (aw, ah) = (atlas.width() as f32, atlas.height() as f32);
         let mut data = vec![0u8; need * SHIFT_STRIDE as usize];
         for (k, (pr, (ax, ay), _)) in pages.iter().enumerate() {
-            let v = [*ax as f32 - pr.x0 as f32, *ay as f32 - pr.y0 as f32, aw, ah];
-            data[k * SHIFT_STRIDE as usize..k * SHIFT_STRIDE as usize + 16].copy_from_slice(bytemuck::cast_slice(&v));
+            let v = [*ax as f32 - pr.x0 as f32, *ay as f32 - pr.y0 as f32, aw, ah, self.area.x0 as f32, self.area.y0 as f32, 0.0, 0.0];
+            data[k * SHIFT_STRIDE as usize..k * SHIFT_STRIDE as usize + 32].copy_from_slice(bytemuck::cast_slice(&v));
         }
         queue.write_buffer(buffer, 0, &data);
         let target = atlas.create_view(&TextureViewDescriptor { base_mip_level: 0, mip_level_count: Some(1), ..Default::default() });
@@ -364,7 +386,7 @@ impl Lift {
         });
         let mut drawn = Vec::new();
         for (k, (pr, (ax, ay), slot)) in pages.iter().enumerate() {
-            let part = pr.intersect(&r);
+            let part = pr.intersect(&r).intersect(&self.area);
             if part.is_empty() { continue; }
             let (x, y) = (ax + (part.x0 - pr.x0) as u32, ay + (part.y0 - pr.y0) as u32);
             pass.set_scissor_rect(x, y, part.w(), part.h());

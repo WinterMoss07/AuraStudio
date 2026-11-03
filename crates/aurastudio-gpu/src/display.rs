@@ -645,7 +645,7 @@ mod tests {
         let piece: Vec<aurastudio_core::Rgba8> = (0..sh).flat_map(|y| (0..sw).map(move |x| if x == 0 || y == 0 || x == sw - 1 || y == sh - 1 { [0; 4] } else { [200, 0, 0, 255] })).collect();
         let pipes = crate::lift::Pipes::new(device, 1);
         let layers = [(&piece[..], 1.0f32)];
-        let mut lift = crate::Lift::new(device, queue, &pipes, (w, h), crate::Pieces { src, below: &white, above: None, layers: &layers }, &mut up).expect("a lift");
+        let mut lift = crate::Lift::new(device, queue, &pipes, (w, h), crate::Pieces { src, area: aurastudio_core::Rect::of_size(w, h), below: &white, above: None, layers: &layers }, &mut up).expect("a lift");
         // Moved right by 130: from 230 to 330, over the page edge at 256.
         let n = crate::LIFT_GRID;
         let verts: Vec<[f32; 4]> = (0..=n).flat_map(|j| (0..=n).map(move |i| (i, j))).map(|(i, j)| {
@@ -664,6 +664,12 @@ mod tests {
         let at = |x: u32, y: u32| { let k = ((y * w + x) * 4) as usize; [got[k], got[k + 1], got[k + 2], got[k + 3]] };
         for (x, y) in [(235, 110), (255, 120), (256, 120), (325, 145)] { assert_eq!(at(x, y), [200, 0, 0, 255], "moved to ({x}, {y})"); }
         for (x, y) in [(150, 120), (225, 120), (335, 120), (300, 90), (300, 160)] { assert_eq!(at(x, y), [255; 4], "({x}, {y})"); }
+        // A lift over a smaller area (below / above that size) says when
+        // the moved box leaves it.
+        let area = src.grown(40);
+        let below: Vec<_> = vec![[255u8; 4]; area.area() as usize];
+        let small = crate::Lift::new(device, queue, &pipes, (w, h), crate::Pieces { src, area, below: &below, above: None, layers: &layers }, &mut up).expect("a lift");
+        assert!(small.covers(src.grown(30)) && !small.covers(src.moved(130, 0)));
     }
 
     /// Standard zoomed out samples the pages' mipmaps: close to the exact

@@ -59,12 +59,18 @@ impl App {
         self.request_redraw();
     }
 
-    /// Its live preview's pieces: to the GPU.
+    /// Its live preview's pieces: to the GPU (a bigger area takes over
+    /// from the lift drawn so far).
     pub(super) fn transform_lift(&mut self, l: &aurastudio_document::Lift) {
         let Some(gpu) = &mut self.gpu else { return };
         if !self.xf.as_ref().is_some_and(|x| x.src == l.src) { return; }
+        self.lift_asked = None;
         let layers: Vec<(&[aurastudio_core::Rgba8], f32)> = l.layers.iter().map(|x| (&x.premul[..], x.opacity)).collect();
-        self.lift = gpu.lift_begin(aurastudio_gpu::Pieces { src: l.src, below: &l.below, above: l.above.as_deref(), layers: &layers });
+        let new = gpu.lift_begin(aurastudio_gpu::Pieces { src: l.src, area: l.area, below: &l.below, above: l.above.as_deref(), layers: &layers });
+        match (new, self.lift.take()) {
+            (Some(mut n), Some(old)) => { n.take_over(&old); self.lift = Some(n); }
+            (n, _) => self.lift = n,
+        }
         if self.lift.is_none() { log::warn!("transform: no live preview (sizes)"); }
         // Changed before it came (Warp mode's grid...): show it.
         if self.xf.as_ref().is_some_and(Xform::changed) { self.lift_show(); self.request_redraw(); }
@@ -76,6 +82,7 @@ impl App {
         let Some(xf) = self.xf.take() else { return };
         // (The canvas keeps the GPU's last picture until the result comes.)
         self.lift = None;
+        self.lift_asked = None;
         let edit = if apply && xf.changed() { Edit::TransformApply { warp: xf.warp, interp: self.transform_opts.interp } } else { Edit::TransformCancel };
         self.send_edit(edit);
         self.update_cursor();
@@ -101,6 +108,22 @@ impl App {
         let (Some(xf), Some(gpu), Some(lift)) = (&self.xf, &self.gpu, &mut self.lift) else { return false };
         if lift.src != xf.src { return false; }
         let Some(verts) = lift_mesh(&xf.warp, xf.src) else { return false };
+        // Moved past the area its pieces cover: a bigger one is asked for
+        // (the paint thread's preview shows meanwhile).
+        let (lo, hi) = verts.iter().fold(((f32::MAX, f32::MAX), (f32::MIN, f32::MIN)), |(lo, hi), v| ((lo.0.min(v[0]), lo.1.min(v[1])), (hi.0.max(v[0]), hi.1.max(v[1]))));
+        let reach = aurastudio_core::Rect::new(lo.0.floor() as i32 - 2, lo.1.floor() as i32 - 2, hi.0.ceil() as i32 + 2, hi.1.ceil() as i32 + 2).union(&xf.src);
+        if !lift.covers(reach) {
+            if self.lift_asked.is_none_or(|a| !a.contains_rect(&reach)) {
+                // Room to go on: half as far again.
+                let g = (reach.w().max(reach.h()) / 2) as i32;
+                let area = reach.grown(g).union(&lift.area);
+                self.lift_asked = Some(area);
+                self.paint.send(Cmd::Lift { doc: Arc::clone(&self.doc), area });
+            }
+            // (Not drawn over the paint thread's preview meanwhile.)
+            lift.live = false;
+            return false;
+        }
         gpu.lift_show(lift, &verts, self.transform_opts.interp == Interp::Nearest, true);
         true
     }

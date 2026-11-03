@@ -354,6 +354,9 @@ pub struct App {
     xf_seq:     u64,
     /// The transform's live preview on the GPU (lift.rs).
     lift:       Option<aurastudio_gpu::Lift>,
+    /// A lift over this area asked for (the transform moved past the
+    /// last one's).
+    lift_asked: Option<aurastudio_core::Rect>,
     /// Animation playback: when it started and from which frame; the next
     /// frame's time; its speed and looping.
     play:       Option<(Instant, u32)>,
@@ -525,6 +528,7 @@ impl App {
             xf_pending: false,
             xf_seq:     0,
             lift:       None,
+            lift_asked: None,
             play:       None,
             play_next:  None,
             looping:    true,

@@ -36,7 +36,8 @@ pub fn preview(stack: &LayerStack, max: u32) -> (u32, u32, Vec<Rgba8>) {
 /// what is over it (`None`: nothing shows over it). A transform's live
 /// preview puts what moves between the two (exact with normal blending
 /// above).
-pub fn merge_split(stack: &LayerStack, id: u64) -> Option<(Vec<Rgba8>, Option<Vec<Rgba8>>)> {
+/// `area`: the part merged (rows of it).
+pub fn merge_split(stack: &LayerStack, id: u64, area: Rect) -> Option<(Vec<Rgba8>, Option<Vec<Rgba8>>)> {
     aurastudio_core::zone!("merge split");
     stack.node(id)?;
     // Drawn before / after it, in drawing order.
@@ -47,7 +48,8 @@ pub fn merge_split(stack: &LayerStack, id: u64) -> Option<(Vec<Rgba8>, Option<Ve
     let ancestors: Vec<u64> = { let mut v = Vec::new(); let mut p = stack.parent_of(id); while let Some(f) = p { v.push(f); p = stack.parent_of(f); } v };
     let after: Vec<u64> = order[k + 1..].iter().copied().filter(|x| !inside.contains(x)).collect();
     let before: Vec<u64> = order[..k].iter().copied().filter(|x| !ancestors.contains(x)).chain(inside.iter().copied()).collect();
-    let frame = stack.frame();
+    let frame = area;
+    if frame.is_empty() { return None; }
     let hidden = |ids: &[u64]| {
         let mut s = stack.clone();
         let mut any = false;

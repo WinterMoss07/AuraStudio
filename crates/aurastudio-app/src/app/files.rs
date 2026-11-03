@@ -199,6 +199,7 @@ impl App {
         self.play_next = None;
         self.xf = None;
         self.lift = None;
+        self.lift_asked = None;
         self.xf_pending = false;
         self.poly = None;
         let old = self.doc.lock().unwrap().id();

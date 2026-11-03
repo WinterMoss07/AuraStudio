@@ -356,7 +356,7 @@ fn a_selection_says_what_moves_and_goes_along() {
     d.apply(Edit::Select(SelectOp::Shape { shape: Shape::Rect(Rect::new(0, 0, 20, 20)), mode: Mode::Replace, aa: false, feather: 0.0 }));
     d.apply(Edit::TransformBegin(vec![a, b]));
     assert_eq!(d.transform_source(), Some(Rect::new(0, 0, 20, 20)));
-    let lift = d.transform_lift().unwrap();
+    let lift = d.transform_lift(Some(d.stack().frame())).unwrap();
     assert_eq!((lift.layers.len(), lift.layers[0].premul.len()), (2, 22 * 22));
     d.apply(Edit::TransformApply { warp: Warp { quad: corners(Rect::new(50, 50, 70, 70)), mesh: None }, interp: Interp::Bicubic });
     for (id, c) in [(a, [255, 0, 0, 255]), (b, [0, 255, 0, 255])] {
@@ -384,7 +384,7 @@ fn the_lift_pieces_make_the_image() {
     d.apply(Edit::SetActive(id));
     d.apply(Edit::TransformBegin(vec![id]));
     let src = d.transform_source().unwrap();
-    let lift = d.transform_lift().unwrap();
+    let lift = d.transform_lift(Some(d.stack().frame())).unwrap();
     assert_eq!(&lift.below[30 * 100 + 30][..3], &[255, 255, 255]);
     let above = lift.above.as_ref().expect("the top layer shows");
     let sw = src.w() as usize;

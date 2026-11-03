@@ -262,13 +262,13 @@ fn split_preview_and_gpu_eligibility() {
     l.set_active(folder);
     let top = paint(&mut l, "top", r(40, 0, 90, 30), [20, 20, 220, 100]);
     let whole = merge(&l, l.frame(), Opts::default());
-    let (below, above) = merge_split(&l, target).unwrap();
+    let (below, above) = merge_split(&l, target, l.frame()).unwrap();
     let above = above.expect("a layer shows over it");
     for ((b, a), m) in below.iter().zip(&above).zip(&whole) {
         let al = a[3] as f32 / 255.0;
         for c in 0..3 { let v = a[c] as f32 * al + b[c] as f32 * (1.0 - al); assert!((v - m[c] as f32).abs() <= 2.0, "{v} vs {}", m[c]); }
     }
-    assert!(merge_split(&l, top).unwrap().1.is_none());
+    assert!(merge_split(&l, top, l.frame()).unwrap().1.is_none());
     let (pw, ph, p) = preview(&l, 45);
     assert_eq!((pw, ph), (45, 35));
     assert_eq!(p.len(), 45 * 35);

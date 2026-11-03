@@ -38,10 +38,13 @@ struct Target {
 /// them, and what moves.
 pub struct Lift {
     pub src:    Rect,
-    /// The frame merged up to the top moved layer (what is left of them
-    /// in), straight RGBA.
+    /// The part of the frame `below` and `above` hold (around the source:
+    /// a transform moved further asks for a bigger one).
+    pub area:   Rect,
+    /// `area` merged up to the top moved layer (what is left of them in),
+    /// straight RGBA.
     pub below:  Vec<Rgba8>,
-    /// What is over them, on transparency; `None`: nothing.
+    /// What is over them in `area`, on transparency; `None`: nothing.
     pub above:  Option<Vec<Rgba8>>,
     /// What moves of each layer, bottom up.
     pub layers: Vec<LiftLayer>,
@@ -49,7 +52,7 @@ pub struct Lift {
 
 impl std::fmt::Debug for Lift {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Lift {{ src: {:?}, layers: {}, above: {} }}", self.src, self.layers.len(), self.above.is_some())
+        write!(f, "Lift {{ src: {:?}, area: {:?}, layers: {}, above: {} }}", self.src, self.area, self.layers.len(), self.above.is_some())
     }
 }
 
@@ -122,11 +125,15 @@ impl Document {
         done
     }
 
-    /// The live preview's pieces for the transform just begun.
-    pub fn transform_lift(&mut self) -> Option<Lift> {
+    /// The live preview's pieces for the transform under way, over `area`
+    /// of the frame (None: around the source, as far again as its size,
+    /// 256 px at least).
+    pub fn transform_lift(&mut self, area: Option<Rect>) -> Option<Lift> {
         aurastudio_core::zone!("transform lift");
         let s = self.transform.as_ref()?;
         let src = s.src;
+        let frame = self.stack.frame();
+        let area = area.unwrap_or_else(|| src.grown(src.w().max(src.h()).max(256) as i32)).union(&src.intersect(&frame)).intersect(&frame);
         let order = self.stack.layer_ids();
         let rank = |id: u64| order.iter().position(|o| *o == id).unwrap_or(0);
         let top = s.targets.iter().map(|t| t.id).max_by_key(|id| rank(*id))?;
@@ -146,8 +153,8 @@ impl Document {
         // Merged with what moves taken out (the bases swapped in, then back).
         let mut stack = self.stack.clone();
         for t in &s.targets { if let Some(i) = stack.image_mut(t.id) { *i = t.base.clone(); } }
-        let (below, above) = aurastudio_compose::merge_split(&stack, top)?;
-        Some(Lift { src, below, above, layers: layers.into_iter().map(|l| l.1).collect() })
+        let (below, above) = aurastudio_compose::merge_split(&stack, top, area)?;
+        Some(Lift { src, area, below, above, layers: layers.into_iter().map(|l| l.1).collect() })
     }
 
     pub(crate) fn transform_preview(&mut self, warp: &Warp, interp: Interp) -> Done {
