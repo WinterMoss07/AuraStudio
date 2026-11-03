@@ -164,6 +164,25 @@ impl Edit {
         }
     }
 
+    /// It changes pixels or the history (a stroke under way ends first).
+    pub(crate) fn changes_pixels(&self) -> bool {
+        matches!(self, Edit::ClearActive | Edit::Fill { .. } | Edit::Paste(_) | Edit::FilterPreview(_) | Edit::FilterApply(_) | Edit::FilterCancel
+            | Edit::TransformBegin(_) | Edit::TransformPreview { .. } | Edit::TransformApply { .. } | Edit::TransformCancel
+            | Edit::Undo | Edit::Redo | Edit::Resize { .. } | Edit::RemoveActive | Edit::DuplicateActive | Edit::SetFilter(..)
+            | Edit::DeleteSheet { .. } | Edit::MoveSheets { .. } | Edit::ShiftFrames { .. } | Edit::RemoveCel { .. } | Edit::MoveCel { .. } | Edit::AddCel { .. }
+            | Edit::SelectionToMask(_) | Edit::Select(_) | Edit::MaskToSelection(_))
+    }
+
+    /// A setting of one node a later change of joins as one undo step (an
+    /// opacity dragged, a name typed): that node.
+    pub(crate) fn joins(&self) -> Option<u64> {
+        match self {
+            Edit::Rename(id, _) | Edit::SetOpacity(id, _) | Edit::SetBlend(id, _) | Edit::SetFolderBlend(id, _) | Edit::SetLabel(id, _) | Edit::SetFilter(id, _) => Some(*id),
+            Edit::RenameCel { folder, .. } => Some(*folder),
+            _ => None,
+        }
+    }
+
     /// The nodes whose footprint it may change (to bound the region).
     pub(crate) fn nodes(&self, s: &LayerStack) -> Vec<u64> {
         match self {

@@ -66,6 +66,7 @@ impl Step {
             Step::Pixels { layer, patch, fill } => {
                 if !t.stack.swap_patch(*layer, patch) { return None; }
                 let mut d = Done::rects(patch.rects());
+                d.layers.push(*layer);
                 if let (Some(f), Some(img)) = (fill.as_mut(), t.stack.image_mut(*layer)) {
                     let now = img.fill();
                     img.set_fill(*f);
@@ -120,12 +121,31 @@ pub struct History {
     /// Bumped by every push, undo and redo: the same value later means
     /// nothing happened in between.
     serial: u64,
+    /// The last step, if a setting of one node that the next change of the
+    /// same setting joins (an opacity dragged, a name typed: one step).
+    joinable: Option<(String, u64)>,
 }
 
 impl History {
-    pub fn new(budget: usize) -> Self { Self { undo: VecDeque::new(), redo: Vec::new(), budget, serial: 0 } }
+    pub fn new(budget: usize) -> Self { Self { undo: VecDeque::new(), redo: Vec::new(), budget, serial: 0, joinable: None } }
+
+    /// A tree step that joins the last one when it changed the same setting
+    /// of the same node (`key`).
+    pub(crate) fn push_tree(&mut self, label: &str, key: Option<u64>, state: TreeState, kept: Vec<Node>) {
+        let k = key.map(|k| (label.to_owned(), k));
+        if k.is_some() && self.joinable == k && self.redo.is_empty() {
+            if let Some((_, Step::Tree { kept: old, .. })) = self.undo.back_mut() {
+                old.extend(kept);
+                self.serial += 1;
+                return;
+            }
+        }
+        self.push(label, Step::Tree { state, kept });
+        self.joinable = k;
+    }
 
     pub(crate) fn push(&mut self, label: &str, step: Step) {
+        self.joinable = None;
         self.redo.clear();
         self.serial += 1;
         // The one before is packed (the last stays quick to undo).
@@ -147,6 +167,7 @@ impl History {
 
     pub(crate) fn undo(&mut self, t: &mut Target<'_>) -> Option<Done> {
         self.serial += 1;
+        self.joinable = None;
         // A step whose layer was deleted can't be applied: dropped, and the
         // previous one goes.
         while let Some((label, mut step)) = self.undo.pop_back() {
@@ -160,6 +181,7 @@ impl History {
 
     pub(crate) fn redo(&mut self, t: &mut Target<'_>) -> Option<Done> {
         self.serial += 1;
+        self.joinable = None;
         while let Some((label, mut step)) = self.redo.pop() {
             if let Some(d) = step.swap_into(t) {
                 if let Some((_, last)) = self.undo.back_mut() { last.pack(); }
@@ -196,7 +218,7 @@ impl History {
     /// with the next one to redo last.
     pub(crate) fn import(budget: usize, undo: Vec<(String, u64, Patch<Rgba8>)>, redo: Vec<(String, u64, Patch<Rgba8>)>) -> Self {
         let step = |(label, layer, patch)| (label, Step::Pixels { layer, patch, fill: None });
-        let mut h = Self { undo: undo.into_iter().map(step).collect(), redo: redo.into_iter().map(step).collect(), budget, serial: 0 };
+        let mut h = Self { undo: undo.into_iter().map(step).collect(), redo: redo.into_iter().map(step).collect(), budget, serial: 0, joinable: None };
         h.trim();
         h
     }
@@ -220,6 +242,7 @@ impl History {
 
     pub fn clear(&mut self) {
         self.serial += 1;
+        self.joinable = None;
         self.undo.clear();
         self.redo.clear();
     }

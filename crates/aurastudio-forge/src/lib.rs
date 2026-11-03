@@ -39,6 +39,35 @@ impl Default for Brush {
     fn default() -> Self { Self::new() }
 }
 
+/// The toolbox group a brush belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind { Draw, Paint, Eraser }
+
+/// A named brush (the placeholder set until PhotoCraft's presets).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Preset {
+    pub name:     String,
+    pub kind:     Kind,
+    pub settings: Brush,
+}
+
+impl Preset {
+    /// The built-in brushes.
+    pub fn builtin() -> Vec<Preset> {
+        let b = Brush::new();
+        let p = |name: &str, kind, settings| Preset { name: name.into(), kind, settings };
+        vec![
+            p("Pencil", Kind::Draw, Brush { radius: 2.0, hardness: 0.9, opacity: 0.9, min_size: 0.5, ..b.clone() }),
+            p("Pen", Kind::Draw, Brush { radius: 3.0, hardness: 1.0, min_size: 0.05, ..b.clone() }),
+            p("Marker", Kind::Draw, Brush { radius: 8.0, hardness: 1.0, opacity: 0.6, min_size: 1.0, ..b.clone() }),
+            p("Round brush", Kind::Paint, Brush { radius: 25.0, hardness: 0.85, min_size: 0.3, ..b.clone() }),
+            p("Soft brush", Kind::Paint, Brush { radius: 60.0, hardness: 0.1, opacity: 0.5, min_size: 0.6, ..b.clone() }),
+            p("Hard eraser", Kind::Eraser, Brush { radius: 20.0, hardness: 1.0, erase: true, min_size: 1.0, ..b.clone() }),
+            p("Soft eraser", Kind::Eraser, Brush { radius: 50.0, hardness: 0.1, erase: true, min_size: 1.0, ..b }),
+        ]
+    }
+}
+
 /// One pen position: canvas pixels, pressure 0..1, time in seconds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PenSample {

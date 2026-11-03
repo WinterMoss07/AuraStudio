@@ -50,6 +50,15 @@ pub struct Document {
     /// A sheet was made for the stroke under way: the history's serial
     /// right after (its first stroke joins it as one undo step).
     new_sheet:            Option<u64>,
+    /// A stroke under way (painted over many pen samples, the document let
+    /// go in between).
+    stroke:               Option<StrokeSession>,
+}
+
+pub(crate) struct StrokeSession {
+    layer: u64,
+    label: String,
+    state: aurastudio_raster::StrokeState<Rgba8>,
 }
 
 impl Document {
@@ -62,6 +71,11 @@ impl Document {
     }
 
     /// A document from its parts (a file being opened): counts as saved.
+    /// A document of layers made elsewhere (an image opened).
+    pub fn from_stack(id: DocId, name: &str, stack: LayerStack, kind: DocType) -> Self {
+        Self::from_parts(id, name, stack, kind, History::new(DEFAULT_BUDGET))
+    }
+
     pub(crate) fn from_parts(id: DocId, name: &str, mut stack: LayerStack, kind: DocType, history: History) -> Self {
         let mut timeline = Timeline::default();
         timeline.settle(&mut stack);
@@ -70,7 +84,7 @@ impl Document {
         Self {
             id, name: name.to_owned(), kind, depth: PixelDepth::default(), stack, timeline, camera: Camera::default(), profile: Profile::srgb(),
             history, dpi: DEFAULT_DPI, path: None, revision: 0, saved_revision: 0, selection: None, deselected: None,
-            transform: None, filter: None, tree, new_sheet: None,
+            transform: None, filter: None, tree, new_sheet: None, stroke: None,
         }
     }
 
@@ -90,6 +104,8 @@ impl Document {
     pub fn is_modified(&self) -> bool { self.revision != self.saved_revision }
     /// The document as of `revision` is now on disk.
     pub fn mark_saved(&mut self, revision: u64) { self.saved_revision = revision; }
+    /// Unsaved from now on (recovered work: not in its own file yet).
+    pub fn touch(&mut self) { self.saved_revision = self.revision.wrapping_sub(1); }
     pub fn filtering(&self) -> bool { self.filter.is_some() }
     pub fn transforming(&self) -> bool { self.transform.is_some() }
     /// What the transform under way moves.
@@ -101,12 +117,37 @@ impl Document {
     /// The paint layer edits go to (clear, filters, transform...).
     pub fn paint_id(&self) -> Option<u64> { self.timeline.paint_id(&self.stack) }
 
+    /// The layer a filter would change and where, around what it shows
+    /// (inside the selection), grown by `margin`: an empty rect on an
+    /// empty layer. `None`: nothing can be filtered now.
+    pub fn filter_area(&self, margin: u32) -> Option<(u64, aurastudio_core::Rect)> {
+        let id = self.paint_id()?;
+        let l = self.stack.layer(id)?;
+        let content = if l.background { Some(self.stack.frame()) } else { l.surface.pixel_bounds() };
+        let r = match (content, &self.selection) {
+            (None, _) => aurastudio_core::Rect::EMPTY,
+            (Some(c), Some(s)) => c.intersect(&s.bbox()),
+            (Some(c), None) => c,
+        };
+        Some((id, if r.is_empty() { r } else { r.grown(margin as i32) }))
+    }
+
+    /// The merged image of `rect` of the nodes `pick` takes (a filter
+    /// layer's dialog shows what is under it).
+    pub fn merged(&self, rect: aurastudio_core::Rect, pick: aurastudio_layers::Pick) -> Vec<Rgba8> {
+        aurastudio_compose::merge(&self.stack, rect, aurastudio_compose::Opts { pick, ..Default::default() })
+    }
+
     // --- Changing ----------------------------------------------------------
 
     /// Do `e`. The only way the document changes.
     pub fn apply(&mut self, e: Edit) -> Done {
         aurastudio_core::zone!("document apply");
         let label = e.label();
+        // A stroke still open ends first (its patch is of the layer as it
+        // is now), unless the edit only reads or moves the tree.
+        let mut first = Done::default();
+        if self.stroke.is_some() && e.changes_pixels() { first = self.end_stroke(); }
         let mut done = match e {
             Edit::SetFrame(n) => Done { other: self.timeline.frame() != n.clamp(1, aurastudio_layers::MAX_FRAME), region: self.time(|t, s| t.set_frame(s, n)), ..Done::default() },
             Edit::SetFps(f) => {
@@ -156,10 +197,14 @@ impl Document {
                 let ids = e.nodes(&self.stack);
                 let mut region = Region::Nothing;
                 for &id in &ids { region.add(Region::of_footprint(self.stack.footprint(id))); }
+                let key = e.joins();
                 let (changed, made) = apply_tree(e, &mut self.stack);
                 if !changed { return Done::default(); }
                 for id in ids.iter().copied().chain(made) { region.add(Region::of_footprint(self.stack.footprint(id))); }
-                self.after_tree(label, Done { region, made, ..Done::default() })
+                self.timeline.settle(&mut self.stack);
+                if let Some(d) = self.timeline.take_dirty() { region.add_rect(d); }
+                let tree = self.record_tree_as(label, key);
+                Done { region, made, tree, ..Done::default() }
             }
         };
         if done.changed() {
@@ -167,7 +212,8 @@ impl Document {
             debug_assert!(self.stack.check_animation(self.timeline.frame()).is_ok(), "{:?}", self.stack.check_animation(self.timeline.frame()));
         }
         if done.refused.is_some() && !done.changed() { done.region = Region::Nothing; }
-        done
+        first.join(done);
+        first
     }
 
     /// A change of time (the frame, the onion skin): what it reshows.
@@ -197,12 +243,16 @@ impl Document {
     /// Record what was done to the tree since the last time as one step.
     /// False if nothing changed (the active node, visibility and folding
     /// don't count).
-    pub(crate) fn record_tree(&mut self, label: &str) -> bool {
+    pub(crate) fn record_tree(&mut self, label: &str) -> bool { self.record_tree_as(label, None) }
+
+    /// The same; `key`: a setting of that node, joined with the last step
+    /// when it changed the same one.
+    fn record_tree_as(&mut self, label: &str, key: Option<u64>) -> bool {
         let now = self.stack.tree_state();
         let removed = self.stack.take_removed();
         if now == self.tree { return !removed.is_empty(); }
         let before = std::mem::replace(&mut self.tree, now);
-        self.history.push(label, Step::Tree { state: before, kept: removed });
+        self.history.push_tree(label, key, before, removed);
         true
     }
 
@@ -285,6 +335,7 @@ impl Document {
             return false;
         }
         done.join(Done::rects(patch.rects()));
+        done.layers.push(layer);
         if fill.is_some() { done.region = Region::Whole; }
         let join = self.new_sheet.take() == Some(self.history.serial());
         let s0 = self.history.serial();
@@ -305,30 +356,99 @@ impl Document {
         *done = Done::default();
     }
 
-    /// A stroke: `paint` draws through the stroke (the brush engine; the
-    /// selection limits it at the source), then it is one undo step of the
-    /// tiles it changed. Painting nothing leaves no step.
+    /// A stroke in one go: `paint` draws through it (the brush engine;
+    /// the selection limits it at the source), then it is one undo step of
+    /// the tiles it changed. Painting nothing leaves no step.
     pub fn stroke(&mut self, label: &str, paint: impl FnOnce(&mut Stroke<'_, Rgba8>)) -> Done {
-        aurastudio_core::zone!("document stroke");
-        let mut done = Done::default();
-        let Some(id) = self.begin_paint(&mut done) else { return Done::refused("Layer is locked or is a folder") };
+        let mut done = self.begin_stroke(label, None);
+        if done.refused.is_some() { return done; }
+        self.paint(paint);
+        let end = self.end_stroke();
+        // Nothing painted: nothing happened (a sheet made for it went).
+        if !end.changed() { return Done::default(); }
+        done.join(end);
+        done
+    }
+
+    /// Start a stroke on the layer strokes go to now (in an animation
+    /// folder with nothing exposed from now: a new sheet, one undo step
+    /// with the stroke). `limit`: a coverage it stays in besides the
+    /// selection (stay inside the lines). A stroke still open ends first.
+    pub fn begin_stroke(&mut self, label: &str, limit: Option<Selection>) -> Done {
+        aurastudio_core::zone!("document begin stroke");
+        let mut done = self.end_stroke();
+        let Some(layer) = self.begin_paint(&mut done) else { done.refused = Some("Layer is locked or is a folder"); return done };
+        let limit = match (self.selection.as_ref(), limit) {
+            (Some(s), Some(l)) => Selection::combine(Some(s), Some(l), aurastudio_selection::Mode::Intersect).map(Selection::into_mask).or_else(|| Some(aurastudio_raster::Mask::new(self.stack.width, self.stack.height, self.stack.tile, 0))),
+            (Some(s), None) => Some(s.as_mask().clone()),
+            (None, l) => l.map(Selection::into_mask),
+        };
+        let Some(img) = self.stack.image(layer) else { return done };
+        let state = img.stroke_state(limit.as_ref());
+        self.stroke = Some(StrokeSession { layer, label: label.to_owned(), state });
+        done
+    }
+
+    /// "Stay inside the lines": the area a stroke starting at (x, y) keeps
+    /// to, the region of the reference layers around it (all the other
+    /// layers when none is marked), as the fill finds it. `None` (free):
+    /// started on a line, off the frame, or nothing around.
+    pub fn stay_inside(&self, x: f32, y: f32, p: FillParams) -> Option<Selection> {
+        use aurastudio_layers::Pick;
+        aurastudio_core::zone!("stay inside");
+        let (xi, yi) = (x.floor() as i32, y.floor() as i32);
+        if !self.stack.frame().contains(xi, yi) { return None; }
+        let layer = self.timeline.layer_of_active(&self.stack).unwrap_or(0);
+        let reference = self.stack.reference_for(layer);
+        let pick = Pick { skip_drafts: p.skip_drafts, reference, skip: layer, ..Pick::ALL };
+        // On a line itself: free (CSP: the brush's center decides).
+        let under = aurastudio_compose::merge(&self.stack, aurastudio_core::Rect::new(xi, yi, xi + 1, yi + 1), aurastudio_compose::Opts { pick, backdrop: aurastudio_compose::Backdrop::Transparent, ..Default::default() });
+        if under.first().is_some_and(|c| c[3] >= 128) { return None; }
+        let src = aurastudio_compose::Merged { stack: &self.stack, pick };
         let limit = self.selection.as_ref().map(Selection::as_mask);
-        let Some(mut stroke) = self.stack.begin_stroke(id, limit) else { return done };
-        paint(&mut stroke);
-        let patch = stroke.end();
-        let mut done2 = Done::rects(patch.rects());
+        let area = aurastudio_layers::fill::flood(&src, self.stack.frame(), xi, yi, p.tolerance, p.expand, limit)?;
+        Selection::from_predicate(self.space(), area.bbox(), |x, y| area.contains(x, y))
+    }
+
+    /// A stroke is under way.
+    pub fn stroking(&self) -> bool { self.stroke.is_some() }
+
+    /// The layer the stroke under way paints on.
+    pub fn stroke_layer(&self) -> Option<u64> { self.stroke.as_ref().map(|s| s.layer) }
+
+    /// Paint more of the stroke under way. False if there is none (or its
+    /// layer is gone: the stroke stops, what it painted stays undoable).
+    pub fn paint<R>(&mut self, f: impl FnOnce(&mut Stroke<'_, Rgba8>) -> R) -> Option<R> {
+        let StrokeSession { layer, label, state } = self.stroke.take()?;
+        let img = self.stack.image_mut(layer)?;
+        let mut stroke = state.on(img);
+        let r = f(&mut stroke);
+        self.stroke = Some(StrokeSession { layer, label, state: stroke.detach() });
+        Some(r)
+    }
+
+    /// End the stroke under way: one undo step of the tiles it changed
+    /// (none if it painted nothing: a sheet made for it goes too).
+    pub fn end_stroke(&mut self) -> Done {
+        let Some(st) = self.stroke.take() else { return Done::default() };
+        aurastudio_core::zone!("document end stroke");
+        let mut done = Done::default();
+        let Some(img) = self.stack.image_mut(st.layer) else { self.drop_new_sheet(&mut done); return done };
+        let patch = st.state.on(img).end();
+        done.join(Done::rects(patch.rects()));
         let join = self.new_sheet.take() == Some(self.history.serial());
         if patch.is_empty() {
             self.new_sheet = join.then_some(self.history.serial());
             self.drop_new_sheet(&mut done);
             return done;
         }
+        done.layers.push(st.layer);
         let s0 = self.history.serial();
-        self.history.push_pixels(label, id, patch, None);
-        if join && self.history.serial() == s0 + 1 { self.history.join_last(label); }
-        done2.join(done);
+        self.history.push_pixels(&st.label, st.layer, patch, None);
+        if join && self.history.serial() == s0 + 1 { self.history.join_last(&st.label); }
         self.revision += 1;
-        done2
+        done.other = true;
+        done
     }
 
     fn clear_active(&mut self) -> Done {

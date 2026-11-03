@@ -1,0 +1,18 @@
+[package]
+name = "aurastudio-ui"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+aurastudio-core      = { path = "../aurastudio-core" }
+aurastudio-forge     = { path = "../aurastudio-forge" }
+aurastudio-tools     = { path = "../aurastudio-tools" }
+aurastudio-layers    = { path = "../aurastudio-layers" }
+aurastudio-animation = { path = "../aurastudio-animation" }
+aurastudio-document  = { path = "../aurastudio-document" }
+aurastudio-filters   = { path = "../aurastudio-filters" }
+# (egui 0.37 no longer brings its fonts by default.)
+egui        = { version = "0.37", features = ["default_fonts"] }
+log         = "0.4"
+egui_dock   = "0.21"
+egui_extras = { version = "0.37", default-features = false, features = ["svg"] }

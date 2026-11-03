@@ -55,6 +55,8 @@ pub struct Done {
     pub region:    Region,
     /// The node it made, if any.
     pub made:      Option<u64>,
+    /// Paint layers whose pixels changed (their thumbnails to redo).
+    pub layers:    Vec<u64>,
     /// The layer tree changed (the layer list to refresh).
     pub tree:      bool,
     /// The selection changed.
@@ -66,7 +68,7 @@ pub struct Done {
 }
 
 impl Done {
-    pub fn changed(&self) -> bool { !self.region.is_nothing() || self.made.is_some() || self.tree || self.selection || self.other }
+    pub fn changed(&self) -> bool { !self.region.is_nothing() || self.made.is_some() || !self.layers.is_empty() || self.tree || self.selection || self.other }
 
     pub(crate) fn refused(why: &'static str) -> Done { Done { refused: Some(why), ..Done::default() } }
 
@@ -76,9 +78,10 @@ impl Done {
         Done { region, ..Done::default() }
     }
 
-    pub(crate) fn join(&mut self, o: Done) {
+    pub fn join(&mut self, o: Done) {
         self.region.add(o.region);
         self.made = self.made.or(o.made);
+        for l in o.layers { if !self.layers.contains(&l) { self.layers.push(l); } }
         self.tree |= o.tree;
         self.selection |= o.selection;
         self.other |= o.other;

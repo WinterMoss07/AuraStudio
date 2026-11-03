@@ -23,8 +23,10 @@ type FlatBases<P> = HashMap<P, Arc<Vec<P>>>;
 /// Base tiles opened from a coverage or cold form, by tile index.
 type OpenBases<P> = HashMap<(i32, i32), Arc<Vec<P>>>;
 
-struct Limits<'s> {
-    surf: &'s Surface<u8>,
+struct Limits {
+    /// (Its own copy: tiles are shared, so it costs the table only, and a
+    /// stroke can be set aside between pen samples.)
+    surf: Surface<u8>,
     /// One-value rows for uniform limit tiles, by value.
     flat: HashMap<u8, Box<[u8]>>,
     /// Limit tiles opened from a cold form, by tile.
@@ -45,7 +47,7 @@ pub struct Stroke<'s, P: Pixel> {
     /// Highest coverage per pixel, per touched tile (pooled buffers), by
     /// chunk of the grid.
     mask:    HashMap<(i32, i32), MaskChunk>,
-    limit:   Option<Limits<'s>>,
+    limit:   Option<Limits>,
     touched: DirtyTiles,
 }
 
@@ -53,15 +55,45 @@ impl<P: Pixel> Surface<P> {
     /// Start a stroke; `limit` (a one-channel surface, any tile size)
     /// caps the coverage the engine may give each pixel (none outside the
     /// limit's stored area unless its fill allows it).
-    pub fn begin_stroke<'s>(&'s mut self, limit: Option<&'s Surface<u8>>) -> Stroke<'s, P> {
-        let before = self.snapshot();
-        let limit = limit.map(|surf| Limits { surf, flat: HashMap::new(), open: HashMap::new() });
-        let touched = self.dirty_set();
-        Stroke { surf: self, before, flat: HashMap::new(), opened: HashMap::new(), mask: HashMap::new(), limit, touched }
+    pub fn begin_stroke(&mut self, limit: Option<&Surface<u8>>) -> Stroke<'_, P> { self.stroke_state(limit).on(self) }
+
+    /// The same, as a state to set aside between pen samples (the
+    /// document keeps it while its lock is let go): `on` takes it up
+    /// again, on this surface only.
+    pub fn stroke_state(&self, limit: Option<&Surface<u8>>) -> StrokeState<P> {
+        let limit = limit.map(|surf| Limits { surf: surf.clone(), flat: HashMap::new(), open: HashMap::new() });
+        StrokeState { before: self.snapshot(), flat: HashMap::new(), opened: HashMap::new(), mask: HashMap::new(), limit, touched: self.dirty_set() }
     }
 }
 
+/// A stroke set aside (see `Surface::stroke_state`).
+pub struct StrokeState<P: Pixel> {
+    before:  Snapshot<P>,
+    flat:    FlatBases<P>,
+    opened:  OpenBases<P>,
+    mask:    HashMap<(i32, i32), MaskChunk>,
+    limit:   Option<Limits>,
+    touched: DirtyTiles,
+}
+
+impl<P: Pixel> StrokeState<P> {
+    /// Go on painting on `surf` (the surface it was taken from).
+    pub fn on(self, surf: &mut Surface<P>) -> Stroke<'_, P> {
+        let StrokeState { before, flat, opened, mask, limit, touched } = self;
+        Stroke { surf, before, flat, opened, mask, limit, touched }
+    }
+
+    /// Where it painted so far.
+    pub fn touched(&self) -> &DirtyTiles { &self.touched }
+}
+
 impl<P: Pixel> Stroke<'_, P> {
+    /// Set it aside (the surface is let go; `StrokeState::on` goes on).
+    pub fn detach(self) -> StrokeState<P> {
+        let Stroke { before, flat, opened, mask, limit, touched, .. } = self;
+        StrokeState { before, flat, opened, mask, limit, touched }
+    }
+
     /// The tiles the stroke went through so far.
     pub fn touched(&self) -> &DirtyTiles { &self.touched }
 
@@ -110,7 +142,7 @@ impl<P: Pixel> Stroke<'_, P> {
 
     fn prepare_limit(&mut self, x: i32, y: i32) {
         let Some(l) = &mut self.limit else { return };
-        let s = l.surf;
+        let s = &l.surf;
         let (lx, ly) = (x >> s.shift, y >> s.shift);
         match s.slot(lx, ly) {
             Slot::Full(_) => {}
@@ -149,9 +181,9 @@ fn base_of<'a, P: Pixel>(before: &'a Snapshot<P>, flat: &'a FlatBases<P>, opened
 }
 
 /// The limit for `len` pixels from (x, y), `None` without a limit.
-fn limit_of<'a>(l: Option<&'a Limits<'_>>, x: i32, y: i32, len: usize) -> Option<&'a [u8]> {
+fn limit_of(l: Option<&Limits>, x: i32, y: i32, len: usize) -> Option<&[u8]> {
     let l = l?;
-    let s = l.surf;
+    let s = &l.surf;
     let (lx, ly) = (x >> s.shift, y >> s.shift);
     let o = s.offset(x, y);
     match s.slot(lx, ly) {
@@ -201,7 +233,7 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
         self.prepare_limits(rect);
         let (t, shift) = (self.surf.tile as i32, self.surf.shift);
         let Stroke { surf, before, flat, opened, mask, limit, .. } = self;
-        let limit: Option<&'a Limits<'_>> = limit.as_ref();
+        let limit: Option<&'a Limits> = limit.as_ref();
         let (before, flat, opened): (&'a Snapshot<P>, &'a FlatBases<P>, &'a OpenBases<P>) = (before, flat, opened);
         let ck = |v: i32| v.div_euclid(CH);
         for (key, chunk) in surf.grid.chunks.iter_mut() {

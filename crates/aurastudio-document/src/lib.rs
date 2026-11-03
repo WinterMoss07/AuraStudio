@@ -25,6 +25,11 @@ pub use region::{Done, Region};
 pub use select::{SelectOp, Shape, Wand};
 pub use transform::{Lift, LiftLayer};
 pub use workspace::{SharedDoc, Workspace};
+// What the interface shows of the pixels, the selection and the transform:
+// it reaches them through the document.
+pub use aurastudio_raster::{Image, Mask, Run};
+pub use aurastudio_selection::{Mode as SelectMode, Segment, Selection};
+pub use aurastudio_transform::{Interp, Warp};
 
 #[cfg(test)]
 mod tests;

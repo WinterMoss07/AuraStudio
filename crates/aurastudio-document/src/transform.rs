@@ -169,7 +169,7 @@ impl Document {
             }
             if let Some(i) = self.stack.image_mut(t.id) { *i = img; }
         }
-        Done { region, ..Done::default() }
+        Done { region, layers: s.targets.iter().map(|t| t.id).collect(), ..Done::default() }
     }
 
     pub(crate) fn transform_apply(&mut self, warp: &Warp, interp: Interp) -> Done {
@@ -209,10 +209,11 @@ impl Document {
 
     pub(crate) fn transform_cancel(&mut self) -> Done {
         let Some(s) = self.transform.take() else { return Done::default() };
+        let layers = s.targets.iter().map(|t| t.id).collect();
         for t in s.targets { if let Some(i) = self.stack.image_mut(t.id) { *i = t.before; } }
         let mut region = Region::Nothing;
         region.add_rect(s.shown);
         region.add_rect(s.src);
-        Done { region, ..Done::default() }
+        Done { region, layers, ..Done::default() }
     }
 }

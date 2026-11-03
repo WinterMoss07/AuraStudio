@@ -505,3 +505,46 @@ fn resize_keeps_everything_and_drops_the_history() {
     assert_eq!(px(&d, id, 32, 0), [1, 1, 1, 255]);
     let _ = Selection::all(d.space());
 }
+
+/// An opacity dragged or a name typed is one undo step.
+#[test]
+fn a_setting_changed_again_and_again_is_one_step() {
+    let mut d = doc(32, 32);
+    let id = add_layer(&mut d);
+    let n = d.history().undo_len();
+    for k in 1..=10 { d.apply(Edit::SetOpacity(id, 1.0 - k as f32 * 0.05)); }
+    for name in ["a", "ab", "abc"] { d.apply(Edit::Rename(id, name.into())); }
+    assert_eq!(d.history().undo_len(), n + 2);
+    d.apply(Edit::Undo);
+    assert_eq!(d.stack().node(id).unwrap().name(), "ink");
+    d.apply(Edit::Undo);
+    assert_eq!(d.stack().node(id).unwrap().opacity(), 1.0);
+}
+
+/// A stroke over many pen samples, the document let go in between: one
+/// undo step, the same as painted at once; an edit of pixels meanwhile
+/// ends it first.
+#[test]
+fn a_stroke_set_aside_between_samples_is_one_step() {
+    let mut d = doc(64, 64);
+    let id = add_layer(&mut d);
+    let n = d.history().undo_len();
+    assert!(d.begin_stroke("Brush stroke", None).refused.is_none());
+    for k in 0..4 { assert!(d.paint(|s| { s.prepare(Rect::new(k * 10, 0, k * 10 + 8, 8)); rect_in(s, Rect::new(k * 10, 0, k * 10 + 8, 8), [1, 2, 3, 255]); }).is_some()); }
+    assert!(d.stroking());
+    d.end_stroke();
+    assert_eq!(d.history().undo_len(), n + 1);
+    assert_eq!(px(&d, id, 35, 4), [1, 2, 3, 255]);
+    d.begin_stroke("Brush stroke", None);
+    d.paint(|s| { s.prepare(Rect::new(0, 20, 8, 28)); rect_in(s, Rect::new(0, 20, 8, 28), [9, 9, 9, 255]); });
+    d.apply(Edit::Undo);
+    assert!(!d.stroking());
+    assert_eq!(px(&d, id, 4, 24)[3], 0, "the open stroke ended, then was undone");
+    // A stay-inside limit: only inside it.
+    let lim = Selection::rect(d.space(), Rect::new(0, 40, 10, 50));
+    d.begin_stroke("Brush stroke", lim);
+    d.paint(|s| { s.prepare(Rect::new(0, 40, 30, 50)); rect_in(s, Rect::new(0, 40, 30, 50), [5, 5, 5, 255]); });
+    d.end_stroke();
+    assert_eq!(px(&d, id, 5, 45), [5, 5, 5, 255]);
+    assert_eq!(px(&d, id, 20, 45)[3], 0);
+}

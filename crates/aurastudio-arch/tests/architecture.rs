@@ -36,18 +36,17 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("file", &["core", "raster", "layers", "filters"]),
     ("gpu", &["core", "raster"]),
     ("forge", &["core"]),
-    ("forge-library", &["core", "forge"]),
-    ("ui", &["core", "document", "filters", "forge", "forge-library", "layers", "tools", "animation"]),
+    ("ui", &["core", "document", "filters", "forge", "layers", "tools", "animation"]),
     // Diagnostic builds only (the app depends on it optionally).
     ("diag", &["core"]),
     // Fuzzers and diagnostic scenarios: dev only, nothing depends on it.
-    ("stress", &["core", "diag", "input", "raster", "filters", "transform", "tools", "selection", "color", "layers", "compose", "animation", "document", "file", "gpu", "forge", "forge-library"]),
+    ("stress", &["core", "diag", "input", "raster", "filters", "transform", "tools", "selection", "color", "layers", "compose", "animation", "document", "file", "gpu", "forge"]),
     // The application puts everything together.
-    ("aurastudio", &["core", "diag", "input", "raster", "filters", "transform", "tools", "selection", "color", "layers", "compose", "animation", "document", "file", "gpu", "forge", "forge-library", "ui"]),
+    ("aurastudio", &["core", "diag", "input", "raster", "filters", "transform", "tools", "selection", "color", "layers", "compose", "animation", "document", "file", "gpu", "forge", "ui"]),
 ];
 
 /// Crates that never see a window, the GPU or the interface.
-const DATA: &[&str] = &["core", "input", "raster", "filters", "transform", "tools", "selection", "color", "layers", "compose", "animation", "document", "file", "forge", "forge-library", "diag"];
+const DATA: &[&str] = &["core", "input", "raster", "filters", "transform", "tools", "selection", "color", "layers", "compose", "animation", "document", "file", "forge", "diag"];
 const FORBIDDEN_IN_DATA: &[&str] = &["wgpu", "egui", "egui-wgpu", "egui-winit", "egui_dock", "winit", "eframe"];
 
 /// No file may hold more code than this outside its test modules. Big

@@ -1,0 +1,659 @@
+//! The interface (egui): the app lends its data in `Model`, the UI reports
+//! what to do in `Actions`.
+
+pub mod theme;
+mod animation;
+mod atlas;
+mod memory;
+mod bars;
+mod thumbnail;
+mod dock_layout;
+mod dockers;
+mod filters;
+mod home;
+mod prefs;
+mod icons;
+mod tools;
+mod widgets;
+
+use std::time::{Duration, Instant};
+
+use aurastudio_document::{Document, Done, Edit};
+use aurastudio_forge::Brush;
+use aurastudio_layers::{FillParams, LayerStack};
+use egui::Frame;
+use egui_dock::{DockArea, DockState};
+
+pub use aurastudio_core::BlendMode;
+pub use dockers::Tab;
+pub use dockers::layers::LayerCmd;
+pub use filters::FilterAction;
+pub use memory::{mb, MemoryReport, Section as MemorySection};
+pub use prefs::Prefs;
+pub use home::{NewDoc, RecentFile};
+pub use tools::{BrushDrag, Group, Loupe, Overlay, PickerOptions, SelectCmd, SelectOptions, LOUPE_SIDE, ShapeOptions, Tool, ToolMemory, TransformCmd, TransformInfo, TransformMode, TransformNumbers, TransformOptions, TransformOverlay, WandOptions};
+pub use prefs::{CanvasQuality, Renderer};
+pub use widgets::set_display_transform;
+
+/// Brush size range, as a diameter in pixels.
+pub const MAX_BRUSH_SIZE: u32 = 1000;
+
+/// Everything the UI may edit this frame.
+pub struct Model<'a> {
+    /// Settings of the brush in use (the color is global).
+    pub brush:              &'a mut Brush,
+    /// The brushes, and the one in use.
+    pub presets:            &'a [aurastudio_forge::Preset],
+    pub preset:             &'a mut usize,
+    /// The open document: read freely, changed only with `apply` (an
+    /// `Edit`). With no document (`home`), an empty placeholder.
+    pub doc:                &'a mut Document,
+    /// What every `apply` of this frame did, joined: where the canvas
+    /// changed, the tree, the selection.
+    pub done:               Done,
+    /// Animation playback: running, looping.
+    pub playing:            bool,
+    pub looping:            &'a mut bool,
+    /// Width / height typed in the Canvas dock, applied by "Resize".
+    pub canvas_edit:        &'a mut (u32, u32),
+    pub max_canvas:         u32,
+    /// Current view, for display: zoom (1.0 = 100 %) and angle in degrees.
+    pub view_zoom:          f32,
+    pub view_angle:         f32,
+    /// The preferences (Edit > Preferences…), and the monitor profile's
+    /// name (None: no profile found, shown as sRGB).
+    pub prefs:              &'a mut Prefs,
+    pub display_profile:    Option<&'a str>,
+    /// No document open: the start screen shows in place of the canvas.
+    pub home:               bool,
+    /// The window is maximized (its title bar button shows "restore").
+    pub maximized:          bool,
+    /// Selected tool and the fill tool's settings.
+    pub tool:               &'a mut Tool,
+    /// The tool and brush last used in each toolbox group.
+    pub tools:              &'a mut ToolMemory,
+    pub fill:               &'a mut FillParams,
+    /// Brushes stay inside the reference layers' lines.
+    pub stay_inside:        &'a mut bool,
+    pub shape:              &'a mut ShapeOptions,
+    /// Settings of the selection and transform tools, and the transform
+    /// under way.
+    pub select:             &'a mut SelectOptions,
+    pub picker:             &'a mut PickerOptions,
+    pub transform:          &'a mut TransformOptions,
+    pub transform_info:     TransformInfo,
+    /// The graphics API drawing the window (Preferences).
+    pub renderer:           &'a str,
+    /// Drawn over the canvas, placed with `to_points` (canvas pixel ->
+    /// egui point).
+    pub overlay:            Overlay<'a>,
+    pub to_points:          &'a dyn Fn((f32, f32)) -> (f32, f32),
+}
+
+impl Model<'_> {
+    /// The layer tree.
+    pub fn layers(&self) -> &LayerStack { self.doc.stack() }
+
+    /// Do `e` on the document; what it did joins `done`.
+    pub fn apply(&mut self, e: Edit) -> Done {
+        let d = self.doc.apply(e);
+        self.done.join(d.clone());
+        d
+    }
+
+    /// The current frame (animation).
+    pub fn time(&self) -> u32 { self.doc.timeline().frame() }
+
+    pub fn onion(&self) -> &aurastudio_animation::Onion { &self.doc.timeline().onion }
+    pub fn onion_look(&self) -> aurastudio_animation::OnionLook { self.doc.timeline().look }
+
+    /// The sheet `folder` shows now.
+    pub fn exposed(&self, folder: u64) -> Option<u64> { self.doc.timeline().exposed(self.doc.stack(), folder) }
+
+    /// A stroke or a fill can go to the active node now.
+    pub fn can_paint(&self) -> bool { self.doc.timeline().paint_target(self.doc.stack()).is_some() }
+
+    /// The document's type.
+    pub fn doc_kind(&self) -> aurastudio_core::DocType { self.doc.kind() }
+
+    pub fn has_selection(&self) -> bool { self.doc.selection().is_some() }
+
+    pub fn can_undo(&self) -> bool { self.doc.history().undo_len() > 0 }
+    pub fn can_redo(&self) -> bool { self.doc.history().redo_len() > 0 }
+}
+
+/// View commands from the View menu (the app also binds them to keys).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewCmd { ZoomIn, ZoomOut, ActualSize, Fit, RotateLeft, RotateRight, ResetRotation }
+
+/// What the app must do after the UI ran (what the document did is in
+/// `Model::done`).
+#[derive(Default)]
+pub struct Actions {
+    pub resize_to:   Option<(u32, u32)>,
+    pub undo:        bool,
+    pub redo:        bool,
+    /// Clear the active layer (the app does it, undoable).
+    pub clear_layer: bool,
+    pub view:        Option<ViewCmd>,
+    /// The filter dialog: show / keep / drop a filter on the active layer.
+    pub filter:      Option<FilterAction>,
+    /// File menu / shortcut.
+    pub file:        Option<FileCmd>,
+    /// Answer to the dialog shown (see UiState::show_dialog).
+    pub dialog:      Option<DialogChoice>,
+    /// The New dialog was confirmed.
+    pub new_doc:     Option<NewDoc>,
+    /// A recent file was clicked.
+    pub open_path:   Option<std::path::PathBuf>,
+    /// "Remove from list" on a recent file.
+    pub forget_recent: Option<std::path::PathBuf>,
+    /// "Clear list" on the start screen.
+    pub clear_recent: bool,
+    /// Select menu.
+    pub select:      Option<SelectCmd>,
+    /// The transform tool's options.
+    pub transform:   Option<TransformCmd>,
+    /// Copy / paste pixels.
+    pub edit:        Option<EditCmd>,
+    /// Show this docker (hidden from the Window menu).
+    pub show_docker: Option<dockers::Tab>,
+    /// Start (true) or stop animation playback.
+    pub play:        Option<bool>,
+    /// The title bar: the window to minimize, maximize, close or move.
+    pub window:      Option<WindowCmd>,
+}
+
+/// What the title bar asks of the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowCmd {
+    Minimize,
+    /// Maximize, or back to its size.
+    ToggleMaximize,
+    Close,
+    /// The bar is pressed: the window follows the pointer.
+    Drag,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileCmd { New, Open, Save, SaveAs, Export, Close }
+
+/// Copy: the selected pixels of the active layer (all of it without a
+/// selection). Paste: onto a new layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCmd { Copy, Paste }
+
+/// A question the app asks, shown over everything until answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Dialog {
+    /// Closing / replacing a document with unsaved changes.
+    UnsavedChanges { name: String },
+    /// An autosave from a session that didn't close normally was found.
+    Recover { name: String, saved: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogChoice { Save, Discard, Cancel, Recover }
+
+/// Short message shown in the options bar for a few seconds
+/// ("Layer is locked"...).
+#[derive(Default)]
+pub(crate) struct Notice(Option<(String, Instant)>);
+
+impl Model<'_> {
+    /// Eye of node `id` the other way.
+    /// Returns what of the canvas it can change.
+    pub(crate) fn toggle_visible(&mut self, id: u64) {
+        if let Some(v) = self.layers().node(id).map(aurastudio_layers::Node::visible) { self.apply(Edit::SetVisible(id, !v)); }
+    }
+
+    /// Lock of node `id` the other way.
+    pub(crate) fn toggle_locked(&mut self, id: u64) {
+        if let Some(v) = self.layers().node(id).map(aurastudio_layers::Node::locked) { self.apply(Edit::SetLocked(id, !v)); }
+    }
+}
+
+impl Notice {
+    const DURATION: Duration = Duration::from_millis(2500);
+
+    pub fn set(&mut self, text: &str) {
+        self.0 = Some((text.to_owned(), Instant::now()));
+    }
+
+    /// Current text, if still showing, and how long it has left.
+    pub fn current(&mut self) -> Option<(&str, Duration)> {
+        let left = Self::DURATION.saturating_sub(self.0.as_ref()?.1.elapsed());
+        if left.is_zero() {
+            self.0 = None;
+            return None;
+        }
+        self.0.as_ref().map(|(t, _)| (t.as_str(), left))
+    }
+}
+
+/// UI state kept between frames.
+pub struct UiState {
+    dock:          DockState<Tab>,
+    theme_applied: bool,
+    focus_tab:     Option<Tab>,
+    notice:        Notice,
+    color:         dockers::color::ColorState,
+    layers:        dockers::layers::LayersState,
+    /// Window > Memory report: shown, and the last measure (the app takes
+    /// one each second while it is shown).
+    memory_open:   bool,
+    memory:        Option<memory::MemoryReport>,
+    /// Where the pointer was in the last frame (the Delete key goes by it).
+    pointer:       Option<egui::Pos2>,
+    tool_list:     dockers::tool_list::ToolListState,
+    /// Cel template docker: the cel being renamed, a deletion asked.
+    cel:           dockers::cel_template::CelState,
+    /// The Animation panel (X-sheet / timeline).
+    pub anim:      animation::AnimPanel,
+    /// The open filter dialog.
+    filter:        Option<filters::FilterDialog>,
+    /// The Preferences dialog is open, on this section.
+    prefs_open:    Option<prefs::Section>,
+    /// Select > Grow… (or Shrink, Feather, Border): its pixels.
+    select_dialog: Option<(SelectKind, f32)>,
+    dock_layout:   dock_layout::DockLayout,
+    dialog:        Option<Dialog>,
+    new_form:      Option<home::NewForm>,
+    /// The New dialog's tab last used (Painting, Animation, Comics).
+    new_category:  usize,
+    recent:        Vec<RecentFile>,
+}
+
+impl Default for UiState {
+    fn default() -> Self { Self::new() }
+}
+
+impl UiState {
+    pub fn new() -> Self {
+        Self {
+            dock:          dockers::default_dock(),
+            theme_applied: false,
+            focus_tab:     None,
+            notice:        Notice::default(),
+            color:         Default::default(),
+            layers:        Default::default(),
+            memory_open:   false,
+            memory:        None,
+            pointer:       None,
+            tool_list:     Default::default(),
+            cel:           Default::default(),
+            anim:          Default::default(),
+            filter:        None,
+            prefs_open:    None,
+            select_dialog: None,
+            dock_layout:   Default::default(),
+            dialog:        None,
+            new_form:      None,
+            new_category:  0,
+            recent:        Vec::new(),
+        }
+    }
+
+    /// Show the New document dialog.
+    pub fn open_new_dialog(&mut self) {
+        self.new_form = Some(home::NewForm::new(self.new_category));
+    }
+
+    /// Recent files of the start screen (thumbnails come later, see
+    /// set_recent_thumbnail).
+    pub fn set_recent(&mut self, recent: Vec<RecentFile>) {
+        self.recent = recent;
+    }
+
+    pub fn set_recent_thumbnail(&mut self, path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
+        home::set_thumbnail(&mut self.recent, path, w, h, rgba);
+    }
+
+    /// Ask the user; the answer comes back in `Actions::dialog`.
+    pub fn show_dialog(&mut self, dialog: Dialog) {
+        self.dialog = Some(dialog);
+    }
+
+    /// The Delete key: over the Layers docker or the Animation panel it
+    /// deletes what is picked there (nodes, frames) at the next frame, and
+    /// this says true. False: the canvas's (clear the layer).
+    pub fn delete_key(&mut self) -> bool {
+        let Some(p) = self.pointer else { return false };
+        if self.anim.rect.is_some_and(|r| r.contains(p)) {
+            self.anim.delete_req = true;
+            true
+        } else if self.layers.rect.is_some_and(|r| r.contains(p)) {
+            self.layers.delete_req = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The memory report window is open: the app should measure.
+    pub fn memory_wanted(&self) -> bool { self.memory_open }
+
+    /// The latest measure, for the window.
+    pub fn set_memory(&mut self, r: MemoryReport) { self.memory = Some(r); }
+
+    /// A dialog is waiting for an answer (the canvas ignores the pen).
+    pub fn has_dialog(&self) -> bool {
+        self.dialog.is_some() || self.new_form.is_some() || self.prefs_open.is_some() || self.select_dialog.is_some() || self.anim.is_asking() || self.cel.is_asking()
+    }
+
+    /// The layers chosen in the Layers docker (several with Ctrl / Shift;
+    /// else the active one).
+    pub fn chosen_layers(&self, layers: &LayerStack) -> Vec<u64> { self.layers.selection(layers) }
+
+    /// Select > Grow… and the like: ask how many pixels.
+    pub fn ask_select(&mut self, kind: SelectKind) {
+        let v = match kind { SelectKind::Feather => 10.0, _ => 5.0 };
+        self.select_dialog = Some((kind, v));
+    }
+
+    /// The pixels of this layer changed, inside `rect` (None: anywhere): rebuild its thumbnail.
+    pub fn invalidate_thumbnail(&mut self, layer_id: u64, rect: Option<aurastudio_core::Rect>) {
+        self.layers.invalidate(layer_id, rect);
+    }
+
+    /// Show a docker (as the Window menu does).
+    pub fn show_docker(&mut self, tab: dockers::Tab) { dockers::set_shown(&mut self.dock, tab, true); }
+
+    /// Every layer changed (canvas resize...).
+    pub fn invalidate_all_thumbnails(&mut self) {
+        self.layers.invalidate_all();
+    }
+
+    /// Edit > Preferences… (Ctrl+K).
+    pub fn open_prefs(&mut self) {
+        if self.prefs_open.is_none() { self.prefs_open = Some(prefs::Section::default()); }
+    }
+
+    /// Open the dialog of filter `n` (any number: taken modulo their count)
+    /// on the active layer, as its menu entry does. For the fuzz test.
+    #[doc(hidden)]
+    pub fn open_filter_dialog(&mut self, ctx: &egui::Context, n: usize, m: &Model) {
+        let kinds: Vec<aurastudio_filters::Kind> = aurastudio_filters::Kind::all().collect();
+        if self.filter.is_none() { self.filter = filters::new_dialog(ctx, kinds[n % kinds.len()], m); }
+    }
+
+    /// A layer command from its shortcut (Ctrl+G...), done next frame.
+    pub fn layer_shortcut(&mut self, cmd: LayerCmd) { self.layers.shortcut(cmd); }
+
+    /// A filter dialog is open (the layer shows its preview: no painting).
+    pub fn filtering(&self) -> bool { self.filter.is_some() }
+
+    /// Close the filter dialog without keeping its filter (the app sends
+    /// the Cancel itself: a document is closing...).
+    pub fn close_filter(&mut self) -> bool { self.filter.take().is_some_and(|d| d.targets_layer()) }
+
+    /// Show a short message in the tool options bar for a few seconds.
+    pub fn notify(&mut self, text: &str) {
+        self.notice.set(text);
+    }
+}
+
+/// Build the whole UI for this frame.
+pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions: &mut Actions) {
+    let ctx = &root.ctx().clone();
+    if !state.theme_applied {
+        theme::apply(ctx);
+        state.theme_applied = true;
+    }
+    {
+        aurastudio_core::zone!("layer thumbnails");
+        state.layers.refresh_thumbnails(ctx, model.doc.stack());
+    }
+    // (Drawn again below if shown: the Delete key goes by where they are.)
+    state.pointer = ctx.pointer_latest_pos();
+    state.layers.rect = None;
+    state.anim.rect = None;
+
+    bars::menu_bar(root, state, model, actions);
+    bars::toolbar(root, &mut state.notice, model, actions);
+
+    if let Some(tab) = state.focus_tab.take() {
+        // (Hidden from the Window menu: shown again.)
+        dockers::set_shown(&mut state.dock, tab, true);
+        if let Some(loc) = state.dock.find_tab(&tab) {
+            let _ = state.dock.set_active_tab(loc);
+        }
+    }
+
+    egui::Panel::right("dock")
+        // Grayed out with no document open: its width stays too.
+        .resizable(!model.home)
+        .show_separator_line(false)
+        .default_size(300.0)
+        .size_range(240.0..=600.0)
+        // A little room on the left: the tabs no longer touch the canvas.
+        .frame(Frame::NONE.fill(theme::PANEL).inner_margin(egui::Margin { left: 6, ..Default::default() }))
+        .show(root, |ui| {
+            aurastudio_core::zone!("dockers");
+            // No document open: grayed out, like the toolbox.
+            if model.home { ui.disable(); }
+            let style = theme::dock_style(ui.style());
+            let mut viewer = dockers::Viewer {
+                color:  &mut state.color,
+                layers: &mut state.layers,
+                tool_list: &mut state.tool_list,
+                cel: &mut state.cel,
+                notice: &mut state.notice,
+                m:      model,
+                a:      actions,
+                content: &mut state.dock_layout.content,
+            };
+            let (bar, sep) = (style.tab_bar.height, style.separator.width);
+            DockArea::new(&mut state.dock)
+                .style(style)
+                .show_close_buttons(false)
+                .show_leaf_close_all_buttons(false)
+                .show_leaf_collapse_buttons(false)
+                .window_bounds(ctx.content_rect())
+                .show_inside(ui, &mut viewer);
+            // Docks keep their content visible: a separator pushes the
+            // next docks instead of squashing one.
+            state.dock_layout.enforce(&mut state.dock, bar, sep);
+        });
+
+    if let Some(tab) = actions.show_docker.take() { dockers::set_shown(&mut state.dock, tab, true); }
+    // The Animation panel (Animation documents): under the canvas or
+    // beside the dockers.
+    if state.anim.open && !model.home && model.doc_kind() == aurastudio_core::DocType::Animation {
+        aurastudio_core::zone!("animation panel");
+        animation::panel(root, &mut state.anim, &mut state.layers, &mut state.notice, model, actions);
+    }
+
+    memory::window(ctx, &mut state.memory_open, state.memory.as_ref());
+
+    if let Some(card) = canvas_card(ctx, root.available_rect_before_wrap(), model) {
+        if model.home {
+            home::start_screen(ctx, card, &mut state.recent, actions);
+        } else {
+            tools::draw_overlay(ctx, card, &model.overlay, model.to_points);
+        }
+    }
+    if let Some(section) = &mut state.prefs_open {
+        let mut reset = false;
+        if !prefs::dialog(ctx, section, model.prefs, model.display_profile, model.renderer, &mut reset) { state.prefs_open = None; }
+        if reset { state.dock = dockers::default_dock(); }
+    }
+    // A filter layer to edit (the Layers docker asked).
+    if let Some((id, created)) = state.layers.edit_filter.take() {
+        if state.filter.is_none() {
+            state.filter = filters::layer_dialog(ctx, id, created, model);
+        }
+    }
+    if let Some(d) = &mut state.filter {
+        let open = filters::dialog(ctx, d, actions);
+        if let Some((id, e)) = d.edit.take() { filters::apply_layer_edit(id, e, model); }
+        if !open { state.filter = None; }
+    }
+    if let Some(form) = &mut state.new_form {
+        state.new_category = form.category();
+        if !home::new_dialog(ctx, form, model.max_canvas, actions) { state.new_form = None; }
+    }
+    dialog(ctx, state, actions);
+    select_dialog(ctx, state, actions);
+}
+
+/// A modal dialog in the app's frame.
+fn modal(ctx: &egui::Context, id: &str) -> egui::Modal {
+    egui::Modal::new(egui::Id::unique(id))
+        .frame(egui::Frame::popup(&ctx.global_style()).inner_margin(egui::Margin::same(18)).corner_radius(theme::CANVAS_ROUNDING))
+}
+
+/// The open dialog, if any: modal, the rest of the UI is dimmed.
+fn dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
+    use egui::RichText;
+    let Some(d) = state.dialog.clone() else { return };
+    let mut choice = None;
+    let button = |ui: &mut egui::Ui, text: &str, primary: bool| {
+        let b = egui::Button::new(RichText::new(text).color(theme::TEXT)).min_size(egui::vec2(96.0, 28.0));
+        ui.add(if primary { b.fill(theme::ACCENT) } else { b })
+    };
+    let modal = modal(ctx, "app_dialog")
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            match &d {
+                Dialog::UnsavedChanges { name } => {
+                    ui.label(RichText::new(format!("Save changes to “{name}”?")).heading());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Your changes will be lost if you don't save them.").color(theme::TEXT_WEAK));
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if button(ui, "Don't save", false).clicked() { choice = Some(DialogChoice::Discard); }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if button(ui, "Save", true).clicked() { choice = Some(DialogChoice::Save); }
+                            if button(ui, "Cancel", false).clicked() { choice = Some(DialogChoice::Cancel); }
+                        });
+                    });
+                }
+                Dialog::Recover { name, saved } => {
+                    ui.label(RichText::new("Recover unsaved work?").heading());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!(
+                        "AuraStudio didn't close normally. An automatic save of “{name}” from {saved} was found."
+                    )).color(theme::TEXT_WEAK));
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        if button(ui, "Discard", false).clicked() { choice = Some(DialogChoice::Discard); }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if button(ui, "Recover", true).clicked() { choice = Some(DialogChoice::Recover); }
+                        });
+                    });
+                }
+            }
+        });
+    // Escape / click outside: cancel (the recovery question stays).
+    if modal.should_close() && choice.is_none() && matches!(d, Dialog::UnsavedChanges { .. }) {
+        choice = Some(DialogChoice::Cancel);
+    }
+    if choice.is_some() {
+        state.dialog = None;
+        a.dialog = choice;
+    }
+}
+
+/// The Select menu's commands that take a number of pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectKind { Grow, Shrink, Feather, Border }
+
+impl SelectKind {
+    fn name(self) -> &'static str {
+        match self { SelectKind::Grow => "Grow selection", SelectKind::Shrink => "Shrink selection", SelectKind::Feather => "Feather selection", SelectKind::Border => "Border selection" }
+    }
+}
+
+/// Select > Grow… (Shrink, Feather, Border): how many pixels.
+fn select_dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
+    use egui::RichText;
+    let Some((kind, mut v)) = state.select_dialog else { return };
+    let mut done = None;
+    let modal = modal(ctx, "select_dialog")
+        .show(ctx, |ui| {
+            ui.set_width(260.0);
+            ui.label(RichText::new(kind.name()).heading());
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(if kind == SelectKind::Feather { "Radius" } else { "By" });
+                let r = ui.add(egui::DragValue::new(&mut v).range(1.0..=500.0).speed(0.5).max_decimals(0).suffix(" px"));
+                r.request_focus();
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() { done = Some(false); }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let ok = egui::Button::new(RichText::new("OK").color(theme::TEXT)).fill(theme::ACCENT).min_size(egui::vec2(72.0, 26.0));
+                    if ui.add(ok).clicked() { done = Some(true); }
+                });
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) { done = Some(true); }
+        });
+    if modal.should_close() && done.is_none() { done = Some(false); }
+    match done {
+        Some(ok) => {
+            state.select_dialog = None;
+            if ok {
+                a.select = Some(match kind {
+                    SelectKind::Grow => SelectCmd::Grow(v),
+                    SelectKind::Shrink => SelectCmd::Shrink(v),
+                    SelectKind::Feather => SelectCmd::Feather(v),
+                    SelectKind::Border => SelectCmd::Border(v),
+                });
+            }
+        }
+        None => state.select_dialog = Some((kind, v)),
+    }
+}
+
+/// egui memory key of the canvas rect (points), read by the GPU crate to
+/// place the canvas viewport.
+pub const CANVAS_RECT_ID: &str = "aurastudio_canvas_rect";
+
+/// The canvas card: what is left of the window, rounded (the UI surface is
+/// painted over its corners; the GPU draws the canvas under the UI).
+fn canvas_card(ctx: &egui::Context, free: egui::Rect, model: &mut Model) -> Option<egui::Rect> {
+    use egui::{pos2, Rect, Shape};
+    let g = theme::CANVAS_FRAME;
+    // From the window's left edge (the toolbox sits on it).
+    let card = Rect::from_min_max(free.min, pos2(free.right(), free.bottom() - g));
+    if card.width() <= 0.0 || card.height() <= 0.0 { return None; }
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CANVAS_RECT_ID), card));
+    let tools = tools::toolbox(ctx, card.left_center(), model);
+
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let fill = theme::PANEL;
+    painter.rect_filled(Rect::from_min_max(pos2(card.left(), card.bottom()), free.max), 0.0, fill);
+    // Each rounded corner (the toolbox's too): a fan of triangles between
+    // the corner and a quarter circle.
+    let r = theme::CANVAS_ROUNDING;
+    for (corner, sx, sy) in [
+        (card.left_top(), 1.0, 1.0),
+        (pos2(card.left(), tools.top()), 1.0, -1.0),
+        (pos2(card.left(), tools.bottom()), 1.0, 1.0),
+        (card.right_top(), -1.0, 1.0),
+        (card.left_bottom(), 1.0, -1.0),
+        (card.right_bottom(), -1.0, -1.0),
+    ] {
+        let center = corner + egui::vec2(sx * r, sy * r);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(corner, fill);
+        const STEPS: u32 = 8;
+        for i in 0..=STEPS {
+            let a = std::f32::consts::FRAC_PI_2 * i as f32 / STEPS as f32;
+            mesh.colored_vertex(center - egui::vec2(sx * r * a.cos(), sy * r * a.sin()), fill);
+            if i > 0 { mesh.add_triangle(0, i, i + 1); }
+        }
+        painter.add(Shape::mesh(mesh));
+    }
+    Some(card)
+}
+
+/// Tests: one egui pass of `f` on `ctx` (egui ≥ 0.34 runs a root Ui; its
+/// texture changes are dropped).
+#[cfg(test)]
+pub(crate) fn test_pass(ctx: &egui::Context, input: egui::RawInput, mut f: impl FnMut(&mut egui::Ui)) {
+    let mut out = ctx.run_ui(input, |ui| f(ui));
+    out.textures_delta.clear();
+}

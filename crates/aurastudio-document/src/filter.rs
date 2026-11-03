@@ -42,7 +42,7 @@ impl Document {
         region.add(now);
         let layer = s.layer;
         if let Some(i) = self.stack.image_mut(layer) { *i = img; }
-        Done { region, ..Done::default() }
+        Done { region, layers: vec![layer], ..Done::default() }
     }
 
     pub(crate) fn filter_apply(&mut self, filter: &Filter) -> Done {
@@ -57,7 +57,7 @@ impl Document {
     pub(crate) fn filter_cancel(&mut self) -> Done {
         let Some(s) = self.filter.take() else { return Done::default() };
         if let Some(i) = self.stack.image_mut(s.layer) { *i = s.before; }
-        Done { region: s.shown, ..Done::default() }
+        Done { region: s.shown, layers: vec![s.layer], ..Done::default() }
     }
 }
 

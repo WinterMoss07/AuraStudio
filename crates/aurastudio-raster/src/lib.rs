@@ -24,7 +24,7 @@ pub use ops::Combine;
 pub use patch::{Patch, Snapshot};
 pub use save::{legacy, SaveCache, SaveStats};
 pub use slot::Summary;
-pub use stroke::Stroke;
+pub use stroke::{Stroke, StrokeState};
 pub use surface::{Run, Stored, Surface, SummaryGrid, MAX_TILE, MIN_TILE};
 
 /// A layer's pixels (8-bit documents).
