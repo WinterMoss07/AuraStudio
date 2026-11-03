@@ -134,7 +134,7 @@ jobs:
           set -o pipefail
           export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C link-arg=/PDBALTPATH:aurastudio-$VERSION.pdb"
           for alloc in mimalloc system; do
-            if [ $alloc = mimalloc ]; then flags="--features profile"; else flags="--no-default-features --features profile"; fi
+            if [ $alloc = mimalloc ]; then flags="--features profile,mimalloc"; else flags="--features profile"; fi
             cargo build --profile ci -p aurastudio $flags 2>&1 | tee build-profile-$alloc.log
             mkdir -p dist-profile/$alloc
             cp target/ci/aurastudio.exe "dist-profile/$alloc/aurastudio-$VERSION-profile-$alloc.exe"

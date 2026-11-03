@@ -8,9 +8,9 @@ name = "aurastudio"
 path = "src/main.rs"
 
 [features]
-default = ["mimalloc"]
-# The app's allocator: mimalloc, or the system's without this feature
-# (--no-default-features), to compare them (README, Profiling).
+default = []
+# The app's allocator: the system's by default, mimalloc with this
+# feature (--features mimalloc), to compare them (README, Profiling).
 mimalloc = ["dep:mimalloc"]
 # Tracy profiler: zones, frames and plots for the Tracy window (README,
 # Profiling). Off: the profiling macros compile to nothing.

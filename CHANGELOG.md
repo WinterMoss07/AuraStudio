@@ -3,6 +3,52 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.20.0 — 2026-11-03
+
+The foundations rebuilt crate by crate (branch `rework/foundations`), and
+a new brush engine. Each crate does one thing, depends only on what the
+crate table allows, and is tested on its own.
+
+**Brushes**
+- Forge is now PhotoCraft's Photoshop-model engine on AuraStudio's
+  tiles: round and bitmap tips (Photoshop's measured hardness), Shape
+  Dynamics, Scattering, Texture, Dual Brush, Color Dynamics, Transfer,
+  Brush Pose, Noise, Wet Edges, Build-up, Smoothing and the Mixer Brush.
+  Only the tiles a stroke changes are painted, from the pixels before
+  the stroke, the selection as a limit, dithered so soft low-flow
+  strokes don't band; big brushes on several cores.
+- Built-in sets: Drawing, General, Dry Media, Wet Media, Mixer, Special
+  Effects, Erasers. The pen turned over erases with any brush; tilt and
+  barrel rotation reach the engine.
+- Import Photoshop `.abr` and Procreate `.brush` / `.brushset` (Tools
+  docker, Import…): each file becomes a group of the library, kept on
+  disk; its tips are read when the brush is picked. What has no
+  equivalent is listed in the log.
+- Tool options: Size, Opacity, Flow, Hardness (round tips), Spacing,
+  Smoothing, the brush's blend mode.
+- The MyPaint engine and brushes are gone; stroke previews in the Tools
+  docker will come back on the new engine.
+
+**Interface**
+- New colors: panels, toolbox and toolbar #535353; canvas, layer list
+  and desk #282828; blue accent #3776F0.
+- The menu bar is the title bar (menus, the app's name, minimize /
+  maximize / close); the window has no system frame, its edges resize
+  it. The document's name, type, size, layers and zoom are on the
+  toolbar's right.
+
+**Under the hood**
+- Pen, mouse and touch come through one input stream (WinTab, Windows
+  Ink, the mouse's bounce filter, a strokelog of recent strokes).
+- Tiles (`raster`) with copy-on-write, coverage and cold forms; the
+  merge in its own crate (`compose`) with folder and stroke caches; time
+  out of the layers (`animation`); one door for every document change
+  (`Document::apply`) with tile-patch history; files format 6 (every
+  earlier version still opens); color management through a display
+  table from the document's profile to the monitor's.
+- The system allocator again by default (mimalloc stays as a build
+  option, to compare).
+
 ## 0.19.6 — 2026-10-29
 
 Memory no longer grows when layers are shown, hidden or added; Alt +

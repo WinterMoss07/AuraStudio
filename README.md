@@ -315,11 +315,11 @@ cargo run --release --features profile
 Without a Rust toolchain: GitHub, Actions, Build, **Run workflow** with
 "Also build the Tracy profiler version" ticked; the run's artifacts then
 hold `aurastudio-<version>-Windows-profile`, two builds in two folders
-(keep each `.pdb` beside its `.exe`): `mimalloc` (the app's default
-allocator) and `system` (Windows' allocator), to compare them. The
+(keep each `.pdb` beside its `.exe`): `system` (Windows' allocator, the
+app's default) and `mimalloc`, to compare them. The
 Memory report's first line names the allocator.
 
-Locally: `--no-default-features` builds with the system allocator.
+Locally: `--features mimalloc` builds with mimalloc.
 
 Then open the Tracy window (**version 0.14.x**, the protocol the Rust
 client speaks; Windows builds are on its releases page) and click

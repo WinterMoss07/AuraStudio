@@ -33,8 +33,8 @@ use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-/// Where the app's allocations go: mimalloc (feature `mimalloc`, on by
-/// default) or the system's allocator. Chosen when building, so the two
+/// Where the app's allocations go: the system's allocator (by default)
+/// or mimalloc (feature `mimalloc`). Chosen when building, so the two
 /// can be compared (README, Profiling).
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc as Inner;
