@@ -3,6 +3,48 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.20.1 — 2026-11-03
+
+First fixes of the 0.20 review, and memory.
+
+**Memory**
+- The canvas on the GPU is in pages of 256 × 256: blank areas take no
+  memory, line art one byte a pixel, only colored pages four (an A4 at
+  300 dpi was 66 MB whatever was on it). Each page has its own
+  mipmaps; the canvas shader reads through a page table.
+- The stroke cache (the layers under / over the painted one) is kept at
+  16 bits a channel instead of 32, a plain cell as one color, at most
+  96 MB, and freed when the stroke ends (a 998 px stroke kept ~270 MB
+  until the next one).
+- Window > Memory report lists the paint thread's caches (stroke cache,
+  stroke coverage, folder cache, last save's encodings, pixel pool) and
+  the canvas pages by kind.
+
+**Fixes**
+- Painting on an empty frame of an animation folder works again (it
+  said "select a layer to paint").
+- New / Open from the start screen no longer asks to save "" (the
+  current frame and the onion skin look no longer count as changes).
+- Pen, then mouse, then pen: the system arrow no longer stays inside the
+  brush outline.
+- Moving a transform's box no longer lags: its GPU preview was dropped
+  (it came before the box), so every move ran the slow one. Dragging
+  the pivot sends no preview at all.
+- Brushes over 600 px no longer lag along the stroke: painting the
+  stroke never went to several cores.
+- The fill keeps the soft edge of lines: an empty area is filled behind
+  its pixels, so the anti-aliasing shades from the line to the fill
+  color.
+
+**Interface**
+- "AuraStudio" centered on the title bar, larger.
+- Document info in a status bar at the bottom; notices over the canvas,
+  top left (Krita).
+- Alt + right drag shows the tip as a dab paints it, red, by hardness.
+- Going from the canvas to the dockers no longer lights the dock's edge
+  and changes the cursor each time.
+- The color picker's cursor is Lucide's pipette.
+
 ## 0.20.0 — 2026-11-03
 
 The foundations rebuilt crate by crate (branch `rework/foundations`), and
