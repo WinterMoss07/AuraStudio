@@ -85,6 +85,9 @@ impl App {
         self.lift_asked = None;
         let edit = if apply && xf.changed() { Edit::TransformApply { warp: xf.warp, interp: self.transform_opts.interp } } else { Edit::TransformCancel };
         self.send_edit(edit);
+        // The pages its preview made full: merged again whole, after it.
+        let pages = self.gpu.as_mut().map(|g| g.take_lifted()).unwrap_or_default();
+        if !pages.is_empty() { self.show(aurastudio_document::Region::Rects(pages)); }
         self.update_cursor();
         self.request_redraw();
     }

@@ -320,7 +320,12 @@ impl App {
         }
         match (auto, result) {
             (true, Ok(())) => {}
-            (true, Err(e)) => log::warn!("autosave failed: {e}"),
+            (true, Err(e)) => {
+                log::warn!("autosave failed: {e}");
+                // Not on disk: tried again after the usual delay (unless a
+                // later autosave is on its way).
+                if self.autosaved_revision == revision { self.autosaved_revision = revision.wrapping_sub(1); }
+            }
             (false, Ok(())) => {
                 // The work is safe in its own file now.
                 if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); }

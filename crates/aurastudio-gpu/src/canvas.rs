@@ -110,6 +110,9 @@ struct Atlas {
     used:    Vec<bool>,
     mip:     MipGen,
     levels:  u32,
+    /// Bumped each time `texture` is replaced (a bind group made before
+    /// reads the old one).
+    version: u64,
 }
 
 impl Atlas {
@@ -142,7 +145,7 @@ impl Atlas {
     fn new(device: &Device, format: TextureFormat, levels: u32) -> Self {
         let (texture, view, cols) = Self::make(device, format, 1, levels);
         let mip = MipGen::new(device, &texture);
-        Self { format, texture, view, cols, cap: 1, used: vec![false], mip, levels }
+        Self { format, texture, view, cols, cap: 1, used: vec![false], mip, levels, version: 0 }
     }
 
     /// At least `n` free slots: the atlas grown (by a quarter at least) if
@@ -205,6 +208,7 @@ impl Atlas {
         self.cols = cols;
         self.cap = cap;
         self.used = used;
+        self.version += 1;
         self.mip.attach_clean(device, &self.texture);
     }
 
@@ -238,6 +242,7 @@ impl Atlas {
         self.texture = texture;
         self.view = view;
         self.levels = levels;
+        self.version += 1;
         self.mip.attach(device, &self.texture);
     }
 
@@ -283,11 +288,9 @@ pub struct Canvas {
     table_view: TextureView,
     entries:    Vec<[u32; 4]>,
     table_dirty: bool,
-    /// Bumped when a texture the canvas shader binds is replaced.
-    generation: u64,
-    /// The atlases' room when the bind group was last told.
-    caps_seen:  (u32, u32),
     building:   HashMap<usize, Rows>,
+    /// Pages a transform's preview made full (`take_lifted`).
+    lifted:     Vec<usize>,
 }
 
 impl Canvas {
@@ -316,14 +319,16 @@ impl Canvas {
             table, table_view,
             entries: vec![[UNIFORM, 0, 0, 0]; n],
             table_dirty: true,
-            generation: 0,
-            caps_seen: (1, 1),
             building: HashMap::new(),
+            lifted: Vec::new(),
         }
     }
 
     pub fn mipmaps(&self) -> bool { self.rgba.levels > 1 }
-    pub fn generation(&self) -> u64 { self.generation }
+    /// Changes whenever a texture the canvas shader binds is replaced (an
+    /// atlas grown, shrunk, or with other levels): the bind group is made
+    /// again. Grown then shrunk back to the same room still counts.
+    pub fn generation(&self) -> u64 { self.rgba.version + self.mono.version }
     pub(crate) fn views(&self) -> (&TextureView, &TextureView, &TextureView) { (&self.rgba.view, &self.mono.view, &self.table_view) }
 
     /// The pages by kind, and what the atlases and the table take.
@@ -564,7 +569,10 @@ impl Canvas {
             .flat_map(|py| (rect.x0.div_euclid(p)..(rect.x1 - 1).div_euclid(p) + 1).map(move |px| (py, px)))
             .map(|(py, px)| (py as u32 * self.cols + px as u32) as usize).collect();
         for &i in &ids {
-            if let Some(page) = self.known(i) { self.set_page(device, queue, up, i, &page, Sorted::Full); }
+            if let Some(page) = self.known(i) {
+                self.set_page(device, queue, up, i, &page, Sorted::Full);
+                if !self.lifted.contains(&i) { self.lifted.push(i); }
+            }
             self.building.remove(&i);
         }
         // (Places taken once all are made: the atlas may have grown.)
@@ -572,6 +580,14 @@ impl Canvas {
             if let Page::Full { slot } = self.pages[i] { out.push((self.page_rect(i), self.rgba.origin(slot), slot)); }
         }
         out
+    }
+
+    /// The transform's preview is over: the pages it made full that still
+    /// are, as canvas rects. Sent again whole, they are sorted again (else
+    /// they keep 4 bytes a pixel until a whole merge).
+    pub(crate) fn take_lifted(&mut self) -> Vec<Rect> {
+        let frame = self.frame();
+        std::mem::take(&mut self.lifted).into_iter().filter(|&i| matches!(self.pages[i], Page::Full { .. })).map(|i| self.page_rect(i).intersect(&frame)).collect()
     }
 
     /// The RGBA atlas (the transform preview's target).
@@ -586,7 +602,6 @@ impl Canvas {
         if levels == self.rgba.levels { return; }
         self.rgba.set_levels(device, queue, levels);
         self.mono.set_levels(device, queue, levels);
-        self.generation += 1;
     }
 
     /// Before a frame: the atlases shrunk if mostly free, the table sent,
@@ -607,9 +622,6 @@ impl Canvas {
             }
             // (The moved pages' levels were copied.)
         }
-        // An atlas grown or shrunk is a new texture.
-        let caps = (self.rgba.cap, self.mono.cap);
-        if caps != self.caps_seen { self.caps_seen = caps; self.generation += 1; }
         // (A grown atlas moved its pages too.)
         for i in 0..self.pages.len() { self.set_entry(i); }
         if std::mem::take(&mut self.table_dirty) {

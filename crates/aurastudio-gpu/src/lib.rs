@@ -16,6 +16,7 @@ mod upload;
 mod view;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aurastudio_core::{DisplayLut, Rect, Rgba8};
 use wgpu::util::DeviceExt;
@@ -34,6 +35,9 @@ impl<T: WindowHandle + wgt::WgpuHasDisplayHandle + Clone> Target for T {}
 /// squares (nearest sampling) instead of being blurred, like Krita / CSP
 /// close up (unless smooth zoom-in is chosen).
 const NEAREST_FROM_ZOOM: f32 = 2.0;
+
+/// Mipmaps unused this long (zoomed in) are dropped at the next frame.
+const MIPS_KEPT: Duration = Duration::from_secs(5);
 
 /// How the window is presented. Immediate: a frame is shown as soon as it
 /// is drawn (lowest pen latency, two images); Fifo: in step with the
@@ -197,6 +201,8 @@ pub struct GpuState {
     pub clear_color: [f64; 3],
     /// The transform preview's pipelines, made when first needed.
     lift_pipes:      Option<lift::Pipes>,
+    /// Mipmaps kept but not sampled (zoomed in) since then.
+    mips_idle:       Option<Instant>,
 }
 
 impl GpuState {
@@ -318,6 +324,7 @@ impl GpuState {
             viewport: [0.0, 0.0, size.0.max(1) as f32, size.1.max(1) as f32],
             clear_color: [0.4, 0.4, 0.4],
             lift_pipes: None,
+            mips_idle: None,
         })
     }
 
@@ -422,6 +429,10 @@ impl GpuState {
         }
     }
 
+    /// A transform's preview is over: the canvas rects to send again whole
+    /// (pages it made full, sorted again then).
+    pub fn take_lifted(&mut self) -> Vec<aurastudio_core::Rect> { self.canvas.take_lifted() }
+
     /// A new canvas texture of another size; the caller then uploads the
     /// merge. The view fits it whole.
     pub fn resize_canvas(&mut self, width: u32, height: u32) {
@@ -496,8 +507,16 @@ impl GpuState {
     pub fn begin_frame(&mut self, lift: Option<&mut Lift>) -> Option<Frame> {
         aurastudio_core::zone!("gpu frame");
         if std::mem::take(&mut self.size_pending) { self.configure_surface(); }
-        // Standard quality zoomed out samples mipmaps: made the first time.
-        if self.quality == CanvasQuality::Standard && self.view.zoom < 1.0 { self.set_mipmaps(true); }
+        // Standard quality zoomed out samples mipmaps: made when needed,
+        // dropped after a while zoomed in (a third more memory).
+        let sampled = self.quality == CanvasQuality::Standard && self.view.zoom < 1.0;
+        if sampled { self.set_mipmaps(true); }
+        self.mips_idle = match (sampled || !self.canvas.mipmaps(), self.mips_idle) {
+            (true, _) => None,
+            (false, None) => Some(Instant::now()),
+            (false, Some(t)) if t.elapsed() >= MIPS_KEPT => { self.set_mipmaps(false); None }
+            (false, t) => t,
+        };
         self.write_view_uniform();
         let (output, suboptimal) = match self.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(t) => (t, false),

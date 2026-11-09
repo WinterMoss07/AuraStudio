@@ -475,6 +475,57 @@ mod tests {
         (worst, n)
     }
 
+    /// An atlas grown then shrunk back to the same room before a frame is
+    /// still a new texture: the bind group kept since must be made again
+    /// (else it reads the first texture: a black block on the first
+    /// stroke after opening).
+    #[test]
+    fn a_kept_bind_group_is_told_of_a_new_texture() {
+        let Some(g) = gpu() else { eprintln!("no GPU adapter: skipped"); return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (600, 400);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        let mut prep = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        canvas.prepare(device, queue, &mut prep, true);
+        queue.submit([prep.finish()]);
+        let bound = canvas.generation();
+        let r = aurastudio_core::Rect::of_size(w, h);
+        // Noise everywhere (full pages: the atlas grows), then white (one
+        // color: the pages go, the atlas shrinks back to one page).
+        let noise: Vec<aurastudio_core::Rgba8> = picture(w, h).chunks_exact(4).map(|c| [c[0], c[1], c[2], 255]).collect();
+        canvas.upload(device, queue, &mut up, r, &noise);
+        canvas.upload(device, queue, &mut up, r, &vec![[255; 4]; (w * h) as usize]);
+        let mut prep = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        canvas.prepare(device, queue, &mut prep, true);
+        queue.submit([prep.finish()]);
+        assert_ne!(canvas.generation(), bound);
+        let got = render(&g, &mut canvas, &CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false }, (64, 64), true);
+        assert!(got.chunks_exact(4).all(|p| p == [255, 255, 255, 255]), "white everywhere");
+    }
+
+    /// Pages a transform's preview made full go back to one color once
+    /// sent again whole.
+    #[test]
+    fn lifted_pages_are_sorted_again() {
+        let Some(g) = gpu() else { eprintln!("no GPU adapter: skipped"); return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (600, 400);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        let white = |r: aurastudio_core::Rect| vec![[255u8; 4]; r.area() as usize];
+        let all = aurastudio_core::Rect::of_size(w, h);
+        canvas.upload(device, queue, &mut up, all, &white(all));
+        assert_eq!(canvas.count().full, 0);
+        canvas.full_pages(device, queue, &mut up, aurastudio_core::Rect::new(10, 10, 20, 20));
+        assert_eq!(canvas.count().full, 1);
+        let back = canvas.take_lifted();
+        assert_eq!(back.len(), 1);
+        for r in back { canvas.upload(device, queue, &mut up, r, &white(r)); }
+        assert_eq!(canvas.count().full, 0);
+        assert!(canvas.take_lifted().is_empty());
+    }
+
     /// High matches the exact average at 33, 25, 12 and 5 %, upright and
     /// tilted, and close up: within one step of 255 (rounding).
     #[test]
