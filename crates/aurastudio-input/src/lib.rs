@@ -23,7 +23,8 @@ pub mod synthetic;
 #[cfg(windows)]
 pub mod win;
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use aurastudio_core::{Micros, TransferCurve};
@@ -57,8 +58,28 @@ pub struct Health {
     pub warnings:       Vec<String>,
 }
 
+/// Wakes the app's loop when a capture thread has samples: without it they
+/// waited for some other event (a frame, a mouse message) to be read, and
+/// a busy loop held the pen back. One call until the app has read them.
+#[derive(Default)]
+pub struct Waker {
+    pending: AtomicBool,
+    wake:    OnceLock<Box<dyn Fn() + Send + Sync>>,
+}
+
+impl Waker {
+    pub fn wake(&self) {
+        if self.pending.swap(true, Ordering::AcqRel) { return; }
+        if let Some(f) = self.wake.get() { f(); }
+    }
+
+    /// The app reads: the next sample wakes it again.
+    fn read(&self) { self.pending.store(false, Ordering::Release); }
+}
+
 pub struct Input {
     raw:      Arc<SegQueue<RawSample>>,
+    waker:    Arc<Waker>,
     machine:  state::Machine,
     backend:  Backend,
     /// The mouse as the app forwards it.
@@ -79,7 +100,7 @@ pub struct Input {
 impl Input {
     pub fn new(app_version: &str) -> Self {
         Self {
-            raw: Arc::new(SegQueue::new()), machine: state::Machine::default(), backend: Backend::None,
+            raw: Arc::new(SegQueue::new()), waker: Arc::default(), machine: state::Machine::default(), backend: Backend::None,
             mouse: (0.0, 0.0, false, 0), debounce: debounce::Debounce::default(), recording: Vec::new(), context: Vec::new(),
             log: None, app_version: app_version.to_owned(), wheel: Vec::new(),
             #[cfg(windows)] win: None,
@@ -96,7 +117,7 @@ impl Input {
             let origin = Arc::new(win::Origin::default());
             if let Some((x, y)) = win::client_origin(hwnd) { origin.set(x, y); }
             let counters = Arc::new(win::Counters::default());
-            let wintab = win::wintab::Thread::start(Arc::clone(&self.raw), Arc::clone(&origin), Arc::clone(&counters));
+            let wintab = win::wintab::Thread::start(Arc::clone(&self.raw), Arc::clone(&origin), Arc::clone(&counters), Arc::clone(&self.waker));
             let ink = win::ink::Hook::install(hwnd, Arc::clone(&self.raw), Arc::clone(&origin), Arc::clone(&counters), wintab.is_err()).ok();
             self.backend = match (&wintab, &ink) { (Ok(_), _) => Backend::WinTab, (Err(_), Some(_)) => Backend::WindowsInk, _ => Backend::None };
             self.win = Some(win::Capture { wintab: wintab.ok(), ink, origin, counters });
@@ -107,6 +128,9 @@ impl Input {
     }
 
     pub fn backend(&self) -> Backend { self.backend }
+
+    /// What wakes the app's loop when the pen has samples (once).
+    pub fn set_waker(&self, f: impl Fn() + Send + Sync + 'static) { let _ = self.waker.wake.set(Box::new(f)); }
 
     /// The app's global pressure curve (Preferences > Tablet).
     pub fn set_curve(&mut self, c: TransferCurve) { self.machine.curve = c; }
@@ -222,6 +246,7 @@ impl Input {
 
     /// Everything that happened since the last call, in order.
     pub fn poll(&mut self) -> Vec<Event> {
+        self.waker.read();
         for s in self.debounce.poll(Instant::now()) { self.raw.push(s); }
         let mut out = std::mem::take(&mut self.wheel);
         while let Some(s) = self.raw.pop() { self.machine.feed(s, &mut out); }
@@ -310,5 +335,21 @@ mod tests {
         i.activated(false);
         assert!(i.poll().iter().any(|e| e.kind == Kind::Up { cancelled: true }));
         assert_eq!(i.health().backend, Some("none (mouse and touch only)"));
+    }
+
+    /// One wake per batch of samples, until the app reads them.
+    #[test]
+    fn the_waker_wakes_once_until_read() {
+        use std::sync::atomic::AtomicUsize;
+        let mut i = Input::new("t");
+        let n = Arc::new(AtomicUsize::new(0));
+        let m = Arc::clone(&n);
+        i.set_waker(move || { m.fetch_add(1, Ordering::Relaxed); });
+        i.waker.wake();
+        i.waker.wake();
+        assert_eq!(n.load(Ordering::Relaxed), 1);
+        i.poll();
+        i.waker.wake();
+        assert_eq!(n.load(Ordering::Relaxed), 2);
     }
 }

@@ -836,6 +836,10 @@ impl ApplicationHandler<AppEvent> for App {
         log::info!("max canvas size: {} px", gpu.max_canvas_size());
 
         let hwnd = window.window_handle().ok().and_then(|h| match h.as_raw() { RawWindowHandle::Win32(h) => Some(h.hwnd.get()), _ => None });
+        // The pen thread wakes the loop at once: its samples go to the
+        // paint thread without waiting for another event.
+        let proxy = self.proxy.clone();
+        self.input.set_waker(move || { let _ = proxy.send_event(AppEvent::Wake); });
         let backend = self.input.install(hwnd.unwrap_or(0));
         log::info!("pen input backend: {}", backend.name());
         crate::rescue::note("pen", backend.name().to_string());
@@ -927,8 +931,15 @@ impl ApplicationHandler<AppEvent> for App {
                 self.update_cursor();
             }
             // Maybe on another monitor now: other profile, other scaling.
-            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::Moved(_) => {
                 self.input.window_moved();
+                self.refresh_dpi("moved");
+                self.refresh_display_profile();
+            }
+            // Another monitor (or the screens changed): the tablet context
+            // is opened again on the new desktop.
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if !self.is_drawing { self.input.display_changed(); } else { self.input.window_moved(); }
                 self.refresh_dpi("moved");
                 self.refresh_display_profile();
             }
