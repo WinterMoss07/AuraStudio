@@ -177,13 +177,14 @@ impl<P: Pixel> Patch<P> {
 }
 
 impl<P: Pixel> HeapSize for Patch<P> {
-    /// Kept bytes (a kept tile shared with the surface counts fully).
+    /// Kept bytes (a tile shared counts its share).
     fn heap_bytes(&self) -> usize {
         let px = (self.tile * self.tile) as usize * P::BYTES;
+        // A tile shared (with the layer, a copy...) counts its share only.
         self.tiles.iter().map(|(_, _, s)| 16 + match s {
-            Slot::Full(_) => px,
-            Slot::Alpha(a) => a.a.capacity(),
-            Slot::Cold(c) => c.data.capacity(),
+            Slot::Full(t) => px / std::sync::Arc::strong_count(t),
+            Slot::Alpha(a) => a.a.capacity() / std::sync::Arc::strong_count(a),
+            Slot::Cold(c) => c.data.capacity() / std::sync::Arc::strong_count(c),
             Slot::Fill | Slot::Uniform(_) => 0,
         }).sum()
     }

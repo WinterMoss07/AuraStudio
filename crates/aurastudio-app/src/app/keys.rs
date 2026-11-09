@@ -2,7 +2,7 @@
 //! pointer does (Space, Shift, Ctrl).
 
 use winit::event::{ElementState, KeyEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use aurastudio_ui::{EditCmd, FileCmd, Group, LayerCmd, SelectCmd, Tool, ViewCmd};
 
@@ -114,12 +114,12 @@ impl App {
             Key::Named(NamedKey::Escape) if self.gesture.is_some() => { self.gesture = None; self.update_cursor(); self.request_redraw(); }
             // View keys (Krita): 1 = 100 %, 2 = fit, 4 / 6 = rotate
             // by 15 degrees, 5 = reset rotation, + / - = zoom.
+            // Digits by the key's place (AZERTY gives "&", "é"... there),
+            // the others by what they type.
+            Key::Character(_) | Key::Named(_) if !ctrl && !alt && digit_view(&key).is_some() => {
+                if let Some(cmd) = digit_view(&key) { self.view_cmd(cmd); }
+            }
             Key::Character(c) if !ctrl && !alt => match c {
-                "1" => self.view_cmd(ViewCmd::ActualSize),
-                "2" => self.view_cmd(ViewCmd::Fit),
-                "4" => self.view_cmd(ViewCmd::RotateLeft),
-                "6" => self.view_cmd(ViewCmd::RotateRight),
-                "5" => self.view_cmd(ViewCmd::ResetRotation),
                 "+" | "=" => self.view_cmd(ViewCmd::ZoomIn),
                 "-" => self.view_cmd(ViewCmd::ZoomOut),
                 // Previous / next frame (OpenToonz).
@@ -130,4 +130,21 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// The view command of a digit key, by its place on the keyboard (top row
+/// or keypad): 1 = 100 %, 2 = fit, 4 / 6 = rotate, 5 = reset rotation;
+/// the keypad's + and - zoom.
+fn digit_view(key: &KeyEvent) -> Option<ViewCmd> {
+    let PhysicalKey::Code(code) = key.physical_key else { return None };
+    Some(match code {
+        KeyCode::Digit1 | KeyCode::Numpad1 => ViewCmd::ActualSize,
+        KeyCode::Digit2 | KeyCode::Numpad2 => ViewCmd::Fit,
+        KeyCode::Digit4 | KeyCode::Numpad4 => ViewCmd::RotateLeft,
+        KeyCode::Digit5 | KeyCode::Numpad5 => ViewCmd::ResetRotation,
+        KeyCode::Digit6 | KeyCode::Numpad6 => ViewCmd::RotateRight,
+        KeyCode::NumpadAdd => ViewCmd::ZoomIn,
+        KeyCode::NumpadSubtract => ViewCmd::ZoomOut,
+        _ => return None,
+    })
 }

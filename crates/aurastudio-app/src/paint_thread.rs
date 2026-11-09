@@ -13,6 +13,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use crate::Locked;
 
 use aurastudio_compose::{Opts, StrokeCache};
 use aurastudio_core::Rect;
@@ -184,6 +185,9 @@ struct Worker {
     stroke_cache: StrokeCache,
     /// The last save's encodings per document (incremental saves).
     saves:      HashMap<DocId, Arc<Mutex<SaveCaches>>>,
+    /// Held by the autosave writing (two never write the recovery file at
+    /// once): the document and revision last written.
+    autosaving: Arc<Mutex<Option<(DocId, u64)>>>,
     /// Filter commands taken from the queue, and sent (`PaintThread`).
     filters_taken: u64,
     filters_sent:  Arc<AtomicU64>,
@@ -246,7 +250,7 @@ impl Worker {
     fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify, stroke: None,
-            stroke_cache: StrokeCache::default(), saves: HashMap::new(), filters_taken: 0, filters_sent: Arc::default(),
+            stroke_cache: StrokeCache::default(), saves: HashMap::new(), autosaving: Arc::default(), filters_taken: 0, filters_sent: Arc::default(),
         }
     }
 
@@ -317,7 +321,7 @@ impl Worker {
                     Cmd::Save { doc, path, origin, auto } => self.save(doc, path, origin, auto),
                     Cmd::Lift { doc, area } => {
                         if self.stroke.is_some() { self.finish_stroke(&mut events); }
-                        let lift = doc.lock().unwrap_or_else(|e| e.into_inner()).transform_lift(Some(area));
+                        let lift = doc.locked().transform_lift(Some(area));
                         if let Some(l) = lift { events.push(Event::TransformLift(Box::new(l))); }
                         self.doc = Some(doc);
                     }
@@ -347,7 +351,7 @@ impl Worker {
     /// `region` of `doc`'s frame to merge again.
     fn add_region(&mut self, doc: &SharedDoc, region: &Region) {
         let frame = {
-            let d = doc.lock().unwrap_or_else(|e| e.into_inner());
+            let d = doc.locked();
             d.stack().frame()
         };
         self.add_region_in(frame, region);
@@ -378,7 +382,7 @@ impl Worker {
         let (taken, sent) = (self.filters_taken, Arc::clone(&self.filters_sent));
         let stop = move || sent.load(Ordering::Acquire) > taken;
         let (done, frame, started, lift, size) = {
-            let mut d = doc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut d = doc.locked();
             let before = (d.stack().width, d.stack().height);
             let done = d.apply_until(edit, &stop);
             let size = (d.stack().width, d.stack().height);
@@ -414,7 +418,7 @@ impl Worker {
         let Some(doc) = self.doc.clone() else { return };
         let Some(mut st) = self.stroke.take() else { return };
         let_ui_in();
-        let mut d = doc.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = doc.locked();
         let frame = d.stack().frame();
         if !st.begun {
             st.begun = true;
@@ -443,7 +447,7 @@ impl Worker {
         if let Some(r) = st.pace.report() { log::warn!("{r}"); }
         let Some(doc) = self.doc.clone() else { return };
         let (done, frame) = {
-            let mut d = doc.lock().unwrap_or_else(|e| e.into_inner());
+            let mut d = doc.locked();
             d.paint(|s| st.engine.end_stroke(s));
             (d.end_stroke(), d.stack().frame())
         };
@@ -460,7 +464,7 @@ impl Worker {
         profiling::scope!("merge whole");
         self.stroke_cache = StrokeCache::default();
         let (w, h) = {
-            let d = doc.lock().unwrap_or_else(|e| e.into_inner());
+            let d = doc.locked();
             (d.stack().width, d.stack().height)
         };
         // (What was waiting is part of it.)
@@ -470,13 +474,13 @@ impl Worker {
         for y0 in (0..h).step_by(BAND as usize) {
             let r = Rect::from_xywh(0, y0 as i32, w, BAND.min(h - y0));
             let px = {
-                let d = doc.lock().unwrap_or_else(|e| e.into_inner());
+                let d = doc.locked();
                 // (Resized meanwhile: a new whole merge comes.)
                 if (d.stack().width, d.stack().height) != (w, h) { break; }
                 aurastudio_compose::merge(d.stack(), r, Opts { ghosts: true, ..Default::default() })
             };
             {
-                let mut p = self.projection.lock().unwrap_or_else(|e| e.into_inner());
+                let mut p = self.projection.locked();
                 if (p.width, p.height) != (w, h) { break; }
                 p.push(r, px);
             }
@@ -492,7 +496,7 @@ impl Worker {
         self.last_update = Instant::now();
         let rects = std::mem::take(&mut self.pending);
         let Some(doc) = self.doc.clone() else { return };
-        let d = doc.lock().unwrap_or_else(|e| e.into_inner());
+        let d = doc.locked();
         let s = d.stack();
         let frame = s.frame();
         // A filter layer reading far around (a big blur): one piece over
@@ -512,7 +516,7 @@ impl Worker {
         self.publish_held();
         let (w, h) = (s.width, s.height);
         drop(d);
-        let mut p = self.projection.lock().unwrap_or_else(|e| e.into_inner());
+        let mut p = self.projection.locked();
         if (p.width, p.height) != (w, h) { return; }
         for (r, px) in patches { p.push(r, px); }
     }
@@ -521,19 +525,26 @@ impl Worker {
     /// preview merge, packing and writing are done on a thread of its own.
     fn save(&mut self, doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool) {
         let (parts, id) = {
-            let d = doc.lock().unwrap_or_else(|e| e.into_inner());
+            let d = doc.locked();
             (d.snapshot_parts(origin.as_deref()), d.id())
         };
         let caches = Arc::clone(self.saves.entry(id).or_default());
         let notify = Arc::clone(&self.notify);
+        let autosaving = Arc::clone(&self.autosaving);
         let spawned = std::thread::Builder::new().name("save".into()).spawn(move || {
             profiling::register_thread!("save");
             let snap = parts.finish();
             // (An autosave has its own file: the caches are the document's.)
             let result = if auto {
-                aurastudio_file::save(&snap, &path, &mut SaveCaches::default())
+                let mut last = autosaving.locked();
+                // (A newer one of the same document written first: this
+                // one is stale.)
+                if last.is_some_and(|(d, r)| d == id && snap.revision < r) { Ok(()) } else {
+                    *last = Some((id, snap.revision));
+                    aurastudio_file::save(&snap, &path, &mut SaveCaches::default())
+                }
             } else {
-                aurastudio_file::save(&snap, &path, &mut caches.lock().unwrap_or_else(|e| e.into_inner()))
+                aurastudio_file::save(&snap, &path, &mut caches.locked())
             }.map_err(|e| e.to_string());
             log::info!("{} {}: {:?}", if auto { "autosave" } else { "save" }, path.display(), result);
             notify(Event::Saved { doc: id, path, revision: snap.revision, auto, result });
@@ -569,7 +580,7 @@ mod tests {
         (Arc::new(Mutex::new(d)), id)
     }
 
-    fn pixel(doc: &SharedDoc, id: u64, x: i32, y: i32) -> [u8; 4] { doc.lock().unwrap().stack().image(id).unwrap().pixel(x, y) }
+    fn pixel(doc: &SharedDoc, id: u64, x: i32, y: i32) -> [u8; 4] { doc.locked().stack().image(id).unwrap().pixel(x, y) }
 
     fn brush(r: f32) -> Brush { Brush { size: r * 2.0, hardness: 1.0, pressure_size: false, color: [0.0, 0.0, 0.0, 1.0], ..Brush::default() } }
 
@@ -596,7 +607,7 @@ mod tests {
         assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok(id));
         assert_eq!(pixel(&doc, id, 30, 32), [0, 0, 0, 255]);
         drop(pt);
-        let patches = projection.lock().unwrap().take_patches();
+        let patches = projection.locked().take_patches();
         let mut screen = vec![[0u8; 4]; 64 * 64];
         for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
         assert_eq!(screen[32 * 64 + 30], [0, 0, 0, 255]);
@@ -612,7 +623,7 @@ mod tests {
         });
         edit(&pt, &doc, Edit::Resize { width: 80, height: 40 });
         assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok((80, 40)));
-        let d = doc.lock().unwrap();
+        let d = doc.locked();
         assert_eq!((d.stack().width, d.stack().height), (80, 40));
     }
 
@@ -637,7 +648,7 @@ mod tests {
         edit(&pt, &doc, Edit::SetOnion(o));
         drop(pt);
         let mut screen = vec![[0u8; 4]; 64 * 64];
-        for (r, px) in &projection.lock().unwrap().take_patches() { blit(&mut screen, 64, *r, px); }
+        for (r, px) in &projection.locked().take_patches() { blit(&mut screen, 64, *r, px); }
         let g = screen[8 * 64 + 8];
         assert!(g[0] > 200 && g[1] < 60, "the sheet before, red: {g:?}");
     }
@@ -660,7 +671,7 @@ mod tests {
         }
         pt.send(Cmd::End);
         drop(pt);
-        let patches = projection.lock().unwrap().take_patches();
+        let patches = projection.locked().take_patches();
         assert!(!patches.is_empty());
         for (r, px) in &patches {
             let holes = px.iter().filter(|p| p[3] < 255).count();
@@ -726,13 +737,13 @@ mod tests {
         drop(pt);
         assert_eq!(pixel(&doc, id, 30, 40), [0, 0, 0, 255]);
 
-        let other = doc.lock().unwrap().apply(Edit::AddLayer("other".into())).made.unwrap();
-        doc.lock().unwrap().apply(Edit::SetActive(id));
+        let other = doc.locked().apply(Edit::AddLayer("other".into())).made.unwrap();
+        doc.locked().apply(Edit::SetActive(id));
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(4.0)), limit: None, zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, 50.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
-        doc.lock().unwrap().apply(Edit::SetActive(other));
+        doc.locked().apply(Edit::SetActive(other));
         pt.send(Cmd::Sample(PenSample::new(50.0, 50.0, 1.0, 0.01)));
         pt.send(Cmd::End);
         drop(pt);
@@ -746,27 +757,27 @@ mod tests {
     #[test]
     fn unfinished_strokes_are_recorded_and_deleted_layers_stop_them() {
         let (doc, id) = doc_with_layer();
-        let n = doc.lock().unwrap().history().undo_len();
+        let n = doc.locked().history().undo_len();
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(4.0)), limit: None, zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         stroke(&pt, &doc, 40.0);
         drop(pt);
-        assert_eq!(doc.lock().unwrap().history().undo_len(), n + 2);
+        assert_eq!(doc.locked().history().undo_len(), n + 2);
 
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(4.0)), limit: None, zoom: 1.0 });
         pt.send(Cmd::Sample(PenSample::new(10.0, 10.0, 1.0, 0.0)));
         std::thread::sleep(Duration::from_millis(50));
         {
-            let mut d = doc.lock().unwrap();
+            let mut d = doc.locked();
             d.apply(Edit::SetActive(id));
             assert!(d.apply(Edit::RemoveActive).changed());
         }
         pt.send(Cmd::Sample(PenSample::new(50.0, 10.0, 1.0, 0.01)));
         pt.send(Cmd::End);
         drop(pt);
-        let d = doc.lock().unwrap();
+        let d = doc.locked();
         let paper = d.stack().root[0].id();
         assert_eq!(d.stack().image(paper).unwrap().pixel(30, 10), [255; 4], "nothing landed on the Paper");
     }
@@ -782,7 +793,7 @@ mod tests {
         pt.send(Cmd::Save { doc: Arc::clone(&doc), path: path.clone(), origin: None, auto: false });
         let (revision, result) = rx.recv_timeout(Duration::from_secs(10)).unwrap();
         result.unwrap();
-        assert_eq!(revision, doc.lock().unwrap().revision());
+        assert_eq!(revision, doc.locked().revision());
         let opened = aurastudio_file::open(&path, 4096).unwrap();
         assert_eq!(opened.stack.image(id).unwrap().pixel(30, 32), [0, 0, 0, 255]);
         std::fs::remove_file(path).unwrap();
@@ -794,7 +805,7 @@ mod tests {
     fn selection_limits_strokes_fill_and_clear() {
         let (doc, id) = doc_with_layer();
         let sel = |r: Rect| Edit::Select(aurastudio_document::SelectOp::Shape { shape: aurastudio_document::Shape::Rect(r), mode: aurastudio_document::SelectMode::Replace, aa: false, feather: 0.0 });
-        doc.lock().unwrap().apply(sel(Rect::new(0, 0, 30, 64)));
+        doc.locked().apply(sel(Rect::new(0, 0, 30, 64)));
         let pt = PaintThread::spawn(proj(64, 64), |_| {});
         stroke(&pt, &doc, 20.0);
         let params = FillParams { refer: aurastudio_layers::Refer::Layer, ..Default::default() };
@@ -820,7 +831,7 @@ mod tests {
     fn strokes_stay_inside_the_lines() {
         let (doc, color) = doc_with_layer();
         let ink = {
-            let mut d = doc.lock().unwrap();
+            let mut d = doc.locked();
             let ink = d.apply(Edit::AddLayer("lines".into())).made.unwrap();
             // A wall at x = 30..33.
             d.stroke("wall", |s| {

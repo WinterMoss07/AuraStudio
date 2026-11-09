@@ -6,6 +6,7 @@
 
 use aurastudio_document::Document;
 use aurastudio_gpu::GpuMemory;
+use crate::Locked;
 
 /// Interface textures sent whole and freed since the start (for the
 /// memory report: a churn shows here even when the textures alive are few).
@@ -89,7 +90,7 @@ static EVENTS: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
 /// Note the memory after an event (a document made or closed, a file
 /// opened, playback started / stopped). The last 40 are kept.
 pub fn event(name: &'static str) {
-    let mut e = EVENTS.lock().unwrap();
+    let mut e = EVENTS.locked();
     e.push((name, process_memory().1.unwrap_or(0)));
     if e.len() > 40 { e.remove(0); }
 }
@@ -98,7 +99,7 @@ pub fn event(name: &'static str) {
 /// the one before it (never below zero: a release shows as 0, and the next
 /// line starts from the lower figure).
 fn events_section() -> MemorySection {
-    let e = EVENTS.lock().unwrap();
+    let e = EVENTS.locked();
     let mut sec = MemorySection::timeline("Events: private bytes added since the one before");
     let mut prev = None;
     for (name, p) in e.iter() {
@@ -115,7 +116,7 @@ fn events_section() -> MemorySection {
 
 /// Note the memory now as step `name` (once per name).
 pub fn mark(name: &'static str) {
-    let mut b = BOOT.lock().unwrap();
+    let mut b = BOOT.locked();
     if b.iter().any(|x| x.0 == name) { return; }
     b.push((name, process_memory().1.unwrap_or(0), heap_bytes()));
 }
@@ -123,7 +124,7 @@ pub fn mark(name: &'static str) {
 /// The steps as a section: what each added to the private bytes, and to
 /// the heap.
 fn boot_section() -> MemorySection {
-    let b = BOOT.lock().unwrap();
+    let b = BOOT.locked();
     let mut sec = MemorySection::timeline("Startup: private bytes added by each step");
     let (mut prev_p, mut prev_h) = (0u64, 0u64);
     for (i, (name, p, h)) in b.iter().enumerate() {

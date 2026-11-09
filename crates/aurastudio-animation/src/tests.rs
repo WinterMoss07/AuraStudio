@@ -222,6 +222,14 @@ fn timing_moves_copies_and_shifts() {
     assert_eq!(frames(&s), [1, 2, 4, 5]);
     assert!(s.move_sheets(a, &[4, 5], 2, false, Onto::Refuse));
     assert_eq!(frames(&s), [1, 2, 6, 7]);
+    // Two sheets moved onto two others, swapped: those take their frames.
+    let at = |s: &LayerStack, n: u32| s.sheet_at(a, n).unwrap();
+    let (s1, s2, s6, s7) = (at(&s, 1), at(&s, 2), at(&s, 6), at(&s, 7));
+    assert!(!s.move_sheets(a, &[1, 2], 5, false, Onto::Refuse));
+    assert!(s.move_sheets(a, &[1, 2], 5, false, Onto::Swap));
+    assert_eq!((at(&s, 6), at(&s, 7), at(&s, 1), at(&s, 2)), (s1, s2, s6, s7), "swapped");
+    assert!(s.move_sheets(a, &[6, 7], -5, false, Onto::Swap));
+    assert_eq!(frames(&s), [1, 2, 6, 7]);
     assert!(s.shift_frames(a, 2, Shift::Insert));
     assert_eq!(frames(&s), [1, 3, 7, 8]);
     assert!(s.shift_frames(a, 3, Shift::Remove));

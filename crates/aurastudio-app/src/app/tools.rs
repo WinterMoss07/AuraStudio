@@ -93,7 +93,7 @@ impl App {
             }
             Tool::Arc => if let Some(p) = at { self.arc_press(p) },
             // The pen turned over erases with any brush.
-            Tool::Brush | Tool::Eraser => self.begin_stroke(tool == Tool::Eraser || e.device == Device::Eraser),
+            Tool::Brush | Tool::Eraser => self.begin_stroke(tool == Tool::Eraser || e.device == Device::Eraser, e.time.0 as f64 / 1e6),
             Tool::Picker => {
                 self.gesture = Some(Gesture::Pick);
                 self.pick_color();

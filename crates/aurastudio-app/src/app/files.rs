@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use crate::Locked;
 
 use aurastudio_core::DocType;
 use aurastudio_document::{Document, Edit};
@@ -21,7 +22,7 @@ impl App {
         if self.home || self.is_drawing { return; }
         match cmd {
             EditCmd::Copy => {
-                let clip = self.doc.lock().unwrap_or_else(|e| e.into_inner()).copy();
+                let clip = self.doc.locked().copy();
                 let Some(clip) = clip else {
                     self.ui.notify("Nothing to copy here (empty, or a folder is selected)");
                     self.request_redraw();
@@ -93,7 +94,7 @@ impl App {
         self.cancel_filter();
         self.end_transform(true);
         let (modified, name) = {
-            let d = self.doc.lock().unwrap();
+            let d = self.doc.locked();
             (d.is_modified(), d.name.clone())
         };
         // The start screen's stand-in has nothing to save.
@@ -247,7 +248,7 @@ impl App {
         self.lift_asked = None;
         self.xf_pending = false;
         self.poly = None;
-        let old = self.doc.lock().unwrap().id();
+        let old = self.doc.locked().id();
         self.autosaved_revision = doc.revision();
         self.autosave_at = None;
         self.doc = self.workspace.add(doc);
@@ -256,7 +257,7 @@ impl App {
         self.apply_color_management();
         self.workspace.close(old);
         self.paint.send(Cmd::Forget(old));
-        *self.projection.lock().unwrap() = Projection::new(w, h);
+        *self.projection.locked() = Projection::new(w, h);
         if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
         self.canvas_edit = (w, h);
         self.ui.invalidate_all_thumbnails();
@@ -268,7 +269,7 @@ impl App {
     /// The paint thread resized the canvas: the screen follows, then the
     /// whole frame is merged again.
     pub(super) fn resized(&mut self, w: u32, h: u32) {
-        *self.projection.lock().unwrap_or_else(|e| e.into_inner()) = Projection::new(w, h);
+        *self.projection.locked() = Projection::new(w, h);
         if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
         self.canvas_edit = (w, h);
         self.ui.invalidate_all_thumbnails();
@@ -280,7 +281,7 @@ impl App {
     /// `then`: done once saved.
     pub(super) fn save(&mut self, save_as: bool, then: Option<Pending>) {
         let (path, name) = {
-            let d = self.doc.lock().unwrap();
+            let d = self.doc.locked();
             (d.path.clone(), d.name.clone())
         };
         let path = match path.filter(|p| !save_as && has_extension(p, EXTENSION)) {
@@ -307,7 +308,7 @@ impl App {
 
     pub(super) fn on_saved(&mut self, doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String>) {
         {
-            let mut d = self.doc.lock().unwrap();
+            let mut d = self.doc.locked();
             // A save of a document closed since: nothing left to update.
             if d.id() != doc { return; }
             if !auto && result.is_ok() {
@@ -345,7 +346,7 @@ impl App {
     /// The merged image to PNG / JPG (on a thread: big images take a
     /// moment to encode).
     pub(super) fn export(&mut self) {
-        let name = self.doc.lock().unwrap().name.clone();
+        let name = self.doc.locked().name.clone();
         let picked = rfd::FileDialog::new()
             .set_title("Export")
             .add_filter("PNG image", &["png"])
@@ -362,10 +363,12 @@ impl App {
         self.ui.notify("Exporting…");
         std::thread::spawn(move || {
             // Locked only to copy the tree (shared tiles); merged after.
-            let stack = doc.lock().unwrap_or_else(|e| e.into_inner()).stack_for_file();
+            let stack = doc.locked().stack_for_file();
             let (w, h) = (stack.width, stack.height);
-            // Without the draft layers (CSP).
-            let pixels = aurastudio_compose::merge(&stack, aurastudio_core::Rect::of_size(w, h), aurastudio_compose::Opts { pick: aurastudio_layers::Pick::EXPORT, ..Default::default() });
+            // Without the draft layers (CSP). A PNG keeps what is
+            // transparent; a JPEG (no alpha) is over white.
+            let backdrop = if has_extension(&path, "png") { aurastudio_compose::Backdrop::Transparent } else { aurastudio_compose::Backdrop::White };
+            let pixels = aurastudio_compose::merge(&stack, aurastudio_core::Rect::of_size(w, h), aurastudio_compose::Opts { pick: aurastudio_layers::Pick::EXPORT, backdrop, ..Default::default() });
             let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let msg = match aurastudio_file::export_image(&pixels, w, h, &path) {
                 Ok(()) => format!("Exported {file}"),

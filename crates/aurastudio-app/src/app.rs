@@ -11,6 +11,7 @@ mod xform;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use crate::Locked;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::{
@@ -319,8 +320,8 @@ pub struct App {
     /// cursor was last set for the mouse (a switch resets it).
     pen_near:       bool,
     cursor_for_mouse: bool,
-    /// Pen samples sent for the current stroke.
-    samples_sent: u32,
+    /// Where the current stroke's last sample was sent (window pixels).
+    last_sent: Option<(f32, f32)>,
     modifiers:  ModifiersState,
     /// Monitor ICC profile (None: not found, treated as sRGB).
     display_profile: Option<aurastudio_color::Profile>,
@@ -431,7 +432,8 @@ pub struct App {
 #[derive(Default)]
 struct Wakes {
     since:    Option<Instant>,
-    /// Pointer, keys, window events seen in the window of time.
+    /// Pointer (pen included), keys, window events seen in the window of
+    /// time.
     touched:  bool,
     frames:   u32,
     delayed:  u32,
@@ -520,7 +522,7 @@ impl App {
             stroke_device: None,
             pen_near: false,
             cursor_for_mouse: true,
-            samples_sent: 0,
+            last_sent: None,
             modifiers:  ModifiersState::empty(),
             display_profile: None,
             space_down: false,
@@ -663,7 +665,7 @@ impl App {
     }
 
     fn canvas_size(&self) -> (u32, u32) {
-        let p = self.projection.lock().unwrap();
+        let p = self.projection.locked();
         (p.width, p.height)
     }
 }
@@ -792,7 +794,7 @@ impl ApplicationHandler<AppEvent> for App {
         let window = Arc::new(event_loop.create_window(attrs).unwrap());
         crate::memory::mark("window");
         let size   = {
-            let d = self.doc.lock().unwrap();
+            let d = self.doc.locked();
             (d.stack().width, d.stack().height)
         };
         use aurastudio_gpu::Backend;

@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use crate::Locked;
 
 use aurastudio_color::{monitor_profile, DisplaySetup, Intent, MonitorChoice, ViewMode};
 use aurastudio_core::DocType;
@@ -73,7 +74,7 @@ impl App {
 
     pub(super) fn stop_playback(&mut self) {
         if self.play.take().is_some() {
-            let done = self.doc.lock().unwrap_or_else(|e| e.into_inner()).apply(Edit::PauseOnion(false));
+            let done = self.doc.locked().apply(Edit::PauseOnion(false));
             self.show(done.region);
             self.request_redraw();
             crate::memory::event("play stop");
@@ -206,7 +207,7 @@ impl App {
         // Upload what the paint thread merged (taken out under the
         // projection's own lock, copied to the GPU after).
         if std::mem::take(&mut self.painted) {
-            let patches = self.projection.lock().unwrap_or_else(|e| e.into_inner()).take_patches();
+            let patches = self.projection.locked().take_patches();
             gpu.upload_all(&patches);
         }
 

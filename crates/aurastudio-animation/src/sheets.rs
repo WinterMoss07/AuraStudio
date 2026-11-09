@@ -480,6 +480,20 @@ impl SheetEdit for LayerStack {
         if from.iter().any(|n| !(1..=MAX_FRAME as i64).contains(&to(*n))) { return false; }
         let clash = from.iter().any(|n| { let t = to(*n) as u32; self.sheet_at(folder, t).is_some() && (copy || !from.contains(&t)) });
         if clash && onto == Onto::Refuse { return false; }
+        if clash && onto == Onto::Swap && !copy {
+            // The sheets landed on take the frames left free, in order.
+            let moved: Vec<(u64, u32)> = from.iter().filter_map(|&n| Some((self.sheet_at(folder, n)?, to(n) as u32))).collect();
+            let dest: Vec<u32> = from.iter().map(|&n| to(n) as u32).filter(|t| !from.contains(t)).collect();
+            let mut hit: Vec<u32> = dest.iter().copied().filter(|t| self.sheet_at(folder, *t).is_some()).collect();
+            hit.sort_unstable();
+            let mut free: Vec<u32> = from.iter().copied().filter(|n| !dest.contains(n)).collect();
+            free.sort_unstable();
+            let mut moves = moved;
+            moves.extend(hit.iter().zip(&free).filter_map(|(&t, &f)| Some((self.sheet_at(folder, t)?, f))));
+            renumber(self, folder, &moves);
+            if let Some(&(id, _)) = moves.first() { self.set_active(id); }
+            return true;
+        }
         // Far end first: no sheet lands on one still to move.
         let order: Vec<u32> = if delta > 0 { from.iter().rev().copied().collect() } else { from.clone() };
         let mut any = false;

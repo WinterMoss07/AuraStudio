@@ -241,6 +241,8 @@ impl History {
         let (label, mut step) = self.undo.pop_back()?;
         match step.swap_into(t) {
             Some(d) => {
+                // (The next to redo stays as it is, the others packed.)
+                if let Some((_, last)) = self.redo.last_mut() { last.pack(); }
                 self.redo.push((label, step));
                 Some(d)
             }

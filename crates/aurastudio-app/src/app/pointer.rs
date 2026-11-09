@@ -46,6 +46,8 @@ impl App {
     }
 
     fn on_pointer(&mut self, e: Event) {
+        // (The pen's samples come here, not as window events.)
+        self.wakes.touched = true;
         let pos = (e.x as f32, e.y as f32);
         // Pen ⇄ mouse: the system shows its own cursor again, ours must be
         // set anew (else the arrow stays inside the brush outline). Only on
@@ -408,7 +410,8 @@ impl App {
 
     /// Start a stroke on the active layer. Refused (with a notice in the
     /// options bar) when it is locked or a folder is selected.
-    pub(super) fn begin_stroke(&mut self, erase: bool) {
+    /// `time`: the press's, seconds on the input clock.
+    pub(super) fn begin_stroke(&mut self, erase: bool, time: f64) {
         // (Drawing stops the playback, on the frame shown.)
         self.stop_playback();
         // Instant feedback when the layer can't be painted.
@@ -419,9 +422,9 @@ impl App {
             return;
         }
         self.is_drawing = true;
-        self.samples_sent = 0;
+        self.last_sent = None;
         self.send_begin(erase);
-        self.draw_at(self.cursor, aurastudio_input::clock::now().0 as f64 / 1e6);
+        self.draw_at(self.cursor, time);
     }
 
     /// Open a stroke on the paint thread with the current brush.
@@ -444,8 +447,9 @@ impl App {
     }
 
     pub(super) fn end_stroke(&mut self, time: f64) {
-        // A press without moving: one dot there.
-        if self.samples_sent == 0 { self.draw_at(self.cursor, time); }
+        // The tip lifted where no sample went yet: the stroke ends there
+        // (at the pressure last given; a press alone: one dot).
+        if self.last_sent != Some(self.cursor) { self.draw_at(self.cursor, time); }
         self.is_drawing = false;
         self.stroke_device = None;
         self.paint.send(Cmd::End);
@@ -456,7 +460,7 @@ impl App {
     /// seconds on the input clock.
     fn draw_at(&mut self, at: (f32, f32), time: f64) {
         let Some((x, y)) = self.window_to_canvas(at.0, at.1) else { return };
-        self.samples_sent += 1;
+        self.last_sent = Some(at);
         self.paint.send(Cmd::Sample(PenSample::new(x, y, self.pressure, time).with_pen(self.pen.0, self.pen.1)));
     }
 

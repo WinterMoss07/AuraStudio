@@ -8,6 +8,16 @@ mod size_drag;
 mod system;
 mod window;
 
+/// A lock taken even if a thread panicked while holding it (the data is
+/// still used: a crash report or a save beats a second panic).
+pub(crate) trait Locked<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> Locked<T> for std::sync::Mutex<T> {
+    fn locked(&self) -> std::sync::MutexGuard<'_, T> { self.lock().unwrap_or_else(|e| e.into_inner()) }
+}
+
 #[global_allocator]
 static ALLOC: memory::Counting = memory::Counting;
 
