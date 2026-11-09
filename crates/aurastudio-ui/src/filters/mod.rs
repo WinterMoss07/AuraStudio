@@ -4,7 +4,7 @@
 // Pixel code indexes channels side by side (p[c], table[c]...).
 #![allow(clippy::needless_range_loop)]
 
-mod draw;
+pub(crate) mod draw;
 mod editors;
 mod source;
 mod view;

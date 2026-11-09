@@ -126,17 +126,7 @@ impl MipGen {
         for (l, (target, bind)) in self.levels.iter().enumerate().skip(1) {
             let Some(bind) = bind else { continue };
             let (w, h) = ((width >> l).max(1), (height >> l).max(1));
-            let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
-                label: Some("mip"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: target, depth_slice: None, resolve_target: None,
-                    ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            let mut pass = crate::over_pass(enc, target, "mip");
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bind, &[]);
             for r in &dirty {

@@ -11,7 +11,6 @@ use crate::brush::{
 use crate::procedural::{bristle_tip, chalk_tip, charcoal_tip, grass_tip, leaf_tip, rake_tip, spatter_tip, sponge_tip, star_tip};
 
 /// Preset groups, in panel order.
-#[cfg(test)]
 pub const GROUPS: [&str; 4] = ["General", "Dry Media", "Wet Media", "Special Effects"];
 
 fn preset(group: &str, name: &str, brush: BrushSettings) -> BrushPreset {
@@ -462,11 +461,8 @@ mod tests {
     #[test]
     fn builtins_are_grouped_and_unique() {
         let v = builtin();
+        // (Names unique: the library's test, over these and its own.)
         assert!((30..=40).contains(&v.len()), "{}", v.len());
-        let mut names: Vec<&str> = v.iter().map(|p| p.name.as_str()).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), v.len(), "duplicate preset names");
         for g in GROUPS {
             assert!(v.iter().filter(|p| p.group == g).count() >= 6, "{g}");
         }

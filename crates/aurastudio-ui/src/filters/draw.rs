@@ -64,12 +64,7 @@ pub fn histogram(p: &Painter, r: Rect, h: &[u32; 256], top: f32, color: Color32)
         let y = r.bottom() - (v as f32 / top).min(1.0) * r.height();
         // (A shown bar is at least a hairline: one stray pixel shows.)
         let y = y.min(r.bottom() - 1.0);
-        let k = mesh.vertices.len() as u32;
-        for q in [pos2(x0, r.bottom()), pos2(x0, y), pos2(x0 + bw, y), pos2(x0 + bw, r.bottom())] {
-            mesh.colored_vertex(q, color);
-        }
-        mesh.add_triangle(k, k + 1, k + 2);
-        mesh.add_triangle(k, k + 2, k + 3);
+        quad(&mut mesh, [pos2(x0, r.bottom()), pos2(x0, y), pos2(x0 + bw, y), pos2(x0 + bw, r.bottom())], color);
     }
     p.add(Shape::mesh(mesh));
 }
@@ -119,14 +114,17 @@ pub fn cells(p: &Painter, r: Rect, n: usize, f: impl Fn(usize) -> Color32) {
     for i in 0..n {
         let c = f(i);
         let x0 = r.left() + i as f32 * cw;
-        let k = mesh.vertices.len() as u32;
-        for q in [pos2(x0, r.top()), pos2(x0 + cw + 0.3, r.top()), pos2(x0 + cw + 0.3, r.bottom()), pos2(x0, r.bottom())] {
-            mesh.colored_vertex(q, c);
-        }
-        mesh.add_triangle(k, k + 1, k + 2);
-        mesh.add_triangle(k, k + 2, k + 3);
+        quad(&mut mesh, [pos2(x0, r.top()), pos2(x0 + cw + 0.3, r.top()), pos2(x0 + cw + 0.3, r.bottom()), pos2(x0, r.bottom())], c);
     }
     p.add(Shape::mesh(mesh));
+}
+
+/// A quad of one color (corners in order) added to `mesh`.
+fn quad(mesh: &mut epaint::Mesh, corners: [Pos2; 4], c: Color32) {
+    let k = mesh.vertices.len() as u32;
+    for q in corners { mesh.colored_vertex(q, c); }
+    mesh.add_triangle(k, k + 1, k + 2);
+    mesh.add_triangle(k, k + 2, k + 3);
 }
 
 /// Triangular slider handle pointing up at (x, y).

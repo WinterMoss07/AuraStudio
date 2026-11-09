@@ -72,16 +72,35 @@ pub fn pattern(style: PatternStyle, size: u32, seed: u32) -> PatternImage {
     PatternImage { width: n, height: n, data }
 }
 
+/// A disc of radius `c` centered in the tip whose edge wanders by angle:
+/// at radius `base + amp × noise` (fraction of `c`), noise of `freq` turns
+/// on a ring of `cells`; `sharp`: how fast it fades out past the edge.
+#[allow(clippy::too_many_arguments)]
+fn ragged_disc(x: u32, y: u32, c: f32, base: f32, amp: f32, freq: f32, cells: i32, sharp: f32, salt: u64) -> f32 {
+    let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+    let r = (dx * dx + dy * dy).sqrt() / c;
+    let edge = base + amp * value_noise((dy.atan2(dx) + std::f32::consts::PI) * freq, 0.5, cells, salt);
+    ((edge - r) * sharp).clamp(0.0, 1.0)
+}
+
+/// Round dots (x, y, radius), antialiased, the strongest where they meet,
+/// at `gain`.
+fn dots_tip(n: u32, dots: &[(f32, f32, f32)], gain: f32) -> GrayTile {
+    GrayTile::from_fn(n, n, |x, y| {
+        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+        dots.iter().fold(0.0f32, |acc, &(dx, dy, r)| {
+            let d = ((px - dx).powi(2) + (py - dy).powi(2)).sqrt();
+            acc.max((r + 0.5 - d).clamp(0.0, 1.0) * gain)
+        })
+    })
+}
+
 /// A chalk/charcoal tip: a disc with a ragged edge and grainy interior.
 pub fn chalk_tip(n: u32, seed: u32) -> GrayTile {
     let salt = u64::from(seed) + 101;
     let c = n as f32 / 2.0;
     GrayTile::from_fn(n, n, |x, y| {
-        let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
-        let r = (dx * dx + dy * dy).sqrt() / c;
-        let ang = dy.atan2(dx);
-        let edge = 0.8 + 0.15 * value_noise((ang + std::f32::consts::PI) * 3.0, 0.5, 19, salt);
-        let inside = ((edge - r) * 8.0).clamp(0.0, 1.0);
+        let inside = ragged_disc(x, y, c, 0.8, 0.15, 3.0, 19, 8.0, salt);
         let grain = hash2(x as i32, y as i32, salt);
         inside * if grain < 0.2 { 0.2 } else { 0.7 + 0.3 * grain }
     })
@@ -111,13 +130,7 @@ pub fn spatter_tip(n: u32, seed: u32, drops: u32) -> GrayTile {
             (s / 2.0 + a.cos() * d, s / 2.0 + a.sin() * d, r)
         })
         .collect();
-    GrayTile::from_fn(n, n, |x, y| {
-        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-        blobs.iter().fold(0.0f32, |acc, &(bx, by, r)| {
-            let d = ((px - bx).powi(2) + (py - by).powi(2)).sqrt();
-            acc.max((r + 0.5 - d).clamp(0.0, 1.0))
-        })
-    })
+    dots_tip(n, &blobs, 1.0)
 }
 
 /// A bristle tip: parallel hair streaks of varying density inside an ellipse.
@@ -206,10 +219,7 @@ pub fn sponge_tip(n: u32, seed: u32) -> GrayTile {
     let salt = u64::from(seed) + 606;
     let c = n as f32 / 2.0;
     GrayTile::from_fn(n, n, |x, y| {
-        let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
-        let r = (dx * dx + dy * dy).sqrt() / c;
-        let edge = 0.78 + 0.2 * value_noise((dy.atan2(dx) + std::f32::consts::PI) * 2.5, 0.5, 16, salt);
-        let disc = ((edge - r) * 6.0).clamp(0.0, 1.0);
+        let disc = ragged_disc(x, y, c, 0.78, 0.2, 2.5, 16, 6.0, salt);
         let pores = fbm(x as f32, y as f32, n as f32, 6, 3, salt);
         disc * ((pores - 0.42) * 6.0).clamp(0.0, 1.0)
     })
@@ -239,13 +249,7 @@ pub fn rake_tip(n: u32, seed: u32, bristles: u32) -> GrayTile {
             (x, y, r)
         })
         .collect();
-    GrayTile::from_fn(n, n, |x, y| {
-        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-        dots.iter().fold(0.0f32, |acc, &(dx, dy, r)| {
-            let d = ((px - dx).powi(2) + (py - dy).powi(2)).sqrt();
-            acc.max((r + 0.5 - d).clamp(0.0, 1.0) * 0.9)
-        })
-    })
+    dots_tip(n, &dots, 0.9)
 }
 
 #[cfg(test)]

@@ -373,17 +373,7 @@ impl Lift {
         }
         queue.write_buffer(buffer, 0, &data);
         let target = atlas.create_view(&TextureViewDescriptor { base_mip_level: 0, mip_level_count: Some(1), ..Default::default() });
-        let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
-            label: Some("lift"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &target, depth_slice: None, resolve_target: None,
-                ops: Operations { load: LoadOp::Load, store: StoreOp::Store },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let mut pass = crate::over_pass(enc, &target, "lift");
         let mut drawn = Vec::new();
         for (k, (pr, (ax, ay), slot)) in pages.iter().enumerate() {
             let part = pr.intersect(&r).intersect(&self.area);

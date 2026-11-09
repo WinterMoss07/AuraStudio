@@ -137,18 +137,12 @@ pub fn blend_channel(mode: PaintMode, cb: f32, cs: f32) -> f32 {
 /// `B(cb, cs)` with Linear Dodge and Divide clipped at `hi`.
 #[inline]
 fn channel(mode: PaintMode, cb: f32, cs: f32, hi: f32) -> f32 {
+    // The layers' modes: one formula for both (the 8-bit paths use it).
+    if let Some(m) = mode.core() { return m.channel(cb, cs); }
     match mode {
-        PaintMode::Darken => cb.min(cs),
-        PaintMode::Multiply => cb * cs,
-        PaintMode::ColorBurn => color_burn(cb, cs),
         PaintMode::LinearBurn => (cb + cs - 1.0).max(0.0),
-        PaintMode::Lighten => cb.max(cs),
-        PaintMode::Screen => cb + cs - cb * cs,
-        PaintMode::ColorDodge => color_dodge(cb, cs),
         PaintMode::LinearDodge => (cb + cs).min(hi),
-        PaintMode::Overlay => hard_light(cs, cb),
         PaintMode::SoftLight => soft_light_ps(cb, cs),
-        PaintMode::HardLight => hard_light(cb, cs),
         PaintMode::VividLight if cs <= 0.0 => 0.0,
         PaintMode::VividLight if cs >= 1.0 => 1.0,
         PaintMode::VividLight => {
@@ -173,9 +167,7 @@ fn channel(mode: PaintMode, cb: f32, cs: f32, hi: f32) -> f32 {
                 0.0
             }
         }
-        PaintMode::Difference => (cb - cs).abs(),
         PaintMode::Exclusion => cb + cs - 2.0 * cb * cs,
-        PaintMode::Subtract => (cb - cs).max(0.0),
         PaintMode::Divide => {
             if cs <= 0.0 {
                 if cb <= 0.0 { 0.0 } else { 1.0 }
@@ -206,6 +198,9 @@ fn channel(mode: PaintMode, cb: f32, cs: f32, hi: f32) -> f32 {
                 (cb / (1.0 - cs)).min(1.0)
             }
         }
+        // (The layers' modes: returned above.)
+        PaintMode::Darken | PaintMode::Multiply | PaintMode::ColorBurn | PaintMode::Lighten | PaintMode::Screen | PaintMode::ColorDodge
+        | PaintMode::Overlay | PaintMode::HardLight | PaintMode::Difference | PaintMode::Subtract => cs,
         // The source itself; non-separable modes are handled by `blend_rgb`.
         PaintMode::Normal | PaintMode::Dissolve | PaintMode::DarkerColor | PaintMode::LighterColor | PaintMode::Hue | PaintMode::Saturation | PaintMode::Color | PaintMode::Luminosity => cs,
     }
@@ -254,16 +249,6 @@ fn color_dodge(cb: f32, cs: f32) -> f32 {
         1.0
     } else {
         (cb / (1.0 - cs)).min(1.0)
-    }
-}
-
-#[inline]
-fn hard_light(cb: f32, cs: f32) -> f32 {
-    if cs <= 0.5 {
-        cb * 2.0 * cs
-    } else {
-        let s = 2.0 * cs - 1.0;
-        cb + s - cb * s
     }
 }
 

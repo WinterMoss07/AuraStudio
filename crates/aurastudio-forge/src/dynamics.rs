@@ -818,6 +818,8 @@ pub struct DabGenerator {
     builder: DabBuilder,
     dual: Option<DualBuilder>,
     scratch: Vec<StrokePoint>,
+    /// The walk's steps of one point (kept: no allocation per point).
+    steps: Vec<StepInput>,
 }
 
 impl DabGenerator {
@@ -838,28 +840,26 @@ impl DabGenerator {
             builder: DabBuilder::new(&brush),
             dual: dual_on.then(|| DualBuilder::new(&brush)),
             scratch: Vec::new(),
+            steps: Vec::new(),
         }
     }
 
     fn walk(&mut self, pts: &[StrokePoint], dabs: &mut Vec<Dab>, dual: &mut Vec<Dab>) {
+        // (Steps gathered first: the step length reads the builder.)
+        let mut steps = std::mem::take(&mut self.steps);
         for p in pts {
             let p = apply_pose(&self.builder.brush, *p);
+            steps.clear();
             let b = &self.builder;
-            let len = |q: &StrokePoint| b.step_len(q);
-            let mut steps = Vec::new();
-            self.walker.push(p, &len, &mut |s| steps.push(s));
-            for s in &steps {
-                self.builder.build(s, dabs);
-            }
+            self.walker.push(p, &|q: &StrokePoint| b.step_len(q), &mut |s| steps.push(s));
+            for s in &steps { self.builder.build(s, dabs); }
             if let (Some(w), Some(db)) = (self.dual_walker.as_mut(), self.dual.as_mut()) {
-                let mut steps = Vec::new();
-                let len = |q: &StrokePoint| db.step_len(q);
-                w.push(p, &len, &mut |s| steps.push(s));
-                for s in &steps {
-                    db.build(s, dual);
-                }
+                steps.clear();
+                w.push(p, &|q: &StrokePoint| db.step_len(q), &mut |s| steps.push(s));
+                for s in &steps { db.build(s, dual); }
             }
         }
+        self.steps = steps;
     }
 
     /// Feed input points; appends the new primary and dual dabs.
@@ -878,17 +878,10 @@ impl DabGenerator {
         let mut sm = Vec::new();
         self.smoother.finish(&mut sm);
         self.walk(&sm, dabs, dual);
-        let mut steps = Vec::new();
-        self.walker.finish(&mut |s| steps.push(s));
-        for s in &steps {
-            self.builder.build(s, dabs);
-        }
+        let b = &mut self.builder;
+        self.walker.finish(&mut |s| b.build(&s, dabs));
         if let (Some(w), Some(db)) = (self.dual_walker.as_mut(), self.dual.as_mut()) {
-            let mut steps = Vec::new();
-            w.finish(&mut |s| steps.push(s));
-            for s in &steps {
-                db.build(s, dual);
-            }
+            w.finish(&mut |s| db.build(&s, dual));
         }
     }
 }

@@ -2,7 +2,7 @@
 //! icon buttons, elided text.
 
 pub use crate::icons::Icon;
-use egui::{epaint, pos2, vec2, Color32, Pos2, Rect, Sense, Shape, Stroke, Ui};
+use egui::{pos2, vec2, Color32, Pos2, Rect, Sense, Shape, Stroke, Ui};
 
 use std::sync::{Arc, RwLock};
 
@@ -117,20 +117,8 @@ pub fn checker(painter: &egui::Painter, rect: Rect, cell: f32) {
 /// Horizontal gradient, sampled `steps` times through `color_at(t)`.
 fn paint_gradient(painter: &egui::Painter, rect: Rect, color_at: &dyn Fn(f32) -> Color32) {
     const STEPS: usize = 48;
-    let mut mesh = epaint::Mesh::default();
-    for i in 0..=STEPS {
-        let t = i as f32 / STEPS as f32;
-        let x = rect.left() + t * rect.width();
-        let c = color_at(t);
-        mesh.colored_vertex(pos2(x, rect.top()), c);
-        mesh.colored_vertex(pos2(x, rect.bottom()), c);
-        if i > 0 {
-            let k = (i * 2) as u32;
-            mesh.add_triangle(k - 2, k - 1, k);
-            mesh.add_triangle(k - 1, k + 1, k);
-        }
-    }
-    painter.add(Shape::mesh(mesh));
+    let stops: Vec<Color32> = (0..=STEPS).map(|i| color_at(i as f32 / STEPS as f32)).collect();
+    crate::filters::draw::gradient(painter, rect, &stops);
 }
 
 // --- Gradient channel slider ----------------------------------------------

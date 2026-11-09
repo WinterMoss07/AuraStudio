@@ -701,11 +701,7 @@ impl Expand {
                 BindGroupEntry { binding: 1, resource: u.as_entire_binding() },
             ],
         });
-        let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
-            label: Some("expand"),
-            color_attachments: &[Some(RenderPassColorAttachment { view: &dst, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } })],
-            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
-        });
+        let mut pass = crate::over_pass(enc, &dst, "expand");
         pass.set_viewport(to.0 as f32, to.1 as f32, PAGE as f32, PAGE as f32, 0.0, 1.0);
         pass.set_scissor_rect(to.0, to.1, PAGE, PAGE);
         pass.set_pipeline(&self.pipe);

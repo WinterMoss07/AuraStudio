@@ -69,8 +69,11 @@ const DRAWING: &str = "Drawing";
 const ERASERS: &str = "Erasers";
 const MIXER: &str = "Mixer";
 
-/// Built-in groups, in library order.
-pub const BUILTIN_GROUPS: [&str; 7] = [DRAWING, "General", "Dry Media", "Wet Media", MIXER, "Special Effects", ERASERS];
+/// Built-in groups, in library order (the PhotoCraft set's among ours).
+pub const BUILTIN_GROUPS: [&str; 7] = {
+    let g = crate::presets::GROUPS;
+    [DRAWING, g[0], g[1], g[2], MIXER, g[3], ERASERS]
+};
 
 fn pressure(minimum: f32) -> Dynamic { Dynamic { minimum, ..Dynamic::controlled(Control::PenPressure) } }
 

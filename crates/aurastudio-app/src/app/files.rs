@@ -261,20 +261,21 @@ impl App {
         self.apply_color_management();
         self.workspace.close(old);
         self.paint.send(Cmd::Forget(old));
-        *self.projection.locked() = Projection::new(w, h);
-        if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); gpu.expect_pages(pages.0, pages.1); }
-        self.canvas_edit = (w, h);
-        self.ui.invalidate_all_thumbnails();
-        self.layers_dirty = true;
-        self.request_redraw();
+        self.canvas_is(w, h, pages);
         crate::memory::event("document shown (new / opened)");
     }
 
     /// The paint thread resized the canvas: the screen follows, then the
     /// whole frame is merged again.
     pub(super) fn resized(&mut self, w: u32, h: u32) {
-        *self.projection.locked() = Projection::new(w, h);
         let pages = self.doc.locked().stack().cell_estimate(aurastudio_gpu::PAGE);
+        self.canvas_is(w, h, pages);
+    }
+
+    /// The canvas is `w` × `h` now (`pages`: the GPU pages it may need):
+    /// the projection, the GPU canvas and the panels follow.
+    fn canvas_is(&mut self, w: u32, h: u32, pages: (u32, u32)) {
+        *self.projection.locked() = Projection::new(w, h);
         if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); gpu.expect_pages(pages.0, pages.1); }
         self.canvas_edit = (w, h);
         self.ui.invalidate_all_thumbnails();

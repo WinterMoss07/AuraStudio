@@ -55,8 +55,12 @@ pub trait Pixel: Copy + Default + PartialEq + Eq + std::hash::Hash + std::fmt::D
     /// From premultiplied floats (alpha 0 gives the transparent default).
     fn from_premul(p: PremulF) -> Self;
     /// `color` (its alpha taken as a coverage too) over `self` with
-    /// coverage `cov`, Normal blending: the fill tool's operation.
-    fn over(self, color: Self, cov: u8) -> Self;
+    /// coverage `cov`, Normal blending: the fill tool's operation. (By
+    /// default through premultiplied floats; 8 bit types have their own.)
+    fn over(self, color: Self, cov: u8) -> Self {
+        if cov == 0 || !color.visible() { return self; }
+        Self::from_premul(premul_over(self.to_premul(), color.to_premul(), from_u8(cov)))
+    }
     /// The alpha-only split: (color with its alpha at the max, alpha as a
     /// byte). Only meaningful when `ALPHA_FORM`.
     fn split_alpha(self) -> (Self, u8) { (self, 255) }
@@ -148,10 +152,6 @@ impl Pixel for Rgba16 {
         let q = |v: f32| ((v / a).clamp(0.0, 1.0) * 65535.0 + 0.5) as u16;
         Rgba16([q(p[0]), q(p[1]), q(p[2]), (a * 65535.0 + 0.5) as u16])
     }
-    fn over(self, color: Self, cov: u8) -> Self {
-        if cov == 0 || !color.visible() { return self; }
-        Self::from_premul(premul_over(self.to_premul(), color.to_premul(), from_u8(cov)))
-    }
 }
 
 /// IEEE half float from f32 (round to nearest even, overflow to infinity).
@@ -215,10 +215,6 @@ impl Pixel for RgbaF16 {
         if p[3] <= 0.0 { return RgbaF16::from_f32([1.0, 1.0, 1.0, 0.0]); }
         RgbaF16::from_f32([p[0] / p[3], p[1] / p[3], p[2] / p[3], p[3]])
     }
-    fn over(self, color: Self, cov: u8) -> Self {
-        if cov == 0 || !color.visible() { return self; }
-        Self::from_premul(premul_over(self.to_premul(), color.to_premul(), from_u8(cov)))
-    }
 }
 
 /// Straight RGBA, 32 bit float. Equality and hashing go by the bits.
@@ -247,10 +243,6 @@ impl Pixel for RgbaF32 {
     fn from_premul(p: PremulF) -> Self {
         if p[3] <= 0.0 { return RgbaF32([1.0, 1.0, 1.0, 0.0]); }
         RgbaF32([p[0] / p[3], p[1] / p[3], p[2] / p[3], p[3]])
-    }
-    fn over(self, color: Self, cov: u8) -> Self {
-        if cov == 0 || !color.visible() { return self; }
-        Self::from_premul(premul_over(self.to_premul(), color.to_premul(), from_u8(cov)))
     }
 }
 
