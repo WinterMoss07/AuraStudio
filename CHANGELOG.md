@@ -3,6 +3,45 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.23.1 — 2026-11-09
+
+The whole painting chain reviewed, from the pen to the screen: lag and
+paint bugs fixed.
+
+**Lag**
+- Pen samples wake the app as soon as they come: they no longer wait
+  for another event to reach the brush (the cause of the delays of
+  100 ms and more with small brushes).
+- Samples that waited are painted together: a stroke that falls behind
+  catches up instead of lagging more and more, and no longer goes on
+  painting long after the pen is lifted.
+- The end of a stroke no longer merges the whole stroke again for the
+  screen (hundreds of ms with a big brush on a big picture).
+- Imported tips, textures per tip, noise, watercolor edges and
+  projection draw their dabs on all cores, over the tip's own box
+  (up to half the pixels).
+- The Mixer brush (Wet Blender...) reads and paints a big dab on all
+  cores.
+
+**Painting**
+- 2-Brush shape: a dab of the second tip repaints what it changes (it
+  left patches with an old mask).
+- The Mixer brush follows the dab's opacity (pressure, Transfer), the
+  stroke texture and the second tip.
+- Velocity: the speed is read over at least 4 ms (samples read in a
+  burst counted as a flick).
+
+**Tablet**
+- A pen leaving range during a stroke ends it where it was, not with a
+  line to the window's corner.
+- Tablets without tilt: packets read at their real size.
+- The tablet context opens again when the screens changed (another
+  monitor, back from sleep).
+
+**Log**
+- "UI waited" says what the paint thread was doing (stroke, end of a
+  stroke, merge, edit, saving).
+
 ## 0.23.0 — 2026-11-09
 
 Advanced tool options in CSP's layout, the stroke preview, view mirrors,
