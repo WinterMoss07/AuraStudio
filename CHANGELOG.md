@@ -3,6 +3,43 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.20.4 — 2026-11-09
+
+Bug fixes by cause: heavy work that blocked painting or the interface,
+state not refreshed after a change, results and undo steps lost.
+
+**No more freezes**
+- Saving and autosaving hold the document only to copy it: the preview
+  and the packing are done on the save thread.
+- Export merges a copy of the document, painting goes on.
+- Opening a document or the recovered work no longer freezes the
+  interface ("Opening…").
+- Resizing the canvas is done on the paint thread.
+- A filter preview stops as soon as newer values come (long previews on
+  big pages).
+- Brush import runs on a thread; brushes picked again are no longer read
+  from the disk again each time.
+
+**Display and memory**
+- The black block on the first stroke after opening a document is gone.
+- Standard quality drops the mipmaps 5 s after zooming back in (a third
+  more memory).
+- After a transform, the canvas pages it used go back to their small
+  form.
+- A failed autosave is tried again.
+
+**Undo**
+- Undo with a filter or transform open removes its preview from the
+  screen.
+- One undo never undoes two things: a step that can't be undone is
+  dropped and said so.
+- A stroke on a new sheet stays one step after saving and opening: one
+  undo removes the stroke and the sheet.
+- A stroke is never lost when its layer is moved or deleted meanwhile.
+
+**Docs**
+- README cut to what is useful.
+
 ## 0.20.3 — 2026-11-09
 
 Code duplicates removed, data kept twice and work done twice. Nothing
