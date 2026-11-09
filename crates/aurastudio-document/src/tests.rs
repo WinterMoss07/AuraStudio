@@ -21,7 +21,6 @@ fn rect_in(s: &mut aurastudio_raster::Stroke<'_, Rgba8>, r: Rect, c: Rgba8) {
                     let k = sp.limit.map_or(255, |l| l[i]);
                     if k == 0 { continue; }
                     sp.pixels[i] = c;
-                    sp.mask[i] = k;
                 }
                 x += n as i32;
             }
@@ -102,7 +101,7 @@ fn a_new_action_drops_redo_and_old_steps_go_over_budget() {
                 let mut x0 = 0;
                 while x0 < 256 {
                     let sp = s.span_mut(x0, y, (256 - x0) as usize);
-                    for i in 0..sp.len() { x ^= x << 13; x ^= x >> 7; x ^= x << 17; sp.pixels[i] = [(x >> 24) as u8, (x >> 32) as u8, 1, 255]; sp.mask[i] = 255; }
+                    for i in 0..sp.len() { x ^= x << 13; x ^= x >> 7; x ^= x << 17; sp.pixels[i] = [(x >> 24) as u8, (x >> 32) as u8, 1, 255]; }
                     x0 += sp.len() as i32;
                 }
             }
@@ -175,6 +174,14 @@ fn filters_preview_cancel_apply_and_undo() {
     let n = d.history().undo_len();
     d.apply(Edit::FilterPreview(Some(Filter::new(Kind::Sepia))));
     d.apply(Edit::FilterApply(inv.clone()));
+    assert_eq!(px(&d, id, 15, 15), [55, 155, 205, 255]);
+    assert_eq!(d.history().undo_len(), n + 1);
+    d.apply(Edit::Undo);
+    assert_eq!(px(&d, id, 15, 15), [200, 100, 50, 255]);
+    // Applied with the values shown: kept as shown (not filtered twice).
+    d.apply(Edit::FilterPreview(Some(inv.clone())));
+    let done = d.apply(Edit::FilterApply(inv.clone()));
+    assert!(done.changed() && done.layers.contains(&id));
     assert_eq!(px(&d, id, 15, 15), [55, 155, 205, 255]);
     assert_eq!(d.history().undo_len(), n + 1);
     d.apply(Edit::Undo);

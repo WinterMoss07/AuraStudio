@@ -16,6 +16,9 @@ pub(crate) struct FilterSession {
     /// What the last preview changed (`None`: nothing; the fill changed:
     /// everywhere).
     shown:  Region,
+    /// The filter the layer shows now, and the selection's stamp then
+    /// (Apply keeps it without filtering again).
+    last:   Option<(Filter, u64)>,
 }
 
 impl FilterSession {
@@ -28,9 +31,11 @@ impl Document {
         if self.filter.is_none() {
             let Some(layer) = self.paint_id() else { return Done::refused("Layer is locked or is a folder") };
             let Some(before) = self.stack.image(layer).cloned() else { return Done::default() };
-            self.filter = Some(FilterSession { layer, before, shown: Region::Nothing });
+            self.filter = Some(FilterSession { layer, before, shown: Region::Nothing, last: None });
         }
+        let stamp = self.selection.as_ref().map_or(0, Selection::stamp);
         let Some(s) = self.filter.as_mut() else { return Done::default() };
+        s.last = filter.map(|f| (f.clone(), stamp));
         let mut img = s.before.clone();
         let mut now = Region::Nothing;
         if let Some(f) = filter {
@@ -46,8 +51,12 @@ impl Document {
     }
 
     pub(crate) fn filter_apply(&mut self, filter: &Filter) -> Done {
-        let mut done = self.filter_preview(Some(filter));
+        // Shown already with these values: kept as it is.
+        let stamp = self.selection.as_ref().map_or(0, Selection::stamp);
+        let shown = self.filter.as_ref().is_some_and(|s| s.last.as_ref().is_some_and(|(f, k)| f == filter && *k == stamp));
+        let mut done = if shown { Done::default() } else { self.filter_preview(Some(filter)) };
         let Some(s) = self.filter.take() else { return done };
+        if shown { done.layers.push(s.layer); }
         let before = Before(s.before.snapshot(), s.before.fill());
         let mut d = Done::default();
         if self.end_paint(filter.kind.name(), s.layer, before, &mut d) { done.other = true; }

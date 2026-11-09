@@ -214,8 +214,7 @@ impl Document {
                 let (changed, made) = apply_tree(e, &mut self.stack);
                 if !changed { return Done::default(); }
                 for id in ids.iter().copied().chain(made) { region.add(Region::of_footprint(self.stack.footprint(id))); }
-                self.timeline.settle(&mut self.stack);
-                if let Some(d) = self.timeline.take_dirty() { region.add_rect(d); }
+                self.settle_into(&mut region);
                 let tree = self.record_tree_as(label, key);
                 Done { region, made, tree, ..Done::default() }
             }
@@ -231,10 +230,9 @@ impl Document {
 
     /// A change of time (the frame, the onion skin): what it reshows.
     fn time(&mut self, f: impl FnOnce(&mut Timeline, &mut LayerStack) -> bool) -> Region {
-        let moved = f(&mut self.timeline, &mut self.stack);
+        f(&mut self.timeline, &mut self.stack);
         let mut r = Region::Nothing;
         if let Some(d) = self.timeline.take_dirty() { r.add_rect(d); }
-        if moved && r.is_nothing() { r = Region::Nothing; }
         // (Settling may rename sheets: not a step of its own.)
         self.tree = self.stack.tree_state();
         r
@@ -245,10 +243,16 @@ impl Document {
         Done { other: true, region, ..Done::default() }
     }
 
+    /// The time settled after the tree changed; what it reshows into
+    /// `region`.
+    fn settle_into(&mut self, region: &mut Region) {
+        self.timeline.settle(&mut self.stack);
+        if let Some(d) = self.timeline.take_dirty() { region.add_rect(d); }
+    }
+
     /// After the tree changed: settle the time, record the step.
     pub(crate) fn after_tree(&mut self, label: &str, mut done: Done) -> Done {
-        self.timeline.settle(&mut self.stack);
-        if let Some(d) = self.timeline.take_dirty() { done.region.add_rect(d); }
+        self.settle_into(&mut done.region);
         done.tree |= self.record_tree(label);
         done
     }
@@ -291,8 +295,7 @@ impl Document {
         let Some(mut d) = d else { return Done::default() };
         d.other = true;
         if d.tree {
-            self.timeline.settle(&mut self.stack);
-            if let Some(r) = self.timeline.take_dirty() { d.region.add_rect(r); }
+            self.settle_into(&mut d.region);
             self.tree = self.stack.tree_state();
         }
         d
@@ -343,6 +346,13 @@ impl Document {
         let Some(img) = self.stack.image(layer) else { return false };
         let patch = img.diff(&before.0);
         let fill = (img.fill() != before.1).then_some(before.1);
+        self.record_paint(label, layer, patch, fill, done)
+    }
+
+    /// The step of a paint (`fill`: the color before, if it changed); with
+    /// the sheet just made for it, as one step. Nothing changed: the sheet
+    /// goes.
+    fn record_paint(&mut self, label: &str, layer: u64, patch: aurastudio_raster::Patch<Rgba8>, fill: Option<Rgba8>, done: &mut Done) -> bool {
         if patch.is_empty() && fill.is_none() {
             self.drop_new_sheet(done);
             return false;
@@ -448,19 +458,10 @@ impl Document {
         let mut done = Done::default();
         let Some(img) = self.stack.image_mut(st.layer) else { self.drop_new_sheet(&mut done); return done };
         let patch = st.state.on(img).end();
-        done.join(Done::rects(patch.rects()));
-        let join = self.new_sheet.take() == Some(self.history.serial());
-        if patch.is_empty() {
-            self.new_sheet = join.then_some(self.history.serial());
-            self.drop_new_sheet(&mut done);
-            return done;
+        if self.record_paint(&st.label, st.layer, patch, None, &mut done) {
+            self.revision += 1;
+            done.other = true;
         }
-        done.layers.push(st.layer);
-        let s0 = self.history.serial();
-        self.history.push_pixels(&st.label, st.layer, patch, None);
-        if join && self.history.serial() == s0 + 1 { self.history.join_last(&st.label); }
-        self.revision += 1;
-        done.other = true;
         done
     }
 

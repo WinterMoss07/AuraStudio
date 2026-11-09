@@ -89,7 +89,7 @@ impl Document {
         // What shows of them, inside the selection.
         let mut src = Rect::EMPTY;
         for &id in &ids {
-            if let Some(b) = self.stack.image(id).and_then(|i| i.pixel_bounds()) { src = if src.is_empty() { b } else { src.union(&b) }; }
+            if let Some(b) = self.stack.image(id).and_then(|i| i.pixel_bounds()) { src = src.union(&b); }
         }
         if let Some(s) = &self.selection { src = src.intersect(&s.bbox()); }
         if src.is_empty() { done.refused = Some("Nothing to transform"); return done; }
@@ -150,10 +150,15 @@ impl Document {
             (rank(t.id), LiftLayer { premul, opacity })
         }).collect();
         layers.sort_by_key(|l| l.0);
-        // Merged with what moves taken out (the bases swapped in, then back).
-        let mut stack = self.stack.clone();
-        for t in &s.targets { if let Some(i) = stack.image_mut(t.id) { *i = t.base.clone(); } }
-        let (below, above) = aurastudio_compose::merge_split(&stack, top, area)?;
+        // Merged with what moves taken out: the bases swapped in, then back
+        // (no copy of the stack).
+        let mut s = self.transform.take()?;
+        let swap = |stack: &mut LayerStack, s: &mut Session| for t in &mut s.targets { if let Some(i) = stack.image_mut(t.id) { std::mem::swap(i, &mut t.base); } };
+        swap(&mut self.stack, &mut s);
+        let split = aurastudio_compose::merge_split(&self.stack, top, area);
+        swap(&mut self.stack, &mut s);
+        self.transform = Some(s);
+        let (below, above) = split?;
         Some(Lift { src, area, below, above, layers: layers.into_iter().map(|l| l.1).collect() })
     }
 
@@ -194,12 +199,12 @@ impl Document {
         if let Some((old, source)) = &s.selection {
             let space = self.space();
             let dest = warp.dest_rect(s.src).map_or(Rect::EMPTY, |d| d.intersect(&space.frame()));
-            let moved = if dest.is_empty() { Selection::combine(Some(old), Selection::rect(space, s.src), Mode::Subtract) } else {
+            // (What was selected outside the moved part stays.)
+            let rest = Selection::combine(Some(old), Selection::rect(space, s.src), Mode::Subtract);
+            let moved = if dest.is_empty() { rest } else {
                 let mut px = vec![[0u8; 4]; dest.area() as usize];
                 render(source, warp, interp, dest, &mut px);
                 let mask: Vec<u8> = px.iter().map(|p| p[3]).collect();
-                // (What was selected outside the moved part stays.)
-                let rest = Selection::combine(Some(old), Selection::rect(space, s.src), Mode::Subtract);
                 Selection::combine(rest.as_ref(), Selection::from_mask(space, dest, &mask), Mode::Add)
             };
             if moved != self.selection {
