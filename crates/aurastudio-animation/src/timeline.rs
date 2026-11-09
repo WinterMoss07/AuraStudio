@@ -98,7 +98,8 @@ impl Timeline {
         let mut flipped = Vec::new();
         walk(&mut stack.root, self.frame, &mut flipped);
         stack.tidy();
-        if let Some((_, Some(sheet))) = stack.anim_of(stack.active_id()) { stack.set_active(sheet); }
+        // (A cel chosen: its sheet, by `set_active`'s rule.)
+        stack.set_active(stack.active_id());
         let g = if self.paused { Vec::new() } else { ghosts(stack, &self.onion, self.look, self.frame) };
         let old: Vec<u64> = stack.ghosts().iter().flat_map(|x| x.1.iter().map(|g| g.sheet)).collect();
         let ghost_area = stack.set_ghosts(g);

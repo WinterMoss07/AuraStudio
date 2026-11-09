@@ -70,8 +70,9 @@ pub(crate) fn ghosts(stack: &LayerStack, marks: &Onion, look: OnionLook, time: u
     let Some(cur) = sheets.iter().rposition(|f| f.0 <= time) else { return Vec::new() };
     let color = |c: [u8; 3]| c.map(|v| v as f32 / 255.0);
     let mut shown: Vec<(u32, Ghost)> = Vec::new();
-    let add = |i: usize, d: u32, opacity: Option<f32>, shown: &mut Vec<(u32, Ghost)>| {
-        if i == cur || shown.iter().any(|g| g.1.sheet == sheets[i].1) { return; }
+    // The current sheet, or one shown already: no second ghost.
+    let seen = |i: usize, shown: &[(u32, Ghost)]| i == cur || shown.iter().any(|g| g.1.sheet == sheets[i].1);
+    let push = |i: usize, d: u32, opacity: Option<f32>, shown: &mut Vec<(u32, Ghost)>| {
         let tint = color(if i < cur { look.before } else { look.after });
         let opacity = opacity.map_or_else(|| look.fade(d), |v| v.clamp(0.0, 1.0));
         if opacity > 0.0 { shown.push((d, Ghost { sheet: sheets[i].1, tint, opacity })); }
@@ -86,18 +87,18 @@ pub(crate) fn ghosts(stack: &LayerStack, marks: &Onion, look: OnionLook, time: u
             let t = time as i64 + off as i64;
             if off == 0 || t < 1 { continue; }
             let Some(i) = sheets.iter().rposition(|x| x.0 as i64 <= t) else { continue };
-            if i == cur || shown.iter().any(|g| g.1.sheet == sheets[i].1) { continue; }
+            if seen(i, &shown) { continue; }
             let d = if off < 0 { back += 1; back } else { front += 1; front };
-            add(i, d, op, &mut shown);
+            push(i, d, op, &mut shown);
         }
     } else {
         for (&off, &op) in &marks.mobile {
             let i = cur as i64 + off as i64;
-            if off != 0 && (0..sheets.len() as i64).contains(&i) { add(i as usize, off.unsigned_abs(), op, &mut shown); }
+            if off != 0 && (0..sheets.len() as i64).contains(&i) && !seen(i as usize, &shown) { push(i as usize, off.unsigned_abs(), op, &mut shown); }
         }
     }
     for (&f, &op) in &marks.fixed {
-        if let Some(i) = sheets.iter().rposition(|x| x.0 <= f) { add(i, i.abs_diff(cur) as u32, op, &mut shown); }
+        if let Some(i) = sheets.iter().rposition(|x| x.0 <= f).filter(|&i| !seen(i, &shown)) { push(i, i.abs_diff(cur) as u32, op, &mut shown); }
     }
     shown.sort_by_key(|g| std::cmp::Reverse(g.0));
     vec![(folder, shown.into_iter().map(|g| g.1).collect())]
