@@ -26,10 +26,3 @@ pub(crate) fn node_key(h: &mut Fnv, n: &Node, r: Rect) {
     }
 }
 
-/// The key of `nodes` over `r`, with a salt (what kind of merge).
-pub(crate) fn nodes_key<'a>(nodes: impl IntoIterator<Item = &'a Node>, r: Rect, salt: u64) -> u64 {
-    let mut h = Fnv::default();
-    h.u64(salt).u32(r.x0 as u32).u32(r.y0 as u32).u32(r.x1 as u32).u32(r.y1 as u32);
-    for n in nodes { node_key(&mut h, n, r); }
-    h.finish()
-}

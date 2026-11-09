@@ -347,7 +347,7 @@ pub struct Compose;
 impl Scenario for Compose {
     fn name(&self) -> &'static str { "compose (A4 300 dpi, 20 layers)" }
     fn run(&mut self, _report: &mut Report) {
-        use aurastudio_compose::{merge, FolderCache, Opts, StrokeCache};
+        use aurastudio_compose::{merge, Opts, StrokeCache};
         use aurastudio_layers::{FolderBlend, LayerStack, Node, Start};
         let (w, h) = (2480i32, 3508i32);
         let mut s = LayerStack::new(w as u32, h as u32, 128, Start::Paper);
@@ -366,10 +366,9 @@ impl Scenario for Compose {
             if let Some(Node::Layer(l)) = s.node_mut(id) { if i < 5 && i % 2 == 1 { l.blend = BlendMode::Multiply; } }
             if i == 5 { mid = id; }
         }
-        let cache = FolderCache::default();
         for _ in 0..2 {
             aurastudio_core::zone!("merge A4 frame");
-            std::hint::black_box(merge(&s, s.frame(), Opts { cache: Some(&cache), ..Default::default() }));
+            std::hint::black_box(merge(&s, s.frame(), Opts::default()));
         }
         let mut sc = StrokeCache::default();
         for k in 0..120 {

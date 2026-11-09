@@ -6,7 +6,6 @@
 //! clipped nodes over it are merged on their own, then blended down with
 //! the base's mode and opacity. A hidden base hides them.
 
-use std::sync::Arc;
 
 use aurastudio_core::blend::{blend_over, to_straight_u8, Premul};
 use aurastudio_core::{BlendMode, Rect, Rgba8};
@@ -14,7 +13,6 @@ use aurastudio_layers::{ghosts_in, Folder, FolderBlend, Ghost, LayerStack, Node,
 use aurastudio_raster::Run;
 use rayon::prelude::*;
 
-use crate::cache::FolderCache;
 
 /// What is behind the merge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -34,8 +32,6 @@ pub struct Opts<'a> {
     pub backdrop: Backdrop,
     /// Draw the onion ghosts (the screen only).
     pub ghosts:   bool,
-    /// Flattened isolated folders kept from merge to merge.
-    pub cache:    Option<&'a FolderCache>,
     /// Nodes drawn as if hidden, ids sorted (the part of the stack under
     /// or over a node, without a copy of the stack).
     pub hidden:   &'a [u64],
@@ -63,7 +59,6 @@ type Mask<'a> = Option<&'a [f32]>;
 pub(crate) struct Ctx<'a> {
     pub pick:   Pick,
     pub ghosts: &'a [(u64, Vec<Ghost>)],
-    pub cache:  Option<&'a FolderCache>,
     pub hidden: &'a [u64],
 }
 
@@ -150,7 +145,7 @@ pub fn merge_into(stack: &LayerStack, rect: Rect, opts: Opts, out: &mut [Rgba8])
     let m = margin(&stack.root, opts.pick) as i32;
     let side = (m as u32 * 4).clamp(128, 2048) as i32;
     let ghosts: &[(u64, Vec<Ghost>)] = if opts.ghosts { stack.ghosts() } else { &[] };
-    let ctx = Ctx { pick: opts.pick, ghosts, cache: opts.cache, hidden: opts.hidden };
+    let ctx = Ctx { pick: opts.pick, ghosts, hidden: opts.hidden };
     let start = match opts.backdrop { Backdrop::White => [1.0; 4], Backdrop::Transparent => [0.0; 4] };
     grid_parts(out, rect, side).into_par_iter().for_each(|(_, p, mut rows)| {
         let mut b = Block::new(p.grown(m), start);
@@ -314,18 +309,11 @@ fn draw_layer(l: &aurastudio_layers::Layer, b: &mut Block, op: f32, blend: Blend
 
 /// An isolated folder's content merged on its own over `rect` (from the
 /// folder cache when its content is unchanged).
-fn folder_alone(f: &Folder, rect: Rect, ctx: Ctx, is_ref: bool, stop: &mut bool) -> Arc<Vec<Premul>> {
-    let ghosts = ctx.ghosts_of(f.id);
-    // (Only plain merges are cached: a pick or ghosts change the result.)
-    let cacheable = ctx.pick == Pick::ALL && ctx.hidden.is_empty() && ghosts.is_none() && !is_ref;
-    let key = (cacheable && ctx.cache.is_some()).then(|| crate::key::nodes_key(f.children.iter(), rect, 0xF01D));
-    if let (Some(k), Some(c)) = (key, ctx.cache) { if let Some(px) = c.get(k) { return px; } }
+fn folder_alone(f: &Folder, rect: Rect, ctx: Ctx, is_ref: bool, stop: &mut bool) -> Vec<Premul> {
     let mut t = Block::new(rect, [0.0; 4]);
-    if let Some(gh) = ghosts { ghost_block(f, gh, &mut t, 1.0, ctx); }
+    if let Some(gh) = ctx.ghosts_of(f.id) { ghost_block(f, gh, &mut t, 1.0, ctx); }
     compose(&f.children, &mut t, 1.0, ctx, is_ref, None, stop, false);
-    let px = Arc::new(t.px);
-    if let (Some(k), Some(c)) = (key, ctx.cache) { if !*stop { c.put(k, Arc::clone(&px)); } }
-    px
+    t.px
 }
 
 /// Draw `n` onto `b`, through `mask` if clipped; `alone`: as the base of

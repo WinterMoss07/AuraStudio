@@ -159,11 +159,6 @@ fn pieces_occlusion_and_cache_change_nothing() {
         }
         let frame = r(-5, -5, w + 5, h + 5);
         let whole = merge(&s, frame, Opts::default());
-        let cache = FolderCache::default();
-        for _ in 0..2 {
-            let cached = merge(&s, frame, Opts { cache: Some(&cache), ..Default::default() });
-            assert_eq!(worst(&whole, &cached), 0, "the folder cache");
-        }
         let part = r(rng.below(w as u64) as i32, rng.below(h as u64) as i32, w, h);
         let got = merge(&s, part, Opts::default());
         for y in part.y0..part.y1 {

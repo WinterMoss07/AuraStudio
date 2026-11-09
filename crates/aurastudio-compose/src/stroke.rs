@@ -133,7 +133,7 @@ impl StrokeCache {
         let usable = !needs_general(stack) && items[k + 1..].iter().all(|it| match it { Item::Node(n, _) => normal(n), Item::Ghosts(..) => true });
         if !usable { return crate::merge(stack, rect, opts); }
         let (Item::Node(painted, scale), below_items, above_items) = (items[k], &items[..k], &items[k + 1..]) else { return Vec::new() };
-        let ctx = Ctx { pick: Pick::ALL, ghosts, cache: None, hidden: &[] };
+        let ctx = Ctx { pick: Pick::ALL, ghosts, hidden: &[] };
         // The settings of everything but the painted layer's pixels.
         let mut sh = Fnv::default();
         for it in &items {

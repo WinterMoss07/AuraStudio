@@ -12,13 +12,11 @@
 // Pixel code indexes channels side by side.
 #![allow(clippy::needless_range_loop)]
 
-mod cache;
 mod extra;
 mod key;
 mod merge;
 mod stroke;
 
-pub use cache::FolderCache;
 pub use extra::{gpu_mergeable, merge_split, preview, Merged};
 pub use merge::{margin, merge, merge_into, needs_general, Backdrop, Opts};
 pub use stroke::StrokeCache;

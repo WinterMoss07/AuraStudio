@@ -228,7 +228,6 @@ fn paint_thread_section() -> MemorySection {
     let mut s = MemorySection::new("Paint thread: caches", true);
     s.add("stroke cache (the layers under / over the stroke, 16-bit, while painting)", h.stroke_cache.load(Relaxed));
     s.add("stroke coverage (the stroke under way)", h.stroke.load(Relaxed));
-    s.add("folder cache (merged folders, 64 MB at most)", h.folder_cache.load(Relaxed));
     s.add("last save's encodings (incremental saves)", h.saves.load(Relaxed));
     s
 }

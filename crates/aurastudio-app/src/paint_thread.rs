@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurastudio_compose::{FolderCache, Opts, StrokeCache};
+use aurastudio_compose::{Opts, StrokeCache};
 use aurastudio_core::Rect;
 use aurastudio_document::{DocId, Done, Edit, Region, SharedDoc};
 use aurastudio_file::SaveCaches;
@@ -164,12 +164,11 @@ struct Painting {
 /// What the paint thread holds, for the memory report (set as it works).
 pub struct Held {
     pub stroke_cache: AtomicU64,
-    pub folder_cache: AtomicU64,
     pub stroke:       AtomicU64,
     pub saves:        AtomicU64,
 }
 
-pub static HELD: Held = Held { stroke_cache: AtomicU64::new(0), folder_cache: AtomicU64::new(0), stroke: AtomicU64::new(0), saves: AtomicU64::new(0) };
+pub static HELD: Held = Held { stroke_cache: AtomicU64::new(0), stroke: AtomicU64::new(0), saves: AtomicU64::new(0) };
 
 struct Worker {
     /// Document being worked on.
@@ -182,7 +181,6 @@ struct Worker {
     stroke:     Option<Painting>,
     /// Merges of the layers under / over the stroke's layer (compose).
     stroke_cache: StrokeCache,
-    folder_cache: FolderCache,
     /// The last save's encodings per document (incremental saves).
     saves:      HashMap<DocId, Arc<Mutex<SaveCaches>>>,
     /// Filter commands taken from the queue, and sent (`PaintThread`).
@@ -239,7 +237,6 @@ impl Worker {
     fn publish_held(&self) {
         let o = Ordering::Relaxed;
         HELD.stroke_cache.store(self.stroke_cache.bytes() as u64, o);
-        HELD.folder_cache.store(self.folder_cache.bytes() as u64, o);
         HELD.stroke.store(self.stroke.as_ref().map_or(0, |s| s.engine.stroke_bytes()) as u64, o);
         let saves: usize = self.saves.values().map(|c| c.try_lock().map_or(0, |c| c.bytes())).sum();
         if saves > 0 || self.saves.is_empty() { HELD.saves.store(saves as u64, o); }
@@ -248,7 +245,7 @@ impl Worker {
     fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify, stroke: None,
-            stroke_cache: StrokeCache::default(), folder_cache: FolderCache::default(), saves: HashMap::new(), filters_taken: 0, filters_sent: Arc::default(),
+            stroke_cache: StrokeCache::default(), saves: HashMap::new(), filters_taken: 0, filters_sent: Arc::default(),
         }
     }
 
@@ -476,7 +473,7 @@ impl Worker {
                 let d = doc.lock().unwrap_or_else(|e| e.into_inner());
                 // (Resized meanwhile: a new whole merge comes.)
                 if (d.stack().width, d.stack().height) != (w, h) { bands.clear(); break; }
-                aurastudio_compose::merge(d.stack(), r, Opts { cache: Some(&self.folder_cache), ghosts: true, ..Default::default() })
+                aurastudio_compose::merge(d.stack(), r, Opts { ghosts: true, ..Default::default() })
             };
             bands.push((r, px));
             let_ui_in();
@@ -508,7 +505,7 @@ impl Worker {
             let px = match layer {
                 // Mid-stroke: the layers under and over it from the cache.
                 Some(l) => self.stroke_cache.merge(s, l, r),
-                None => aurastudio_compose::merge(s, r, Opts { cache: Some(&self.folder_cache), ghosts: true, ..Default::default() }),
+                None => aurastudio_compose::merge(s, r, Opts { ghosts: true, ..Default::default() }),
             };
             (r, px)
         }).collect();
