@@ -85,12 +85,8 @@ pub fn show_category(ctx: &egui::Context) -> bool { ctx.data(|d| d.get_temp(egui
 
 fn set_show_category(ctx: &egui::Context, on: bool) { ctx.data_mut(|d| d.insert_temp(egui::Id::unique("show_category"), on)); }
 
-/// F5 and F6, and both windows.
+/// Both windows (F5 and F6 are the app's keys).
 pub fn windows(ctx: &egui::Context, st: &mut AdvancedState, m: &mut Model, a: &mut Actions) {
-    if !m.home {
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) { st.open = !st.open; }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F6)) { st.brushes_open = !st.brushes_open; }
-    }
     st.preview.upload(ctx);
     if m.home { return; }
     if st.open || m.tool.paints() { st.preview.ask(m.brush, a); }
@@ -113,42 +109,47 @@ fn advanced(ctx: &egui::Context, st: &mut AdvancedState, m: &mut Model, a: &mut 
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 84.0), Sense::hover());
         paint_preview(ui, r, &name, st.preview.region());
         ui.add_space(6.0);
-        let bottom = 34.0;
-        let h = (ui.available_height() - bottom).max(120.0);
-        ui.horizontal_top(|ui| {
-            // The categories.
-            let left = 150.0;
-            ui.allocate_ui_with_layout(vec2(left, h), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.set_width(left);
-                ui.set_min_height(h);
-                egui::Frame::NONE.fill(theme::DESK).inner_margin(4).show(ui, |ui| {
-                    ui.set_width(left - 8.0);
-                    ui.set_min_height(h - 40.0);
-                    for c in Category::ALL {
-                        ui.horizontal(|ui| {
-                            if c.is_sub() { ui.add_space(14.0); }
-                            let on = c.switch().map(|(get, _)| get(m.brush));
-                            let text = RichText::new(c.name()).color(if on == Some(false) { theme::TEXT_WEAK } else { theme::TEXT });
-                            if ui.add_sized(vec2(ui.available_width(), 18.0), egui::Button::selectable(st.cat == c, text)).clicked() { st.cat = c; }
-                        });
-                    }
-                });
-                ui.add_space(4.0);
-                let mut sc = show_category(ui.ctx());
-                if ui.checkbox(&mut sc, "Show category").on_hover_text("Tool options shows the categories' names").changed() { set_show_category(ui.ctx(), sc); }
+        // The buttons at the bottom, the rest above them.
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Reset all settings to default").on_hover_text("The brush as it was saved as its default (or before it was first changed)").clicked() { a.brush_default = Some(BrushDefault::Reset); }
+                if ui.button("Save all settings as default").on_hover_text("These settings become what Reset goes back to").clicked() { a.brush_default = Some(BrushDefault::Save); }
             });
             ui.separator();
-            // Its settings.
-            ui.vertical(|ui| {
-                let w = ui.available_width().max(200.0);
-                ui.set_width(w);
-                settings(ui, st, m, w, h);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                let h = ui.available_height().max(120.0);
+                ui.horizontal_top(|ui| {
+                    // The categories.
+                    let left = 150.0;
+                    ui.allocate_ui_with_layout(vec2(left, h), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(left);
+                        egui::Frame::NONE.fill(theme::DESK).inner_margin(4).show(ui, |ui| {
+                            ui.set_width(left - 8.0);
+                            ui.set_min_height(h - 40.0);
+                            for c in Category::ALL {
+                                let (r, resp) = ui.allocate_exact_size(vec2(left - 8.0, 20.0), Sense::click());
+                                let p = ui.painter();
+                                if st.cat == c { p.rect_filled(r, 2.0, theme::ACCENT); } else if resp.hovered() { p.rect_filled(r, 2.0, theme::ROW_HOVER); }
+                                // (An effect that is off: dimmed.)
+                                let off = c.switch().is_some_and(|(get, _)| !get(m.brush));
+                                let x = r.left() + if c.is_sub() { 18.0 } else { 6.0 };
+                                p.text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, c.name(), egui::FontId::proportional(13.0), if off && st.cat != c { theme::TEXT_WEAK.gamma_multiply(0.7) } else { theme::TEXT });
+                                if resp.clicked() { st.cat = c; }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        let mut sc = show_category(ui.ctx());
+                        if ui.checkbox(&mut sc, "Show category").on_hover_text("Tool options shows the categories' names").changed() { set_show_category(ui.ctx(), sc); }
+                    });
+                    ui.separator();
+                    // Its settings.
+                    ui.vertical(|ui| {
+                        let w = ui.available_width().max(200.0);
+                        ui.set_width(w);
+                        settings(ui, st, m, w, h);
+                    });
+                });
             });
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("Reset all settings to default").on_hover_text("The brush as it was saved as its default (or before it was first changed)").clicked() { a.brush_default = Some(BrushDefault::Reset); }
-            if ui.button("Save all settings as default").on_hover_text("These settings become what Reset goes back to").clicked() { a.brush_default = Some(BrushDefault::Save); }
         });
     });
     st.open = open;
@@ -185,7 +186,7 @@ fn settings(ui: &mut Ui, st: &mut AdvancedState, m: &mut Model, w: f32, h: f32) 
             let was = list.contains(&s.id);
             let mut on = was;
             if let Some(r) = row(ui, s, m.brush, w - 14.0, Some(&mut on)) {
-                if r.hovered() { hovered = Some(s.id); }
+                if r.contains_pointer() { hovered = Some(s.id); }
             }
             if on != was { set_shown(m.brush, s.id, on); }
         }

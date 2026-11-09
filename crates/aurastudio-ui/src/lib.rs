@@ -354,6 +354,13 @@ impl UiState {
     }
 
     /// The memory report window is open: the app should measure.
+    /// F5 / F6: show or hide Advanced tool options, or (`brushes`) the
+    /// Brushes window.
+    pub fn toggle_window(&mut self, brushes: bool) {
+        let w = if brushes { &mut self.advanced.brushes_open } else { &mut self.advanced.open };
+        *w = !*w;
+    }
+
     /// The stroke preview asked with `Actions::preview` (straight RGBA).
     pub fn set_preview(&mut self, w: u32, h: u32, rgba: &[u8]) { self.advanced.preview.set(w, h, rgba); }
 

@@ -55,6 +55,9 @@ impl App {
             }
             // The start screen has nothing to edit or move.
             _ if self.home => {}
+            // F5: Advanced tool options, F6: Brushes (Krita's keys).
+            Key::Named(NamedKey::F5) if !key.repeat && !ctrl && !alt => { self.ui.toggle_window(false); self.request_redraw(); }
+            Key::Named(NamedKey::F6) if !key.repeat && !ctrl && !alt => { self.ui.toggle_window(true); self.request_redraw(); }
             Key::Named(NamedKey::Delete) if !key.repeat && !alt => {
                 // Over the Layers docker or the Animation panel: delete what is picked there.
                 if !self.ui.delete_key() { self.clear_active_layer(); }
