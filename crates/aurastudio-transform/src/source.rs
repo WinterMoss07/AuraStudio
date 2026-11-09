@@ -1,5 +1,7 @@
-//! What is transformed: its premultiplied pixels and their halvings (built
-//! when a reduction first needs them, rows on all cores), and sampling.
+//! What is transformed: its pixels (straight RGBA, premultiplied as they
+//! are sampled) and their halvings (premultiplied, 16 bits a channel,
+//! built when a reduction first needs them, rows on all cores), and
+//! sampling.
 
 use std::sync::OnceLock;
 
@@ -26,14 +28,33 @@ fn bicubic(t: f32) -> [f32; 4] {
     [far(1.0 + t), near(t), near(1.0 - t), far(2.0 - t)]
 }
 
-/// Premultiplied pixels, 16 bits a channel (65535 = 1.0).
+/// A level's pixels: the source's own (4 bytes a pixel), or a halving.
+enum Px {
+    Straight(Vec<Rgba8>),
+    /// Premultiplied, 16 bits a channel (65535 = 1.0).
+    Premul(Vec<[u16; 4]>),
+}
+
+/// Straight 8-bit as premultiplied 16-bit (65535 = 1.0).
+#[inline]
+fn premul(p: Rgba8) -> [f32; 4] {
+    let a = p[3] as f32 * (65535.0 / 65025.0);
+    [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, p[3] as f32 * 257.0]
+}
+
 struct Level {
     w:  usize,
     h:  usize,
-    px: Vec<[u16; 4]>,
+    px: Px,
 }
 
 impl Level {
+    /// Pixel `k`, premultiplied (65535 = 1.0).
+    #[inline]
+    fn get(&self, k: usize) -> [f32; 4] {
+        match &self.px { Px::Straight(v) => premul(v[k]), Px::Premul(v) => v[k].map(|c| c as f32) }
+    }
+
     /// Half the size, each pixel the average of the up to four below.
     fn half(&self) -> Level {
         let (nw, nh) = (self.w.div_ceil(2), self.h.div_ceil(2));
@@ -44,15 +65,15 @@ impl Level {
                 for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                     let (sx, sy) = (2 * x + dx, 2 * y + dy);
                     if sx < self.w && sy < self.h {
-                        let p = self.px[sy * self.w + sx];
-                        for c in 0..4 { s[c] += p[c] as u32; }
+                        let p = self.get(sy * self.w + sx);
+                        for c in 0..4 { s[c] += p[c].round() as u32; }
                         n += 1;
                     }
                 }
                 *o = s.map(|v| ((v + n / 2) / n) as u16);
             }
         });
-        Level { w: nw, h: nh, px }
+        Level { w: nw, h: nh, px: Px::Premul(px) }
     }
 }
 
@@ -72,21 +93,13 @@ impl Source {
     /// From straight RGBA rows of `rect`.
     pub fn new(rect: Rect, rgba: &[Rgba8]) -> Self {
         let (w, h) = (rect.w() as usize, rect.h() as usize);
-        let px: Vec<[u16; 4]> = if rgba.len() == w * h {
-            rgba.par_iter().with_min_len(4096).map(|p| {
-                let a = p[3] as u32;
-                let pm = |c: u8| ((c as u32 * a * 65535 + 32512) / 65025) as u16;
-                [pm(p[0]), pm(p[1]), pm(p[2]), (a * 257) as u16]
-            }).collect()
-        } else {
-            vec![[0; 4]; w * h]
-        };
+        let px = if rgba.len() == w * h { rgba.to_vec() } else { vec![[0; 4]; w * h] };
         // Halvings down to one pixel (at most 13).
         let mut n = 1;
         let (mut lw, mut lh) = (w, h);
         while n < 14 && (lw > 1 || lh > 1) { lw = lw.div_ceil(2); lh = lh.div_ceil(2); n += 1; }
         let levels: Vec<OnceLock<Level>> = (0..n).map(|_| OnceLock::new()).collect();
-        let _ = levels[0].set(Level { w, h, px });
+        let _ = levels[0].set(Level { w, h, px: Px::Straight(px) });
         Self { rect, levels }
     }
 
@@ -110,7 +123,7 @@ impl Source {
         let inner = fi >= 1 && fj >= 1 && fi + 2 <= mx && fj + 2 <= my;
         let px = |i: isize, j: isize| -> [f32; 4] {
             let k = if inner { j as usize * lv.w + i as usize } else { (j.clamp(0, my) as usize) * lv.w + i.clamp(0, mx) as usize };
-            lv.px[k].map(|c| c as f32)
+            lv.get(k)
         };
         let mut acc = [0f32; 4];
         match interp {
@@ -175,5 +188,7 @@ impl Source {
     }
 
     /// Bytes held (the levels built so far).
-    pub fn heap_bytes(&self) -> usize { self.levels.iter().filter_map(|l| l.get()).map(|l| l.px.len() * 8).sum() }
+    pub fn heap_bytes(&self) -> usize {
+        self.levels.iter().filter_map(|l| l.get()).map(|l| match &l.px { Px::Straight(v) => v.len() * 4, Px::Premul(v) => v.len() * 8 }).sum()
+    }
 }

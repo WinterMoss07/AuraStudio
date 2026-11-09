@@ -54,7 +54,7 @@ fn halving_averages_and_rotating_keeps_alpha() {
     let mut out = vec![[0u8; 4]; 32 * 32];
     render(&src, &warp, Interp::Bicubic, Rect::new(0, 0, 32, 32), &mut out);
     for p in &out[10 * 32 + 10..10 * 32 + 20] { assert!((110..=145).contains(&p[0]), "{p:?}"); }
-    assert!(src.heap_bytes() > 64 * 64 * 8, "the halving was made when needed");
+    assert!(src.heap_bytes() > 64 * 64 * 4, "the halving was made when needed");
     // A square turned 45°: its middle opaque, its corners outside empty,
     // soft edges.
     let sq = vec![[200u8, 50, 10, 255]; 40 * 40];
