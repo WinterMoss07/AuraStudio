@@ -46,22 +46,16 @@ pub fn merge_split(stack: &LayerStack, id: u64, area: Rect) -> Option<(Vec<Rgba8
     let k = order.iter().position(|&x| x == id)?;
     let inside: Vec<u64> = { let mut v = Vec::new(); if let Some(n) = stack.node(id) { n.for_each(&mut |c| v.push(c.id())); } v };
     let ancestors: Vec<u64> = { let mut v = Vec::new(); let mut p = stack.parent_of(id); while let Some(f) = p { v.push(f); p = stack.parent_of(f); } v };
-    let after: Vec<u64> = order[k + 1..].iter().copied().filter(|x| !inside.contains(x)).collect();
-    let before: Vec<u64> = order[..k].iter().copied().filter(|x| !ancestors.contains(x)).chain(inside.iter().copied()).collect();
+    let mut after: Vec<u64> = order[k + 1..].iter().copied().filter(|x| !inside.contains(x)).collect();
+    let mut before: Vec<u64> = order[..k].iter().copied().filter(|x| !ancestors.contains(x)).chain(inside.iter().copied()).collect();
+    after.sort_unstable();
+    before.sort_unstable();
     let frame = area;
     if frame.is_empty() { return None; }
-    let hidden = |ids: &[u64]| {
-        let mut s = stack.clone();
-        let mut any = false;
-        for &i in ids { if let Some(n) = s.node_mut(i) { any |= n.visible(); *n.visible_mut() = false; } }
-        (s, any)
-    };
-    let (below_stack, any_after) = hidden(&after);
-    let below = merge(&below_stack, frame, Opts::default());
-    let above = any_after.then(|| {
-        let (s, _) = hidden(&before);
-        merge(&s, frame, Opts { backdrop: Backdrop::Transparent, ..Default::default() })
-    });
+    // (The other part drawn as if hidden: no copy of the stack.)
+    let any_after = after.iter().any(|&i| stack.node(i).is_some_and(Node::visible));
+    let below = merge(stack, frame, Opts { hidden: &after, ..Default::default() });
+    let above = any_after.then(|| merge(stack, frame, Opts { backdrop: Backdrop::Transparent, hidden: &before, ..Default::default() }));
     Some((below, above))
 }
 

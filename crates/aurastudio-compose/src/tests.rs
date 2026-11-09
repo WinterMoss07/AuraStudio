@@ -295,3 +295,26 @@ fn the_stroke_cache_keeps_plain_cells_small() {
     cache.clear();
     assert_eq!((cache.len(), cache.bytes()), (0, 0));
 }
+
+#[test]
+fn grid_parts_cover_the_rect_once_in_place() {
+    let rect = r(-37, 5, 150, 70);
+    let mut out = vec![[0u8; 4]; rect.area() as usize];
+    let parts = crate::merge::grid_parts(&mut out, rect, 64);
+    let mut seen = 0;
+    for (cell, p, rows) in parts {
+        assert_eq!((cell.x0.rem_euclid(64), cell.y0.rem_euclid(64)), (0, 0));
+        assert!(cell.contains_rect(&p) && rect.contains_rect(&p));
+        assert_eq!(rows.len() as u32, p.h());
+        for (k, row) in rows.into_iter().enumerate() {
+            assert_eq!(row.len() as u32, p.w());
+            for (i, d) in row.iter_mut().enumerate() { *d = [(p.x0 + i as i32).rem_euclid(251) as u8, (p.y0 + k as i32) as u8, 1, 0]; seen += 1; }
+        }
+    }
+    assert_eq!(seen as u64, rect.area());
+    let w = rect.w() as usize;
+    for (i, d) in out.iter().enumerate() {
+        let (x, y) = (rect.x0 + (i % w) as i32, rect.y0 + (i / w) as i32);
+        assert_eq!(*d, [x.rem_euclid(251) as u8, y as u8, 1, 0]);
+    }
+}

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use aurastudio_core::blend::{blend_over, to_straight_u8, Premul};
 use aurastudio_core::{BlendMode, Rect, Rgba8};
-use aurastudio_layers::{Folder, FolderBlend, Ghost, LayerStack, Node, Pick};
+use aurastudio_layers::{ghosts_in, Folder, FolderBlend, Ghost, LayerStack, Node, Pick};
 use aurastudio_raster::Run;
 use rayon::prelude::*;
 
@@ -36,6 +36,9 @@ pub struct Opts<'a> {
     pub ghosts:   bool,
     /// Flattened isolated folders kept from merge to merge.
     pub cache:    Option<&'a FolderCache>,
+    /// Nodes drawn as if hidden, ids sorted (the part of the stack under
+    /// or over a node, without a copy of the stack).
+    pub hidden:   &'a [u64],
 }
 
 /// The most a stack of filter layers may read around a pixel.
@@ -61,10 +64,49 @@ pub(crate) struct Ctx<'a> {
     pub pick:   Pick,
     pub ghosts: &'a [(u64, Vec<Ghost>)],
     pub cache:  Option<&'a FolderCache>,
+    pub hidden: &'a [u64],
 }
 
 impl Ctx<'_> {
-    fn ghosts_of(&self, id: u64) -> Option<&[Ghost]> { self.ghosts.iter().find(|x| x.0 == id).map(|x| &x.1[..]).filter(|v| !v.is_empty()) }
+    fn ghosts_of(&self, id: u64) -> Option<&[Ghost]> { ghosts_in(self.ghosts, id) }
+}
+
+/// A part of `rect` on a grid of `side` px: the whole grid cell, its part
+/// of `rect`, and that part's rows in the output.
+pub(crate) type Part<'a> = (Rect, Rect, Vec<&'a mut [Rgba8]>);
+
+/// `out` (the rows of `rect`) cut along a grid of `side` px (fixed: the
+/// same pixels whatever rect asks for them), each part with its own rows,
+/// so the parts are written in place on all cores.
+pub(crate) fn grid_parts(out: &mut [Rgba8], rect: Rect, side: i32) -> Vec<Part<'_>> {
+    let g = rect.snapped_out(side as u32);
+    let cols: Vec<(i32, i32, i32)> = (g.x0..g.x1).step_by(side as usize).map(|x| (x, x.max(rect.x0), (x + side).min(rect.x1))).filter(|c| c.1 < c.2).collect();
+    let mut parts: Vec<Part> = Vec::new();
+    let mut rows = out.chunks_mut(rect.w().max(1) as usize);
+    for by in (g.y0..g.y1).step_by(side as usize) {
+        let (y0, y1) = (by.max(rect.y0), (by + side).min(rect.y1));
+        if y0 >= y1 { continue; }
+        let first = parts.len();
+        for &(cx, x0, x1) in &cols { parts.push((Rect::new(cx, by, cx + side, by + side), Rect::new(x0, y0, x1, y1), Vec::with_capacity((y1 - y0) as usize))); }
+        for _ in y0..y1 {
+            let Some(mut row) = rows.next() else { return parts };
+            for (k, &(_, x0, x1)) in cols.iter().enumerate() {
+                let (seg, rest) = std::mem::take(&mut row).split_at_mut((x1 - x0) as usize);
+                row = rest;
+                parts[first + k].2.push(seg);
+            }
+        }
+    }
+    parts
+}
+
+/// Rows of `p` from block `b` (premultiplied) into `rows`, straight.
+pub(crate) fn write_rows(b: &Block, p: Rect, rows: &mut [&mut [Rgba8]]) {
+    for (k, row) in rows.iter_mut().enumerate() {
+        let o = (p.y0 + k as i32 - b.rect.y0) as usize * b.w + (p.x0 - b.rect.x0) as usize;
+        let n = row.len();
+        for (d, q) in row.iter_mut().zip(&b.px[o..o + n]) { *d = to_straight_u8(*q); }
+    }
 }
 
 /// The tree has something only the general path handles: a visible
@@ -108,45 +150,23 @@ pub fn merge_into(stack: &LayerStack, rect: Rect, opts: Opts, out: &mut [Rgba8])
     let m = margin(&stack.root, opts.pick) as i32;
     let side = (m as u32 * 4).clamp(128, 2048) as i32;
     let ghosts: &[(u64, Vec<Ghost>)] = if opts.ghosts { stack.ghosts() } else { &[] };
-    let ctx = Ctx { pick: opts.pick, ghosts, cache: opts.cache };
+    let ctx = Ctx { pick: opts.pick, ghosts, cache: opts.cache, hidden: opts.hidden };
     let start = match opts.backdrop { Backdrop::White => [1.0; 4], Backdrop::Transparent => [0.0; 4] };
-    // Pieces on a fixed grid (the same pixels whatever rect asks for them).
-    let g = rect.snapped_out(side as u32);
-    let mut pieces = Vec::new();
-    for y in (g.y0..g.y1).step_by(side as usize) {
-        for x in (g.x0..g.x1).step_by(side as usize) {
-            let p = Rect::new(x, y, x + side, y + side).intersect(&rect);
-            if !p.is_empty() { pieces.push(p); }
-        }
-    }
-    let done: Vec<(Rect, Vec<Rgba8>)> = pieces.par_iter().map(|&p| {
-        let ext = p.grown(m);
-        let mut b = Block::new(ext, start);
+    grid_parts(out, rect, side).into_par_iter().for_each(|(_, p, mut rows)| {
+        let mut b = Block::new(p.grown(m), start);
         let mut stop = false;
         compose(&stack.root, &mut b, 1.0, ctx, false, None, &mut stop, true);
-        let mut px = Vec::with_capacity(p.area() as usize);
-        for y in p.y0..p.y1 {
-            let o = (y - ext.y0) as usize * b.w + (p.x0 - ext.x0) as usize;
-            px.extend(b.px[o..o + p.w() as usize].iter().map(|q| to_straight_u8(*q)));
-        }
-        (p, px)
-    }).collect();
-    let rw = rect.w() as usize;
-    for (p, px) in done {
-        let pw = p.w() as usize;
-        for (k, y) in (p.y0..p.y1).enumerate() {
-            let o = (y - rect.y0) as usize * rw + (p.x0 - rect.x0) as usize;
-            out[o..o + pw].copy_from_slice(&px[k * pw..(k + 1) * pw]);
-        }
-    }
+        write_rows(&b, p, &mut rows);
+    });
 }
 
 /// `n` is the reference `pick` looks at.
 fn is_reference(n: &Node, pick: Pick) -> bool { pick.reference == Some(n.id()) }
 
 /// Whether `n` is drawn (it, or for a folder its content).
-fn taken(n: &Node, pick: Pick, in_reference: bool) -> bool {
-    if matches!(n, Node::Mask(_)) || !n.visible() || n.opacity() <= 0.0 || n.id() == pick.skip { return false; }
+fn taken(n: &Node, ctx: Ctx, in_reference: bool) -> bool {
+    let pick = ctx.pick;
+    if matches!(n, Node::Mask(_)) || !n.visible() || n.opacity() <= 0.0 || n.id() == pick.skip || ctx.hidden.binary_search(&n.id()).is_ok() { return false; }
     if pick.skip_drafts && n.props().draft { return false; }
     if pick.reference.is_some() && !in_reference && !is_reference(n, pick) && !n.is_folder() { return false; }
     true
@@ -172,7 +192,7 @@ pub(crate) fn compose(nodes: &[Node], b: &mut Block, scale: f32, ctx: Ctx, in_re
     let mut i = 0;
     // Occlusion: start at the topmost opaque cover (whole merges only).
     if top && mask.is_none() && scale >= 1.0 && pick.reference.is_none() && pick.until == 0 {
-        if let Some(k) = (0..nodes.len()).rev().find(|&k| taken(&nodes[k], pick, in_reference) && occludes(&nodes[k], b) && nodes.get(k + 1).is_none_or(|n| !n.props().clip)) {
+        if let Some(k) = (0..nodes.len()).rev().find(|&k| taken(&nodes[k], ctx, in_reference) && occludes(&nodes[k], b) && nodes.get(k + 1).is_none_or(|n| !n.props().clip)) {
             i = k;
             aurastudio_core::count!("merge occluded nodes", k);
         }
@@ -186,12 +206,12 @@ pub(crate) fn compose(nodes: &[Node], b: &mut Block, scale: f32, ctx: Ctx, in_re
         let clipped = &nodes[i + 1..j];
         let base_ref = in_reference || is_reference(base, pick);
         let is_filter = matches!(base, Node::Filter(_));
-        let wanted = !is_filter && clipped.iter().any(|c| taken(c, pick, base_ref));
-        if !taken(base, pick, in_reference) {
+        let wanted = !is_filter && clipped.iter().any(|c| taken(c, ctx, base_ref));
+        if !taken(base, ctx, in_reference) {
             // A hidden base hides its clipped nodes; left out by a reference
             // pick, the reference may be among them.
             if pick.reference.is_some() && !in_reference && base.visible() {
-                for c in clipped { if taken(c, pick, false) { draw(c, b, scale, ctx, false, mask, false, stop); } }
+                for c in clipped { if taken(c, ctx, false) { draw(c, b, scale, ctx, false, mask, false, stop); } }
             }
         } else if !wanted {
             draw(base, b, scale, ctx, in_reference, mask, false, stop);
@@ -199,7 +219,7 @@ pub(crate) fn compose(nodes: &[Node], b: &mut Block, scale: f32, ctx: Ctx, in_re
                 // Clipped to a filter layer: nothing to clip to.
                 for c in clipped {
                     if *stop || c.id() == pick.until { *stop = true; return; }
-                    if taken(c, pick, in_reference) { draw(c, b, scale, ctx, in_reference, mask, false, stop); }
+                    if taken(c, ctx, in_reference) { draw(c, b, scale, ctx, in_reference, mask, false, stop); }
                 }
             }
         } else {
@@ -210,7 +230,7 @@ pub(crate) fn compose(nodes: &[Node], b: &mut Block, scale: f32, ctx: Ctx, in_re
             let cover: Vec<f32> = g.px.iter().map(|p| p[3]).collect();
             for c in clipped {
                 if *stop || c.id() == pick.until { *stop = true; break; }
-                if taken(c, pick, base_ref) { draw(c, &mut g, 1.0, ctx, base_ref, Some(&cover), false, stop); }
+                if taken(c, ctx, base_ref) { draw(c, &mut g, 1.0, ctx, base_ref, Some(&cover), false, stop); }
             }
             let (op, mode) = match base {
                 Node::Layer(l) => (l.opacity, l.blend),
@@ -225,7 +245,7 @@ pub(crate) fn compose(nodes: &[Node], b: &mut Block, scale: f32, ctx: Ctx, in_re
 
 /// The ghosts `gh` of animation folder `f` onto `b`, far to near: each
 /// drawing merged on its own, tinted, faded.
-fn ghost_block(f: &Folder, gh: &[Ghost], b: &mut Block, scale: f32, ctx: Ctx) {
+pub(crate) fn ghost_block(f: &Folder, gh: &[Ghost], b: &mut Block, scale: f32, ctx: Ctx) {
     for gst in gh {
         let Some(Node::Folder(sheet)) = f.children.iter().find(|c| c.id() == gst.sheet) else { continue };
         let mut t = Block::new(b.rect, [0.0; 4]);
@@ -297,7 +317,7 @@ fn draw_layer(l: &aurastudio_layers::Layer, b: &mut Block, op: f32, blend: Blend
 fn folder_alone(f: &Folder, rect: Rect, ctx: Ctx, is_ref: bool, stop: &mut bool) -> Arc<Vec<Premul>> {
     let ghosts = ctx.ghosts_of(f.id);
     // (Only plain merges are cached: a pick or ghosts change the result.)
-    let cacheable = ctx.pick == Pick::ALL && ghosts.is_none() && !is_ref;
+    let cacheable = ctx.pick == Pick::ALL && ctx.hidden.is_empty() && ghosts.is_none() && !is_ref;
     let key = (cacheable && ctx.cache.is_some()).then(|| crate::key::nodes_key(f.children.iter(), rect, 0xF01D));
     if let (Some(k), Some(c)) = (key, ctx.cache) { if let Some(px) = c.get(k) { return px; } }
     let mut t = Block::new(rect, [0.0; 4]);

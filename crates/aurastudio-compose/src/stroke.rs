@@ -7,12 +7,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aurastudio_core::blend::{blend_over, to_straight_u8, Premul};
+use aurastudio_core::blend::Premul;
 use aurastudio_core::{BlendMode, Fnv, Rect, Rgba8};
-use aurastudio_layers::{Folder, FolderBlend, Ghost, LayerStack, Node, Pick};
+use aurastudio_layers::{ghosts_in, Folder, FolderBlend, Ghost, LayerStack, Node, Pick};
 use rayon::prelude::*;
 
-use crate::merge::{compose, needs_general, Block, Ctx};
+use crate::merge::{compose, ghost_block, grid_parts, needs_general, write_rows, Block, Ctx};
 
 /// Cell side, px.
 const CELL: i32 = 64;
@@ -32,7 +32,7 @@ fn flatten<'a>(nodes: &'a [Node], scale: f32, ghosts: &'a [(u64, Vec<Ghost>)], o
         if matches!(n, Node::Mask(_)) || !n.visible() || n.opacity() <= 0.0 { continue; }
         match n {
             Node::Folder(f) if f.blend == FolderBlend::PassThrough => {
-                if let Some(gh) = ghosts.iter().find(|g| g.0 == f.id).map(|g| &g.1[..]).filter(|g| !g.is_empty()) { out.push(Item::Ghosts(f, scale * f.opacity, gh)); }
+                if let Some(gh) = ghosts_in(ghosts, f.id) { out.push(Item::Ghosts(f, scale * f.opacity, gh)); }
                 flatten(&f.children, scale * f.opacity, ghosts, out);
             }
             _ => out.push(Item::Node(n, scale)),
@@ -106,20 +106,7 @@ fn draw_items(items: &[Item], b: &mut Block, ctx: Ctx) {
     for it in items {
         match *it {
             Item::Node(n, s) => draw_scaled(n, b, s, ctx, &mut stop),
-            Item::Ghosts(f, s, gh) => {
-                for g in gh {
-                    let Some(Node::Folder(sheet)) = f.children.iter().find(|c| c.id() == g.sheet) else { continue };
-                    let mut t = Block::new(b.rect, [0.0; 4]);
-                    let mut st = false;
-                    compose(&sheet.children, &mut t, 1.0, Ctx { ghosts: &[], ..ctx }, false, None, &mut st, false);
-                    let op = g.opacity * s * sheet.opacity;
-                    for (d, p) in b.px.iter_mut().zip(&t.px) {
-                        if p[3] <= 0.0 { continue; }
-                        let cs = g.tinted([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
-                        blend_over(d, cs, p[3].min(1.0) * op, BlendMode::Normal);
-                    }
-                }
-            }
+            Item::Ghosts(f, s, gh) => ghost_block(f, gh, b, s, ctx),
         }
     }
 }
@@ -146,7 +133,7 @@ impl StrokeCache {
         let usable = !needs_general(stack) && items[k + 1..].iter().all(|it| match it { Item::Node(n, _) => normal(n), Item::Ghosts(..) => true });
         if !usable { return crate::merge(stack, rect, opts); }
         let (Item::Node(painted, scale), below_items, above_items) = (items[k], &items[..k], &items[k + 1..]) else { return Vec::new() };
-        let ctx = Ctx { pick: Pick::ALL, ghosts, cache: None };
+        let ctx = Ctx { pick: Pick::ALL, ghosts, cache: None, hidden: &[] };
         // The settings of everything but the painted layer's pixels.
         let mut sh = Fnv::default();
         for it in &items {
@@ -191,12 +178,12 @@ impl StrokeCache {
         }
         for c in &cells { if let Some(e) = self.cells.get_mut(c) { e.used = self.tick; } }
         self.trim(BUDGET);
-        // Below, then the painted layer, then what is over it.
+        // Below, then the painted layer, then what is over it, straight
+        // into each cell's rows of the output.
         let cells_ref = &self.cells;
-        let rows: Vec<(Rect, Vec<Rgba8>)> = cells.par_iter().filter_map(|&(x, y)| {
-            let cr = Rect::new(x, y, x + CELL, y + CELL);
-            let part = cr.intersect(&rect);
-            let e = cells_ref.get(&(x, y))?;
+        let mut out = vec![[0u8; 4]; rect.area() as usize];
+        grid_parts(&mut out, rect, CELL).into_par_iter().for_each(|(cr, part, mut rows)| {
+            let Some(e) = cells_ref.get(&(cr.x0, cr.y0)) else { return };
             let n = (CELL * CELL) as usize;
             let mut b = Block { rect: cr, w: CELL as usize, px: (0..n).map(|i| unpack(e.below.get(i))).collect() };
             let mut stop = false;
@@ -210,22 +197,8 @@ impl StrokeCache {
                     for c in 0..4 { d[c] = p[c] + d[c] * k; }
                 }
             }
-            let mut out = Vec::with_capacity(part.area() as usize);
-            for yy in part.y0..part.y1 {
-                let o = (yy - cr.y0) as usize * CELL as usize + (part.x0 - cr.x0) as usize;
-                out.extend(b.px[o..o + part.w() as usize].iter().map(|q| to_straight_u8(*q)));
-            }
-            Some((part, out))
-        }).collect();
-        let rw = rect.w() as usize;
-        let mut out = vec![[0u8; 4]; rect.area() as usize];
-        for (p, px) in rows {
-            let pw = p.w() as usize;
-            for (k, y) in (p.y0..p.y1).enumerate() {
-                let o = (y - rect.y0) as usize * rw + (p.x0 - rect.x0) as usize;
-                out[o..o + pw].copy_from_slice(&px[k * pw..(k + 1) * pw]);
-            }
-        }
+            write_rows(&b, part, &mut rows);
+        });
         out
     }
 
