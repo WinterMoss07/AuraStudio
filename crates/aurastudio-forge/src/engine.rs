@@ -60,6 +60,11 @@ struct MixerRun {
     dual:      Option<CoverageMap>,
 }
 
+/// What a Mixer Brush that samples all layers sees around the layer it
+/// paints, for a rectangle: the merge of what is under that layer and of
+/// what is over it (transparent where nothing is), straight RGBA rows.
+pub type Sampler = std::sync::Arc<dyn Fn(Rect) -> (Vec<Rgba8>, Vec<Rgba8>) + Send + Sync>;
+
 /// The brush engine for one brush, stroke after stroke.
 pub struct Forge {
     brush:   BrushSettings,
@@ -67,6 +72,8 @@ pub struct Forge {
     mixer:   Option<MixerRun>,
     /// Paint carried between Mixer Brush strokes.
     state:   MixerState,
+    /// "Sample all layers": the other layers, seen by the pickup.
+    sampler: Option<Sampler>,
     /// The view's zoom (smoothing measures its string on screen).
     zoom:    f32,
     /// Strokes painted: each one's jitter seed.
@@ -75,7 +82,7 @@ pub struct Forge {
 
 impl Forge {
     pub fn new(brush: BrushSettings) -> Self {
-        Self { brush, stroke: None, mixer: None, state: MixerState::default(), zoom: 1.0, strokes: 0 }
+        Self { brush, stroke: None, mixer: None, state: MixerState::default(), sampler: None, zoom: 1.0, strokes: 0 }
     }
 
     pub fn brush(&self) -> &BrushSettings { &self.brush }
@@ -89,6 +96,16 @@ impl Forge {
 
     /// A Mixer Brush's paint (Load / Clean, the swatch).
     pub fn mixer_state(&mut self) -> &mut MixerState { &mut self.state }
+
+    /// With the paint a Mixer Brush carried from the strokes before.
+    pub fn with_mixer_state(self, state: MixerState) -> Self { Self { state, ..self } }
+
+    /// The paint it carries now (for the next brush).
+    pub fn take_mixer_state(&mut self) -> MixerState { std::mem::take(&mut self.state) }
+
+    /// The other layers the pickup sees ("Sample all layers"), for the
+    /// stroke under way.
+    pub fn set_sampler(&mut self, s: Option<Sampler>) { self.sampler = s; }
 
     /// The brush for this stroke: its own seed when it has none (a
     /// stroke's jitter differs from the last one's, a replay's doesn't).
@@ -118,7 +135,7 @@ impl Forge {
             }
             let run = self.mixer.as_mut()?;
             run.generator.push(&pts, &mut run.dabs, &mut run.duals);
-            let r = run.paint(s, &mut self.state);
+            let r = run.paint(s, &mut self.state, self.sampler.as_ref());
             return (!r.is_empty()).then_some(r);
         }
         if self.stroke.is_none() {
@@ -136,7 +153,8 @@ impl Forge {
     pub fn end_stroke<S: PaintSurface<Rgba8>>(&mut self, s: &mut S) -> Option<Rect> {
         if let Some(mut run) = self.mixer.take() {
             run.generator.finish(&mut run.dabs, &mut run.duals);
-            let r = run.paint(s, &mut self.state);
+            let r = run.paint(s, &mut self.state, self.sampler.as_ref());
+            self.sampler = None;
             let m = &self.brush.mixer;
             self.state.end_stroke(self.brush.color, m.clean_after_stroke, m.load_after_stroke);
             return (!r.is_empty()).then_some(r);
@@ -151,7 +169,7 @@ impl Forge {
 
 impl MixerRun {
     /// The dabs waiting, painted one after the other (the 2nd tip's first).
-    fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, state: &mut MixerState) -> Rect {
+    fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, state: &mut MixerState, around: Option<&Sampler>) -> Rect {
         let mut done = Rect::EMPTY;
         let dabs = std::mem::take(&mut self.dabs);
         let duals = std::mem::take(&mut self.duals);
@@ -166,7 +184,7 @@ impl MixerRun {
             let rect = self.ctx.dab_rect(d, false);
             if rect.is_empty() { continue; }
             self.ctx.rasterize(d, false, rect, &mut self.cov);
-            mixer_dab(s, &self.cov, rect, d, &self.ctx, self.dual.as_ref(), state);
+            mixer_dab(s, &self.cov, rect, d, &self.ctx, self.dual.as_ref(), state, around);
             done = done.union(&rect);
         }
         (self.dabs, self.duals) = (dabs, duals);
@@ -206,8 +224,11 @@ impl Sampled {
 /// mixed by Mix, land at Flow, times the dab's opacity (pen, Transfer)
 /// and the stroke's texture and 2nd tip. PhotoCraft's model (see
 /// NOTICE.md) on the layer's runs; a selection scales the paint by its
-/// limit. A big dab reads and paints on all cores.
-fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab, ctx: &BrushContext, dual: Option<&CoverageMap>, state: &mut MixerState) {
+/// limit. A big dab reads and paints on all cores. With `around`
+/// ("Sample all layers") it reads the layer between what is under it and
+/// what is over it, as the canvas shows it (normal blending).
+#[allow(clippy::too_many_arguments)]
+fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab, ctx: &BrushContext, dual: Option<&CoverageMap>, state: &mut MixerState, around: Option<&Sampler>) {
     let b = &ctx.brush;
     let m = &b.mixer;
     let w = rect.w() as usize;
@@ -219,13 +240,23 @@ fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab
     let res = state.reservoir;
     let mut amount = if res.is_some() { state.amount.clamp(0.0, 1.0) } else { 0.0 };
     let mut pickup = state.pickup;
+    // The other layers, read once for the dab (only when it picks up).
+    let others = around.filter(|_| wet > 0.0).map(|f| f(rect));
+    let others = others.as_ref().filter(|(u, o)| u.len() == cov.len() && o.len() == cov.len());
     // What a run reads, and how much paint lands on a pixel.
     let sample = |sp: &Span<'_, Rgba8>| {
         let mut o = Sampled::default();
         for i in 0..sp.len() {
-            let k = at(sp.x + i as i32, sp.y);
+            let (x, y) = (sp.x + i as i32, sp.y);
+            let k = at(x, y);
             if k <= 0.0 { continue; }
-            let p = sp.pixels[i];
+            let p = match others {
+                Some((under, over)) => {
+                    let j = (y - rect.y0) as usize * w + (x - rect.x0) as usize;
+                    over_straight(over[j], over_straight(sp.pixels[i], under[j]))
+                }
+                None => sp.pixels[i],
+            };
             let a = p[3] as f32 / 255.0;
             for (c, v) in o.acc.iter_mut().enumerate() { *v += p[c] as f32 / 255.0 * k * a; }
             o.wsum += k;
@@ -284,6 +315,17 @@ fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab
     }
     state.amount = amount;
     state.pickup = pickup;
+}
+
+/// `top` over `bottom`, straight RGBA.
+fn over_straight(top: Rgba8, bottom: Rgba8) -> Rgba8 {
+    let (ta, ba) = (top[3] as f32 / 255.0, bottom[3] as f32 / 255.0);
+    if ta >= 1.0 { return top; }
+    if ta <= 0.0 { return bottom; }
+    let a = ta + ba * (1.0 - ta);
+    if a <= 0.0 { return [0; 4]; }
+    let c = |i: usize| (top[i] as f32 * ta + bottom[i] as f32 * ba * (1.0 - ta)) / a;
+    [c(0).round() as u8, c(1).round() as u8, c(2).round() as u8, (a * 255.0).round() as u8]
 }
 
 #[cfg(test)]
@@ -390,11 +432,39 @@ mod tests {
         b.mixer.mix = 1.0;
         b.mixer.load = 0.0;
         let mut f = Forge::new(b);
-        f.mixer_state().clean();
-        f.mixer_state().color = Some(f.brush().color);
+        let c = f.brush().color;
+        f.mixer_state().clean(c);
         line(&mut f, &mut s, (10.0, 15.0), (60.0, 15.0));
         let p = s.pixel(30, 15);
         assert!(p[0] > p[1] + 40, "red dragged along: {p:?}");
+    }
+
+    /// "Sample all layers": an empty layer over red picks the red up; on
+    /// its own it has nothing to pick.
+    #[test]
+    fn sampling_all_layers_picks_up_the_layers_under() {
+        let paint = |all: bool| {
+            let mut s = FlatSurface::new(80, 30, [255, 255, 255, 0]);
+            let mut b = brush(12.0);
+            b.mixer = crate::MixerSettings { enabled: true, wet: 1.0, mix: 1.0, load: 0.0, sample_all_layers: all, ..Default::default() };
+            let mut f = Forge::new(b);
+            let c = f.brush().color;
+            f.mixer_state().clean(c);
+            if all {
+                // Red under the layer at the left, nothing over it.
+                let red: Sampler = std::sync::Arc::new(|r: Rect| {
+                    let under = (r.y0..r.y1).flat_map(|_| (r.x0..r.x1).map(|x| if x < 20 { [200, 0, 0, 255] } else { [255; 4] })).collect();
+                    (under, vec![[0; 4]; r.area() as usize])
+                });
+                f.set_sampler(Some(red));
+            }
+            line(&mut f, &mut s, (10.0, 15.0), (60.0, 15.0));
+            f.end_stroke(&mut s);
+            s.pixel(30, 15)
+        };
+        let p = paint(true);
+        assert!(p[3] > 0 && p[0] > p[1] + 40, "red picked up from under: {p:?}");
+        assert_eq!(paint(false)[3], 0, "nothing on the layer to pick");
     }
 
     #[test]

@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 use crate::Locked;
 
 use aurastudio_compose::{Opts, StrokeCache};
-use aurastudio_core::Rect;
+use aurastudio_core::{Rect, Rgba8};
 use aurastudio_document::{DocId, Done, Edit, Region, SharedDoc};
 use aurastudio_file::SaveCaches;
-use aurastudio_forge::{Brush, Forge, PenSample};
+use aurastudio_forge::{Brush, Forge, MixerState, PenSample};
 use aurastudio_layers::FillParams;
 
 use crate::projection::{add_rect, SharedProjection};
@@ -105,6 +105,9 @@ pub enum Cmd {
     /// The transform's live preview over `area` (it moved past the one it
     /// had).
     Lift { doc: SharedDoc, area: Rect },
+    /// The Mixer Brush's paint: loaded with `color`, or cleaned (`color`:
+    /// the one in use).
+    Mixer { load: bool, color: [f32; 4] },
 }
 
 /// What the worker reports to the main thread (through `notify`).
@@ -216,6 +219,9 @@ struct Worker {
     /// Filter commands taken from the queue, and sent (`PaintThread`).
     filters_taken: u64,
     filters_sent:  Arc<AtomicU64>,
+    /// The paint a Mixer Brush carries from stroke to stroke (the engine
+    /// holds it during a stroke).
+    mixer:         MixerState,
 }
 
 /// Painting time of a stroke against the pen's: a stroke that fell behind
@@ -251,6 +257,50 @@ impl StrokePace {
     }
 }
 
+/// The layers around `layer` as a "Sample all layers" Mixer Brush sees
+/// them, for one stroke: a copy of the stack as the stroke begins (its
+/// tiles shared, the painted layer's own left out so painting it copies
+/// none), merged by cells as the dabs ask (each cell once).
+fn all_layers(stack: &aurastudio_layers::LayerStack, layer: u64) -> aurastudio_forge::Sampler {
+    const CELL: i32 = 128;
+    let mut snap = stack.clone();
+    if let Some(aurastudio_layers::Node::Layer(l)) = snap.node_mut(layer) { l.surface.clear(); }
+    type Cell = Arc<(Vec<Rgba8>, Vec<Rgba8>)>;
+    let cells: Mutex<HashMap<(i32, i32), Cell>> = Mutex::default();
+    let frame = snap.frame();
+    Arc::new(move |r: Rect| {
+        let w = r.w() as usize;
+        let mut under = vec![[0u8; 4]; r.area() as usize];
+        let mut over = vec![[0u8; 4]; r.area() as usize];
+        let inside = r.intersect(&frame);
+        if inside.is_empty() { return (under, over); }
+        for cy in inside.y0.div_euclid(CELL)..=(inside.y1 - 1).div_euclid(CELL) {
+            for cx in inside.x0.div_euclid(CELL)..=(inside.x1 - 1).div_euclid(CELL) {
+                let cr = Rect::new(cx * CELL, cy * CELL, cx * CELL + CELL, cy * CELL + CELL).intersect(&frame);
+                let got = cells.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&(cx, cy)).cloned();
+                let cell = match got {
+                    Some(c) => c,
+                    None => {
+                        let Some(m) = aurastudio_compose::merge_around(&snap, layer, cr) else { continue };
+                        let c = Arc::new(m);
+                        cells.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((cx, cy), Arc::clone(&c));
+                        c
+                    }
+                };
+                let part = cr.intersect(&r);
+                let cw = cr.w() as usize;
+                for y in part.y0..part.y1 {
+                    let (from, to) = ((y - cr.y0) as usize * cw + (part.x0 - cr.x0) as usize, (y - r.y0) as usize * w + (part.x0 - r.x0) as usize);
+                    let n = part.w() as usize;
+                    under[to..to + n].copy_from_slice(&cell.0[from..from + n]);
+                    over[to..to + n].copy_from_slice(&cell.1[from..from + n]);
+                }
+            }
+        }
+        (under, over)
+    })
+}
+
 /// A preview another one waiting makes useless.
 fn superseded(cmd: &Cmd, queue: &VecDeque<Cmd>) -> bool {
     let is_xform = |c: &Cmd| matches!(c, Cmd::Edit { edit: Edit::TransformPreview { .. } | Edit::TransformApply { .. } | Edit::TransformCancel, .. });
@@ -277,6 +327,7 @@ impl Worker {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify, stroke: None,
             stroke_cache: StrokeCache::default(), saves: HashMap::new(), autosaving: Arc::default(), filters_taken: 0, filters_sent: Arc::default(),
+            mixer: MixerState::default(),
         }
     }
 
@@ -321,7 +372,7 @@ impl Worker {
                         // undo like any other.
                         if self.stroke.is_some() { self.finish_stroke(&mut events); }
                         self.doc = Some(doc);
-                        let mut engine = Forge::new(*brush);
+                        let mut engine = Forge::new(*brush).with_mixer_state(std::mem::take(&mut self.mixer));
                         engine.set_zoom(zoom);
                         self.stroke = Some(Painting { engine, begun: false, limit, layer: 0, pace: StrokePace::default() });
                     }
@@ -363,6 +414,10 @@ impl Worker {
                         let lift = doc.locked().transform_lift(Some(area));
                         if let Some(l) = lift { events.push(Event::TransformLift(Box::new(l))); }
                         self.doc = Some(doc);
+                    }
+                    Cmd::Mixer { load, color } => {
+                        if self.stroke.is_some() { self.finish_stroke(&mut events); }
+                        if load { self.mixer.load(color); } else { self.mixer.clean(color); }
                     }
                     Cmd::Forget(id) => {
                         self.saves.remove(&id);
@@ -470,16 +525,24 @@ impl Worker {
             let done = d.begin_stroke("Brush stroke", limit);
             if let Some(why) = done.refused {
                 events.push(Event::Notice(why));
+                self.mixer = st.engine.take_mixer_state();
                 return;
             }
             st.layer = d.stroke_layer().unwrap_or(0);
+            let m = &st.engine.brush().mixer;
+            if m.enabled && m.sample_all_layers && !st.engine.brush().erase {
+                st.engine.set_sampler(Some(all_layers(d.stack(), st.layer)));
+            }
             // (A sheet made for it: the time shows another drawing.)
             self.stroke_cache.clear();
             self.add_region_in(frame, &done.region);
             if done.tree { events.push(Event::TreeChanged); }
         }
         // The layer gone: nothing left to paint on (the stroke stops).
-        let Some(r) = d.paint_area(|s| st.engine.stroke_through(s, ps)) else { return };
+        let Some(r) = d.paint_area(|s| st.engine.stroke_through(s, ps)) else {
+            self.mixer = st.engine.take_mixer_state();
+            return;
+        };
         drop(d);
         if let Some(r) = r { add_rect(&mut self.pending, r.intersect(&frame)); }
         self.stroke = Some(st);
@@ -489,12 +552,13 @@ impl Worker {
     fn finish_stroke(&mut self, events: &mut Vec<Event>) {
         let Some(mut st) = self.stroke.take() else { return };
         if let Some(r) = st.pace.report() { log::warn!("{r}"); }
-        let Some(doc) = self.doc.clone() else { return };
+        let Some(doc) = self.doc.clone() else { self.mixer = st.engine.take_mixer_state(); return };
         let (done, frame, last) = {
             let mut d = doc.locked();
             let last = d.paint_area(|s| st.engine.end_stroke(s)).flatten();
             (d.end_stroke(), d.stack().frame(), last)
         };
+        self.mixer = st.engine.take_mixer_state();
         // Each stroke builds its own (a stroke begins with a new one): the
         // memory goes back now, not at the next stroke.
         self.stroke_cache.clear();
@@ -690,6 +754,59 @@ mod tests {
         let merged = d.merged(Rect::new(0, 0, 64, 64), aurastudio_layers::Pick::ALL);
         assert_eq!(screen, merged);
         assert_eq!(d.stack().image(id).map(|i| i.pixel(6, 32)[3]), Some(255));
+    }
+
+    fn line_with(pt: &PaintThread, doc: &SharedDoc, b: &Brush, y: f32) {
+        pt.send(Cmd::Begin { doc: Arc::clone(doc), brush: Box::new(b.clone()), limit: None, zoom: 1.0 });
+        for i in 0..=20 { pt.send(Cmd::Sample(PenSample::new(8.0 + i as f32 * 2.4, y, 1.0, i as f64 * 0.005))); }
+        pt.send(Cmd::End);
+    }
+
+    /// A Mixer Brush keeps its paint from stroke to stroke; Clean and Load
+    /// change it.
+    #[test]
+    fn the_mixer_paint_is_kept_cleaned_and_loaded() {
+        let (doc, id) = doc_with_layer();
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        let mut b = brush(3.0);
+        // Dry (paints only what it holds), nothing automatic.
+        b.mixer = aurastudio_forge::MixerSettings { enabled: true, wet: 0.0, load: 1.0, clean_after_stroke: false, load_after_stroke: false, ..Default::default() };
+        line_with(&pt, &doc, &b, 10.0);
+        pt.send(Cmd::Mixer { load: false, color: b.color });
+        line_with(&pt, &doc, &b, 30.0);
+        pt.send(Cmd::Mixer { load: true, color: b.color });
+        line_with(&pt, &doc, &b, 50.0);
+        drop(pt);
+        assert!(pixel(&doc, id, 30, 10)[3] > 200, "loaded at first");
+        assert_eq!(pixel(&doc, id, 30, 30)[3], 0, "cleaned: nothing to paint");
+        assert!(pixel(&doc, id, 30, 50)[3] > 200, "loaded again");
+    }
+
+    /// "Sample all layers": an empty layer over a red one picks the red up.
+    #[test]
+    fn a_mixer_brush_samples_the_layers_under() {
+        for all in [true, false] {
+            let (doc, ink) = doc_with_layer();
+            let under = {
+                let mut d = doc.locked();
+                let under = d.apply(Edit::AddLayer("under".into())).made.unwrap();
+                d.apply(Edit::Move { ids: vec![under], dragged: under, target: ink, place: aurastudio_layers::Place::Below });
+                under
+            };
+            let pt = PaintThread::spawn(proj(64, 64), |_| {});
+            let mut red = brush(12.0);
+            red.color = [0.8, 0.0, 0.0, 1.0];
+            line_with(&pt, &doc, &red, 32.0);
+            edit(&pt, &doc, Edit::SetActive(ink));
+            let mut b = brush(4.0);
+            b.mixer = aurastudio_forge::MixerSettings { enabled: true, wet: 1.0, mix: 1.0, load: 0.0, sample_all_layers: all, ..Default::default() };
+            pt.send(Cmd::Mixer { load: false, color: b.color });
+            line_with(&pt, &doc, &b, 32.0);
+            drop(pt);
+            assert!(pixel(&doc, under, 30, 32)[0] > 150, "the red layer");
+            let p = pixel(&doc, ink, 40, 32);
+            if all { assert!(p[3] > 0 && p[0] > p[1] + 40, "red picked up: {p:?}"); } else { assert_eq!(p[3], 0, "its own layer only: {p:?}"); }
+        }
     }
 
     /// A resize is done on the paint thread, which tells the new size.

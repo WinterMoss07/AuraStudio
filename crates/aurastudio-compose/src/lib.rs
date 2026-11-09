@@ -17,7 +17,7 @@ mod key;
 mod merge;
 mod stroke;
 
-pub use extra::{gpu_mergeable, merge_split, preview, Merged};
+pub use extra::{gpu_mergeable, merge_around, merge_split, preview, Merged};
 pub use merge::{margin, merge, merge_into, needs_general, Backdrop, Opts};
 pub use stroke::StrokeCache;
 

@@ -55,11 +55,6 @@ pub struct MixerState {
     pub amount: f32,
     /// Colour picked up from the canvas (straight RGBA), None = clean.
     pub pickup: Option<[f32; 4]>,
-    /// The foreground colour in effect when the reservoir was loaded from the canvas
-    /// (`load_sampled`), None when it holds the foreground itself.
-    pub sampled_over: Option<[f32; 4]>,
-    /// A bounded 64 x 64 spatial load in tip-local coordinates. Empty cells carry no paint.
-    pub spatial: Option<Vec<[f32; 4]>>,
     /// The color recorded by the last stroke (its color) or the last Load Brush or Clean Brush
     /// (the foreground). None = no stroke, load or clean yet.
     pub color: Option<[f32; 4]>,
@@ -68,56 +63,31 @@ pub struct MixerState {
 impl MixerState {
     /// Load Brush: fill the reservoir with a color (full).
     pub fn load(&mut self, color: [f32; 4]) {
-        self.spatial = None;
         self.reservoir = Some(color);
         self.amount = 1.0;
-        self.sampled_over = None;
+        self.color = Some(color);
     }
 
-    /// Load the reservoir with a colour sampled from the canvas (⌥-click) while `foreground` is
-    /// the foreground colour; `holds_sample` stays true until the foreground changes.
-    pub fn load_sampled(&mut self, color: [f32; 4], foreground: [f32; 4]) {
-        self.load(color);
-        self.sampled_over = Some(foreground);
-        self.color = Some(foreground);
-    }
-    /// Clean Brush: empty the reservoir and the pickup well.
-    pub fn clean(&mut self) {
-        self.spatial = None;
+    /// Clean Brush: empty the reservoir and the pickup well; `foreground`
+    /// is the color in use (the next stroke in it starts clean).
+    pub fn clean(&mut self, foreground: [f32; 4]) {
         self.reservoir = None;
         self.amount = 0.0;
         self.pickup = None;
-        self.sampled_over = None;
+        self.color = Some(foreground);
     }
 
-    /// Whether the reservoir holds a canvas sample taken while `foreground` was the foreground.
-    pub fn holds_sample(&self, foreground: [f32; 4]) -> bool {
-        self.reservoir.is_some() && self.sampled_over == Some(foreground)
-    }
     /// Before a stroke in `color`: choosing a color other than [`MixerState::color`] loads the
     /// reservoir with it.
     pub fn begin_stroke(&mut self, color: [f32; 4]) {
-        if self.color != Some(color) {
-            self.load(color);
-            self.color = Some(color);
-        }
+        if self.color != Some(color) { self.load(color); }
     }
+
     /// After a stroke in `color`: the automatic Clean empties the brush, then the automatic Load
     /// fills the reservoir again.
     pub fn end_stroke(&mut self, color: [f32; 4], clean: bool, load: bool) {
-        // Automatic Load replenishes a sampled tip as well as a solid-color load.
-        // Move its bounded buffer through Clean instead of allocating a copy.
-        let sampled = self.holds_sample(color).then_some(color);
-        let spatial = if load { self.spatial.take() } else { None };
-        let paint = if spatial.is_some() || sampled.is_some() { self.reservoir.unwrap_or(color) } else { color };
-        if clean {
-            self.clean();
-        }
-        if load {
-            self.load(paint);
-            self.spatial = spatial;
-            self.sampled_over = sampled;
-        }
+        if clean { self.clean(color); }
+        if load { self.load(color); }
         self.color = Some(color);
     }
 }

@@ -29,7 +29,7 @@ use egui_dock::{DockArea, DockState};
 
 pub use dockers::layers::LayerCmd;
 use dockers::Tab;
-pub use advanced::{BrushDefault, PREVIEW as PREVIEW_SIZE};
+pub use advanced::{BrushDefault, MixerCmd, PREVIEW as PREVIEW_SIZE};
 pub use filters::FilterAction;
 pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
@@ -179,6 +179,8 @@ pub struct Actions {
     pub preview:     Option<Brush>,
     /// Advanced tool options: back to the brush's default, or save it.
     pub brush_default: Option<BrushDefault>,
+    /// The Mixer Brush's paint loaded or cleaned.
+    pub mixer:       Option<MixerCmd>,
 }
 
 /// What the title bar asks of the window.

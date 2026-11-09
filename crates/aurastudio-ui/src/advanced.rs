@@ -23,6 +23,15 @@ pub enum BrushDefault {
     Save,
 }
 
+/// What a Mixer Brush's paint is asked to do (Photoshop's Load / Clean).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MixerCmd {
+    /// Loaded with the color in use.
+    Load,
+    /// Emptied: the next stroke paints only what it picks up.
+    Clean,
+}
+
 /// The stroke preview: the brush it shows, being made or not, its picture.
 #[derive(Default)]
 pub struct Preview {
@@ -114,6 +123,11 @@ fn advanced(ctx: &egui::Context, st: &mut AdvancedState, m: &mut Model, a: &mut 
             ui.horizontal(|ui| {
                 if ui.button("Reset all settings to default").on_hover_text("The brush as it was saved as its default (or before it was first changed)").clicked() { a.brush_default = Some(BrushDefault::Reset); }
                 if ui.button("Save all settings as default").on_hover_text("These settings become what Reset goes back to").clicked() { a.brush_default = Some(BrushDefault::Save); }
+                if m.brush.mixer.enabled {
+                    ui.separator();
+                    if ui.button("Load brush").on_hover_text("Fill the Mixer Brush with the color in use").clicked() { a.mixer = Some(MixerCmd::Load); }
+                    if ui.button("Clean brush").on_hover_text("Empty the Mixer Brush: it paints only what it picks up").clicked() { a.mixer = Some(MixerCmd::Clean); }
+                }
             });
             ui.separator();
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {

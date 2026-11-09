@@ -39,6 +39,33 @@ pub fn preview(stack: &LayerStack, max: u32) -> (u32, u32, Vec<Rgba8>) {
 /// `area`: the part merged (rows of it).
 pub fn merge_split(stack: &LayerStack, id: u64, area: Rect) -> Option<(Vec<Rgba8>, Option<Vec<Rgba8>>)> {
     aurastudio_core::zone!("merge split");
+    let (before, after, _) = split(stack, id)?;
+    if area.is_empty() { return None; }
+    // (The other part drawn as if hidden: no copy of the stack.)
+    let any_after = after.iter().any(|&i| stack.node(i).is_some_and(Node::visible));
+    let below = merge(stack, area, Opts { hidden: &after, ..Default::default() });
+    let above = any_after.then(|| merge(stack, area, Opts { backdrop: Backdrop::Transparent, hidden: &before, ..Default::default() }));
+    Some((below, above))
+}
+
+/// What is under node `id` (it not drawn) and what is over it (on
+/// transparency), straight RGBA rows of `area`: a Mixer Brush that samples
+/// all layers sees the layer it paints between the two.
+pub fn merge_around(stack: &LayerStack, id: u64, area: Rect) -> Option<(Vec<Rgba8>, Vec<Rgba8>)> {
+    aurastudio_core::zone!("merge around");
+    let (before, mut after, inside) = split(stack, id)?;
+    if area.is_empty() { return None; }
+    let any_after = after.iter().any(|&i| stack.node(i).is_some_and(Node::visible));
+    let above = if any_after { merge(stack, area, Opts { backdrop: Backdrop::Transparent, hidden: &before, ..Default::default() }) } else { vec![[0; 4]; area.area() as usize] };
+    after.extend(inside);
+    after.sort_unstable();
+    let below = merge(stack, area, Opts { hidden: &after, ..Default::default() });
+    Some((below, above))
+}
+
+/// The nodes drawn up to `id` (it and what is in it included) and after
+/// it, ids sorted; and `id` with what is in it.
+fn split(stack: &LayerStack, id: u64) -> Option<(Vec<u64>, Vec<u64>, Vec<u64>)> {
     stack.node(id)?;
     // Drawn before / after it, in drawing order.
     let mut order = Vec::new();
@@ -50,13 +77,7 @@ pub fn merge_split(stack: &LayerStack, id: u64, area: Rect) -> Option<(Vec<Rgba8
     let mut before: Vec<u64> = order[..k].iter().copied().filter(|x| !ancestors.contains(x)).chain(inside.iter().copied()).collect();
     after.sort_unstable();
     before.sort_unstable();
-    let frame = area;
-    if frame.is_empty() { return None; }
-    // (The other part drawn as if hidden: no copy of the stack.)
-    let any_after = after.iter().any(|&i| stack.node(i).is_some_and(Node::visible));
-    let below = merge(stack, frame, Opts { hidden: &after, ..Default::default() });
-    let above = any_after.then(|| merge(stack, frame, Opts { backdrop: Backdrop::Transparent, hidden: &before, ..Default::default() }));
-    Some((below, above))
+    Some((before, after, inside))
 }
 
 /// What the fill tool looks at: the merge of the nodes `pick` takes, on

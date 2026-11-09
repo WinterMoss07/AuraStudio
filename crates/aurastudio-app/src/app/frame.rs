@@ -425,6 +425,11 @@ impl App {
         if actions.import_brushes { self.import_brushes(); }
         if let Some(b) = actions.preview { self.stroke_preview(b); }
         if let Some(d) = actions.brush_default { self.brush_default(d); }
+        if let Some(c) = actions.mixer {
+            let load = c == aurastudio_ui::MixerCmd::Load;
+            self.paint.send(crate::paint_thread::Cmd::Mixer { load, color: self.brush.color });
+            self.ui.notify(if load { "Brush loaded" } else { "Brush cleaned" });
+        }
         if let Some(action) = actions.filter {
             use aurastudio_ui::FilterAction as F;
             let edit = match action { F::Preview(f) => Edit::FilterPreview(f), F::Apply(f) => Edit::FilterApply(f), F::Cancel => Edit::FilterCancel };
