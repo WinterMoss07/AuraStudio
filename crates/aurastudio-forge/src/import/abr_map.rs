@@ -304,7 +304,7 @@ impl Mapper<'_> {
 
     /// Mixer Brush tool options captured with a preset (Wet, Load, Mix, Flow, Sample All Layers).
     /// Key names are best effort (Photoshop doesn't document them); several spellings are read.
-    fn mixer_options(&mut self, to: &Descriptor, m: &mut MixerSettings) {
+    fn mixer_options(to: &Descriptor, m: &mut MixerSettings) {
         let first = |keys: &[&str]| keys.iter().find_map(|k| pct(to, k));
         let wet = first(&["wetness", "Wtns", "wet"]);
         let load = first(&["dryness", "load", "Ld  "]);
@@ -488,7 +488,7 @@ impl Mapper<'_> {
             if let Some(v) = boolean(to, "smoothingZoomCompensation") {
                 b.smoothing.adjust_for_zoom = v;
             }
-            self.mixer_options(to, &mut b.mixer);
+            Self::mixer_options(to, &mut b.mixer);
             if mask_blend_is_set(to) {
                 self.warnings.insert("tool blend modes stored with presets are not applied".into());
             }

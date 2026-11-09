@@ -768,7 +768,7 @@ impl ApplicationHandler<AppEvent> for App {
             // moves all the time).
             let dragging = self.gpu.as_ref().is_some_and(Screen::ui_is_dragging);
             let interval = if self.painted {
-                self.paint_frame()
+                Self::paint_frame()
             } else if self.is_drawing {
                 paint_thread::canvas_frame()
             } else if self.ui_dirty && !dragging && self.nav.is_none() {

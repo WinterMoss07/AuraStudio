@@ -141,7 +141,7 @@ mod tests {
         let t = r.text();
         assert!(t.contains("100.00 MB  Layer 1") && t.contains("graphics memory") && t.contains("Not itemised"), "{t}");
         // With the heap counted: the gap is the heap's, the rest is outside it.
-        let with_heap = MemoryReport { heap: Some(150 << 20), ..r.clone() };
+        let with_heap = MemoryReport { heap: Some(150 << 20), ..r };
         assert_eq!(with_heap.not_itemised(), Some(30 << 20));
         assert_eq!(with_heap.outside_heap(), Some(250 << 20));
         assert!(with_heap.text().contains("Outside the Rust heap"));

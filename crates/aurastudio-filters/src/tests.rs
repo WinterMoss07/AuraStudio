@@ -221,7 +221,7 @@ fn mask_feather_and_spread_match_flat_planes() {
     assert_eq!(a.read(view), blur::blur_u8(&flat, w, h, 4.0));
     let mut b = m.clone();
     spread_mask(&mut b, 3.0, true, true);
-    let mut want = flat.clone();
+    let mut want = flat;
     extreme::disc(&mut want, w, h, 3.0, u8::max);
     assert_eq!(b.read(view), want);
 }

@@ -166,9 +166,8 @@ impl Kind {
             Kind::BlackWhite => { let mut v = BW_DEFAULTS.to_vec(); v.push(0.0); v }
             Kind::Invert | Kind::Sepia | Kind::FindEdges => vec![100.0],
             Kind::Opacity => vec![50.0],
-            Kind::Posterize => vec![4.0],
+            Kind::Posterize | Kind::GaussianBlur => vec![4.0],
             Kind::Threshold => vec![128.0],
-            Kind::GaussianBlur => vec![4.0],
             Kind::UnsharpMask => vec![80.0, 2.0, 0.0],
             Kind::Thicken | Kind::Thin => vec![1.0, 0.0],
             Kind::Emboss => vec![135.0, 3.0, 100.0],

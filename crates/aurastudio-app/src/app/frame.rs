@@ -20,7 +20,7 @@ impl App {
     /// Shortest time between two frames showing new paint: the paint
     /// thread merges once per canvas frame, a little early is let through
     /// (two clocks: waiting for the next one would show it a frame late).
-    pub(super) fn paint_frame(&self) -> Duration { paint_thread::canvas_frame() * 3 / 4 }
+    pub(super) fn paint_frame() -> Duration { paint_thread::canvas_frame() * 3 / 4 }
 
     /// Interface size and 100 % zoom meaning, from the settings.
     pub(super) fn apply_settings(&mut self) {
@@ -141,7 +141,7 @@ impl App {
     /// queue is empty: pen packets kept it from ever coming). New paint:
     /// as soon as it is merged; else one frame per refresh.
     pub(super) fn render_if_due(&mut self) {
-        let min = if self.painted { self.paint_frame() } else { self.frame_interval };
+        let min = if self.painted { Self::paint_frame() } else { self.frame_interval };
         if !self.painted && !self.redraw_wanted { return; }
         if self.last_frame.is_some_and(|t| t.elapsed() < min) { return; }
         self.redraw_wanted = false;

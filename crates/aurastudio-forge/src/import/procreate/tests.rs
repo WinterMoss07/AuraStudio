@@ -110,7 +110,7 @@ fn plist_damage_is_an_error_not_a_panic() {
     let t = b.len() - 32;
     b[t + 8..t + 16].copy_from_slice(&u64::MAX.to_be_bytes());
     assert!(Plist::parse(&b).is_err());
-    let mut b = bytes.clone();
+    let mut b = bytes;
     b[t + 16..t + 24].copy_from_slice(&99u64.to_be_bytes());
     assert!(Plist::parse(&b).is_err());
     assert!(Plist::parse(b"bplist00").is_err() && Plist::parse(b"not a plist at all, really not").is_err());

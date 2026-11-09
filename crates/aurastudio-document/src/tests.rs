@@ -315,7 +315,7 @@ fn copy_paste_selected_pixels() {
     assert_eq!(px(&d, new, 12, 12), [9, 8, 7, 255]);
     assert_eq!(px(&d, new, 28, 28)[3], 0, "outside the lasso");
     // Partly off the frame: kept there (in the canvas's margin).
-    let off = Clip { rect: clip.rect.moved(-15, 50), ..clip.clone() };
+    let off = Clip { rect: clip.rect.moved(-15, 50), ..clip };
     let o = d.apply(Edit::Paste(off)).made.unwrap();
     assert_eq!(px(&d, o, -3, 62), [9, 8, 7, 255]);
     d.apply(Edit::Undo);
@@ -343,7 +343,7 @@ fn transforms_move_apply_undo_cancel() {
     d.apply(Edit::TransformBegin(vec![id]));
     d.apply(Edit::TransformPreview { warp: Warp { quad: corners(Rect::new(0, 0, 5, 5)), mesh: None }, interp: Interp::Bilinear });
     let n = d.history().undo_len();
-    d.apply(Edit::TransformApply { warp: moved.clone(), interp: Interp::Bicubic });
+    d.apply(Edit::TransformApply { warp: moved, interp: Interp::Bicubic });
     assert!(!d.transforming());
     assert_eq!((d.history().undo_len(), d.history().undo_label()), (n + 1, Some("Transform")));
     assert_eq!(px(&d, id, 55, 65), [0, 0, 255, 255]);

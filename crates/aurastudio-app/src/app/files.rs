@@ -182,7 +182,7 @@ impl App {
                         let d = Document::from_stack(id, &name, stack, DocType::Illustration);
                         match aurastudio_file::image_dpi(&path) { Some(dpi) => d.with_dpi(dpi), None => d }
                     })
-            }.map_err(|e| e.to_string())
+            }
         });
     }
 
@@ -428,7 +428,7 @@ impl App {
         let Some(path) = recovery_path() else { return };
         let (id, max) = (self.workspace.reserve_id(), self.max_canvas());
         self.read_document(Opening::Recovery, move || {
-            let snap = aurastudio_file::open(&path, max).map_err(|e| e.to_string())?;
+            let snap = aurastudio_file::open(&path, max)?;
             let origin = snap.origin.clone();
             let name = origin.as_deref().map_or_else(|| "Untitled".into(), aurastudio_file::doc_name);
             let mut doc = Document::from_snapshot(id, &name, snap);

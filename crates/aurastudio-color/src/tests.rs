@@ -76,7 +76,7 @@ fn soft_proof_marks_what_the_output_cannot_show() {
     assert!(gray(lut.apply_u8([200, 30, 90])));
     // Keys change with what the table depends on.
     let k = s.key();
-    assert_eq!(k, s.clone().key());
+    assert_eq!(k, s.key());
     assert_ne!(k, DisplaySetup { intent: Intent::Saturation, ..s }.key());
 }
 

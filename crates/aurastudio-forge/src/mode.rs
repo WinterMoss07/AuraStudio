@@ -198,11 +198,11 @@ fn channel(mode: PaintMode, cb: f32, cs: f32, hi: f32) -> f32 {
                 (cb / (1.0 - cs)).min(1.0)
             }
         }
-        // (The layers' modes: returned above.)
+        // The source itself; non-separable modes are handled by `blend_rgb`
+        // (and the layers' modes were returned above).
         PaintMode::Darken | PaintMode::Multiply | PaintMode::ColorBurn | PaintMode::Lighten | PaintMode::Screen | PaintMode::ColorDodge
-        | PaintMode::Overlay | PaintMode::HardLight | PaintMode::Difference | PaintMode::Subtract => cs,
-        // The source itself; non-separable modes are handled by `blend_rgb`.
-        PaintMode::Normal | PaintMode::Dissolve | PaintMode::DarkerColor | PaintMode::LighterColor | PaintMode::Hue | PaintMode::Saturation | PaintMode::Color | PaintMode::Luminosity => cs,
+        | PaintMode::Overlay | PaintMode::HardLight | PaintMode::Difference | PaintMode::Subtract
+        | PaintMode::Normal | PaintMode::Dissolve | PaintMode::DarkerColor | PaintMode::LighterColor | PaintMode::Hue | PaintMode::Saturation | PaintMode::Color | PaintMode::Luminosity => cs,
     }
 }
 

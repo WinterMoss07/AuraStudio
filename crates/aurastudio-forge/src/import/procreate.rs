@@ -126,7 +126,7 @@ pub fn read_procreate(bytes: &[u8], group: &str) -> Result<ProcreateImport, Stri
 /// The brush folders of a `.brushset` (`"<uuid>/"`), in the set's order.
 fn brush_dirs(zip: &ZipReader, out: &mut ProcreateImport) -> Vec<String> {
     let has = |dir: &str| zip.find(&format!("{dir}/Brush.archive")).is_some();
-    let listed = zip.find("brushset.plist").map(|e| zip.read(e, MAX_SET_PLIST).map_err(|e| e.to_string()).and_then(|x| set_plist(&x)));
+    let listed = zip.find("brushset.plist").map(|e| zip.read(e, MAX_SET_PLIST).and_then(|x| set_plist(&x)));
     let mut seen = std::collections::HashSet::new();
     let mut dirs = Vec::new();
     match listed {
@@ -400,9 +400,9 @@ fn settings(a: &Archive, unmapped: &mut BTreeSet<&'static str>) -> BrushSettings
 }
 
 /// `f(luminance, alpha)` for each pixel (Rec. 601 luminance), in one pass.
-fn luma_alpha(img: &Image, f: impl Fn(f32, f32) -> f32) -> Result<Vec<f32>, String> {
+fn luma_alpha(img: &Image, f: impl Fn(f32, f32) -> f32) -> Vec<f32> {
     let px = img.to_rgba32f();
-    Ok(px.pixels().map(|p| f(0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2], p[3])).collect())
+    px.pixels().map(|p| f(0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2], p[3])).collect()
 }
 
 fn tile(w: u32, h: u32, v: &[f32]) -> GrayTile {
@@ -419,7 +419,7 @@ struct Mapper<'a> {
 impl Mapper<'_> {
     fn image(&self, dir: &str, file: &str) -> Result<Option<Image>, String> {
         let Some(e) = self.zip.find(&format!("{dir}{file}")) else { return Ok(None) };
-        let bytes = self.zip.read(e, MAX_IMAGE_FILE).map_err(|e| e.to_string())?;
+        let bytes = self.zip.read(e, MAX_IMAGE_FILE)?;
         let mut r = image::ImageReader::new(std::io::Cursor::new(&bytes[..]));
         r.set_format(image::ImageFormat::Png);
         let mut limits = image::Limits::default();
@@ -464,14 +464,14 @@ impl Mapper<'_> {
         notes: &mut Vec<String>,
         unmapped: &mut BTreeSet<&'static str>,
     ) -> Result<Option<(String, BrushSettings)>, String> {
-        let bytes = self.zip.read_by_name(&format!("{dir}Brush.archive"), MAX_ARCHIVE).map_err(|e| e.to_string())?;
+        let bytes = self.zip.read_by_name(&format!("{dir}Brush.archive"), MAX_ARCHIVE)?;
         let a = Archive::parse(&bytes)?;
         let name = a.text("name").map(|n| capped(n.trim())).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Brush {}", index + 1));
         let mut b = settings(&a, unmapped);
         match self.image(dir, "Shape.png")? {
             Some(img) => {
                 let invert = a.flag("shapeInverted");
-                let v = luma_alpha(&img, |l, al| (if invert { 1.0 - l } else { l }) * al)?;
+                let v = luma_alpha(&img, |l, al| (if invert { 1.0 - l } else { l }) * al);
                 let (iw, ih) = (img.width(), img.height());
                 drop(img);
                 let (w, h, v) = fit(iw, ih, v, MAX_TIP_EDGE);
@@ -489,7 +489,7 @@ impl Mapper<'_> {
             Ok(Some(img)) => {
                 // Transparent grain lets paint through: white, or black when the grain is inverted.
                 let back = if a.flag("textureInverted") { 0.0 } else { 1.0 };
-                let v = luma_alpha(&img, |l, al| l * al + back * (1.0 - al))?;
+                let v = luma_alpha(&img, |l, al| l * al + back * (1.0 - al));
                 let (iw, ih) = (img.width(), img.height());
                 drop(img);
                 let (w, h, v) = fit(iw, ih, v, MAX_PATTERN_EDGE);

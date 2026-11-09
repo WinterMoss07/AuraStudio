@@ -202,9 +202,8 @@ fn no_file_is_too_big() {
         let rel = f.strip_prefix(crates_dir()).unwrap().to_string_lossy().replace('\\', "/");
         match TOO_BIG.iter().find(|(p, _)| *p == rel) {
             Some((_, listed)) if n > *listed => errors.push(format!("{rel}: {n} lines, more than when it was listed ({listed})")),
-            Some(_) => {}
             None if n > MAX_LINES => errors.push(format!("{rel}: {n} lines of code (limit {MAX_LINES}): split it by job")),
-            None => {}
+            _ => {}
         }
     }
     assert!(errors.is_empty(), "\n{}", errors.join("\n"));

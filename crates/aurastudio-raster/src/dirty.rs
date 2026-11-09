@@ -58,7 +58,7 @@ impl DirtyTiles {
     /// Add every tile of `o` (same tile size; another is ignored).
     pub fn union(&mut self, o: &DirtyTiles) {
         if o.tile != self.tile { return; }
-        for (tx, ty) in o.tiles().collect::<Vec<_>>() { self.set(tx, ty); }
+        for (tx, ty) in o.tiles() { self.set(tx, ty); }
     }
 
     /// Whether some tile touching `r` is in the set.

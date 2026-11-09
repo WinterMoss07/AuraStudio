@@ -331,7 +331,7 @@ fn from_parts_checks() {
     dup.push(dup[0].clone());
     assert!(LayerStack::from_parts(8, 8, 32, dup, 1).is_err());
     assert!(LayerStack::from_parts(8, 8, 32, Vec::new(), 1).is_err());
-    assert!(LayerStack::from_parts(9, 8, 32, s.root.clone(), 1).is_err(), "another frame");
+    assert!(LayerStack::from_parts(9, 8, 32, s.root, 1).is_err(), "another frame");
 }
 
 #[test]

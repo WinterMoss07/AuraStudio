@@ -463,7 +463,7 @@ fn smoothing_modes() {
     assert!(dev(&sm[5..sm.len() - 1]) < dev(&zig) * 0.5);
     // Catch-up on end finishes at the last input point; without it, the stroke ends short.
     assert_eq!(sm.last().map(|p| (p.x, p.y)), zig.last().map(|p| (p.x, p.y)));
-    let no = smooth_points(&Smoothing { catch_up_on_end: false, ..cfg.clone() }, 1.0, &zig);
+    let no = smooth_points(&Smoothing { catch_up_on_end: false, ..cfg }, 1.0, &zig);
     assert!(no.last().unwrap().x < zig.last().unwrap().x - 1.0);
     // Pulled string: jitter smaller than the string moves nothing; the brush trails by the string.
     let ps = Smoothing { amount: 0.2, pulled_string: true, catch_up_on_end: false, ..Default::default() };
