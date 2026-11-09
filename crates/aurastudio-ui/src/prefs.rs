@@ -80,6 +80,9 @@ pub struct Prefs {
     pub brush_outline:    bool,
     /// Mouse click debounce, ms (0: off).
     pub debounce_ms:      u32,
+    /// The tablet's pressure curve, for every brush (Krita's): its
+    /// points, input then output, 0..1.
+    pub pressure_curve:   Vec<[f32; 2]>,
     // Files.
     /// Unsaved work goes to the recovery file this long after it changed
     /// (0: never).
@@ -104,7 +107,7 @@ impl Default for Prefs {
             ui_scale: 1.0, open_maximized: true,
             hidpi_scaling: true, color_managed: true, perceptual: true, renderer: Renderer::default(),
             canvas_quality: CanvasQuality::High, smooth_zoom_in: false, vsync: false, canvas_fps: 60,
-            brush_outline: true, debounce_ms: 20,
+            brush_outline: true, debounce_ms: 20, pressure_curve: vec![[0.0, 0.0], [1.0, 1.0]],
             autosave_minutes: 5,
             onion_before: [255, 0, 0], onion_after: [0, 255, 0], onion_thickness: 50, onion_playback: false, onion_by_frames: false,
         }
@@ -138,6 +141,7 @@ impl Prefs {
                 "canvas_fps" => if let Ok(v) = v.parse::<u32>() { p.canvas_fps = v.clamp(CANVAS_FPS.0, CANVAS_FPS.1) },
                 "brush_outline" => p.brush_outline = b,
                 "click_debounce_ms" => if let Ok(v) = v.parse::<u32>() { p.debounce_ms = v.min(200) },
+                "pressure_curve" => if let Some(c) = parse_curve(v) { p.pressure_curve = c },
                 "autosave_minutes" => if let Ok(v) = v.parse::<u32>() { p.autosave_minutes = v.min(120) },
                 "onion_before" => if let Some(c) = parse_rgb(v) { p.onion_before = c },
                 "onion_after" => if let Some(c) = parse_rgb(v) { p.onion_after = c },
@@ -152,15 +156,25 @@ impl Prefs {
 
     pub fn to_text(&self) -> String {
         format!(
-            "ui_scale={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\ncanvas_fps={}\nbrush_outline={}\nclick_debounce_ms={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\nonion_by={}\n",
+            "ui_scale={}\nopen_maximized={}\nhidpi_image_scaling={}\ncolor_managed={}\nperceptual={}\nrenderer={}\ncanvas_quality={}\nsmooth_zoom_in={}\nvsync={}\ncanvas_fps={}\nbrush_outline={}\nclick_debounce_ms={}\npressure_curve={}\nautosave_minutes={}\nonion_before={}\nonion_after={}\nonion_thickness={}\nonion_playback={}\nonion_by={}\n",
             self.ui_scale, self.open_maximized, self.hidpi_scaling, self.color_managed,
             self.perceptual, self.renderer.key(),
             if self.canvas_quality == CanvasQuality::Standard { "standard" } else { "high" }, self.smooth_zoom_in, self.vsync, self.canvas_fps,
-            self.brush_outline, self.debounce_ms, self.autosave_minutes,
+            self.brush_outline, self.debounce_ms, self.pressure_curve.iter().map(|p| format!("{},{}", p[0], p[1])).collect::<Vec<_>>().join(";"), self.autosave_minutes,
             hex(self.onion_before), hex(self.onion_after), self.onion_thickness, self.onion_playback,
             if self.onion_by_frames { "frames" } else { "sheets" },
         )
     }
+}
+
+/// `x,y;x,y;...`, at least two points, all in 0..1.
+fn parse_curve(v: &str) -> Option<Vec<[f32; 2]>> {
+    let pts: Option<Vec<[f32; 2]>> = v.split(';').map(|p| {
+        let (x, y) = p.split_once(',')?;
+        let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+        ((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)).then_some([x, y])
+    }).collect();
+    pts.filter(|p| p.len() >= 2)
 }
 
 /// `#rrggbb`.
@@ -316,6 +330,16 @@ fn brushes(ui: &mut Ui, p: &mut Prefs) {
         }
     });
     note(ui, "Ignores a worn mouse button's double release.");
+    title(ui, "Tablet pressure");
+    ui.horizontal(|ui| {
+        crate::curve_edit::curve_editor(ui, "pressure_curve", &mut p.pressure_curve, 150.0, "Pen pressure");
+        ui.vertical(|ui| {
+            if ui.button("Straight").clicked() { p.pressure_curve = vec![[0.0, 0.0], [1.0, 1.0]]; }
+            if ui.button("Soft").clicked() { p.pressure_curve = vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]]; }
+            if ui.button("Firm").clicked() { p.pressure_curve = vec![[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]]; }
+        });
+    });
+    note(ui, "How hard you press, as every brush reads it. Up: lighter pressure is enough.");
 }
 
 fn animation(ui: &mut Ui, p: &mut Prefs) {
@@ -360,7 +384,8 @@ mod tests {
     fn prefs_round_trip_and_old_files_read() {
         let p = Prefs { ui_scale: 1.25, perceptual: false, debounce_ms: 40, autosave_minutes: 0, renderer: Renderer::OpenGl,
             canvas_quality: CanvasQuality::Standard, smooth_zoom_in: true, vsync: true, canvas_fps: 144,
-            onion_before: [12, 200, 255], onion_after: [250, 128, 0], onion_thickness: 73, onion_playback: true, onion_by_frames: true, ..Prefs::default() };
+            onion_before: [12, 200, 255], onion_after: [250, 128, 0], onion_thickness: 73, onion_playback: true, onion_by_frames: true,
+            pressure_curve: vec![[0.0, 0.0], [0.25, 0.5], [1.0, 1.0]], ..Prefs::default() };
         assert_eq!(Prefs::from_text(&p.to_text()), p);
         // A 0.7 settings file.
         let old = Prefs::from_text("hidpi_image_scaling=false\nui_scale=0.85\nclick_debounce_ms=30\n");

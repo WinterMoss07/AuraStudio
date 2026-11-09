@@ -1,10 +1,13 @@
-//! Tool options docker: the brush's name, then its settings as full-width
-//! sliders (label and value inside: fits a narrow dock).
+//! Tool options docker: the brush's name, then the settings it shows
+//! (chosen with the eyes of the Advanced tool options docker, kept per
+//! brush), each a full-width slider with its pen inputs' icon (CSP).
 
 use egui::{RichText, Ui};
 
-use crate::widgets::{paint_mode_combo, percent_slider, size_slider, smoothing_slider, spacing_slider};
-use crate::{theme, Model};
+use crate::brush_settings::{by_id, row, shown};
+use crate::dockers::Tab;
+use crate::widgets::{icon_button, Icon};
+use crate::Model;
 
 pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
     if !m.tool.paints() {
@@ -13,20 +16,19 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
     }
     let Some(p) = m.presets.get(*m.preset) else { return };
     let name = if m.tool.is_shape() { format!("{} · {}", m.tool.name(), p.name) } else { p.name.clone() };
-    ui.label(RichText::new(name).strong());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(name).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if icon_button(ui, Icon::FilterLayer, "Advanced tool options: every setting of the brush", true) { a.show_docker = Some(Tab::BrushEditor); }
+        });
+    });
     ui.add_space(4.0);
     let w = ui.available_width();
-    size_slider(ui, "dock_size", m.brush, w);
-    percent_slider(ui, "dock_opacity", "Opacity", &mut m.brush.opacity, w);
-    percent_slider(ui, "dock_flow", "Flow", &mut m.brush.flow, w);
-    // Hardness shapes the round tip only (an imported bitmap tip has its own edge).
-    if matches!(m.brush.tip, aurastudio_forge::TipShape::Round) { percent_slider(ui, "dock_hardness", "Hardness", &mut m.brush.hardness, w); }
-    spacing_slider(ui, "dock_spacing", m.brush, w);
-    smoothing_slider(ui, "dock_smoothing", m.brush, w);
+    for id in shown(m.brush) {
+        // (An eraser has no blend mode.)
+        if id == "blend" && m.brush.erase { continue; }
+        if let Some(st) = by_id(id) { row(ui, st, m.brush, w, None); }
+    }
     if m.tool.is_shape() { crate::tools::shape_options(ui, m); }
     crate::tools::stay_inside_option(ui, m);
-    if m.brush.erase { return; }
-    ui.add_space(2.0);
-    ui.label(RichText::new("Blend mode").small().color(theme::TEXT_WEAK));
-    paint_mode_combo(ui, "brush_blend_dock", &mut m.brush.mode, w);
 }

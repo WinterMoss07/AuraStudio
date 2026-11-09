@@ -2,6 +2,7 @@
 //! lends it through `Model`; the data itself lives in the data crates
 //! (aurastudio-layers, aurastudio-forge...), which know nothing about egui.
 
+pub mod brush_editor;
 pub mod canvas;
 pub mod cel_template;
 pub mod color;
@@ -15,11 +16,11 @@ use egui_dock::{DockState, NodeIndex, TabViewer};
 use crate::{Actions, Model, Notice};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Tab { Color, ToolOptions, Tools, Layers, Canvas, CelTemplate }
+pub enum Tab { Color, ToolOptions, Tools, Layers, Canvas, CelTemplate, BrushEditor }
 
 impl Tab {
     /// In the Window menu's order.
-    pub const ALL: [Tab; 6] = [Tab::Color, Tab::Tools, Tab::ToolOptions, Tab::Layers, Tab::Canvas, Tab::CelTemplate];
+    pub const ALL: [Tab; 7] = [Tab::Color, Tab::Tools, Tab::ToolOptions, Tab::BrushEditor, Tab::Layers, Tab::Canvas, Tab::CelTemplate];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -29,6 +30,7 @@ impl Tab {
             Tab::Layers      => "Layers",
             Tab::Canvas      => "Canvas",
             Tab::CelTemplate => "Cel template",
+            Tab::BrushEditor => "Advanced tool options",
         }
     }
 
@@ -39,6 +41,7 @@ impl Tab {
             Tab::Tools => Some(Tab::Color),
             Tab::Layers => Some(Tab::Canvas),
             Tab::Canvas => Some(Tab::Layers),
+            Tab::BrushEditor => Some(Tab::ToolOptions),
             Tab::ToolOptions | Tab::CelTemplate => None,
         }
     }
@@ -118,6 +121,7 @@ impl TabViewer for Viewer<'_, '_> {
             Tab::Layers      => layers::show(ui, self.layers, self.notice, self.m, self.a),
             Tab::Canvas      => canvas::show(ui, self.m, self.a),
             Tab::CelTemplate => cel_template::show(ui, self.cel, self.m),
+            Tab::BrushEditor => brush_editor::show(ui, self.m),
         }).response.rect;
         // Body margins included.
         self.content.insert(*tab, content.height() + 16.0);
@@ -127,7 +131,7 @@ impl TabViewer for Viewer<'_, '_> {
 
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
         // The lists scroll themselves; the color docker keeps its size.
-        [false, !matches!(tab, Tab::Layers | Tab::Tools | Tab::Color)]
+        [false, !matches!(tab, Tab::Layers | Tab::Tools | Tab::Color | Tab::BrushEditor)]
     }
 }
 
@@ -143,8 +147,8 @@ mod tests {
     #[test]
     fn dockers_hide_and_come_back() {
         let mut dock = default_dock();
-        // (The Cel template: hidden at first, shown in animation work.)
-        for tab in Tab::ALL { assert_eq!(is_shown(&dock, tab), tab != Tab::CelTemplate); }
+        // (The Cel template and the brush editor: hidden at first.)
+        for tab in Tab::ALL { assert_eq!(is_shown(&dock, tab), !matches!(tab, Tab::CelTemplate | Tab::BrushEditor)); }
         set_shown(&mut dock, Tab::Tools, false);
         assert!(!is_shown(&dock, Tab::Tools) && is_shown(&dock, Tab::Color));
         set_shown(&mut dock, Tab::Tools, true);

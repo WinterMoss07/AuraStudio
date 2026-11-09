@@ -388,42 +388,6 @@ mod size_curve {
     }
 }
 
-/// Brush size as a diameter: 1..1000 px, 100 at the middle.
-pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
-    let max = crate::MAX_BRUSH_SIZE as f32;
-    let d = brush.size.round().clamp(1.0, max);
-    if let Some(v) = fill_slider(ui, id, pixels("Size", 1.0..=max, Some(100.0)), d, width) {
-        // Whole diameters, odd ones included (1, 3, 5 px...); a Dual
-        // Brush keeps its proportion.
-        brush.resize_with_dual_brush(v.round().max(1.0));
-    }
-}
-
-/// A 0..1 value as a 0..100 % slider (the brush's opacity, flow,
-/// hardness).
-pub fn percent_slider(ui: &mut Ui, id: &str, label: &str, value: &mut f32, width: f32) {
-    if let Some(v) = fill_slider(ui, id, percent(label), (*value * 100.0).round(), width) {
-        *value = v / 100.0;
-    }
-}
-
-/// Dab spacing, in % of the diameter (Photoshop's 1..1000 %).
-pub fn spacing_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
-    let sp = (brush.spacing * 100.0).round().clamp(1.0, 1000.0);
-    if let Some(v) = fill_slider(ui, id, Fill { label: "Spacing", range: 1.0..=1000.0, mid: Some(25.0), format: &|v| format!("{v:.0} %") }, sp, width) {
-        brush.spacing = v.round().max(1.0) / 100.0;
-    }
-}
-
-pub fn smoothing_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
-    let s = &mut brush.smoothing;
-    let a = if s.enabled { (s.amount * 100.0).round() } else { 0.0 };
-    if let Some(v) = fill_slider(ui, id, percent("Smoothing"), a, width) {
-        s.amount = v / 100.0;
-        s.enabled = v > 0.0;
-    }
-}
-
 /// The brush's blend modes (Photoshop's, then paint.net's).
 pub fn paint_mode_combo(ui: &mut Ui, id: &str, mode: &mut aurastudio_forge::PaintMode, width: f32) -> bool {
     let mut changed = false;

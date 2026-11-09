@@ -6,6 +6,8 @@ mod animation;
 mod atlas;
 mod memory;
 mod bars;
+mod brush_settings;
+mod curve_edit;
 mod thumbnail;
 mod dock_layout;
 mod dockers;

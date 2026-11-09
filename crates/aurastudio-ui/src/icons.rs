@@ -30,6 +30,8 @@ pub enum Icon {
     Film, Minus, Camera,
     Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, InsertFrame, RemoveFrame,
     SwitchView, Folders,
+    // Brush settings: a setting's pen inputs.
+    Dynamics,
 }
 
 impl Icon {
@@ -46,6 +48,7 @@ impl Icon {
             Icon::Rectangle  => svg!("../icons/square.svg"),
             Icon::Ellipse    => svg!("../icons/circle.svg"),
             Icon::Arc        => svg!("../icons/spline.svg"),
+            Icon::Dynamics   => svg!("../icons/activity.svg"),
             Icon::FileNew    => svg!("../icons/file-plus.svg"),
             Icon::FileOpen | Icon::FolderOpen => svg!("../icons/folder-open.svg"),
             Icon::Save       => svg!("../icons/save.svg"),
@@ -291,7 +294,7 @@ mod tests {
             Close, FileNew, FileOpen, Save, Copy, Paste, Pencil, Ink, Charcoal, Paint, Watercolor, Airbrush, Blend,
             Effects, Misc, Plus, Shapes, EllipseSelect, PolySelect, Wand, Transform, SelReplace, SelAdd, SelSubtract, SelIntersect,
             Perspective, Warp, RotateLeft, RotateRight, FlipH, FlipV, Film, Minus, Camera,
-            Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, InsertFrame, RemoveFrame, SwitchView, Folders]
+            Play, Pause, SkipBack, SkipForward, StepBack, StepForward, Repeat, InsertFrame, RemoveFrame, SwitchView, Folders, Dynamics]
     }
 }
 

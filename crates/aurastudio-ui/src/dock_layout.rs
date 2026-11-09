@@ -31,6 +31,7 @@ impl DockLayout {
             // Lists that scroll by themselves: a few rows are enough.
             Tab::Layers => 140.0,
             Tab::Tools => 150.0,
+            Tab::BrushEditor => 180.0,
             // Everything else: its whole content, or a guess until drawn.
             // (+6: slack, so no scroll bar shows at the minimum.)
             _ => self.content.get(&tab).map_or(120.0, |h| h + 6.0),

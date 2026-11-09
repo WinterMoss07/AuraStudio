@@ -33,6 +33,8 @@ impl App {
         gpu.set_smooth_zoom_in(self.prefs.smooth_zoom_in);
         gpu.set_vsync(self.prefs.vsync);
         self.input.set_debounce(Duration::from_millis(self.prefs.debounce_ms as u64));
+        let curve: Vec<(f32, f32)> = self.prefs.pressure_curve.iter().map(|p| (p[0], p[1])).collect();
+        self.input.set_curve(aurastudio_core::TransferCurve::new(&curve));
         self.update_cursor();
         self.request_redraw();
     }
