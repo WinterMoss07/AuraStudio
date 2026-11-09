@@ -26,7 +26,7 @@ mod tree;
 pub use anim::{Anim, Cel, Column, FolderKind, Onto, Shift, Target, MAX_FRAME};
 pub use edit::Place;
 pub use fill::{Area, FillParams, FillSource, Refer};
-pub use node::{FilterLayer, Folder, FolderBlend, Footprint, Ghost, Layer, MaskLayer, Node, Pick, Props, LABELS};
+pub use node::{ghosts_in, FilterLayer, Folder, FolderBlend, Footprint, Ghost, Layer, MaskLayer, Node, Pick, Props, LABELS};
 pub use rows::Row;
 pub use stack::{LayerStack, Start};
 pub use tree::TreeState;

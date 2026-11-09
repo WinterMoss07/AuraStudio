@@ -163,8 +163,9 @@ impl LayerStack {
     /// Its folder's id (0: the top level) and its index there, bottom to top.
     pub fn place_of(&self, id: u64) -> Option<(u64, usize)> {
         let path = self.path(id)?;
-        let (&i, _) = path.split_last()?;
-        Some((self.parent_of(id).unwrap_or(0), i))
+        let (&i, up) = path.split_last()?;
+        let parent = up.split_last().and_then(|(last, rest)| siblings(&self.root, rest)?.get(*last).map(Node::id));
+        Some((parent.unwrap_or(0), i))
     }
 
     pub fn active_id(&self) -> u64 { self.active }
@@ -277,9 +278,7 @@ impl LayerStack {
     pub fn ghosts(&self) -> &[(u64, Vec<Ghost>)] { &self.ghosts }
 
     /// The ghosts of animation folder `folder`, if any.
-    pub fn ghosts_of(&self, folder: u64) -> Option<&[Ghost]> {
-        self.ghosts.iter().find(|x| x.0 == folder).map(|x| &x.1[..]).filter(|v| !v.is_empty())
-    }
+    pub fn ghosts_of(&self, folder: u64) -> Option<&[Ghost]> { crate::node::ghosts_in(&self.ghosts, folder) }
 
     /// New ghosts; returns where the merge changes (the sheets that
     /// appear or go), `None` if the ghosts are the same.

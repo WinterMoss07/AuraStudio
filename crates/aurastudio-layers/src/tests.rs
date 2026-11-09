@@ -189,7 +189,6 @@ fn strokes_go_through_raster_and_undo_by_patch() {
         st.prepare(r(0, 0, 10, 10));
         let sp = st.span_mut(3, 3, 1);
         sp.pixels[0] = [255, 0, 0, 255];
-        sp.mask[0] = 255;
         st.end()
     };
     assert_eq!(s.image(id).unwrap().pixel(3, 3), [255, 0, 0, 255]);

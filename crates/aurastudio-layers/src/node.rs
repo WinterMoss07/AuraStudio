@@ -194,6 +194,12 @@ pub struct Ghost {
     pub opacity: f32,
 }
 
+/// The ghosts of animation folder `folder` in a ghost list (folder →
+/// ghosts), if any.
+pub fn ghosts_in(list: &[(u64, Vec<Ghost>)], folder: u64) -> Option<&[Ghost]> {
+    list.iter().find(|x| x.0 == folder).map(|x| &x.1[..]).filter(|v| !v.is_empty())
+}
+
 impl Ghost {
     /// `cs` tinted for this ghost (straight color, 0..1): OpenToonz's
     /// raster colorScale, `1 − (1 − c)(1 − tint)`: black ink takes the
