@@ -314,7 +314,7 @@ fn copy_paste_selected_pixels() {
     assert_eq!(d.stack().active_id(), new);
     assert_eq!(px(&d, new, 12, 12), [9, 8, 7, 255]);
     assert_eq!(px(&d, new, 28, 28)[3], 0, "outside the lasso");
-    // Partly off the frame: kept there (the canvas is unbounded).
+    // Partly off the frame: kept there (in the canvas's margin).
     let off = Clip { rect: clip.rect.moved(-15, 50), ..clip.clone() };
     let o = d.apply(Edit::Paste(off)).made.unwrap();
     assert_eq!(px(&d, o, -3, 62), [9, 8, 7, 255]);

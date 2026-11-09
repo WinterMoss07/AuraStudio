@@ -3,8 +3,8 @@
 //! where the implementer wants (a tile edge for `raster`, nowhere for a
 //! flat buffer), so tile size and layout stay private to the storage.
 //! Generic over the pixel type (8-bit RGBA by default). Coordinates are
-//! signed: the canvas is unbounded, the document's frame only says what
-//! the document shows by default.
+//! signed: the canvas's margin lies past its frame (the document keeps
+//! writes inside it, see `LayerStack::area`).
 
 use crate::geom::Rect;
 use crate::pixel::{Pixel, Rgba8};

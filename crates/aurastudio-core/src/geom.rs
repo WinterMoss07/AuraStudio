@@ -1,8 +1,8 @@
 //! Rectangles, points and 2D affine maps, in pixels.
 
 /// A rectangle of pixels: corners `x0, y0` (included) to `x1, y1`
-/// (excluded). Signed, so a layer moved partly off the canvas or the
-/// camera's unbounded canvas need no other type. Empty as soon as
+/// (excluded). Signed, so a layer moved partly off the frame (into the
+/// canvas's margin) needs no other type. Empty as soon as
 /// `x1 <= x0` or `y1 <= y0`; every operation accepts empty rects.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Rect {

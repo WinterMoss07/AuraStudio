@@ -3,6 +3,32 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.21.0 — 2026-11-09
+
+Memory: the canvas is bounded, caches that cost more than they saved are
+gone. Includes 0.20.4.
+
+**Canvas**
+- No more infinite canvas: the canvas is the frame plus a margin on each
+  side (10 % by default, set in the Canvas docker, up to 100 %). Strokes,
+  moves, pastes and filters stop at the margin. Older files keep what is
+  within one frame of each side, then are cut to the margin.
+- Tiles are found in a plain array of small chunks (128 px): no hashing,
+  a few KB of table per sheet.
+
+**Memory**
+- GPU uploads: one submission per frame (each closed a 1 MB staging
+  buffer: 11 of them after five strokes); the staging ring is let go
+  after 2 s without uploads.
+- Two-color canvas pages (ink on paper) no longer keep a copy on the
+  CPU (64 KB a page): made full on the GPU when needed.
+- Transform source: 4 bytes a pixel instead of 8.
+- Removed: the tile pool and the animation folder cache (no gain,
+  measured); the stroke cache below three layers around the painted
+  one.
+- Recent file thumbnails are cached on disk: the home screen no longer
+  decodes each file whole.
+
 ## 0.20.4 — 2026-11-09
 
 Bug fixes by cause: heavy work that blocked painting or the interface,

@@ -123,8 +123,10 @@ pub fn run(seed: u64, ops: u32) {
             }
             8 => { s.freeze(rand_rect(&mut r, w, h)); if r.chance(0.3) { s.thaw(); } }
             9 => {
+                // (Loading keeps what lies within a frame of each side: the
+                // frame's pixels at least come back.)
                 let back = Image::load(&s.save(), 10_000);
-                assert!(back.as_ref().is_some_and(|b| *b == s), "seed {seed} op {op}: save / load");
+                assert!(back.as_ref().is_some_and(|b| b.read(b.rect()) == s.read(s.rect())), "seed {seed} op {op}: save / load");
                 if let Some(b) = back { s = b; history.clear(); }
             }
             10 => {

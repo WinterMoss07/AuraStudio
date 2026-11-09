@@ -16,8 +16,8 @@ fn sample() -> (Snapshot, u64, u64) {
     let mut s = LayerStack::new(96, 64, 32, Start::Paper);
     let ink = s.active_id();
     paint(&mut s, ink, Rect::new(10, 10, 40, 30), [200, 10, 10, 255]);
-    // Past the frame too: the canvas is unbounded.
-    paint(&mut s, ink, Rect::new(-50, -20, -10, 5), [1, 2, 3, 255]);
+    // Past the frame too, in the margin.
+    paint(&mut s, ink, Rect::new(-9, -6, -1, 5), [1, 2, 3, 255]);
     let folder = s.add_folder("Shading");
     let shade = s.add_layer("Shade");
     if let Some(Node::Layer(l)) = s.node_mut(shade) { (l.blend, l.opacity) = (BlendMode::Multiply, 0.5); }
@@ -61,6 +61,19 @@ fn tree(s: &LayerStack) -> Vec<String> { let mut v = Vec::new(); describe(&s.roo
 
 fn merged(s: &LayerStack) -> Vec<Rgba8> { aurastudio_compose::merge(s, s.frame(), Default::default()) }
 
+/// Pixels past the margin (an older, unbounded file) are cut on open.
+#[test]
+fn pixels_past_the_margin_are_cut_on_open() {
+    let (mut snap, ink, _) = sample();
+    paint(&mut snap.stack, ink, Rect::new(-50, -20, -10, 5), [1, 2, 3, 255]);
+    let back = roundtrip(&snap);
+    let area = back.stack.area();
+    let Some(Node::Layer(l)) = back.stack.node(ink) else { panic!("the layer") };
+    let b = l.surface.pixel_bounds().expect("pixels");
+    assert!(area.contains_rect(&b), "{b:?} past {area:?}");
+    assert_eq!(l.surface.pixel(-9, -6), [1, 2, 3, 255], "the margin is kept");
+}
+
 #[test]
 fn save_and_open_give_the_same_document() {
     let (snap, ink, _) = sample();
@@ -68,8 +81,8 @@ fn save_and_open_give_the_same_document() {
     assert_eq!((back.stack.width, back.stack.height, back.stack.tile, back.dpi), (96, 64, 32, 600.0));
     assert_eq!(tree(&back.stack), tree(&snap.stack));
     assert_eq!(back.stack.active_id(), snap.stack.active_id());
-    // Pixels past the frame came along.
-    assert_eq!(back.stack.image(ink).unwrap().pixel(-30, 0), [1, 2, 3, 255]);
+    // Pixels in the margin came along.
+    assert_eq!(back.stack.image(ink).unwrap().pixel(-5, 0), [1, 2, 3, 255]);
     assert_eq!(back.undo, snap.undo);
     assert_eq!(back.redo, snap.redo);
     assert_eq!(merged(&back.stack), merged(&snap.stack));
