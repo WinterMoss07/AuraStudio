@@ -3,7 +3,7 @@
 
 use egui::{RichText, Ui};
 
-use crate::widgets::{flow_slider, hardness_slider, opacity_slider, paint_mode_combo, size_slider, smoothing_slider, spacing_slider};
+use crate::widgets::{paint_mode_combo, percent_slider, size_slider, smoothing_slider, spacing_slider};
 use crate::{theme, Model};
 
 pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
@@ -17,10 +17,10 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut crate::Actions) {
     ui.add_space(4.0);
     let w = ui.available_width();
     size_slider(ui, "dock_size", m.brush, w);
-    opacity_slider(ui, "dock_opacity", m.brush, w);
-    flow_slider(ui, "dock_flow", m.brush, w);
+    percent_slider(ui, "dock_opacity", "Opacity", &mut m.brush.opacity, w);
+    percent_slider(ui, "dock_flow", "Flow", &mut m.brush.flow, w);
     // Hardness shapes the round tip only (an imported bitmap tip has its own edge).
-    if matches!(m.brush.tip, aurastudio_forge::TipShape::Round) { hardness_slider(ui, "dock_hardness", m.brush, w); }
+    if matches!(m.brush.tip, aurastudio_forge::TipShape::Round) { percent_slider(ui, "dock_hardness", "Hardness", &mut m.brush.hardness, w); }
     spacing_slider(ui, "dock_spacing", m.brush, w);
     smoothing_slider(ui, "dock_smoothing", m.brush, w);
     if m.tool.is_shape() { crate::tools::shape_options(ui, m); }

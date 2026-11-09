@@ -238,8 +238,7 @@ pub fn dialog(ctx: &egui::Context, d: &mut FilterDialog, a: &mut Actions) -> boo
 pub fn apply_layer_edit(id: u64, edit: LayerEdit, m: &mut Model) {
     if !matches!(m.layers().node(id), Some(aurastudio_layers::Node::Filter(_))) { return; }
     match edit {
-        LayerEdit::Set(f) | LayerEdit::Restore(f) => { m.apply(Edit::SetFilter(id, f)); }
-        LayerEdit::Keep(f) => { m.apply(Edit::SetFilter(id, f)); }
+        LayerEdit::Set(f) | LayerEdit::Restore(f) | LayerEdit::Keep(f) => { m.apply(Edit::SetFilter(id, f)); }
         LayerEdit::Remove => {
             m.apply(Edit::SetActive(id));
             m.apply(Edit::RemoveActive);
@@ -264,7 +263,7 @@ mod tests {
                 let mut x = r.x0;
                 while x < r.x1 {
                     let sp = s.span_mut(x, y, (r.x1 - x) as usize);
-                    for i in 0..sp.len() { sp.pixels[i] = px[((y - 30) * 200 + x - 40) as usize + i]; sp.mask[i] = 255; }
+                    for i in 0..sp.len() { sp.pixels[i] = px[((y - 30) * 200 + x - 40) as usize + i]; }
                     x += sp.len() as i32;
                 }
             }

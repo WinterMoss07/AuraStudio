@@ -38,15 +38,36 @@ fn span(i: usize, n: usize, size: u32) -> (u32, u32) {
 /// touches `rect`, the others left as they are. What it writes is exactly
 /// what the full computation gives, so a partial update after a change
 /// inside `rect` equals a new thumbnail.
+#[cfg(test)]
 pub fn area_average_into(tiles: &Image, tw: usize, th: usize, rect: Option<Rect>, out: &mut [u8]) {
     assert_eq!(out.len(), tw * th * 4, "the thumbnail buffer has the thumbnail's size");
+    let Some(p) = area_average_part(tiles, tw, th, rect) else { return };
+    for (k, row) in p.px.chunks_exact(p.w * 4).enumerate() {
+        let o = ((p.y + k) * tw + p.x) * 4;
+        out[o..o + row.len()].copy_from_slice(row);
+    }
+}
+
+/// A part of a thumbnail: where (thumbnail pixels) and its straight RGBA.
+pub struct Part {
+    pub x:  usize,
+    pub y:  usize,
+    pub w:  usize,
+    pub h:  usize,
+    pub px: Vec<u8>,
+}
+
+/// The pixels of the `tw` × `th` thumbnail of `tiles` whose box touches
+/// `rect` (layer pixels; `None`: all of them), as `area_average_into`
+/// computes them. `None`: none touched.
+pub fn area_average_part(tiles: &Image, tw: usize, th: usize, rect: Option<Rect>) -> Option<Part> {
     let (w, h) = (tiles.width().max(1), tiles.height().max(1));
     // The thumbnail pixels to do.
     let (tx0, tx1, ty0, ty1) = match rect {
         None => (0, tw, 0, th),
         Some(r) => {
             let c = r.intersect(&Rect::of_size(w, h));
-            if c.is_empty() { return; }
+            if c.is_empty() { return None; }
             let (x0, y0, x1, y1) = (c.x0 as u32, c.y0 as u32, c.x1 as u32, c.y1 as u32);
             // Conservative by one pixel each side (a box may start a pixel early).
             let lo = |v: u32, n: usize, size: u32| ((v as u64 * n as u64 / size as u64) as usize).saturating_sub(1);
@@ -54,6 +75,9 @@ pub fn area_average_into(tiles: &Image, tw: usize, th: usize, rect: Option<Rect>
             (lo(x0, tw, w), hi(x1, tw, w), lo(y0, th, h), hi(y1, th, h))
         }
     };
+    if tx0 >= tx1 || ty0 >= ty1 { return None; }
+    let pw = tx1 - tx0;
+    let mut out = vec![0u8; pw * (ty1 - ty0) * 4];
     for ty in ty0..ty1 {
         let (y0, y1) = span(ty, th, h);
         for tx in tx0..tx1 {
@@ -69,12 +93,13 @@ pub fn area_average_into(tiles: &Image, tw: usize, th: usize, rect: Option<Rect>
             }
             let n = ((y1 - y0) as u64) * ((x1 - x0) as u64);
             let a = s[3];
-            let o = (ty * tw + tx) * 4;
-            if a == 0 { out[o..o + 4].copy_from_slice(&[0, 0, 0, 0]); continue; }
+            let o = ((ty - ty0) * pw + tx - tx0) * 4;
+            if a == 0 { continue; }
             let c = |v: u64| ((v + a / 2) / a).min(255) as u8;
             out[o..o + 4].copy_from_slice(&[c(s[0]), c(s[1]), c(s[2]), ((a + n / 2) / n).min(255) as u8]);
         }
     }
+    Some(Part { x: tx0, y: ty0, w: pw, h: ty1 - ty0, px: out })
 }
 
 /// One pixel `p` (straight RGBA) counted `n` times, weighted by alpha.

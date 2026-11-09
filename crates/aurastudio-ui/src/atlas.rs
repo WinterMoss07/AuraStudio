@@ -103,15 +103,27 @@ impl Atlas {
     /// Put `image` (the size of the region) in its place.
     pub fn write(&mut self, r: Region, image: ColorImage) {
         assert_eq!(image.size, [r.w as usize, r.h as usize], "a picture is written at its own size");
+        self.write_part(r, 0, 0, image);
+    }
+
+    /// Put `image` at (x, y) inside the picture of region `r` (the ring
+    /// follows where the part reaches the picture's edge).
+    pub fn write_part(&mut self, r: Region, x: usize, y: usize, image: ColorImage) {
+        let [w, h] = image.size;
+        assert!(x + w <= r.w as usize && y + h <= r.h as usize, "a part stays inside its picture");
+        if w == 0 || h == 0 { return; }
         let smooth = self.options.magnification == TextureFilter::Linear || self.options.minification == TextureFilter::Linear;
         let options = self.options;
         let Some(p) = self.page_mut(r) else { return };
-        if smooth {
-            let ringed = with_ring(&image);
-            p.tex.set_partial([r.x as usize - RING, r.y as usize - RING], ringed, options);
-        } else {
-            p.tex.set_partial([r.x as usize, r.y as usize], image, options);
+        if !smooth {
+            p.tex.set_partial([r.x as usize + x, r.y as usize + y], image, options);
+            return;
         }
+        let edge = |at_edge: bool| if at_edge { RING } else { 0 };
+        let (left, top) = (edge(x == 0), edge(y == 0));
+        let (right, bottom) = (edge(x + w == r.w as usize), edge(y + h == r.h as usize));
+        let ringed = with_ring(&image, [left, top, right, bottom]);
+        p.tex.set_partial([r.x as usize + x - left, r.y as usize + y - top], ringed, options);
     }
 
     /// The region is free again.
@@ -161,15 +173,17 @@ impl Atlas {
     fn page_mut(&mut self, r: Region) -> Option<&mut Page> { self.pages.get_mut(r.page as usize)?.as_mut() }
 }
 
-/// `image` with a ring of `RING` pixels around it that repeats its edge.
-fn with_ring(image: &ColorImage) -> ColorImage {
+/// `image` with a ring that repeats its edge, `[left, top, right,
+/// bottom]` pixels wide.
+fn with_ring(image: &ColorImage, [l, t, r, b]: [usize; 4]) -> ColorImage {
     let (w, h) = (image.size[0], image.size[1]);
-    let mut ringed = ColorImage::filled([w + 2 * RING, h + 2 * RING], Color32::TRANSPARENT);
-    for y in 0..h + 2 * RING {
-        let sy = y.saturating_sub(RING).min(h - 1);
-        for x in 0..w + 2 * RING {
-            let sx = x.saturating_sub(RING).min(w - 1);
-            ringed.pixels[y * (w + 2 * RING) + x] = image.pixels[sy * w + sx];
+    let rw = w + l + r;
+    let mut ringed = ColorImage::filled([rw, h + t + b], Color32::TRANSPARENT);
+    for y in 0..h + t + b {
+        let sy = y.saturating_sub(t).min(h - 1);
+        for x in 0..rw {
+            let sx = x.saturating_sub(l).min(w - 1);
+            ringed.pixels[y * rw + x] = image.pixels[sy * w + sx];
         }
     }
     ringed
@@ -347,12 +361,16 @@ mod tests {
     #[test]
     fn the_ring_repeats_the_edge_pixels() {
         let image = ColorImage::new([2, 2], vec![Color32::RED, Color32::GREEN, Color32::BLUE, Color32::WHITE]);
-        let r = with_ring(&image);
+        let r = with_ring(&image, [RING; 4]);
         assert_eq!(r.size, [4, 4]);
         let at = |x: usize, y: usize| r.pixels[y * 4 + x];
         assert_eq!((at(0, 0), at(3, 0), at(0, 3), at(3, 3)), (Color32::RED, Color32::GREEN, Color32::BLUE, Color32::WHITE));
         assert_eq!((at(1, 1), at(2, 1), at(1, 2), at(2, 2)), (Color32::RED, Color32::GREEN, Color32::BLUE, Color32::WHITE));
         assert_eq!((at(0, 1), at(3, 2), at(1, 0), at(2, 3)), (Color32::RED, Color32::WHITE, Color32::RED, Color32::WHITE));
+        // A part at the picture's left edge only: a ring on that side only.
+        let r = with_ring(&image, [RING, 0, 0, 0]);
+        assert_eq!(r.size, [3, 2]);
+        assert_eq!((r.pixels[0], r.pixels[1], r.pixels[2]), (Color32::RED, Color32::RED, Color32::GREEN));
     }
 
     /// Writing into a smoothed atlas does not panic at the page's edges

@@ -428,15 +428,20 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
         let color = folder_color(m.layers(), col.id());
         let visible = m.layers().node(col.id()).is_some_and(Node::visible);
         let dim = if visible { 1.0 } else { 0.45 };
+        // The sheets are in time order: one index walks them with the
+        // frames (the first sheet at or after `f`).
+        let mut i = frames.partition_point(|x| x.0 < f0);
         for f in f0..=f1 {
             let r = g.cell(c, f);
             // Every beat, the shade changes.
             let bg = if f == t { theme::ROW_HOVER.gamma_multiply(1.4) } else if ((f - 1) / k).is_multiple_of(2) { theme::ROW_HOVER } else { theme::ROW };
             cp.rect_filled(r.shrink(0.5), 0.0, bg);
-            let drawn = frames.iter().any(|x| x.0 == f);
-            let held = !drawn && frames.iter().any(|x| x.0 < f);
+            while frames.get(i).is_some_and(|x| x.0 < f) { i += 1; }
+            let here = frames.get(i).filter(|x| x.0 == f);
+            let drawn = here.is_some();
+            let held = !drawn && i > 0;
             if drawn {
-                let id = frames.iter().find(|x| x.0 == f).and_then(|x| x.1);
+                let id = here.and_then(|x| x.1);
                 let on = id.is_some() && id == Some(active);
                 let lit = st.picked_in == col_folder(col) && st.picked.contains(&f);
                 cp.rect_filled(r.shrink(1.5), 2.0, color.gamma_multiply(if on || lit { 1.0 } else { 0.75 } * dim));
@@ -695,7 +700,7 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             let moved = if cd.exit {
                 st.group.is_some_and(|gr| ids.iter().fold(false, |any, id| m.apply(Edit::Move { ids: vec![*id], dragged: *id, target: gr, place: Place::Above }).changed() | any))
             } else if let Some((target, place)) = cd.target {
-                m.apply(Edit::Move { ids: if ids.len() > 1 { ids.clone() } else { vec![cd.id] }, dragged: cd.id, target, place }).changed()
+                m.apply(Edit::Move { ids: if ids.len() > 1 { ids } else { vec![cd.id] }, dragged: cd.id, target, place }).changed()
             } else { false };
             if moved {
                 ls.selected.clear();
@@ -1092,7 +1097,7 @@ fn head_menu(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut
         }
     } else {
         if ui.add_enabled(!groupable.is_empty(), egui::Button::new("Group animation folders")).clicked() {
-            m.apply(Edit::GroupAnimationFolders { ids: groupable.clone(), name: "Group".into() });
+            m.apply(Edit::GroupAnimationFolders { ids: groupable, name: "Group".into() });
             ls.selected.clear();
             ui.close();
         }

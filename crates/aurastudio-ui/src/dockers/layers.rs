@@ -37,9 +37,6 @@ pub struct LayersState {
     thumbs:   HashMap<u64, Region>,
     /// Layers the atlas had no room for, and when to try again (not every frame).
     no_room:  HashMap<u64, Instant>,
-    /// Each thumbnail's pixels on the CPU (width, height, straight RGBA):
-    /// a change inside a rectangle only redoes the pixels it touches.
-    cpu:      HashMap<u64, (usize, usize, Vec<u8>)>,
     /// Layers to redo: when they last changed, and where (None: anywhere).
     dirty:    HashMap<u64, (Instant, Option<PxRect>)>,
     /// Screen scale the thumbnails were made for.
@@ -67,7 +64,7 @@ impl Default for LayersState {
     fn default() -> Self {
         Self {
             atlas: Atlas::new("layer-thumbnails", egui::TextureOptions::LINEAR, 4),
-            thumbs: HashMap::new(), no_room: HashMap::new(), cpu: HashMap::new(), dirty: HashMap::new(), ppp: 0.0,
+            thumbs: HashMap::new(), no_room: HashMap::new(), dirty: HashMap::new(), ppp: 0.0,
             renaming: None, label_filter: 0, pending: None, edit_filter: None,
             selected: Vec::new(), rect: None, delete_req: false,
         }
@@ -91,7 +88,6 @@ impl LayersState {
     pub fn invalidate_all(&mut self) {
         for (_, r) in self.thumbs.drain() { self.atlas.free(r); }
         self.no_room.clear();
-        self.cpu.clear();
         self.dirty.clear();
     }
 
@@ -124,7 +120,6 @@ impl LayersState {
         for id in gone {
             if let Some(r) = self.thumbs.remove(&id) { self.atlas.free(r); }
         }
-        self.cpu.retain(|id, _| alive.contains(id));
         self.dirty.retain(|id, _| alive.contains(id));
         self.no_room.retain(|id, _| alive.contains(id));
         self.atlas.tidy();
@@ -150,20 +145,21 @@ impl LayersState {
             let (tw, th) = crate::thumbnail::target_size(layer.surface.width(), layer.surface.height(), max);
             let rect = change.and_then(|(_, r)| r);
 
-            // Known place, same size: only the touched pixels are redone.
-            if let (Some(region), Some(rect), Some(buf)) = (self.thumbs.get(&id).copied(), rect, self.cpu.get_mut(&id)) {
-                if (buf.0, buf.1) == (tw, th) {
-                    crate::thumbnail::area_average_into(&layer.surface, tw, th, Some(rect), &mut buf.2);
-                    self.atlas.write(region, egui::ColorImage::from_rgba_unmultiplied([tw, th], &buf.2));
+            // Known place, same size: only the touched pixels are redone,
+            // written into the atlas (no copy kept on the CPU).
+            if let (Some(region), Some(rect)) = (self.thumbs.get(&id).copied(), rect) {
+                if (region.w as usize, region.h as usize) == (tw, th) {
+                    if let Some(p) = crate::thumbnail::area_average_part(&layer.surface, tw, th, Some(rect)) {
+                        self.atlas.write_part(region, p.x, p.y, egui::ColorImage::from_rgba_unmultiplied([p.w, p.h], &p.px));
+                    }
                     if now.elapsed() > std::time::Duration::from_millis(2) { ctx.request_repaint(); return; }
                     continue;
                 }
             }
 
             // Otherwise all of it, one layer per frame.
-            let mut rgba = vec![0u8; tw * th * 4];
-            crate::thumbnail::area_average_into(&layer.surface, tw, th, None, &mut rgba);
-            let image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &rgba);
+            let Some(all) = crate::thumbnail::area_average_part(&layer.surface, tw, th, None) else { continue };
+            let image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &all.px);
             let same = self.thumbs.get(&id).copied().filter(|r| (r.w as usize, r.h as usize) == (tw, th));
             let region = match same {
                 Some(r) => Some(r),
@@ -176,12 +172,10 @@ impl LayersState {
                 Some(r) => {
                     self.atlas.write(r, image);
                     self.thumbs.insert(id, r);
-                    self.cpu.insert(id, (tw, th, rgba));
                     self.no_room.remove(&id);
                 }
                 None => {
                     // The atlas is full: the layer shows no thumbnail for now, and is tried again later.
-                    self.cpu.remove(&id);
                     self.no_room.insert(id, now + std::time::Duration::from_secs(2));
                 }
             }
@@ -1171,7 +1165,7 @@ mod thumbnail_tests {
         let id = stack.add_layer("paint");
         let mut st = LayersState::default();
         while st.thumbs.len() < stack.layer_ids().len() { st.refresh_thumbnails(&ctx, &stack); }
-        let before = st.cpu[&id].clone();
+        let before = st.thumbs[&id];
         // Paint a block.
         let rect = aurastudio_core::Rect::new(100, 80, 220, 160);
         if let Some(Node::Layer(l)) = stack.node_mut(id) {
@@ -1179,13 +1173,19 @@ mod thumbnail_tests {
         }
         st.dirty.insert(id, (Instant::now() - THUMB_DEBOUNCE * 2, Some(rect)));
         st.refresh_thumbnails(&ctx, &stack);
-        let after = st.cpu[&id].clone();
-        assert_ne!(before.2, after.2, "the block shows");
-        // Exactly what a new thumbnail gives.
+        assert!(!st.dirty.contains_key(&id));
+        assert_eq!(st.thumbs[&id], before, "redone in place");
+        // The part written is exactly what a new thumbnail gives there.
         let Some(Node::Layer(l)) = stack.node(id) else { panic!() };
-        let (tw, th, full) = crate::thumbnail::area_average(&l.surface, after.0.max(after.1) as u32);
-        assert_eq!((after.0, after.1), (tw, th));
-        assert_eq!(after.2, full);
+        let (tw, th) = (before.w as usize, before.h as usize);
+        let p = crate::thumbnail::area_average_part(&l.surface, tw, th, Some(rect)).unwrap();
+        let (fw, fh, full) = crate::thumbnail::area_average(&l.surface, tw.max(th) as u32);
+        assert_eq!((fw, fh), (tw, th));
+        assert!(p.px.iter().any(|v| *v != 0), "the block shows");
+        for (k, row) in p.px.chunks_exact(p.w * 4).enumerate() {
+            let o = ((p.y + k) * tw + p.x) * 4;
+            assert_eq!(row, &full[o..o + row.len()]);
+        }
         // Two changes before the rebuild: their union.
         st.invalidate(id, Some(aurastudio_core::Rect::new(0, 0, 10, 10)));
         st.invalidate(id, Some(aurastudio_core::Rect::new(300, 200, 310, 210)));
@@ -1197,7 +1197,7 @@ mod thumbnail_tests {
         crate::test_pass(&ctx, Default::default(), |_| {});
         let n = stack.layer_ids().len();
         for _ in 0..n + 2 { st.refresh_thumbnails(&ctx, &stack); }
-        let (w2, h2, _) = st.cpu[&id].clone();
-        assert_eq!(w2.max(h2), 56);
+        let r2 = st.thumbs[&id];
+        assert_eq!(r2.w.max(r2.h), 56);
     }
 }

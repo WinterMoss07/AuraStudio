@@ -399,24 +399,11 @@ pub fn size_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, w
     }
 }
 
-pub fn opacity_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
-    let o = (brush.opacity * 100.0).round();
-    if let Some(v) = fill_slider(ui, id, percent("Opacity"), o, width) {
-        brush.opacity = v / 100.0;
-    }
-}
-
-pub fn hardness_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
-    let h = (brush.hardness * 100.0).round();
-    if let Some(v) = fill_slider(ui, id, percent("Hardness"), h, width) {
-        brush.hardness = v / 100.0;
-    }
-}
-
-pub fn flow_slider(ui: &mut Ui, id: &str, brush: &mut aurastudio_forge::Brush, width: f32) {
-    let f = (brush.flow * 100.0).round();
-    if let Some(v) = fill_slider(ui, id, percent("Flow"), f, width) {
-        brush.flow = v / 100.0;
+/// A 0..1 value as a 0..100 % slider (the brush's opacity, flow,
+/// hardness).
+pub fn percent_slider(ui: &mut Ui, id: &str, label: &str, value: &mut f32, width: f32) {
+    if let Some(v) = fill_slider(ui, id, percent(label), (*value * 100.0).round(), width) {
+        *value = v / 100.0;
     }
 }
 
