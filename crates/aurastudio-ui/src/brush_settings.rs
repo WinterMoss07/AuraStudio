@@ -266,8 +266,8 @@ pub fn row(ui: &mut Ui, st: &Setting, b: &mut Brush, width: f32, eye: Option<&mu
             if icon_toggle(ui, if *on { Icon::Eye } else { Icon::EyeClosed }, "Show in Tool options", true, false).clicked() { *on = !*on; }
             w -= 24.0;
         }
-        let icon = st.inputs.is_some();
-        let w = if icon { w - 24.0 } else { w };
+        // (Every row keeps the icon's place: the sliders end together.)
+        let w = w - 24.0;
         let id = st.id;
         match &st.kind {
             Kind::Slider { lo, hi, mid, unit, get, set } => {
@@ -276,7 +276,7 @@ pub fn row(ui: &mut Ui, st: &Setting, b: &mut Brush, width: f32, eye: Option<&mu
             }
             Kind::Switch { get, set } => {
                 let mut v = get(b);
-                if ui.add_sized(vec2(w, 18.0), egui::Checkbox::new(&mut v, st.label)).changed() { set(b, v); }
+                if left(ui, w, |ui| ui.checkbox(&mut v, st.label)).changed() { set(b, v); }
             }
             Kind::Blend => { paint_mode_combo(ui, id, &mut b.mode, w - 8.0); }
         }
@@ -286,6 +286,11 @@ pub fn row(ui: &mut Ui, st: &Setting, b: &mut Brush, width: f32, eye: Option<&mu
             popup_below(&resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| inputs_popup(ui, st, i, b));
         }
     });
+}
+
+/// `f` in a box `width` wide, from its left.
+fn left(ui: &mut Ui, width: f32, f: impl FnOnce(&mut Ui) -> egui::Response) -> egui::Response {
+    ui.allocate_ui_with_layout(vec2(width, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| { ui.set_width(width); f(ui) }).inner
 }
 
 /// CSP's "Input affecting…": each input on or off, its minimum, its
@@ -306,7 +311,7 @@ fn inputs_popup(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
             ui.horizontal(|ui| {
                 let link = d.link(*c);
                 let mut on = link.is_some();
-                if ui.add_sized(vec2(130.0, 18.0), egui::Checkbox::new(&mut on, input_name(*c))).changed() {
+                if left(ui, 130.0, |ui| ui.checkbox(&mut on, input_name(*c))).changed() {
                     let fresh = Link { input: *c, ..Link::default() };
                     if d.set_link(*c, on.then_some(fresh)) { turned_on |= on; } else { ui.ctx().debug_text("no room for more inputs"); }
                 }
@@ -324,7 +329,7 @@ fn inputs_popup(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
         }
         if i.random {
             ui.horizontal(|ui| {
-                ui.add_sized(vec2(130.0, 18.0), egui::Label::new("Random"));
+                left(ui, 130.0, |ui| ui.label("Random"));
                 let spec = Fill { label: "Amount", range: 0.0..=100.0, mid: None, format: &|v| format!("{v:.0} %") };
                 if let Some(v) = fill_slider(ui, &format!("{}_random", st.id), spec, (d.jitter * 100.0).round(), 180.0) {
                     d.jitter = v / 100.0;

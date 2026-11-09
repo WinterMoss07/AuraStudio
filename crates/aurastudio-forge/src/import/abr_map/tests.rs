@@ -369,7 +369,7 @@ fn tilt_scale_projection_spacing_and_mixer_fields_map() {
     let p = &imp.presets[1].brush;
     assert!(p.spacing_enabled && !p.shape_dynamics.brush_projection && p.shape_dynamics.tilt_scale == 0.0);
     assert_eq!(p.mixer, crate::MixerSettings::default());
-    assert_eq!((p.transfer.wetness, p.transfer.mix), (Dynamic::default(), Dynamic::default()));
+    assert_eq!((&p.transfer.wetness, &p.transfer.mix), (&Dynamic::default(), &Dynamic::default()));
 }
 
 #[test]

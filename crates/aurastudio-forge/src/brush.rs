@@ -61,13 +61,11 @@ impl Default for Link {
     fn default() -> Self { Self { input: Control::Off, minimum: 0.0, curve: ResponseCurve::LINEAR } }
 }
 
-/// Inputs a dynamic follows besides its own control.
-pub const MORE_INPUTS: usize = 5;
-
-fn no_more(m: &[Link; MORE_INPUTS]) -> bool { m.iter().all(|l| l.input == Control::Off) }
+/// Most inputs a dynamic follows besides its own control.
+pub const MORE_INPUTS: usize = 7;
 
 /// One dynamic parameter: random jitter plus a controller with a floor.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Dynamic {
     /// 0..1 random variation per dab (for scatter: the amount, may exceed 1).
@@ -82,32 +80,31 @@ pub struct Dynamic {
     /// a `tools.setBrush` patch can set it back to linear. Angle Jitter's controls ignore it.
     pub curve: ResponseCurve,
     /// More inputs at the same time (CSP), each scaling the setting by its own range: the
-    /// result is their product with the control's.
-    #[serde(skip_serializing_if = "no_more")]
-    pub more: [Link; MORE_INPUTS],
+    /// result is their product with the control's. On the heap: a brush has a dozen dynamics,
+    /// and is copied whole on the stack here and there.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<Link>,
 }
 
 impl Default for Dynamic {
     fn default() -> Self {
-        Self { jitter: 0.0, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: [Link::default(); MORE_INPUTS] }
+        Self { jitter: 0.0, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Vec::new() }
     }
 }
 
 impl Dynamic {
-    const NONE: [Link; MORE_INPUTS] = [Link { input: Control::Off, minimum: 0.0, curve: ResponseCurve::LINEAR }; MORE_INPUTS];
-
     pub const fn controlled(control: Control) -> Self {
-        Self { jitter: 0.0, control, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Self::NONE }
+        Self { jitter: 0.0, control, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Vec::new() }
     }
     pub const fn jitter(jitter: f32) -> Self {
-        Self { jitter, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Self::NONE }
+        Self { jitter, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Vec::new() }
     }
     pub fn is_active(&self) -> bool {
         self.jitter > 0.0 || self.is_controlled()
     }
 
     /// Some input drives it (its control or one more).
-    pub fn is_controlled(&self) -> bool { self.control != Control::Off || !no_more(&self.more) }
+    pub fn is_controlled(&self) -> bool { self.control != Control::Off || self.more.iter().any(|l| l.input != Control::Off) }
 
     /// Every input it follows, its control first: (input, minimum, curve).
     pub fn links(&self) -> impl Iterator<Item = Link> + '_ {
@@ -128,9 +125,11 @@ impl Dynamic {
                 let l = Link { input, ..l };
                 if self.control == input || self.control == Control::Off {
                     (self.control, self.minimum, self.curve) = (input, l.minimum, l.curve);
-                    if let Some(i) = at { self.more[i] = Link::default(); }
-                } else if let Some(i) = at.or_else(|| self.more.iter().position(|m| m.input == Control::Off)) {
+                    if let Some(i) = at { self.more.remove(i); }
+                } else if let Some(i) = at {
                     self.more[i] = l;
+                } else if self.more.len() < MORE_INPUTS {
+                    self.more.push(l);
                 } else {
                     return false;
                 }
@@ -138,12 +137,12 @@ impl Dynamic {
             None => {
                 if self.control == input {
                     // The next one becomes the control.
-                    match self.more.iter().position(|m| m.input != Control::Off) {
-                        Some(i) => { let m = std::mem::take(&mut self.more[i]); (self.control, self.minimum, self.curve) = (m.input, m.minimum, m.curve); }
-                        None => self.control = Control::Off,
+                    if self.more.is_empty() { self.control = Control::Off; } else {
+                        let m = self.more.remove(0);
+                        (self.control, self.minimum, self.curve) = (m.input, m.minimum, m.curve);
                     }
                 } else if let Some(i) = at {
-                    self.more[i] = Link::default();
+                    self.more.remove(i);
                 }
             }
         }

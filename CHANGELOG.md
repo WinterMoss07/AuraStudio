@@ -3,6 +3,28 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.22.0 — 2026-11-09
+
+The brush editor: Photoshop's sections with CSP's tool property.
+
+**Brush editor**
+- New docker, Advanced tool options (Window menu, or the button at the
+  top right of Tool options): the sections on the left (Brush tip, Shape
+  dynamics, Scattering, Texture, Dual brush, Color dynamics, Transfer,
+  Stroke, Mixer brush), each with its switch; the section's settings on
+  the right. In a narrow dock the sections are a list above.
+- Each setting has an eye: lit, it shows in Tool options too. Each brush
+  keeps its own list (an ink pen and a watercolor show different
+  sliders).
+- A setting the pen can drive has CSP's icon at the right of its slider,
+  lit while it is driven. Its popup turns each input on or off, several
+  at once: pen pressure, tilt, velocity (new), fade, stylus wheel,
+  barrel rotation, and the stroke's direction for the angle. Each input
+  has its minimum and its own curve; the random part is there too.
+- A brush as changed is kept, on disk too: found again next time.
+- Preferences > Brushes & input: the tablet's pressure curve, for every
+  brush.
+
 ## 0.21.1 — 2026-11-09
 
 Pictures open whole and fast; bug fixes; less work done twice.
