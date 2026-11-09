@@ -109,14 +109,13 @@ impl Kind {
         }
     }
 
-    /// The values that get a plain slider (Levels and Hue / Saturation
-    /// have their own editors).
+    /// The values that get a plain slider (Levels, Hue / Saturation and
+    /// Black & White have their own editors).
     pub fn params(self) -> &'static [Param] {
         use Unit::*;
         match self {
             Kind::BrightnessContrast => { const P: &[Param] = &[p("Brightness", 0, -150.0, 150.0, Number(0)), p("Contrast", 1, -50.0, 100.0, Number(0))]; P }
-            Kind::Levels | Kind::HueSaturation => &[],
-            Kind::BlackWhite => &[],
+            Kind::Levels | Kind::HueSaturation | Kind::BlackWhite => &[],
             Kind::Invert | Kind::Sepia => { const P: &[Param] = &[p("Amount", 0, 0.0, 100.0, Percent)]; P }
             Kind::Opacity => { const P: &[Param] = &[p("Opacity", 0, 0.0, 100.0, Percent)]; P }
             Kind::Posterize => { const P: &[Param] = &[p("Levels", 0, 2.0, 64.0, Number(0))]; P }
@@ -165,14 +164,13 @@ impl Kind {
                 v
             }
             Kind::BlackWhite => { let mut v = BW_DEFAULTS.to_vec(); v.push(0.0); v }
-            Kind::Invert | Kind::Sepia => vec![100.0],
+            Kind::Invert | Kind::Sepia | Kind::FindEdges => vec![100.0],
             Kind::Opacity => vec![50.0],
             Kind::Posterize => vec![4.0],
             Kind::Threshold => vec![128.0],
             Kind::GaussianBlur => vec![4.0],
             Kind::UnsharpMask => vec![80.0, 2.0, 0.0],
             Kind::Thicken | Kind::Thin => vec![1.0, 0.0],
-            Kind::FindEdges => vec![100.0],
             Kind::Emboss => vec![135.0, 3.0, 100.0],
             Kind::DropShadow => vec![120.0, 12.0, 0.0, 16.0, 60.0],
         }
