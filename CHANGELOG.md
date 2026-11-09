@@ -3,6 +3,41 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.21.1 — 2026-11-09
+
+Pictures open whole and fast; bug fixes; less work done twice.
+
+**Pictures**
+- A JPG or PNG no longer opens with black parts (the canvas texture grew
+  before the picture's pixels reached it).
+- PNG is read row by row into the layer: about twice as fast, no copy of
+  the whole picture (2000 × 3000: 46 → 27 MB at the peak). JPG and the
+  other formats go into the layer on all cores, without an RGBA copy.
+- A document just opened shows band by band instead of holding the whole
+  merged frame.
+- PNG export keeps transparency.
+
+**Fixes**
+- Timeline: "Swap them" swaps the sheets (it replaced them).
+- View keys 1 2 4 5 6 work on AZERTY (by their place on the keyboard),
+  and the keypad's + and −.
+- A stroke starts at the press's true time and ends where the tip lifted.
+- Two autosaves never write the recovery file at once.
+- A lock left by a crash no longer makes the app crash again.
+- The idle log no longer reports drawing with the pen as idle.
+
+**Memory and speed**
+- Grow, Shrink and Border selection: on all cores, one distance map; a
+  rectangle (Select All) needs none.
+- A filter inside a selection leaves the rest of the layer untouched
+  (shared with the history).
+- Redo steps are packed like undo steps; the history counts shared tiles
+  once.
+- Gaussian blur on all cores; spatial filters skip a copy.
+- A brush keeps its tip and texture ready for the next stroke; the dual
+  brush and textures do less per pixel.
+- Selection outlines are traced again less often while zooming.
+
 ## 0.21.0 — 2026-11-09
 
 Memory: the canvas is bounded, caches that cost more than they saved are
