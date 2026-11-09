@@ -230,6 +230,19 @@ fn the_stroke_cache_matches_the_full_merge() {
     }
 }
 
+/// With few layers around the painted one, the merge is direct (as fast,
+/// no cells kept).
+#[test]
+fn few_layers_keep_no_cells() {
+    let mut s = stack();
+    paint(&mut s, "under", r(0, 0, 40, 40), [10, 200, 10, 255]);
+    let painted = paint(&mut s, "ink", r(20, 20, 60, 60), [0, 0, 0, 255]);
+    let mut cache = StrokeCache::default();
+    let all = r(0, 0, W, H);
+    assert_eq!(cache.merge(&s, painted, all), merge(&s, all, Opts { ghosts: true, ..Default::default() }));
+    assert_eq!(cache.len(), 0);
+}
+
 #[test]
 fn ghosts_show_on_screen_only() {
     let mut s = stack();
@@ -280,6 +293,7 @@ fn the_stroke_cache_keeps_plain_cells_small() {
     let mut s = LayerStack::new(w, h, 64, Start::Paper);
     let under = s.add_layer("under");
     assert!(s.set_layer_rect(under, r(0, 0, 64, 64), &(0..64 * 64).map(|i| [(i % 251) as u8, 9, 9, 255]).collect::<Vec<_>>()));
+    s.add_layer("empty");
     let painted = s.add_layer("ink");
     let mut cache = StrokeCache::default();
     let all = r(0, 0, w as i32, h as i32);
@@ -313,3 +327,4 @@ fn grid_parts_cover_the_rect_once_in_place() {
         assert_eq!(*d, [x.rem_euclid(251) as u8, y as u8, 1, 0]);
     }
 }
+
