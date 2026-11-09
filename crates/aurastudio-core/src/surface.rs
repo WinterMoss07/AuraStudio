@@ -47,10 +47,6 @@ pub trait PaintSurface<P: Pixel = Rgba8> {
     fn spans_mut<'a>(&'a mut self, rect: Rect, out: &mut Vec<Span<'a, P>>) -> bool {
         self.spans_in(std::slice::from_ref(&rect), out)
     }
-
-    /// The pixel at (x, y) as it was before the stroke (smudge and color
-    /// sampling read the base around the dab).
-    fn base_pixel(&self, x: i32, y: i32) -> P;
 }
 
 /// The allocation of a span buffer, emptied, for the next dab: no
@@ -166,11 +162,6 @@ impl<P: Pixel> PaintSurface<P> for FlatSurface<P> {
             }
         }
         true
-    }
-
-    fn base_pixel(&self, x: i32, y: i32) -> P {
-        if !self.inside(x, y) { return P::default(); }
-        self.base[y as usize * self.width as usize + x as usize]
     }
 }
 

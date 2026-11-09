@@ -48,7 +48,7 @@ fn fs_over(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4(c.rgb * c.a, c.a);
 }
 
-struct U { size: vec2<f32>, opacity: f32, pad: f32 }
+struct U { opacity: f32, pad0: f32, pad1: f32, pad2: f32 }
 @group(0) @binding(1) var s: sampler;
 @group(0) @binding(2) var<uniform> u: U;
 
@@ -257,7 +257,7 @@ impl Lift {
             let view = c.create_view(&TextureViewDescriptor::default());
             let uniform = device.create_buffer_init(&util::BufferInitDescriptor {
                 label: Some("lift_u"),
-                contents: bytemuck::cast_slice(&[canvas_w as f32, canvas_h as f32, opacity.clamp(0.0, 1.0), 0.0]),
+                contents: bytemuck::cast_slice(&[opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0]),
                 usage: BufferUsages::UNIFORM,
             });
             let bind = |s: &Sampler| device.create_bind_group(&BindGroupDescriptor {

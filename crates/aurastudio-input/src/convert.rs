@@ -52,6 +52,7 @@ pub fn wintab_tilt(azimuth: i32, altitude: i32) -> (f32, f32) {
 }
 
 /// WinTab twist (tenths of a degree) to rotation 0..360.
+#[cfg(test)]
 pub fn wintab_rotation(twist: i32) -> f32 { ((twist as f32 / 10.0) % 360.0 + 360.0) % 360.0 }
 
 #[cfg(test)]

@@ -116,7 +116,6 @@ impl Profile {
     /// A key of its content (caches).
     pub fn key(&self) -> u64 { self.0.key }
     pub fn is_srgb(&self) -> bool { *self == Self::srgb() }
-    pub fn is_matrix_shaper(&self) -> bool { self.0.cms.is_matrix_shaper() }
     pub(crate) fn cms(&self) -> &ColorProfile { &self.0.cms }
 
     /// For a file (.aurs header): name, then the ICC bytes.

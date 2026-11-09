@@ -175,6 +175,7 @@ impl LayerStack {
 
     /// The node `id` is clipped onto (its base), or `None` if it isn't
     /// clipped or has nothing under it in its folder.
+    #[cfg(test)]
     pub fn clip_base(&self, id: u64) -> Option<u64> {
         let path = self.path(id)?;
         let (last, parent) = path.split_last()?;

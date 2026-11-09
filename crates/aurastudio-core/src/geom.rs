@@ -235,10 +235,6 @@ impl Affine {
         Point::new(self.a * p.x + self.c * p.y + self.e, self.b * p.x + self.d * p.y + self.f)
     }
 
-    /// The linear part only (a vector does not move).
-    #[inline]
-    pub fn apply_vector(&self, v: Vec2) -> Vec2 { Point::new(self.a * v.x + self.c * v.y, self.b * v.x + self.d * v.y) }
-
     #[inline]
     pub fn determinant(&self) -> f64 { self.a * self.d - self.b * self.c }
 
@@ -252,6 +248,7 @@ impl Affine {
     }
 
     /// Bounds of `r` once mapped, whole pixels outward.
+    #[cfg(test)]
     pub fn map_rect(&self, r: &Rect) -> Rect {
         if r.is_empty() { return Rect::EMPTY; }
         let corners = [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)].map(|(x, y)| self.apply(Point::new(x as f64, y as f64)));

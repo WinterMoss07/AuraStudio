@@ -9,11 +9,14 @@ use std::str::FromStr;
 pub struct Id(pub u128);
 
 impl Id {
+    #[cfg(test)]
     pub const NIL: Id = Id(0);
 
+    #[cfg(test)]
     pub fn is_nil(self) -> bool { self.0 == 0 }
 
     /// From 16 random bytes, as a version 4 UUID.
+    #[cfg(test)]
     pub fn from_random(b: [u8; 16]) -> Id {
         let mut v = u128::from_be_bytes(b);
         v = (v & !(0xf << 76)) | (0x4 << 76);

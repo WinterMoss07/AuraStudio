@@ -92,7 +92,6 @@ pub fn read_procreate(bytes: &[u8], group: &str) -> Result<ProcreateImport, Stri
                     builtin: false,
                     group: group.to_string(),
                     folder: Vec::new(),
-                    captures: Default::default(),
                 });
             }
             Ok(None) => {

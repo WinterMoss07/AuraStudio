@@ -601,7 +601,7 @@ fn base_pixels_are_read_from_before_the_stroke() {
     s.fill_rect(Rect::new(0, 0, 32, 32), [9, 9, 9, 255]);
     let mut st = s.begin_stroke(None);
     dab(&mut st, Rect::new(0, 0, 8, 8), [200, 0, 0], 255);
-    assert_eq!(st.base_pixel(3, 3), [9, 9, 9, 255]);
+    assert_eq!(st.span_mut(3, 3, 1).base[0], [9, 9, 9, 255]);
     assert_eq!(st.surface().pixel(3, 3), [200, 0, 0, 255]);
     st.end();
 }

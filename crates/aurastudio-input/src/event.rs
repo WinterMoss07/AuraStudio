@@ -24,19 +24,6 @@ pub enum Source { Live, Strokelog }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target { Canvas, Ui }
 
-/// Two fingers moving the view: zoom, rotation and pan together, as one
-/// transform from the start of the gesture (phase 2).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Gesture {
-    pub scale:  f64,
-    /// Radians.
-    pub rotate: f64,
-    pub pan:    (f64, f64),
-    /// Center of the fingers, window pixels.
-    pub center: (f64, f64),
-    pub ended:  bool,
-}
-
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
@@ -55,9 +42,6 @@ pub enum Kind {
     ProximityOut,
     /// Wheel or touchpad scroll, in lines (fractions allowed).
     Wheel { dx: f32, dy: f32 },
-    Gesture(Gesture),
-    /// Two-finger tap (undo) and three-finger tap (redo).
-    Tap(u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,7 +66,8 @@ pub struct Event {
 }
 
 impl Event {
+    #[cfg(test)]
     pub fn is_down(&self) -> bool { matches!(self.kind, Kind::Down) }
+    #[cfg(test)]
     pub fn is_up(&self) -> bool { matches!(self.kind, Kind::Up { .. }) }
-    pub fn on_canvas(&self) -> bool { self.target == Target::Canvas }
 }

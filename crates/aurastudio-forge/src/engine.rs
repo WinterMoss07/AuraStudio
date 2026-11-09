@@ -95,6 +95,7 @@ impl Forge {
     pub fn set_zoom(&mut self, zoom: f32) { if zoom.is_finite() && zoom > 0.0 { self.zoom = zoom; } }
 
     /// A Mixer Brush's paint (Load / Clean, the swatch).
+    #[cfg(test)]
     pub fn mixer_state(&mut self) -> &mut MixerState { &mut self.state }
 
     /// With the paint a Mixer Brush carried from the strokes before.

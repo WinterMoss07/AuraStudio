@@ -517,6 +517,7 @@ impl<P: Pixel> Surface<P> {
     }
 
     /// A visible pixel inside `rect`.
+    #[cfg(test)]
     pub fn any_visible_in(&self, rect: Rect) -> bool {
         let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&rect) else { return false };
         for ty in ty0..ty1 {
@@ -582,6 +583,7 @@ impl<P: Pixel> Surface<P> {
     }
 
     /// One premultiplied average per tile of `rect` (the frame by default).
+    #[cfg(test)]
     pub fn summary_grid(&self, rect: Option<Rect>) -> SummaryGrid {
         let r = rect.unwrap_or_else(|| self.rect());
         let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&r) else { return SummaryGrid { origin: (r.x0, r.y0), cols: 0, rows: 0, cell: self.tile, avg: Vec::new() } };
@@ -713,6 +715,4 @@ impl<P: Pixel> PartialEq for Surface<P> {
 }
 
 impl Summary {
-    /// (For `SummaryGrid` users that want the tile's flags too.)
-    pub fn is_uniform(&self) -> bool { self.flags & Summary::UNIFORM != 0 }
 }

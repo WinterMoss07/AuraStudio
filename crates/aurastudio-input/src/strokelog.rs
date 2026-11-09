@@ -49,16 +49,15 @@ fn kind_code(k: Kind) -> (u8, u8) {
     match k {
         Kind::Down => (0, 0), Kind::Move => (1, 0), Kind::Up { cancelled } => (2, cancelled as u8), Kind::Hover => (3, 0),
         Kind::ButtonDown(b) => (4, b), Kind::ButtonUp(b) => (5, b), Kind::ProximityIn => (6, 0), Kind::ProximityOut => (7, 0),
-        Kind::Tap(n) => (8, n),
-        // (Wheel and gestures are not part of a stroke.)
-        Kind::Wheel { .. } | Kind::Gesture(_) => (255, 0),
+        // (The wheel is not part of a stroke.)
+        Kind::Wheel { .. } => (255, 0),
     }
 }
 
 fn kind_of(c: u8, a: u8) -> Option<Kind> {
     Some(match c {
         0 => Kind::Down, 1 => Kind::Move, 2 => Kind::Up { cancelled: a != 0 }, 3 => Kind::Hover,
-        4 => Kind::ButtonDown(a), 5 => Kind::ButtonUp(a), 6 => Kind::ProximityIn, 7 => Kind::ProximityOut, 8 => Kind::Tap(a),
+        4 => Kind::ButtonDown(a), 5 => Kind::ButtonUp(a), 6 => Kind::ProximityIn, 7 => Kind::ProximityOut,
         _ => return None,
     })
 }

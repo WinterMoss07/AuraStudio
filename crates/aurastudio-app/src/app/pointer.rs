@@ -97,19 +97,6 @@ impl App {
                     self.request_redraw();
                 }
             }
-            Kind::Gesture(g) => {
-                if self.is_drawing { return; }
-                if let Some(gpu) = &mut self.gpu {
-                    let c = (g.center.0 as f32, g.center.1 as f32);
-                    gpu.view.pan_by(g.pan.0 as f32, g.pan.1 as f32);
-                    gpu.view_zoom_at(g.scale as f32, c);
-                    gpu.view_rotate_at(g.rotate as f32, c);
-                    self.request_redraw();
-                }
-            }
-            // Two fingers: undo; three: redo (CSP, Procreate).
-            Kind::Tap(2) => self.undo(),
-            Kind::Tap(3) => self.redo(),
             Kind::ProximityOut => { self.update_cursor(); self.request_canvas_frame(); }
             _ => {}
         }

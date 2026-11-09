@@ -75,14 +75,6 @@ impl Fnv {
     pub fn finish(&self) -> u64 { self.0 }
 }
 
-/// The hash of a value's `Debug` text: any field added to the type enters
-/// it by itself.
-pub fn of_debug<T: std::fmt::Debug>(v: &T) -> u64 {
-    let mut h = Fnv::default();
-    h.bytes(format!("{v:?}").as_bytes());
-    h.finish()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

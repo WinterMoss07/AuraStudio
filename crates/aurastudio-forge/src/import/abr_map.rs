@@ -62,7 +62,7 @@ fn map_file(f: &AbrFile, group: &str) -> AbrImport {
                 }
             };
             let name = if b.name.trim().is_empty() { default_name } else { b.name.trim().to_string() };
-            out.presets.push(BrushPreset { name, brush, builtin: false, group: group.to_string(), folder: Vec::new(), captures: Default::default() });
+            out.presets.push(BrushPreset { name, brush, builtin: false, group: group.to_string(), folder: Vec::new() });
         }
     } else if f.presets.is_empty() {
         // Tips without a settings section (early v6 files): one preset per tip.
@@ -75,7 +75,6 @@ fn map_file(f: &AbrFile, group: &str) -> AbrImport {
                 builtin: false,
                 group: group.to_string(),
                 folder: Vec::new(),
-                captures: Default::default(),
             });
         }
     } else {
@@ -86,7 +85,7 @@ fn map_file(f: &AbrFile, group: &str) -> AbrImport {
                 // named after the imported file.
                 Some(brush) => {
                     let folder = f.folders.get(i).cloned().unwrap_or_default();
-                    out.presets.push(BrushPreset { name, brush, builtin: false, group: group.to_string(), folder, captures: Default::default() });
+                    out.presets.push(BrushPreset { name, brush, builtin: false, group: group.to_string(), folder });
                 }
                 None => {
                     m.warnings.insert(format!("\"{name}\": its sampled tip is missing from the file; skipped"));

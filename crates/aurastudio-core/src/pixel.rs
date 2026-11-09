@@ -29,11 +29,6 @@ impl PixelKind {
     pub fn from_code(c: u8) -> Option<PixelKind> {
         match c { 1 => Some(PixelKind::Rgba8), 2 => Some(PixelKind::Gray8), 3 => Some(PixelKind::Rgba16), 4 => Some(PixelKind::RgbaF16), 5 => Some(PixelKind::RgbaF32), _ => None }
     }
-
-    /// The color type of a document of this depth.
-    pub fn for_depth(d: crate::PixelDepth) -> PixelKind {
-        match d { crate::PixelDepth::U8 => PixelKind::Rgba8, crate::PixelDepth::U16 => PixelKind::Rgba16, crate::PixelDepth::F16 => PixelKind::RgbaF16, crate::PixelDepth::F32 => PixelKind::RgbaF32 }
-    }
 }
 
 /// Premultiplied RGBA, 0..1 (values above 1 allowed for float pixels).

@@ -4,7 +4,7 @@
 //! (layers, a selection) is the document's business.
 
 use aurastudio_core::{Point, Rect};
-use aurastudio_transform::{corners, keep_convex, Homography, Mesh, Quad, Warp};
+use aurastudio_transform::{keep_convex, Homography, Mesh, Quad, Warp};
 
 /// How the transform tool's handles work.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -357,7 +357,8 @@ impl Xform {
     }
 
     /// The source's corners.
-    pub fn source_corners(&self) -> Quad { corners(self.src) }
+    #[cfg(test)]
+    pub fn source_corners(&self) -> Quad { aurastudio_transform::corners(self.src) }
 }
 
 // --- The gestures: (box, pivot) after the drag --------------------------

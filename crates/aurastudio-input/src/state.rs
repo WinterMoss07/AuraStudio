@@ -113,8 +113,6 @@ impl Machine {
     /// Whether some device is down (a stroke in progress).
     pub fn any_down(&self) -> bool { self.devices.values().any(|d| matches!(d.state, State::Down(_))) }
 
-    /// Whether `device` is down on the canvas.
-    pub fn down_on_canvas(&self, device: Device) -> bool { matches!(self.devices.get(&device).map(|d| d.state), Some(State::Down(Target::Canvas))) }
 }
 
 /// Keep only the last of consecutive hovers of a device (outside strokes,

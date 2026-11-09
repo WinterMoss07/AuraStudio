@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use aurastudio_core::{Micros, TransferCurve};
 use crossbeam_queue::SegQueue;
 
-pub use event::{Device, Event, Gesture, Kind, Source, Target};
+pub use event::{Device, Event, Kind, Source, Target};
 pub use state::{FrameInfo, RawSample};
 
 /// Which API captures the pen.
@@ -87,7 +87,6 @@ pub struct Input {
     debounce: debounce::Debounce<RawSample>,
     /// Strokes being recorded, per device.
     recording: Vec<Event>,
-    context:  Vec<u8>,
     log:      Option<strokelog::Writer>,
     app_version: String,
     wheel:    Vec<Event>,
@@ -101,7 +100,7 @@ impl Input {
     pub fn new(app_version: &str) -> Self {
         Self {
             raw: Arc::new(SegQueue::new()), waker: Arc::default(), machine: state::Machine::default(), backend: Backend::None,
-            mouse: (0.0, 0.0, false, 0), debounce: debounce::Debounce::default(), recording: Vec::new(), context: Vec::new(),
+            mouse: (0.0, 0.0, false, 0), debounce: debounce::Debounce::default(), recording: Vec::new(),
             log: None, app_version: app_version.to_owned(), wheel: Vec::new(),
             #[cfg(windows)] win: None,
             #[cfg(windows)] hwnd: 0,
@@ -234,10 +233,6 @@ impl Input {
         self.raw.push(RawSample { device: Device::Touch(id as u32), x, y, pressure: force.unwrap_or(1.0), tilt: (0.0, 0.0), rotation: 0.0, contact: down, in_range: down, buttons: 0, time: clock::now() });
     }
 
-    /// The app's context for the strokes from now on (view, brush, tool,
-    /// layer): opaque bytes, versioned by the app, kept in the strokelog.
-    pub fn set_context(&mut self, blob: Vec<u8>) { self.context = blob; }
-
     /// Record strokes in `dir` (oldest sessions removed past the budget).
     pub fn open_strokelog(&mut self, dir: &std::path::Path) -> bool {
         self.log = strokelog::Writer::open(dir, &self.app_version, &self.machine.curve, strokelog::BUDGET);
@@ -261,8 +256,9 @@ impl Input {
     pub fn replay(stroke: &strokelog::Stroke, start: Micros, speed: f64) -> Vec<Event> { strokelog::replay(stroke, start, speed) }
 
     /// Keep the events of strokes on the canvas; a finished one goes to
-    /// the strokelog.
+    /// the strokelog. No strokelog open: nothing is kept.
     fn record(&mut self, events: &[Event]) {
+        if self.log.is_none() { return; }
         for e in events {
             if !matches!(e.device, Device::Pen | Device::Eraser | Device::Mouse) || e.target != Target::Canvas { continue; }
             match e.kind {
@@ -271,7 +267,7 @@ impl Input {
                 Kind::Up { .. } if !self.recording.is_empty() => {
                     self.recording.push(*e);
                     let events = std::mem::take(&mut self.recording);
-                    if let Some(l) = &self.log { l.push(strokelog::Stroke { context: self.context.clone(), events }); }
+                    if let Some(l) = &self.log { l.push(strokelog::Stroke { context: Vec::new(), events }); }
                 }
                 _ => {}
             }
@@ -283,6 +279,7 @@ impl Input {
     pub fn export(&self, stroke: &strokelog::Stroke) -> Vec<u8> { strokelog::export(&self.app_version, &self.machine.curve, stroke) }
 
     /// Counters and warnings.
+    #[cfg(test)]
     pub fn health(&self) -> Health {
         let mut h = Health { backend: Some(self.backend.name()), bounces: self.debounce.bounces, ..Default::default() };
         #[cfg(windows)]

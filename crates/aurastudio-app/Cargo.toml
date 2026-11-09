@@ -26,10 +26,8 @@ aurastudio-core      = { path = "../aurastudio-core" }
 aurastudio-diag      = { path = "../aurastudio-diag", optional = true }
 aurastudio-input     = { path = "../aurastudio-input" }
 aurastudio-raster    = { path = "../aurastudio-raster" }
-aurastudio-filters   = { path = "../aurastudio-filters" }
 aurastudio-transform = { path = "../aurastudio-transform" }
 aurastudio-tools     = { path = "../aurastudio-tools" }
-aurastudio-selection = { path = "../aurastudio-selection" }
 aurastudio-color     = { path = "../aurastudio-color" }
 aurastudio-layers    = { path = "../aurastudio-layers" }
 aurastudio-compose   = { path = "../aurastudio-compose" }

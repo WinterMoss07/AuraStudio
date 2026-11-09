@@ -29,6 +29,7 @@ impl Camera {
     pub fn keys(&self) -> &[CameraKey] { &self.keys }
 
     /// Add or replace the key at its frame.
+    #[cfg(test)]
     pub fn set_key(&mut self, k: CameraKey) {
         match self.keys.binary_search_by_key(&k.frame, |x| x.frame) {
             Ok(i) => self.keys[i] = k,
@@ -36,6 +37,7 @@ impl Camera {
         }
     }
 
+    #[cfg(test)]
     pub fn remove_key(&mut self, frame: u32) -> bool {
         match self.keys.binary_search_by_key(&frame, |x| x.frame) { Ok(i) => { self.keys.remove(i); true } Err(_) => false }
     }

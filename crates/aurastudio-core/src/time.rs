@@ -11,9 +11,6 @@ impl Micros {
 
     #[inline]
     pub fn as_secs_f64(self) -> f64 { self.0 as f64 * 1e-6 }
-
-    #[inline]
-    pub fn as_millis_f64(self) -> f64 { self.0 as f64 * 1e-3 }
 }
 
 /// A film frame number (0 = the first frame of the timeline).
@@ -40,6 +37,7 @@ impl Fps {
 
     /// When `frame` starts, in microseconds from frame 0 (exact up to the
     /// microsecond, computed from the fraction).
+    #[cfg(test)]
     pub fn start_of(self, frame: FrameNo) -> Micros {
         if self.num == 0 { return Micros(0); }
         Micros((frame.0 as u128 * self.den as u128 * 1_000_000 / self.num as u128) as u64)

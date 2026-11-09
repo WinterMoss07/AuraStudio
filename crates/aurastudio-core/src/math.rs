@@ -34,6 +34,7 @@ pub fn smoothstep(t: f32) -> f32 {
 /// A pen position rounded to 1/16 px (whole-pixel positions made stairs
 /// in fine brushes; WinTab gives 1/16 at best).
 #[inline]
+#[cfg(test)]
 pub fn quantize16(v: f64) -> f64 { (v * 16.0).round() / 16.0 }
 
 #[cfg(test)]

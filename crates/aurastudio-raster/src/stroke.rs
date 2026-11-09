@@ -15,7 +15,7 @@ use aurastudio_core::{PaintSurface, Pixel, Rect, Span};
 use crate::patch::{Patch, Snapshot};
 use crate::grid::{join, CH};
 use crate::slot::Slot;
-use crate::surface::{pixel_of, Surface};
+use crate::surface::Surface;
 use crate::DirtyTiles;
 
 /// Shared base tiles of one color, by color.
@@ -315,10 +315,5 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
             }
         }
         true
-    }
-
-    fn base_pixel(&self, x: i32, y: i32) -> P {
-        let s = &self.surf;
-        pixel_of(self.before.slot(x >> s.shift, y >> s.shift), self.before.fill, s.offset(x, y), s.npx())
     }
 }
