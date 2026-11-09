@@ -717,6 +717,8 @@ impl ApplicationHandler<AppEvent> for App {
         #[cfg(feature = "profile")]
         tracy_client::plot!("heap MB", crate::memory::heap_bytes() as f64 / 1_048_576.0);
         if self.quit {
+            // The brush in use as last changed, kept with its preset.
+            if let Err(e) = self.library.keep(self.preset, self.brush.clone()) { log::warn!("brush not kept: {e}"); }
             event_loop.exit();
             return;
         }

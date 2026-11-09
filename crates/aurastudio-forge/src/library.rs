@@ -220,6 +220,14 @@ struct GroupFile {
     presets: Vec<Preset>,
 }
 
+/// The built-in brushes as changed in the editor, by name (`edited.json`).
+#[derive(Serialize, Deserialize, Default)]
+struct EditedFile {
+    presets: Vec<(String, BrushSettings)>,
+}
+
+const EDITED: &str = "edited.json";
+
 impl Library {
     /// The built-ins only, nothing kept on disk.
     pub fn builtin() -> Self { Self { presets: builtin(), root: None, tips: Tips::default() } }
@@ -238,7 +246,40 @@ impl Library {
                 Err(e) => warnings.push(format!("{}: {e}", f.display())),
             }
         }
+        // The built-ins as last changed.
+        let edited = root.join(EDITED);
+        if edited.exists() {
+            match read_capped(&edited, MAX_GROUP_BYTES).and_then(|b| serde_json::from_slice::<EditedFile>(&b).map_err(|e| e.to_string())) {
+                Ok(e) => for (name, settings) in e.presets {
+                    if let Some(p) = lib.presets.iter_mut().find(|p| p.builtin && p.name == name) { p.settings = settings; }
+                },
+                Err(e) => warnings.push(format!("{}: {e}", edited.display())),
+            }
+        }
         (lib, warnings)
+    }
+
+    /// Keep `settings` as preset `index`'s, on disk too (a brush changed in
+    /// the editor is found again next time).
+    pub fn keep(&mut self, index: usize, settings: BrushSettings) -> Result<(), String> {
+        let Some(p) = self.presets.get_mut(index) else { return Ok(()) };
+        if p.settings == settings { return Ok(()); }
+        p.settings = settings;
+        let Some(root) = &self.root else { return Ok(()) };
+        if p.builtin {
+            // Only those that differ from how they ship.
+            let shipped = builtin();
+            let presets = self.presets.iter().filter(|p| p.builtin)
+                .filter(|p| shipped.iter().find(|s| s.name == p.name).is_none_or(|s| s.settings != p.settings))
+                .map(|p| (p.name.clone(), without_bitmaps(&p.settings))).collect();
+            let json = serde_json::to_vec(&EditedFile { presets }).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+            write_atomic(&root.join(EDITED), &json)
+        } else {
+            let group = p.group.clone();
+            let presets: Vec<Preset> = self.presets.iter().filter(|p| !p.builtin && p.group == group).cloned().collect();
+            write_group(root, &group, &presets)
+        }
     }
 
     /// The groups, in library order.
@@ -364,16 +405,19 @@ fn store_tips(root: &Path, cache: &Tips, presets: &mut [Preset]) -> Result<(), S
 /// write its bitmap).
 fn write_group(root: &Path, group: &str, presets: &[Preset]) -> Result<(), String> {
     std::fs::create_dir_all(root.join("groups")).map_err(|e| e.to_string())?;
-    let mut kept = presets.to_vec();
-    for p in &mut kept {
-        let b = &mut p.settings;
-        if let TipShape::Stored(t) = &mut b.tip { t.full = None; }
-        if let TipShape::Stored(t) = &mut b.dual_brush.tip { t.full = None; }
-        if let Pattern::Stored(t) = &mut b.texture.pattern { t.full = None; }
-    }
+    let kept = presets.iter().map(|p| Preset { settings: without_bitmaps(&p.settings), ..p.clone() }).collect();
     let file = GroupFile { group: group.into(), presets: kept };
     let json = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
     write_atomic(&root.join("groups").join(group_file(group)), &json)
+}
+
+/// `b` without its stored tips' bitmaps (they are in their tip files).
+fn without_bitmaps(b: &BrushSettings) -> BrushSettings {
+    let mut b = b.clone();
+    if let TipShape::Stored(t) = &mut b.tip { t.full = None; }
+    if let TipShape::Stored(t) = &mut b.dual_brush.tip { t.full = None; }
+    if let Pattern::Stored(t) = &mut b.texture.pattern { t.full = None; }
+    b
 }
 
 fn stored_tip(t: &TipShape) -> Option<&StoredTile> { if let TipShape::Stored(s) = t { Some(s) } else { None } }
@@ -463,6 +507,26 @@ mod tests {
         assert!(order.windows(2).all(|w| w[0] <= w[1]));
         assert!(v.iter().any(|p| p.kind == Kind::Eraser) && v.iter().any(|p| p.settings.mixer.enabled));
         assert!(v.iter().all(|p| p.settings.erase == (p.kind == Kind::Eraser)));
+    }
+
+    /// A brush changed in the editor is found again when the library opens.
+    #[test]
+    fn edited_brushes_are_kept() {
+        let dir = std::env::temp_dir().join(format!("forge-edits-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut lib, w) = Library::open(dir.clone());
+        assert!(w.is_empty());
+        let i = lib.presets.iter().position(|p| p.builtin).unwrap();
+        let mut b = lib.presets[i].settings.clone();
+        b.size = 77.0;
+        b.tool_options = vec!["size".into(), "flow".into()];
+        lib.keep(i, b.clone()).unwrap();
+        let (again, w) = Library::open(dir.clone());
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(again.presets[i].settings, b);
+        // Others as shipped.
+        assert_eq!(again.presets[i + 1].settings, builtin()[i + 1].settings);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

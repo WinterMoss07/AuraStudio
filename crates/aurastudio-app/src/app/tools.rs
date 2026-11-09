@@ -430,7 +430,8 @@ impl App {
     pub(super) fn select_preset(&mut self, index: usize) {
         if index == self.preset || index >= self.library.presets.len() { return; }
         let color = self.brush.color;
-        if let Some(old) = self.library.presets.get_mut(self.preset) { old.settings = self.brush.clone(); }
+        // The brush left as changed, kept with its preset (on disk too).
+        if let Err(e) = self.library.keep(self.preset, self.brush.clone()) { log::warn!("brush not kept: {e}"); }
         let mut b = self.library.presets[index].settings.clone();
         // An imported bitmap is read from the disk when its brush is picked.
         self.library.load_tips(&mut b);

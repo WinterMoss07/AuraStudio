@@ -686,6 +686,10 @@ pub struct BrushSettings {
     pub mixer: MixerSettings,
     /// Random seed for jitters (commands derive it from the stroke when not given), so strokes replay.
     pub seed: u64,
+    /// The settings the Tool options docker shows for this brush (their ids, in the docker's
+    /// order); empty: the usual ones. Not a stroke setting: kept with the preset.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_options: Vec<String>,
 }
 
 impl Default for BrushSettings {
@@ -728,6 +732,7 @@ impl Default for BrushSettings {
             locks: SectionLocks::default(),
             mixer: MixerSettings::default(),
             seed: 0,
+            tool_options: Vec::new(),
         }
     }
 }
