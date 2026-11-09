@@ -596,17 +596,6 @@ fn other_pixel_types_paint_and_undo_too() {
 }
 
 #[test]
-fn the_pool_gives_buffers_back() {
-    let v = crate::pool::take_pixels::<Rgba8>(256, CLEAR);
-    crate::pool::give_pixels(v);
-    assert!(crate::pool::held_bytes() >= 1024);
-    let again = crate::pool::take_pixels::<Rgba8>(256, [1, 2, 3, 4]);
-    assert!(again.iter().all(|p| *p == [1, 2, 3, 4]), "a reused buffer is filled again");
-    crate::pool::trim(std::time::Duration::ZERO);
-    assert_eq!(crate::pool::held_bytes(), 0);
-}
-
-#[test]
 fn base_pixels_are_read_from_before_the_stroke() {
     let mut s = Image::new(32, 32, 16, CLEAR);
     s.fill_rect(Rect::new(0, 0, 32, 32), [9, 9, 9, 255]);

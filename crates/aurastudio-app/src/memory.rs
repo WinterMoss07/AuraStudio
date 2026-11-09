@@ -230,7 +230,6 @@ fn paint_thread_section() -> MemorySection {
     s.add("stroke coverage (the stroke under way)", h.stroke.load(Relaxed));
     s.add("folder cache (merged folders, 64 MB at most)", h.folder_cache.load(Relaxed));
     s.add("last save's encodings (incremental saves)", h.saves.load(Relaxed));
-    s.add("pixel pool (tile buffers kept for reuse)", aurastudio_raster::pool::held_bytes() as u64);
     s
 }
 

@@ -13,7 +13,6 @@ mod dirty;
 mod grid;
 mod ops;
 mod patch;
-pub mod pool;
 mod save;
 mod slot;
 mod stroke;

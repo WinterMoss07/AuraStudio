@@ -138,22 +138,18 @@ impl<P: Pixel> Surface<P> {
         (((y & m) << self.shift) + (x & m)) as usize
     }
 
-    pub(crate) fn set_slot(&mut self, tx: i32, ty: i32, s: Slot<P>) { recycle(self.grid.set(tx, ty, s)); }
+    pub(crate) fn set_slot(&mut self, tx: i32, ty: i32, s: Slot<P>) { self.grid.set(tx, ty, s); }
 
     pub(crate) fn drop_table_if_empty(&mut self) { self.grid.prune(); }
 
     /// The pixels of tile (tx, ty) to write into: any other form becomes
-    /// pixels; a shared tile is copied first (into a pooled buffer).
+    /// pixels; a shared tile is copied first.
     pub(crate) fn full_mut(&mut self, tx: i32, ty: i32) -> &mut Vec<P> {
         let (n, fill) = (self.npx(), self.fill);
         let slot = self.grid.get_mut(tx, ty);
         let shared = match slot { Slot::Full(t) => Arc::strong_count(t) > 1 || Arc::weak_count(t) > 0, _ => true };
         if shared {
-            let mut px = crate::pool::take_pixels(n, fill);
-            match &*slot {
-                Slot::Full(t) => px.copy_from_slice(&t.px),
-                other => { let e = other.expand(fill, n); px.copy_from_slice(&e); }
-            }
+            let px = match &*slot { Slot::Full(t) => t.px.clone(), other => other.expand(fill, n) };
             *slot = Slot::Full(Arc::new(FullTile { px, info: None }));
         }
         match slot {
@@ -297,7 +293,7 @@ impl<P: Pixel> Surface<P> {
 
     /// Back to the fill everywhere (frees every tile and the table).
     pub fn clear(&mut self) {
-        for (_, c) in std::mem::take(&mut self.grid.chunks) { for s in c.slots { recycle(s); } }
+        self.grid.chunks.clear();
     }
 
     /// Back to the fill outside `keep` (crop to the frame, or to a
@@ -610,14 +606,6 @@ fn emit<P: Pixel>(s: &Slot<P>, fill: P, x: i32, start: usize, len: usize, f: &mu
         Slot::Alpha(t) => f(x, Run::Coverage { color: t.color, clear: t.clear, alpha: &t.a[start..start + len] }),
         Slot::Uniform(c) => f(x, Run::Uniform(*c, len)),
         Slot::Fill | Slot::Cold(_) => f(x, Run::Uniform(fill, len)),
-    }
-}
-
-/// A slot let go: its pixel buffer back to the pool when nobody else
-/// holds it.
-pub(crate) fn recycle<P: Pixel>(s: Slot<P>) {
-    if let Slot::Full(t) = s {
-        if let Ok(t) = Arc::try_unwrap(t) { crate::pool::give_pixels(t.px); }
     }
 }
 
