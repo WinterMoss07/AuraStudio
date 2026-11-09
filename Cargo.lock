@@ -201,7 +201,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "arboard",
  "aurastudio-animation",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-animation"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-compose",
  "aurastudio-core",
@@ -251,14 +251,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-arch"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "moxcms 0.9.1",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-compose"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -279,11 +279,11 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-core"
-version = "0.20.2"
+version = "0.20.3"
 
 [[package]]
 name = "aurastudio-diag"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "tracy-client",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-document"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-animation",
  "aurastudio-color",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-animation",
  "aurastudio-compose",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-filters"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "aurastudio-raster",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-forge"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "flate2",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "aurastudio-raster",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-input"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "crossbeam-queue",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-raster"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "lz4_flex",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-selection"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-stress"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-color",
  "aurastudio-compose",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-tools"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "aurastudio-input",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-transform"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-core",
  "rayon",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "aurastudio-animation",
  "aurastudio-core",

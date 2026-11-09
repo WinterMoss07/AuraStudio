@@ -3,6 +3,32 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.20.3 — 2026-11-09
+
+Code duplicates removed, data kept twice and work done twice. Nothing
+new to see; painting should be the same.
+
+**Memory**
+- A stroke keeps its coverage once (the brush engine's), not a second
+  8-bit copy per tile it touches.
+- Layer thumbnails are kept once (on the GPU), not also on the CPU.
+- A transform's live preview no longer copies the whole layer stack
+  (three copies before).
+
+**Speed**
+- Applying a filter with the values already shown keeps the preview
+  instead of filtering the layer again.
+- The merges for the screen write straight into the result (no copy of
+  each piece).
+- The animation panel finds each cell's sheet without scanning them all.
+- The cursor asks the window for its edges once per move, not up to
+  three times.
+
+**Behind the scenes**
+- One way to read onion ghosts, to draw them, to record a paint step,
+  to settle the time after an edit, to make a stroke's jitter seed.
+- Identical branches merged (blend modes, filters, icons, tool hints).
+
 ## 0.20.2 — 2026-11-03
 
 Second round of the 0.20 review.
