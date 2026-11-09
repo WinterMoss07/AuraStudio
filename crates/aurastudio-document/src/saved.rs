@@ -76,7 +76,9 @@ impl Document {
     /// and 0.19 tile steps become patches of the document's tiles.
     pub fn from_snapshot(id: DocId, name: &str, snap: Snapshot) -> Document {
         aurastudio_core::zone!("document from snapshot");
-        let Snapshot { stack, dpi, kind, depth, frame, fps, onion, profile, selection, undo, redo, .. } = snap;
+        let Snapshot { mut stack, dpi, kind, depth, frame, fps, onion, profile, selection, undo, redo, .. } = snap;
+        // (Files before 0.23 kept the first sheet on top.)
+        aurastudio_animation::SheetEdit::stack_sheets(&mut stack);
         let undo = import(&stack, undo);
         let redo = import(&stack, redo);
         let mut doc = Document::from_parts(id, name, stack, kind, History::import(DEFAULT_BUDGET, undo, redo));

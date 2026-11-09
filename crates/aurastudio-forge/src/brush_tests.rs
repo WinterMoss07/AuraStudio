@@ -999,6 +999,10 @@ fn several_inputs_drive_one_setting() {
     // Full pressure, upright: full size; half pressure, flat pen: 0.6 × 0.5.
     assert!((base_diameter(&b, &step(1.0, 0.0)) - 100.0).abs() < 1e-3);
     assert!((base_diameter(&b, &step(0.5, 90.0)) - 30.0).abs() < 1e-3);
+    // A maximum: full pressure gives it, not full size.
+    b.shape_dynamics.size.set_link(Control::PenPressure, Some(Link { minimum: 0.2, maximum: 0.8, ..Link::default() }));
+    assert!((base_diameter(&b, &step(1.0, 0.0)) - 80.0).abs() < 1e-3);
+    b.shape_dynamics.size.set_link(Control::PenPressure, Some(Link { minimum: 0.2, ..Link::default() }));
     // Pressure dropped: tilt becomes the control.
     let d = &mut b.shape_dynamics.size;
     assert!(d.set_link(Control::PenPressure, None));

@@ -307,3 +307,21 @@ fn the_camera_eases_between_keys() {
     assert!((q.x - 100.0).abs() < 1e-9 && (q.y - 50.0).abs() < 1e-9, "the center in the middle");
     assert!(c.remove_key(11) && !c.remove_key(11));
 }
+
+/// Sheets stack as they come: sheet 1 at the bottom, each next one over
+/// it, whatever order they are made or moved in.
+#[test]
+fn sheets_stack_in_time_order() {
+    let mut s = doc(64, 64);
+    let mut t = Timeline::default();
+    let a = s.add_animation_folder("A");
+    for n in [1, 3, 2] { sheet(&mut s, &mut t, a, n); }
+    let order = |s: &LayerStack| -> Vec<u32> { s.node(a).unwrap().as_folder().unwrap().children.iter().filter_map(|c| c.sheet_start()).collect() };
+    assert_eq!(order(&s), [1, 2, 3], "bottom to top");
+    assert!(s.move_sheet(a, 1, 5, Onto::Refuse));
+    assert_eq!(order(&s), [2, 3, 5]);
+    // An older file's order (first on top) comes back stacked.
+    if let Some(Node::Folder(f)) = s.node_mut(a) { f.children.reverse(); }
+    s.stack_sheets();
+    assert_eq!(order(&s), [2, 3, 5]);
+}

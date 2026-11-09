@@ -479,14 +479,14 @@ fn link_value(l: &Link, fade_steps: u32, s: &StepInput) -> f32 {
     }
 }
 
-/// What the inputs make of a dynamic setting, 0..1: each input lerps from its minimum to 1, the
+/// What the inputs make of a dynamic setting, 0..1: each input lerps from its minimum to its maximum, the
 /// results multiplied (CSP's several inputs at once). 1 with none.
 pub fn controlled(d: &Dynamic, s: &StepInput) -> f32 {
-    d.links().map(|l| { let m = l.minimum.clamp(0.0, 1.0); m + (1.0 - m) * link_value(&l, d.fade_steps, s) }).product()
+    d.links().map(|l| { let (lo, hi) = (l.minimum.clamp(0.0, 1.0), l.maximum.clamp(0.0, 1.0)); lo + (hi - lo) * link_value(&l, d.fade_steps, s) }).product()
 }
 
 /// The lowest the inputs can take a setting to (each at 0).
-fn floor_of(d: &Dynamic) -> f32 { d.links().map(|l| l.minimum.clamp(0.0, 1.0)).product() }
+fn floor_of(d: &Dynamic) -> f32 { d.links().map(|l| l.minimum.min(l.maximum).clamp(0.0, 1.0)).product() }
 
 /// Angle contributed by a control, in degrees (counter-clockwise).
 pub fn control_angle(c: Control, fade_steps: u32, s: &StepInput) -> f32 {

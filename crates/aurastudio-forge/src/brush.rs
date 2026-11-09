@@ -47,19 +47,23 @@ pub enum Control {
 /// (CSP's four, then the others Photoshop has). Random is the dynamic's `jitter`.
 pub const INPUTS: [Control; 6] = [Control::PenPressure, Control::PenTilt, Control::Velocity, Control::Fade, Control::StylusWheel, Control::Rotation];
 
-/// One more input of a dynamic (CSP's "Input affecting…": several at once): the setting goes
-/// from `minimum` (input 0) to full (input 1) through `curve`.
+/// One input of a dynamic (CSP's "Input affecting…": several at once): the setting goes from
+/// `minimum` (input 0) to `maximum` (input 1) through `curve`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Link {
     pub input: Control,
     pub minimum: f32,
+    pub maximum: f32,
     pub curve: ResponseCurve,
 }
 
 impl Default for Link {
-    fn default() -> Self { Self { input: Control::Off, minimum: 0.0, curve: ResponseCurve::LINEAR } }
+    fn default() -> Self { Self { input: Control::Off, minimum: 0.0, maximum: 1.0, curve: ResponseCurve::LINEAR } }
 }
+
+fn is_one(v: &f32) -> bool { *v == 1.0 }
+fn one() -> f32 { 1.0 }
 
 /// Most inputs a dynamic follows besides its own control.
 pub const MORE_INPUTS: usize = 7;
@@ -79,6 +83,9 @@ pub struct Dynamic {
     /// Rotation), applied after the global pen curve. Linear by default. Always written to JSON, so
     /// a `tools.setBrush` patch can set it back to linear. Angle Jitter's controls ignore it.
     pub curve: ResponseCurve,
+    /// The control's value at input 1 (CSP's Maximum value; 1 = full).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub maximum: f32,
     /// More inputs at the same time (CSP), each scaling the setting by its own range: the
     /// result is their product with the control's. On the heap: a brush has a dozen dynamics,
     /// and is copied whole on the stack here and there.
@@ -88,16 +95,16 @@ pub struct Dynamic {
 
 impl Default for Dynamic {
     fn default() -> Self {
-        Self { jitter: 0.0, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Vec::new() }
+        Self { jitter: 0.0, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, maximum: 1.0, more: Vec::new() }
     }
 }
 
 impl Dynamic {
     pub const fn controlled(control: Control) -> Self {
-        Self { jitter: 0.0, control, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Vec::new() }
+        Self { jitter: 0.0, control, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, maximum: 1.0, more: Vec::new() }
     }
     pub const fn jitter(jitter: f32) -> Self {
-        Self { jitter, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Vec::new() }
+        Self { jitter, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, maximum: 1.0, more: Vec::new() }
     }
     pub fn is_active(&self) -> bool {
         self.jitter > 0.0 || self.is_controlled()
@@ -108,7 +115,7 @@ impl Dynamic {
 
     /// Every input it follows, its control first: (input, minimum, curve).
     pub fn links(&self) -> impl Iterator<Item = Link> + '_ {
-        let first = (self.control != Control::Off).then_some(Link { input: self.control, minimum: self.minimum, curve: self.curve });
+        let first = (self.control != Control::Off).then_some(Link { input: self.control, minimum: self.minimum, maximum: self.maximum, curve: self.curve });
         first.into_iter().chain(self.more.iter().copied().filter(|l| l.input != Control::Off && l.input != self.control))
     }
 
@@ -124,7 +131,7 @@ impl Dynamic {
             Some(l) => {
                 let l = Link { input, ..l };
                 if self.control == input || self.control == Control::Off {
-                    (self.control, self.minimum, self.curve) = (input, l.minimum, l.curve);
+                    (self.control, self.minimum, self.maximum, self.curve) = (input, l.minimum, l.maximum, l.curve);
                     if let Some(i) = at { self.more.remove(i); }
                 } else if let Some(i) = at {
                     self.more[i] = l;
@@ -139,7 +146,7 @@ impl Dynamic {
                     // The next one becomes the control.
                     if self.more.is_empty() { self.control = Control::Off; } else {
                         let m = self.more.remove(0);
-                        (self.control, self.minimum, self.curve) = (m.input, m.minimum, m.curve);
+                        (self.control, self.minimum, self.maximum, self.curve) = (m.input, m.minimum, m.maximum, m.curve);
                     }
                 } else if let Some(i) = at {
                     self.more.remove(i);

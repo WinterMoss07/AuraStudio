@@ -233,6 +233,9 @@ pub trait SheetEdit {
     /// `Insert` pushes the sheets from `at` one frame later; `Remove` takes
     /// the sheet at `at` away and brings the following ones one earlier.
     fn shift_frames(&mut self, folder: u64, at: u32, edit: Shift) -> bool;
+    /// The sheets of every animation folder stacked as they come (the
+    /// first at the bottom): a file from before, a sheet put back.
+    fn stack_sheets(&mut self);
 }
 
 fn anim_mut(s: &mut LayerStack, folder: u64) -> Option<&mut Anim> {
@@ -253,8 +256,13 @@ fn renumber(s: &mut LayerStack, folder: u64, moves: &[(u64, u32)]) {
         let Node::Folder(fr) = c else { continue };
         if let Some(&(_, n)) = moves.iter().find(|m| m.0 == fr.id) { fr.kind = FolderKind::Sheet(n); }
     }
-    // Last sheet at the bottom, first at the top of the list.
-    f.children.sort_by_key(|c| std::cmp::Reverse(c.sheet_start().unwrap_or(0)));
+    stack_in_order(&mut f.children);
+}
+
+/// Sheets stacked as they come: the first at the bottom, each next one
+/// over it (on top of the list). Other children keep their place order.
+pub(crate) fn stack_in_order(children: &mut [Node]) {
+    children.sort_by_key(|c| c.sheet_start().unwrap_or(0));
 }
 
 /// Sheet `id` may go: a paint layer stays in the document.
@@ -272,6 +280,12 @@ fn take_sheet(s: &mut LayerStack, id: u64) {
 }
 
 impl SheetEdit for LayerStack {
+    fn stack_sheets(&mut self) {
+        for folder in self.animation_folders() {
+            if let Some(Node::Folder(f)) = self.node_mut(folder) { stack_in_order(&mut f.children); }
+        }
+    }
+
     fn add_animation_folder(&mut self, name: &str) -> u64 {
         self.insert_folder(Folder { kind: FolderKind::Animation(Anim::default()), ..Folder::new(name) })
     }
@@ -336,8 +350,8 @@ impl SheetEdit for LayerStack {
         let sheet = self.new_id();
         let node = Node::Folder(Folder { id: sheet, name: String::new(), children: cels, kind: FolderKind::Sheet(n), ..Folder::new("") });
         let Some(Node::Folder(f)) = self.node_mut(folder) else { return None };
-        // Kept from the last sheet (bottom) to the first (top of the list).
-        let at = f.children.iter().position(|c| c.sheet_start().is_some_and(|k| k < n)).unwrap_or(f.children.len());
+        // Over the sheets before it, under those after (the first at the bottom).
+        let at = f.children.iter().position(|c| c.sheet_start().is_some_and(|k| k > n)).unwrap_or(f.children.len());
         f.children.insert(at, node);
         self.set_active(sheet);
         Some(target)

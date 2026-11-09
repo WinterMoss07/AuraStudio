@@ -107,6 +107,8 @@ impl Step {
                         let folder = place.0 == 0 || matches!(t.stack.node(place.0), Some(Node::Folder(_)));
                         if !folder || t.stack.node(*id).is_some() { *node = Some(n); return None; }
                         t.stack.add_node(n, place.0, place.1);
+                        // (Saved in another order: stacked as they come.)
+                        aurastudio_animation::SheetEdit::stack_sheets(&mut *t.stack);
                     }
                 }
                 t.stack.set_active(*active);
