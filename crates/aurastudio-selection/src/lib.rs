@@ -117,8 +117,7 @@ impl Selection {
     /// `new` met with `old` (`None`: nothing selected).
     pub fn combine(old: Option<&Selection>, new: Option<Selection>, mode: Mode) -> Option<Selection> {
         match (mode, old, new) {
-            (Mode::Replace, _, n) => n,
-            (Mode::Add, None, n) => n,
+            (Mode::Replace, _, n) | (Mode::Add, None, n) => n,
             (Mode::Add | Mode::Subtract, Some(o), None) => Some(o.clone()),
             (Mode::Subtract | Mode::Intersect, None, _) | (Mode::Intersect, _, None) => None,
             (m, Some(o), Some(n)) => {
