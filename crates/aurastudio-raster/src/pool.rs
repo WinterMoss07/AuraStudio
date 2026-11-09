@@ -1,5 +1,5 @@
-//! Reused tile buffers: the pixels a tile gets when first painted and the
-//! stroke masks come from here and go back here, so a long session does
+//! Reused tile buffers: the pixels a tile gets when first painted come
+//! from here and go back here, so a long session does
 //! not allocate and free the same few kilobytes thousands of times
 //! (Krita's tile info pool). Buffers not reused for a while are freed
 //! (`trim`), and the pool never holds more than `MAX_BYTES`.
@@ -17,7 +17,6 @@ pub const MAX_BYTES: usize = 64 << 20;
 struct Pool {
     /// Per pixel type: a `Vec<(Vec<P>, Instant)>` (boxed once per type).
     pixels: HashMap<TypeId, Box<dyn Any + Send>>,
-    masks:  Vec<(Box<[u8]>, Instant)>,
     bytes:  usize,
 }
 
@@ -25,7 +24,7 @@ static POOL: Mutex<Option<Pool>> = Mutex::new(None);
 
 fn with<R>(f: impl FnOnce(&mut Pool) -> R) -> R {
     let mut g = POOL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let p = g.get_or_insert_with(|| Pool { pixels: HashMap::new(), masks: Vec::new(), bytes: 0 });
+    let p = g.get_or_insert_with(|| Pool { pixels: HashMap::new(), bytes: 0 });
     f(p)
 }
 
@@ -58,37 +57,11 @@ pub fn give_pixels<P: Pixel>(v: Vec<P>) {
     });
 }
 
-/// `n` zero bytes (a stroke mask).
-pub fn take_mask(n: usize) -> Box<[u8]> {
-    let got = with(|p| {
-        let i = p.masks.iter().rposition(|(m, _)| m.len() == n)?;
-        let (m, _) = p.masks.swap_remove(i);
-        p.bytes -= n;
-        Some(m)
-    });
-    match got {
-        Some(mut m) => { m.fill(0); m }
-        None => vec![0u8; n].into_boxed_slice(),
-    }
-}
-
-pub fn give_mask(m: Box<[u8]>) {
-    let n = m.len();
-    with(|p| {
-        if p.bytes + n > MAX_BYTES { return; }
-        p.masks.push((m, Instant::now()));
-        p.bytes += n;
-    });
-}
-
 /// Free what has waited longer than `idle` (call it when the app is
 /// idle; `Duration::ZERO` empties the pool).
 pub fn trim(idle: Duration) {
     with(|p| {
         let now = Instant::now();
-        let mut freed = 0;
-        p.masks.retain(|(m, t)| { let keep = now.duration_since(*t) < idle; if !keep { freed += m.len(); } keep });
-        p.bytes -= freed;
         let mut freed = 0;
         for list in p.pixels.values_mut() {
             freed += trim_any(list.as_mut(), now, idle);

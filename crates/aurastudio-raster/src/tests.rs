@@ -149,7 +149,7 @@ fn set_fill_keeps_stored_pixels() {
 }
 
 /// A tiny engine following the rule of `PaintSurface`: coverage capped by
-/// the limit, max with the mask, pixel made from the base.
+/// the limit, pixel made from the base.
 fn dab(surf: &mut dyn PaintSurface<Rgba8>, r: Rect, color: [u8; 3], cov: u8) {
     surf.prepare(r);
     let r = r.intersect(&surf.frame());
@@ -165,7 +165,7 @@ fn dab(surf: &mut dyn PaintSurface<Rgba8>, r: Rect, color: [u8; 3], cov: u8) {
     }
 }
 
-fn paint(mut s: Span<'_>, color: [u8; 3], cov: u8) {
+fn paint(s: Span<'_>, color: [u8; 3], cov: u8) {
     for i in 0..s.len() {
         let m = s.cover(i, cov);
         s.pixels[i] = if m == 0 { s.base[i] } else { paint_pixel_u8(s.base[i], color, m, BlendMode::Normal) };
@@ -584,7 +584,7 @@ fn other_pixel_types_paint_and_undo_too() {
         st.prepare(Rect::new(0, 0, 40, 20));
         let mut buf = Vec::new();
         st.spans_mut(Rect::new(0, 0, 40, 20), &mut buf);
-        for mut sp in buf { for i in 0..sp.len() { let m = sp.cover(i, 255); sp.pixels[i] = sp.base[i].over(red, m); } }
+        for sp in buf { for i in 0..sp.len() { let m = sp.cover(i, 255); sp.pixels[i] = sp.base[i].over(red, m); } }
         st.end()
     };
     assert_eq!(s.pixel(10, 10), red);
@@ -603,8 +603,7 @@ fn the_pool_gives_buffers_back() {
     let again = crate::pool::take_pixels::<Rgba8>(256, [1, 2, 3, 4]);
     assert!(again.iter().all(|p| *p == [1, 2, 3, 4]), "a reused buffer is filled again");
     crate::pool::trim(std::time::Duration::ZERO);
-    let m = crate::pool::take_mask(64);
-    assert!(m.iter().all(|v| *v == 0));
+    assert_eq!(crate::pool::held_bytes(), 0);
 }
 
 #[test]
@@ -615,7 +614,6 @@ fn base_pixels_are_read_from_before_the_stroke() {
     dab(&mut st, Rect::new(0, 0, 8, 8), [200, 0, 0], 255);
     assert_eq!(st.base_pixel(3, 3), [9, 9, 9, 255]);
     assert_eq!(st.surface().pixel(3, 3), [200, 0, 0, 255]);
-    assert_eq!(st.coverage(3, 3), 255);
     st.end();
 }
 

@@ -100,7 +100,10 @@ impl<P: Pixel> Patch<P> {
     pub fn rects(&self) -> Vec<Rect> { self.tiles().rects() }
 
     /// The smallest rectangle around the tiles.
-    pub fn bounds(&self) -> Rect { self.tiles().bounds() }
+    pub fn bounds(&self) -> Rect {
+        let t = self.tile as i32;
+        self.tiles.iter().fold(Rect::EMPTY, |a, (tx, ty, _)| a.union(&Rect::from_xywh(tx * t, ty * t, self.tile, self.tile)))
+    }
 
     /// Compress the kept pixel and coverage tiles (an older history step:
     /// less memory, a little slower to undo).

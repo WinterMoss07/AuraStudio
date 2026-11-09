@@ -92,7 +92,10 @@ impl DirtyTiles {
     pub fn rects_in(&self, clip: Rect) -> Vec<Rect> { self.rects().into_iter().map(|r| r.intersect(&clip)).filter(|r| !r.is_empty()).collect() }
 
     /// The smallest rectangle around the set.
-    pub fn bounds(&self) -> Rect { self.rects().iter().fold(Rect::EMPTY, |a, r| a.union(r)) }
+    pub fn bounds(&self) -> Rect {
+        let t = self.tile as i32;
+        self.tiles().fold(Rect::EMPTY, |a, (tx, ty)| a.union(&Rect::from_xywh(tx * t, ty * t, self.tile, self.tile)))
+    }
 
     /// (tx, ty) of every tile in the set.
     pub(crate) fn tiles(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
