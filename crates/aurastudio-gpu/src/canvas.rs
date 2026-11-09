@@ -152,9 +152,12 @@ impl Atlas {
 
     /// At least `n` free slots: the atlas grown (by a quarter at least) if
     /// not.
-    fn reserve(&mut self, device: &Device, queue: &Queue, n: u32) {
+    /// Writes held in `up` go first: the copy into the grown texture must
+    /// see them (else those pages came out black).
+    fn reserve(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, n: u32) {
         let free = self.cap - self.in_use();
         if free >= n { return; }
+        if up.is_held() { up.release(queue); up.hold(); }
         let want = (self.cap + n - free).max(self.cap + self.cap / 4);
         let (cols, rows) = Self::layout(want);
         let keep: Vec<u32> = (0..self.cap).collect();
@@ -172,8 +175,8 @@ impl Atlas {
     }
 
     /// A free slot, the atlas grown if there is none.
-    fn alloc(&mut self, device: &Device, queue: &Queue) -> u32 {
-        self.reserve(device, queue, 1);
+    fn alloc(&mut self, device: &Device, queue: &Queue, up: &mut Uploads) -> u32 {
+        self.reserve(device, queue, up, 1);
         let i = self.used.iter().position(|u| !*u).unwrap_or(0);
         if let Some(u) = self.used.get_mut(i) { *u = true; }
         i as u32
@@ -364,9 +367,7 @@ impl Canvas {
     /// R8 atlas into an RGBA slot.
     fn mono_to_full(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, i: usize) {
         let Page::Mono { a, b, slot: m } = self.pages[i] else { return };
-        // (A growing atlas copies its texture: the writes held first.)
-        if self.rgba.in_use() == self.rgba.cap && up.is_held() { up.release(queue); up.hold(); }
-        let slot = self.rgba.alloc(device, queue);
+        let slot = self.rgba.alloc(device, queue, up);
         let (mx, my) = self.mono.origin(m);
         let (rx, ry) = self.rgba.origin(slot);
         let ex = self.expand.get_or_insert_with(|| Expand::new(device));
@@ -390,25 +391,20 @@ impl Canvas {
     /// Page `i` is now `px` (all of it, padded): sorted, its slots and the
     /// GPU's pixels changed as needed.
     fn set_page(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, i: usize, px: &[Rgba8], sorted: Sorted) {
-        // An atlas about to grow copies its texture: the writes held
-        // must reach it first.
-        let full = |a: &Atlas| a.in_use() == a.cap;
-        let grows = (matches!(sorted, Sorted::Full) && full(&self.rgba)) || (matches!(sorted, Sorted::Mono { .. }) && full(&self.mono));
-        if grows && up.is_held() { up.release(queue); up.hold(); }
         let old = std::mem::replace(&mut self.pages[i], Page::Uniform([0; 4]));
         let (mono_slot, full_slot) = match old { Page::Mono { slot, .. } => (Some(slot), None), Page::Full { slot } => (None, Some(slot)), Page::Uniform(_) => (None, None) };
         let all = Rect::new(0, 0, PAGE as i32, PAGE as i32);
         self.pages[i] = match sorted {
             Sorted::Uniform(c) => Page::Uniform(c),
             Sorted::Mono { a, b, t } => {
-                let slot = mono_slot.unwrap_or_else(|| self.mono.alloc(device, queue));
+                let slot = mono_slot.unwrap_or_else(|| self.mono.alloc(device, queue, up));
                 let (x, y) = self.mono.origin(slot);
                 up.write(device, queue, &self.mono.texture, (x, y), (PAGE, PAGE), &t);
                 self.mono.mark(slot, all);
                 Page::Mono { a, b, slot }
             }
             Sorted::Full => {
-                let slot = full_slot.unwrap_or_else(|| self.rgba.alloc(device, queue));
+                let slot = full_slot.unwrap_or_else(|| self.rgba.alloc(device, queue, up));
                 let (x, y) = self.rgba.origin(slot);
                 up.write(device, queue, &self.rgba.texture, (x, y), (PAGE, PAGE), px.as_flattened());
                 self.rgba.mark(slot, all);
@@ -471,8 +467,8 @@ impl Canvas {
                 }
                 sorted.insert(i, k);
             }
-            self.rgba.reserve(device, queue, full);
-            self.mono.reserve(device, queue, mono);
+            self.rgba.reserve(device, queue, up, full);
+            self.mono.reserve(device, queue, up, mono);
         }
         for i in ids {
             {

@@ -831,4 +831,32 @@ mod tests {
         let pages = 96 * 256 * 256 * 4;
         assert!(c.bytes <= pages + pages / 6, "{} MB for {} MB of pages", c.bytes >> 20, pages >> 20);
     }
+
+    /// A photo sent in bands in one submission (as a frame's uploads): the
+    /// atlas grows meanwhile, and every page shows (it once copied the
+    /// texture before the writes held: pages came out black).
+    #[test]
+    fn a_photo_sent_in_one_submission_shows_whole() {
+        let Some(g) = gpu() else { return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (1100u32, 1300u32);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        let mut seed = 7u32;
+        let want: Vec<aurastudio_core::Rgba8> = (0..w * h).map(|_| { seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); let b = seed.to_le_bytes(); [b[1], b[2], b[3], 255] }).collect();
+        up.hold();
+        for y0 in (0..h).step_by(256) {
+            let r = aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 256.min(h - y0));
+            let px = want[(y0 * w) as usize..((y0 + r.h()) * w) as usize].to_vec();
+            canvas.upload(device, queue, &mut up, r, &px);
+        }
+        up.release(queue);
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let got = render(&g, &mut canvas, &one, (w, h), true);
+        let flat: Vec<u8> = want.iter().flatten().copied().collect();
+        if got != flat {
+            let bad = (0..(w * h) as usize).find(|&i| got[i * 4..i * 4 + 4] != flat[i * 4..i * 4 + 4]).unwrap_or(0);
+            panic!("pixel ({}, {}) is {:?}", bad as u32 % w, bad as u32 / w, &got[bad * 4..bad * 4 + 4]);
+        }
+    }
 }
