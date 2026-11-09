@@ -397,7 +397,13 @@ impl Worker {
         if let Some((w, h)) = size { events.push(Event::Resized(w, h)); }
         if let Some(s) = started { events.push(Event::TransformStarted(s)); }
         if let Some(l) = lift { events.push(Event::TransformLift(Box::new(l))); }
-        if (undo || redo) && !done.changed() { events.push(Event::Notice(if undo { "Nothing to undo" } else { "Nothing to redo" })); }
+        if (undo || redo) && !done.changed() {
+            match done.refused {
+                // (Told by `report`.)
+                Some(why) => log::warn!("{}: {why}; the step was dropped", if undo { "undo" } else { "redo" }),
+                None => events.push(Event::Notice(if undo { "Nothing to undo" } else { "Nothing to redo" })),
+            }
+        }
         // (A whole merge after a tree step: the caches no longer match.)
         if done.tree || done.region == Region::Whole { self.stroke_cache = StrokeCache::default(); }
         self.report(frame, &done, events);

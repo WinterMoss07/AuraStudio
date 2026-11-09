@@ -161,7 +161,7 @@ impl Document {
         // A stroke still open ends first (its patch is of the layer as it
         // is now), unless the edit only reads or moves the tree.
         let mut first = Done::default();
-        if self.stroke.is_some() && e.changes_pixels() { first = self.end_stroke(); }
+        if self.stroke.is_some() && (e.changes_pixels() || self.touches_stroke(&e)) { first = self.end_stroke(); }
         // How it is viewed (the current frame, onion look/pause): not a
         // change to save.
         let view = matches!(e, Edit::SetFrame(_) | Edit::SetOnionLook(_) | Edit::PauseOnion(_));
@@ -232,6 +232,20 @@ impl Document {
         first
     }
 
+    /// `e` takes away or moves the stroke's layer or a folder it is in
+    /// (the stroke would end unrecorded).
+    fn touches_stroke(&self, e: &Edit) -> bool {
+        let Some(s) = &self.stroke else { return false };
+        if !matches!(e, Edit::RemoveActive | Edit::Ungroup | Edit::Group { .. } | Edit::GroupAnimationFolders { .. } | Edit::Move { .. }) { return false; }
+        let ids = e.nodes(&self.stack);
+        let mut at = Some(s.layer);
+        while let Some(id) = at {
+            if ids.contains(&id) { return true; }
+            at = self.stack.parent_of(id);
+        }
+        false
+    }
+
     /// A change of time (the frame, the onion skin): what it reshows.
     fn time(&mut self, f: impl FnOnce(&mut Timeline, &mut LayerStack) -> bool) -> Region {
         f(&mut self.timeline, &mut self.stack);
@@ -281,22 +295,28 @@ impl Document {
         (HistTarget { stack: &mut self.stack, selection: &mut self.selection, profile: &mut self.profile }, &mut self.history)
     }
 
+    /// (A filter or transform under way is put back first: what it showed
+    /// is shown again too.)
     fn undo(&mut self) -> Done {
-        self.end_sessions();
+        let mut done = self.end_sessions();
         let (mut t, h) = self.hist_target();
         let d = h.undo(&mut t);
-        self.after_history(d)
+        done.join(self.after_history(d));
+        done
     }
 
     fn redo(&mut self) -> Done {
-        self.end_sessions();
+        let mut done = self.end_sessions();
         let (mut t, h) = self.hist_target();
         let d = h.redo(&mut t);
-        self.after_history(d)
+        done.join(self.after_history(d));
+        done
     }
 
     fn after_history(&mut self, d: Option<Done>) -> Done {
         let Some(mut d) = d else { return Done::default() };
+        // (A step that could not be applied: dropped, nothing changed.)
+        if d.refused.is_some() { return d; }
         d.other = true;
         if d.tree {
             self.settle_into(&mut d.region);
@@ -315,7 +335,7 @@ impl Document {
 
     fn resize(&mut self, width: u32, height: u32) -> Done {
         if width == 0 || height == 0 || (width, height) == (self.stack.width, self.stack.height) { return Done::default(); }
-        self.end_sessions();
+        let mut done = self.end_sessions();
         self.stack.resize(width, height);
         // Patches of the old frame no longer fit (Krita does the same).
         self.history.clear();
@@ -323,7 +343,8 @@ impl Document {
         self.tree = self.stack.tree_state();
         self.selection = None;
         self.deselected = None;
-        Done { region: Region::Whole, other: true, ..Done::default() }
+        done.join(Done { region: Region::Whole, other: true, ..Done::default() });
+        done
     }
 
     // --- Painting ------------------------------------------------------------
@@ -336,8 +357,16 @@ impl Document {
         match self.timeline.paint_target(&self.stack)? {
             Target::Layer(id) => Some(id),
             Target::NewSheet { folder, frame } => {
+                let active = self.stack.active_id();
                 let id = self.stack.make_sheet(folder, frame)?;
-                done.join(self.after_tree("New sheet", Done::default()));
+                // Its own kind of step (files keep it with the stroke).
+                let sheet = match self.stack.parent_of(id) { Some(p) if p != folder => p, _ => id };
+                let place = self.stack.place_of(sheet)?;
+                self.settle_into(&mut done.region);
+                self.stack.take_removed();
+                self.tree = self.stack.tree_state();
+                self.history.push("New sheet", Step::Sheet { id: sheet, place, node: None, active });
+                done.tree = true;
                 self.new_sheet = Some(self.history.serial());
                 Some(id)
             }
@@ -410,7 +439,11 @@ impl Document {
             (Some(s), None) => Some(s.as_mask().clone()),
             (None, l) => l.map(Selection::into_mask),
         };
-        let Some(img) = self.stack.image(layer) else { return done };
+        let Some(img) = self.stack.image(layer) else {
+            self.drop_new_sheet(&mut done);
+            done.refused = Some("Nothing to paint on");
+            return done;
+        };
         let state = img.stroke_state(limit.as_ref());
         self.stroke = Some(StrokeSession { layer, label: label.to_owned(), state });
         done
@@ -443,11 +476,12 @@ impl Document {
     /// The layer the stroke under way paints on.
     pub fn stroke_layer(&self) -> Option<u64> { self.stroke.as_ref().map(|s| s.layer) }
 
-    /// Paint more of the stroke under way. False if there is none (or its
-    /// layer is gone: the stroke stops, what it painted stays undoable).
+    /// Paint more of the stroke under way. `None` if there is none, or its
+    /// layer is gone (the stroke stops; an edit taking the layer away ends
+    /// the stroke first, recorded).
     pub fn paint<R>(&mut self, f: impl FnOnce(&mut Stroke<'_, Rgba8>) -> R) -> Option<R> {
         let StrokeSession { layer, label, state } = self.stroke.take()?;
-        let img = self.stack.image_mut(layer)?;
+        let Some(img) = self.stack.image_mut(layer) else { self.new_sheet = None; return None };
         let mut stroke = state.on(img);
         let r = f(&mut stroke);
         self.stroke = Some(StrokeSession { layer, label, state: stroke.detach() });

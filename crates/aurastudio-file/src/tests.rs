@@ -25,8 +25,11 @@ fn sample() -> (Snapshot, u64, u64) {
     paint(&mut s, shade, Rect::new(0, 0, 20, 20), [0, 0, 255, 128]);
     let mut snap = Snapshot::of(s);
     snap.dpi = 600.0;
-    snap.undo = vec![Step { label: "Brush".into(), layer: ink, rect: None, data: vec![1, 2, 3] }, Step { label: "Fill".into(), layer: shade, rect: None, data: vec![9; 5000] }];
-    snap.redo = vec![Step { label: "Erase".into(), layer: ink, rect: None, data: vec![] }];
+    snap.undo = vec![
+        Step { label: "Brush".into(), layer: ink, data: vec![1, 2, 3], sheet: Some([7, 3, 1]), ..Step::default() },
+        Step { label: "Fill".into(), layer: shade, data: vec![9; 5000], joined: true, ..Step::default() },
+    ];
+    snap.redo = vec![Step { label: "Erase".into(), layer: ink, ..Step::default() }];
     (snap, ink, shade)
 }
 

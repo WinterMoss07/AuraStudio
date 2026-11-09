@@ -198,6 +198,12 @@ pub(crate) struct StepJson {
     /// Rect-based steps (before 6): x0, y0, x1, y1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rect:  Option<[i64; 4]>,
+    /// Undone with the step before it (older versions: never).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub joined: bool,
+    /// The sheet it made first: id, folder, index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<[u64; 3]>,
 }
 
 pub(crate) const PASS_THROUGH: &str = "Pass Through";

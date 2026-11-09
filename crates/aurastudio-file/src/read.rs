@@ -148,7 +148,7 @@ pub fn read<R: Read + Seek>(input: R, max_side: u32) -> Result<Snapshot, String>
                 None => None,
             };
             let data = read_entry(ctx.zip, &step_entry(version, kind, i), step_max).ok()?;
-            Some(Step { label: s.label, layer: s.layer, rect, data })
+            Some(Step { label: s.label, layer: s.layer, rect, data, joined: s.joined, sheet: s.sheet })
         }).collect()
     };
     let undo = steps("undo", json.undo);

@@ -59,7 +59,7 @@ fn collect<'a>(nodes: &'a [Node], out: &mut Vec<Entry<'a>>) {
 
 pub(crate) fn json_of(snap: &Snapshot) -> DocJson {
     let s = &snap.stack;
-    let step = |x: &crate::Step| StepJson { label: x.label.clone(), layer: x.layer, rect: x.rect.map(|r| r.map(i64::from)) };
+    let step = |x: &crate::Step| StepJson { label: x.label.clone(), layer: x.layer, rect: x.rect.map(|r| r.map(i64::from)), joined: x.joined, sheet: x.sheet };
     DocJson {
         format: "aurastudio".into(), version: FORMAT_VERSION, width: s.width, height: s.height, dpi: snap.dpi,
         kind: snap.kind.name().into(), tile: Some(s.tile), depth: snap.depth.name().into(), frame: snap.frame,

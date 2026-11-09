@@ -12,7 +12,7 @@ use aurastudio_layers::LayerStack;
 use aurastudio_raster::{legacy, Image, Patch};
 use aurastudio_selection::Selection;
 
-use crate::history::{History, DEFAULT_BUDGET};
+use crate::history::{History, Imported, DEFAULT_BUDGET};
 use crate::{DocId, Document};
 
 /// Size of the preview saved in files.
@@ -23,8 +23,8 @@ const PREVIEW: u32 = 512;
 /// are done by `finish`, off the lock.
 pub struct SnapshotParts {
     snap: Snapshot,
-    undo: Vec<(String, u64, Patch<Rgba8>)>,
-    redo: Vec<(String, u64, Patch<Rgba8>)>,
+    undo: Vec<Imported>,
+    redo: Vec<Imported>,
 }
 
 impl SnapshotParts {
@@ -33,7 +33,7 @@ impl SnapshotParts {
     pub fn finish(self) -> Snapshot {
         aurastudio_core::zone!("document snapshot finish");
         let Self { mut snap, undo, redo } = self;
-        let steps = |v: Vec<(String, u64, Patch<Rgba8>)>| v.into_iter().map(|(label, layer, p)| SavedStep { label, layer, rect: None, data: p.to_bytes() }).collect();
+        let steps = |v: Vec<Imported>| v.into_iter().map(|i| SavedStep { label: i.label, layer: i.layer, rect: None, data: i.patch.to_bytes(), joined: i.joined, sheet: i.sheet }).collect();
         snap.undo = steps(undo);
         snap.redo = steps(redo);
         snap.preview = Some(aurastudio_compose::preview(&snap.stack, PREVIEW));
@@ -59,7 +59,7 @@ impl Document {
         aurastudio_core::zone!("document snapshot");
         let stack = self.stack_for_file();
         let (undo, redo) = self.history.export(SAVED_UNDO_STEPS);
-        let take = |v: Vec<crate::history::Exported<'_>>| v.into_iter().map(|e| (e.label.to_owned(), e.layer, e.patch.clone())).collect();
+        let take = |v: Vec<crate::history::Exported<'_>>| v.into_iter().map(|e| Imported { label: e.label.to_owned(), layer: e.layer, patch: e.patch.clone(), joined: e.joined, sheet: e.sheet }).collect();
         let t = &self.timeline;
         let onion = (t.onion != Onion::default()).then(|| OnionMarks { enabled: t.onion.enabled, mobile: t.onion.mobile.iter().map(|(k, v)| (*k, *v)).collect(), fixed: t.onion.fixed.iter().map(|(k, v)| (*k, *v)).collect() });
         let snap = Snapshot {
@@ -96,8 +96,6 @@ impl Document {
     }
 }
 
-type Imported = (String, u64, Patch<Rgba8>);
-
 /// Saved steps as patches: new ones read as they are; old ones (pixels of
 /// rects) replayed, newest first from the layers as they are now, each
 /// giving the patch from its state to the one before it.
@@ -105,11 +103,12 @@ fn import(stack: &aurastudio_layers::LayerStack, steps: Vec<SavedStep>) -> Vec<I
     let frame = stack.frame();
     let mut state: HashMap<u64, Image> = HashMap::new();
     // Undo: the last applies first; redo: the last is the next to redo.
-    let mut out: Vec<Option<Imported>> = Vec::with_capacity(steps.len());
+    let mut out: Vec<(bool, Option<Imported>)> = Vec::with_capacity(steps.len());
     for s in steps.into_iter().rev() {
-        let Some(img) = stack.image(s.layer) else { out.push(None); continue };
+        let joined = s.joined;
+        let Some(img) = stack.image(s.layer) else { out.push((joined, None)); continue };
         let step = if Patch::<Rgba8>::is_patch(&s.data) {
-            Patch::from_bytes(&s.data).filter(|p| p.check()).map(|p| (s.label, s.layer, p))
+            Patch::from_bytes(&s.data).filter(|p| p.check()).map(|patch| Imported { label: s.label, layer: s.layer, patch, joined: s.joined, sheet: s.sheet })
         } else {
             let parts = old_parts(&s, frame);
             parts.and_then(|parts| {
@@ -121,12 +120,27 @@ fn import(stack: &aurastudio_layers::LayerStack, steps: Vec<SavedStep>) -> Vec<I
                 then.compact(frame.snapped_out(then.tile_size()));
                 let patch = now.diff(&then.snapshot());
                 *now = then;
-                (!patch.is_empty()).then_some((s.label, s.layer, patch))
+                (!patch.is_empty()).then_some(Imported { label: s.label, layer: s.layer, patch, joined: false, sheet: None })
             })
         };
-        out.push(step);
+        out.push((joined, step));
     }
-    out.into_iter().rev().flatten().collect()
+    // A step with a part that can't be read goes whole (its other parts
+    // would come back alone).
+    out.reverse();
+    let mut kept: Vec<Imported> = Vec::with_capacity(out.len());
+    let mut group: Vec<Imported> = Vec::new();
+    let mut broken = false;
+    for (joined, step) in out {
+        if !joined {
+            if !broken { kept.append(&mut group); }
+            group.clear();
+            broken = false;
+        }
+        match step { Some(s) => group.push(s), None => broken = true }
+    }
+    if !broken { kept.append(&mut group); }
+    kept
 }
 
 /// An old step's pixels: (rect within the frame, pixels or `None` for the

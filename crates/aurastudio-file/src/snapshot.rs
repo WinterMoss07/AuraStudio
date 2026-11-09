@@ -14,12 +14,17 @@ pub const SAVED_UNDO_STEPS: usize = 50;
 
 /// One history step: its label, the layer it is about, the area (old
 /// rect-based steps), its bytes (the document's encoding).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Step {
-    pub label: String,
-    pub layer: u64,
-    pub rect:  Option<[i32; 4]>,
-    pub data:  Vec<u8>,
+    pub label:  String,
+    pub layer:  u64,
+    pub rect:   Option<[i32; 4]>,
+    pub data:   Vec<u8>,
+    /// Undone with the step before it in the list, as one.
+    pub joined: bool,
+    /// It made a sheet first, undone with it: the sheet's id, its folder
+    /// and its index there.
+    pub sheet:  Option<[u64; 3]>,
 }
 
 /// The onion skin's marks (animation).

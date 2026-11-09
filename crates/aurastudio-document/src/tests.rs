@@ -459,6 +459,102 @@ fn a_new_sheet_and_its_stroke_are_one_step() {
     assert_eq!(d.timeline().frame(), 1);
 }
 
+/// Saved and opened again (C10: a step done as one stays one).
+fn reopened(d: &Document) -> Document {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    aurastudio_file::write(&d.snapshot(None), &mut buf).unwrap();
+    Document::from_snapshot(DocId(2), "t", aurastudio_file::read(std::io::Cursor::new(buf.into_inner()), 16384).unwrap())
+}
+
+/// The first stroke on an empty frame and its sheet stay one step in a
+/// file: one undo after opening takes both away.
+#[test]
+fn a_new_sheet_and_its_stroke_stay_one_step_in_files() {
+    let mut d = Document::new(DocId(1), "a", 32, 32, DocType::Animation);
+    let a = d.stack().root.iter().find(|n| n.is_animation()).unwrap().id();
+    d.apply(Edit::SetActive(a));
+    d.apply(Edit::SetFrame(3));
+    let before = d.stack().sheets(a).len();
+    paint(&mut d, Rect::new(2, 2, 12, 12), [9, 9, 9, 255]);
+    let mut b = reopened(&d);
+    assert_eq!(b.stack().sheets(a).len(), before + 1);
+    b.apply(Edit::Undo);
+    assert_eq!(b.stack().sheets(a).len(), before, "the sheet went with it");
+    b.apply(Edit::Redo);
+    assert_eq!(b.stack().sheets(a).len(), before + 1);
+    let cel = b.paint_id().unwrap();
+    assert_eq!(px(&b, cel, 5, 5), [9, 9, 9, 255]);
+    // Undone before saving: it can't come back from a file (the sheet's
+    // content isn't in it), so it isn't offered.
+    d.apply(Edit::Undo);
+    assert_eq!(reopened(&d).history().redo_len(), 0);
+}
+
+/// A transform (pixels of two layers) is one step in a file too.
+#[test]
+fn a_group_of_pixel_steps_stays_one_step_in_files() {
+    let mut d = doc(64, 64);
+    let (a, b) = (add_layer(&mut d), add_layer(&mut d));
+    d.apply(Edit::SetActive(a));
+    paint(&mut d, Rect::new(0, 0, 10, 10), [1, 2, 3, 255]);
+    d.apply(Edit::SetActive(b));
+    paint(&mut d, Rect::new(0, 0, 10, 10), [4, 5, 6, 255]);
+    d.apply(Edit::TransformBegin(vec![a, b]));
+    d.apply(Edit::TransformApply { warp: Warp { quad: corners(Rect::new(20, 20, 30, 30)), mesh: None }, interp: Interp::Nearest });
+    let mut r = reopened(&d);
+    let n = r.history().undo_len();
+    r.apply(Edit::Undo);
+    assert_eq!((px(&r, a, 5, 5), px(&r, b, 5, 5)), ([1, 2, 3, 255], [4, 5, 6, 255]), "both back at once");
+    assert_eq!(r.history().undo_len(), n - 1);
+}
+
+/// A step that can't be applied is dropped and said so; the one before
+/// stays (one undo never undoes two things).
+#[test]
+fn one_undo_undoes_one_thing_at_most() {
+    let mut d = doc(64, 64);
+    let ink = add_layer(&mut d);
+    paint(&mut d, Rect::new(0, 0, 8, 8), [1, 1, 1, 255]);
+    let other = add_layer(&mut d);
+    paint(&mut d, Rect::new(0, 0, 8, 8), [2, 2, 2, 255]);
+    // The layer of the last step gone, unrecorded.
+    d.stack.take_node(other);
+    let n = d.history().undo_len();
+    let done = d.apply(Edit::Undo);
+    assert!(done.refused.is_some() && !done.changed());
+    assert_eq!(d.history().undo_len(), n - 1);
+    assert_eq!(px(&d, ink, 2, 2), [1, 1, 1, 255], "the step before stays");
+}
+
+/// Undo with a filter shown: the preview is put back and shown so.
+#[test]
+fn undo_shows_the_preview_it_puts_back() {
+    let mut d = doc(64, 64);
+    let ink = add_layer(&mut d);
+    paint(&mut d, Rect::new(10, 10, 20, 20), [200, 100, 50, 255]);
+    d.apply(Edit::FilterPreview(Some(Filter::new(Kind::Invert))));
+    let done = d.apply(Edit::Undo);
+    assert!(done.layers.contains(&ink) && !done.region.is_nothing());
+    assert!(!d.filtering());
+}
+
+/// A stroke whose layer an edit takes away is recorded first; a stroke
+/// with nothing to paint on is refused.
+#[test]
+fn a_stroke_is_never_lost() {
+    let mut d = doc(64, 64);
+    let ink = add_layer(&mut d);
+    let n = d.history().undo_len();
+    d.begin_stroke("Brush stroke", None);
+    d.paint(|s| { s.prepare(Rect::new(0, 0, 8, 8)); rect_in(s, Rect::new(0, 0, 8, 8), [3, 3, 3, 255]) });
+    d.apply(Edit::RemoveActive);
+    assert!(!d.stroking());
+    assert_eq!(d.history().undo_len(), n + 2, "the stroke, then the removal");
+    d.apply(Edit::Undo);
+    d.apply(Edit::Undo);
+    assert_eq!(px(&d, ink, 2, 2)[3], 0);
+}
+
 #[test]
 fn save_and_open_give_the_same_document() {
     let mut d = doc(96, 64);
@@ -501,7 +597,7 @@ fn old_rect_steps_are_replayed_as_patches() {
     // An old step: the rect as it was before (transparent), LZ4.
     let r = Rect::new(8, 8, 24, 24);
     let raw = vec![0u8; r.area() as usize * 4];
-    snap.undo = vec![aurastudio_file::Step { label: "Brush stroke".into(), layer: ink, rect: Some([8, 8, 24, 24]), data: lz4_flex::compress_prepend_size(&raw) }];
+    snap.undo = vec![aurastudio_file::Step { label: "Brush stroke".into(), layer: ink, rect: Some([8, 8, 24, 24]), data: lz4_flex::compress_prepend_size(&raw), ..Default::default() }];
     snap.redo.clear();
     let mut b = Document::from_snapshot(DocId(2), "t", snap);
     assert_eq!(b.history().undo_len(), 1);
