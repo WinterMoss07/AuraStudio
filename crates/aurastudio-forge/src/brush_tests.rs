@@ -981,3 +981,31 @@ fn resizing_with_bad_sizes_leaves_the_dual_tip_alone() {
     assert_eq!(b.dual_brush.size, 20.0);
 }
 
+
+/// Several inputs drive one setting at once (CSP): each lerps from its
+/// minimum, the results multiply; links are set and dropped by input; a
+/// brush saved before keeps its single control.
+#[test]
+fn several_inputs_drive_one_setting() {
+    use crate::dynamics::{base_diameter, StepInput};
+    let mut b = BrushSettings { size: 100.0, ..BrushSettings::default() };
+    b.shape_dynamics.enabled = true;
+    let d = &mut b.shape_dynamics.size;
+    assert!(d.set_link(Control::PenPressure, Some(Link { minimum: 0.2, ..Link::default() })));
+    assert!(d.set_link(Control::PenTilt, Some(Link { minimum: 0.5, ..Link::default() })));
+    assert_eq!(d.control, Control::PenPressure);
+    assert_eq!(d.links().count(), 2);
+    let step = |pressure: f32, tilt: f32| StepInput { point: StrokePoint { pressure, tilt_x: tilt, ..StrokePoint::default() }, direction: 0.0, initial_direction: 0.0, step: 0, velocity: 0.0 };
+    // Full pressure, upright: full size; half pressure, flat pen: 0.6 × 0.5.
+    assert!((base_diameter(&b, &step(1.0, 0.0)) - 100.0).abs() < 1e-3);
+    assert!((base_diameter(&b, &step(0.5, 90.0)) - 30.0).abs() < 1e-3);
+    // Pressure dropped: tilt becomes the control.
+    let d = &mut b.shape_dynamics.size;
+    assert!(d.set_link(Control::PenPressure, None));
+    assert_eq!((d.control, d.minimum), (Control::PenTilt, 0.5));
+    assert!(d.link(Control::PenPressure).is_none());
+    // Saved without `more`: read back as one control; written back the same.
+    let old: Dynamic = serde_json::from_str(r#"{"control":"penPressure","minimum":0.25}"#).unwrap();
+    assert_eq!(old.links().count(), 1);
+    assert!(!serde_json::to_string(&old).unwrap().contains("more"));
+}

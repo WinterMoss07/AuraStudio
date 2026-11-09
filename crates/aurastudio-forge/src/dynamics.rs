@@ -6,7 +6,7 @@
 
 use aurastudio_core::Point;
 
-use crate::brush::{BrushSettings, Control, Dynamic, Smoothing};
+use crate::brush::{BrushSettings, Control, Dynamic, Link, Smoothing};
 use crate::rng::{rand_signed, rand01, stream};
 use crate::{Dab, StrokePoint};
 
@@ -225,7 +225,12 @@ pub struct StepInput {
     pub initial_direction: f32,
     /// Sequential step number (0 = first).
     pub step: u64,
+    /// How fast the pen moves on the screen, 0 (still) .. 1 (`FULL_SPEED` or faster).
+    pub velocity: f32,
 }
+
+/// Screen pixels per millisecond the Velocity input reads as full (a quick flick).
+pub const FULL_SPEED: f64 = 3.0;
 
 /// Walks a polyline and emits steps every `step_len(point)` pixels, plus airbrush steps in time.
 #[derive(Clone, Debug)]
@@ -249,6 +254,9 @@ pub struct PathWalker {
     grid: Option<f64>,
     /// The grid cell of the last pixel-grid step, so the next segment joins it.
     cell: Option<(f64, f64)>,
+    /// The pen's speed, canvas pixels per ms (smoothed), and the factor to the Velocity input.
+    speed_now: f64,
+    velocity_scale: f64,
 }
 
 impl PathWalker {
@@ -266,7 +274,15 @@ impl PathWalker {
             speed_acc: 0.0,
             grid: None,
             cell: None,
+            speed_now: 0.0,
+            velocity_scale: 1.0 / FULL_SPEED,
         }
+    }
+
+    /// The view's zoom: the Velocity input reads the speed on the screen.
+    pub fn zoom(mut self, zoom: f32) -> Self {
+        self.velocity_scale = f64::from(zoom.max(1e-3)) / FULL_SPEED;
+        self
     }
 
     /// Step pixel by pixel instead of by distance: one step per pixel along the segment's major
@@ -341,7 +357,8 @@ impl PathWalker {
         if let Some(g) = self.grid {
             self.cell = Some((grid_cell(point.x, g), grid_cell(point.y, g)));
         }
-        let s = StepInput { point, direction: self.dir, initial_direction: self.initial_dir.unwrap_or(self.dir), step: self.step };
+        let velocity = (self.speed_now * self.velocity_scale).clamp(0.0, 1.0) as f32;
+        let s = StepInput { point, direction: self.dir, initial_direction: self.initial_dir.unwrap_or(self.dir), step: self.step, velocity };
         self.step += 1;
         out(s);
     }
@@ -355,6 +372,9 @@ impl PathWalker {
         };
         let (dx, dy) = (p.x - a.x, p.y - a.y);
         let len = (dx * dx + dy * dy).sqrt();
+        // The speed, smoothed over a few samples (pen reports jitter in time).
+        let dt = p.time - a.time;
+        if dt > 0.0 && dt.is_finite() { self.speed_now += (len / dt - self.speed_now) * 0.3; }
         if len > 1e-9 {
             self.dir = (-dy).atan2(dx) as f32;
             if self.initial_dir.is_none() {
@@ -445,18 +465,28 @@ pub fn control_value(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
         Control::PenTilt => 1.0 - (p.tilt_x.hypot(p.tilt_y) / 90.0).clamp(0.0, 1.0),
         Control::StylusWheel => p.wheel.clamp(0.0, 1.0),
         Control::Rotation => (p.rotation.rem_euclid(360.0)) / 360.0,
+        Control::Velocity => s.velocity,
     }
 }
 
-/// A dynamic's control value passed through its own response curve ([`Dynamic::curve`]). Controls
-/// with no 0..1 input (Off, the direction controls) read 1 and skip the curve.
-pub fn dynamic_value(d: &Dynamic, s: &StepInput) -> f32 {
-    let v = control_value(d.control, d.fade_steps, s);
-    match d.control {
+/// An input's value through its curve ([`Link::curve`]); inputs with no 0..1 value (Off, the
+/// direction controls) read 1 and skip it.
+fn link_value(l: &Link, fade_steps: u32, s: &StepInput) -> f32 {
+    let v = control_value(l.input, fade_steps, s);
+    match l.input {
         Control::Off | Control::InitialDirection | Control::Direction => v,
-        Control::Fade | Control::PenPressure | Control::PenTilt | Control::StylusWheel | Control::Rotation => d.curve.eval(v),
+        _ => l.curve.eval(v),
     }
 }
+
+/// What the inputs make of a dynamic setting, 0..1: each input lerps from its minimum to 1, the
+/// results multiplied (CSP's several inputs at once). 1 with none.
+pub fn controlled(d: &Dynamic, s: &StepInput) -> f32 {
+    d.links().map(|l| { let m = l.minimum.clamp(0.0, 1.0); m + (1.0 - m) * link_value(&l, d.fade_steps, s) }).product()
+}
+
+/// The lowest the inputs can take a setting to (each at 0).
+fn floor_of(d: &Dynamic) -> f32 { d.links().map(|l| l.minimum.clamp(0.0, 1.0)).product() }
 
 /// Angle contributed by a control, in degrees (counter-clockwise).
 pub fn control_angle(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
@@ -476,8 +506,12 @@ pub fn control_angle(c: Control, fade_steps: u32, s: &StepInput) -> f32 {
         Control::Rotation => p.rotation,
         Control::InitialDirection => s.initial_direction.to_degrees(),
         Control::Direction => s.direction.to_degrees(),
+        Control::Velocity => 360.0 * s.velocity,
     }
 }
+
+/// Angle from every input of a dynamic, added up, in degrees.
+pub fn dynamic_angle(d: &Dynamic, s: &StepInput) -> f32 { d.links().map(|l| control_angle(l.input, d.fade_steps, s)).sum() }
 
 /// A 0..1 multiplier from a dynamic: control lerps from `minimum` to 1, jitter reduces randomly,
 /// never below `minimum`.
@@ -485,10 +519,10 @@ fn scalar(d: &Dynamic, s: &StepInput, r: f32) -> f32 {
     if !d.is_active() {
         return 1.0;
     }
-    let min = d.minimum.clamp(0.0, 1.0);
-    let cv = dynamic_value(d, s);
-    let v = (min + (1.0 - min) * cv) * (1.0 - d.jitter.clamp(0.0, 1.0) * r);
-    v.max(min)
+    // (Jitter alone: down to its own minimum.)
+    let floor = if d.is_controlled() { floor_of(d) } else { d.minimum.clamp(0.0, 1.0) };
+    let v = controlled(d, s) * (1.0 - d.jitter.clamp(0.0, 1.0) * r);
+    v.max(floor)
 }
 
 fn rgb_to_hsv(c: [f32; 3]) -> [f32; 3] {
@@ -527,7 +561,7 @@ pub fn dynamic_color(b: &BrushSettings, s: &StepInput, seed: u64, index: u64) ->
     let cd = &b.color_dynamics;
     let (fg, bg) = (b.color, b.background);
     let r = |st: u64| rand01(seed, index, st);
-    let base = if cd.fg_bg.control != Control::Off { 1.0 - dynamic_value(&cd.fg_bg, s) } else { 0.0 };
+    let base = if cd.fg_bg.is_controlled() { 1.0 - controlled(&cd.fg_bg, s) } else { 0.0 };
     let t = (base + (1.0 - base) * cd.fg_bg.jitter.clamp(0.0, 1.0) * r(stream::FG_BG)).clamp(0.0, 1.0);
     let rgb = [fg[0] + (bg[0] - fg[0]) * t, fg[1] + (bg[1] - fg[1]) * t, fg[2] + (bg[2] - fg[2]) * t];
     let [mut h, mut sat, mut v] = rgb_to_hsv(rgb);
@@ -544,9 +578,8 @@ pub fn dynamic_color(b: &BrushSettings, s: &StepInput, seed: u64, index: u64) ->
 pub fn base_diameter(b: &BrushSettings, s: &StepInput) -> f32 {
     let sd = &b.shape_dynamics;
     let mut f = 1.0;
-    if sd.enabled && sd.size.control != Control::Off {
-        let min = sd.size.minimum.clamp(0.0, 1.0);
-        f = min + (1.0 - min) * dynamic_value(&sd.size, s);
+    if sd.enabled && sd.size.is_controlled() {
+        f = controlled(&sd.size, s);
     } else if b.pressure_size {
         f = s.point.pressure.clamp(0.0, 1.0);
     }
@@ -569,7 +602,7 @@ impl DabBuilder {
     }
 
     pub fn step_len(&self, p: &StrokePoint) -> f64 {
-        let s = StepInput { point: *p, direction: 0.0, initial_direction: 0.0, step: 0 };
+        let s = StepInput { point: *p, direction: 0.0, initial_direction: 0.0, step: 0, velocity: 0.0 };
         let d = base_diameter(&self.brush, &s).max(1.0);
         f64::from(d * self.brush.spacing.max(0.01)).max(0.5)
     }
@@ -603,7 +636,7 @@ impl DabBuilder {
                     diameter *= f;
                 }
                 angle +=
-                    control_angle(sd.angle.control, sd.angle.fade_steps, s) + rand_signed(seed, i, stream::ANGLE) * sd.angle.jitter.clamp(0.0, 1.0) * 180.0;
+                    dynamic_angle(&sd.angle, s) + rand_signed(seed, i, stream::ANGLE) * sd.angle.jitter.clamp(0.0, 1.0) * 180.0;
                 roundness = (roundness * scalar(&sd.roundness, s, r(stream::ROUNDNESS))).clamp(0.01, 1.0);
                 if sd.flip_x_jitter && r(stream::FLIP_X) < 0.5 {
                     fx = !fx;
@@ -616,7 +649,7 @@ impl DabBuilder {
             let (mut proj_angle, mut proj_scale) = (0.0, 1.0);
             if sd.enabled {
                 let tilt = s.point.tilt_x.hypot(s.point.tilt_y).clamp(0.0, 90.0);
-                if sd.size.control == Control::PenTilt && sd.tilt_scale > 0.0 {
+                if sd.size.link(Control::PenTilt).is_some() && sd.tilt_scale > 0.0 {
                     let k = 1.0 - sd.tilt_scale.clamp(0.0, 2.0) * 0.5 * tilt / 90.0;
                     roundness = (roundness * k).clamp(0.01, 1.0);
                 }
@@ -632,7 +665,7 @@ impl DabBuilder {
             // Scatter.
             let mut c = Point::new(s.point.x, s.point.y);
             if sc.enabled && sc.scatter.jitter > 0.0 {
-                let cv = dynamic_value(&sc.scatter, s);
+                let cv = controlled(&sc.scatter, s);
                 let amt = f64::from(sc.scatter.jitter * cv * radius);
                 let (ox, oy) = (rand_signed(seed, i, stream::SCATTER_X) as f64 * amt, rand_signed(seed, i, stream::SCATTER_Y) as f64 * amt);
                 if sc.both_axes {
@@ -653,7 +686,7 @@ impl DabBuilder {
                 flow *= scalar(&tr.flow, s, r(stream::FLOW));
             }
             let (wet, mix) = if tr.enabled { (scalar(&tr.wetness, s, r(stream::WET)), scalar(&tr.mix, s, r(stream::MIX))) } else { (1.0, 1.0) };
-            if b.pressure_opacity && !(tr.enabled && tr.opacity.control != Control::Off) {
+            if b.pressure_opacity && !(tr.enabled && tr.opacity.is_controlled()) {
                 opacity *= s.point.pressure.clamp(0.0, 1.0);
             }
             // Colour.
@@ -779,7 +812,7 @@ impl DabGenerator {
         let brush = brush.bounded_for_render();
         let interval = brush.build_up.then(|| 1000.0 / f64::from(brush.build_up_rate.clamp(0.1, 1000.0)));
         let dual_on = brush.dual_brush.enabled;
-        let mut walker = if brush.spacing_enabled { PathWalker::new(interval) } else { PathWalker::new(interval).speed_spacing(SPEED_SPACING_MS) };
+        let mut walker = if brush.spacing_enabled { PathWalker::new(interval) } else { PathWalker::new(interval).speed_spacing(SPEED_SPACING_MS) }.zoom(zoom);
         // A small aliased tip whose dabs are at most a pixel apart steps pixel by pixel.
         if brush.aliased && brush.size * brush.spacing.max(0.01) <= 1.0 {
             walker = walker.pixel_grid(f64::from(crate::render::grid_center(0.0, 0.0, brush.size).0));

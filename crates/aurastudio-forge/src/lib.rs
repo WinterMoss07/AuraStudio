@@ -35,10 +35,10 @@ mod stroke;
 mod rng;
 mod tile;
 
-pub use brush::{BrushSettings, TipShape};
-pub(crate) use brush::{BrushPreset, Control, DualBrush, Dynamic, MAX_BRUSH_SIZE, MAX_SCATTER, MaskMode, Pattern, PatternStyle, Pose, ShapeDynamics, Transfer};
-pub(crate) use curve::ResponseCurve;
-pub(crate) use mixer::MixerSettings;
+pub use brush::{BrushSettings, ColorDynamics, Control, DualBrush, Dynamic, Link, MaskMode, Pattern, PatternStyle, Pose, Scattering, ShapeDynamics, Smoothing, TipShape, Transfer, INPUTS, MAX_BRUSH_SIZE, MAX_SCATTER, MORE_INPUTS};
+pub(crate) use brush::BrushPreset;
+pub use curve::ResponseCurve;
+pub use mixer::MixerSettings;
 pub(crate) use tile::GrayTile;
 pub use engine::{Forge, PenSample};
 pub use library::{Importer, Kind, Library, Preset, ReadFile};

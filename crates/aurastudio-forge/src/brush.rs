@@ -39,7 +39,32 @@ pub enum Control {
     InitialDirection,
     /// Angle only: the current stroke direction.
     Direction,
+    /// How fast the pen moves on the screen (CSP's Velocity): still 0, fast 1.
+    Velocity,
 }
+
+/// The 0..1 pen inputs a setting can follow, in the order the dynamics popup lists them
+/// (CSP's four, then the others Photoshop has). Random is the dynamic's `jitter`.
+pub const INPUTS: [Control; 6] = [Control::PenPressure, Control::PenTilt, Control::Velocity, Control::Fade, Control::StylusWheel, Control::Rotation];
+
+/// One more input of a dynamic (CSP's "Input affecting…": several at once): the setting goes
+/// from `minimum` (input 0) to full (input 1) through `curve`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Link {
+    pub input: Control,
+    pub minimum: f32,
+    pub curve: ResponseCurve,
+}
+
+impl Default for Link {
+    fn default() -> Self { Self { input: Control::Off, minimum: 0.0, curve: ResponseCurve::LINEAR } }
+}
+
+/// Inputs a dynamic follows besides its own control.
+pub const MORE_INPUTS: usize = 5;
+
+fn no_more(m: &[Link; MORE_INPUTS]) -> bool { m.iter().all(|l| l.input == Control::Off) }
 
 /// One dynamic parameter: random jitter plus a controller with a floor.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -56,23 +81,73 @@ pub struct Dynamic {
     /// Rotation), applied after the global pen curve. Linear by default. Always written to JSON, so
     /// a `tools.setBrush` patch can set it back to linear. Angle Jitter's controls ignore it.
     pub curve: ResponseCurve,
+    /// More inputs at the same time (CSP), each scaling the setting by its own range: the
+    /// result is their product with the control's.
+    #[serde(skip_serializing_if = "no_more")]
+    pub more: [Link; MORE_INPUTS],
 }
 
 impl Default for Dynamic {
     fn default() -> Self {
-        Self { jitter: 0.0, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR }
+        Self { jitter: 0.0, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: [Link::default(); MORE_INPUTS] }
     }
 }
 
 impl Dynamic {
+    const NONE: [Link; MORE_INPUTS] = [Link { input: Control::Off, minimum: 0.0, curve: ResponseCurve::LINEAR }; MORE_INPUTS];
+
     pub const fn controlled(control: Control) -> Self {
-        Self { jitter: 0.0, control, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR }
+        Self { jitter: 0.0, control, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Self::NONE }
     }
     pub const fn jitter(jitter: f32) -> Self {
-        Self { jitter, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR }
+        Self { jitter, control: Control::Off, fade_steps: 25, minimum: 0.0, curve: ResponseCurve::LINEAR, more: Self::NONE }
     }
     pub fn is_active(&self) -> bool {
-        self.jitter > 0.0 || self.control != Control::Off
+        self.jitter > 0.0 || self.is_controlled()
+    }
+
+    /// Some input drives it (its control or one more).
+    pub fn is_controlled(&self) -> bool { self.control != Control::Off || !no_more(&self.more) }
+
+    /// Every input it follows, its control first: (input, minimum, curve).
+    pub fn links(&self) -> impl Iterator<Item = Link> + '_ {
+        let first = (self.control != Control::Off).then_some(Link { input: self.control, minimum: self.minimum, curve: self.curve });
+        first.into_iter().chain(self.more.iter().copied().filter(|l| l.input != Control::Off && l.input != self.control))
+    }
+
+    /// The link to `input`, if it follows it.
+    pub fn link(&self, input: Control) -> Option<Link> { self.links().find(|l| l.input == input) }
+
+    /// Follow `input` with `link` (its minimum and curve), or stop following it (`None`). The
+    /// control takes the first input; the others go in `more`. False: no room left.
+    pub fn set_link(&mut self, input: Control, link: Option<Link>) -> bool {
+        if input == Control::Off { return false; }
+        let at = self.more.iter().position(|l| l.input == input);
+        match link {
+            Some(l) => {
+                let l = Link { input, ..l };
+                if self.control == input || self.control == Control::Off {
+                    (self.control, self.minimum, self.curve) = (input, l.minimum, l.curve);
+                    if let Some(i) = at { self.more[i] = Link::default(); }
+                } else if let Some(i) = at.or_else(|| self.more.iter().position(|m| m.input == Control::Off)) {
+                    self.more[i] = l;
+                } else {
+                    return false;
+                }
+            }
+            None => {
+                if self.control == input {
+                    // The next one becomes the control.
+                    match self.more.iter().position(|m| m.input != Control::Off) {
+                        Some(i) => { let m = std::mem::take(&mut self.more[i]); (self.control, self.minimum, self.curve) = (m.input, m.minimum, m.curve); }
+                        None => self.control = Control::Off,
+                    }
+                } else if let Some(i) = at {
+                    self.more[i] = Link::default();
+                }
+            }
+        }
+        true
     }
 }
 
