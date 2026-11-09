@@ -407,7 +407,7 @@ impl Worker {
             }
         }
         // (A whole merge after a tree step: the caches no longer match.)
-        if done.tree || done.region == Region::Whole { self.stroke_cache = StrokeCache::default(); }
+        if done.tree || done.region == Region::Whole { self.stroke_cache.clear(); }
         self.report(frame, &done, events);
         if let Some(n) = seq { events.push(Event::TransformShown(n)); }
         self.doc = Some(doc);
@@ -430,7 +430,7 @@ impl Worker {
             }
             st.layer = d.stroke_layer().unwrap_or(0);
             // (A sheet made for it: the time shows another drawing.)
-            self.stroke_cache = StrokeCache::default();
+            self.stroke_cache.clear();
             self.add_region_in(frame, &done.region);
             if done.tree { events.push(Event::TreeChanged); }
         }
@@ -462,7 +462,7 @@ impl Worker {
     /// a time (the interface runs between two), each band shown as it comes.
     fn merge_whole(&mut self, doc: SharedDoc) {
         profiling::scope!("merge whole");
-        self.stroke_cache = StrokeCache::default();
+        self.stroke_cache.clear();
         let (w, h) = {
             let d = doc.locked();
             (d.stack().width, d.stack().height)

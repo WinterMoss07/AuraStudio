@@ -226,8 +226,6 @@ impl StrokeCache {
     pub fn len(&self) -> usize { self.cells.len() }
     pub fn bytes(&self) -> usize { self.bytes }
     pub fn is_empty(&self) -> bool { self.cells.is_empty() }
-    pub fn clear(&mut self) {
-        self.cells = HashMap::new();
-        self.bytes = 0;
-    }
+    /// Everything dropped (as new).
+    pub fn clear(&mut self) { *self = Self::default(); }
 }

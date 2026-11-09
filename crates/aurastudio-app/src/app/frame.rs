@@ -231,7 +231,8 @@ impl App {
         let fill = &mut self.fill;
         let stay_inside = &mut self.stay_inside;
         // Zoomed out, the outline is traced coarser (its detail can't show).
-        let ants_step = (1.0 / gpu.zoom().max(1e-3)).floor().max(1.0) as u32;
+        // (By powers of two: zooming doesn't trace it again at every step.)
+        let ants_step = ((1.0 / gpu.zoom().max(1e-3)).floor().max(1.0) as u32).next_power_of_two();
         let ants = &mut self.ants;
         let select = &mut self.select;
         let picker = &mut self.picker;
@@ -263,7 +264,7 @@ impl App {
             // The outline, traced again when the selection or the zoom changed.
             match d.selection() {
                 Some(sel) if sel.stamp() != ants.stamp || ants_step != ants.step => {
-                    let mut step = ants_step.next_power_of_two();
+                    let mut step = ants_step;
                     let mut segs = sel.outline(step);
                     // Very detailed (noise picked by the wand): coarser.
                     while segs.len() > 120_000 && step < 64 { step *= 2; segs = sel.outline(step); }

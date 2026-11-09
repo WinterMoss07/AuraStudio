@@ -88,6 +88,7 @@ impl CoverageMap {
         self.bounds
     }
     #[inline]
+    #[cfg(test)]
     pub fn get(&self, x: i32, y: i32) -> f32 {
         let (tx, ty) = (x.div_euclid(COV_TILE), y.div_euclid(COV_TILE));
         self.tiles.get(&tile_key((tx, ty))).map_or(0.0, |t| f16(t.cov[((y - ty * COV_TILE) * COV_TILE + (x - tx * COV_TILE)) as usize]))
@@ -360,10 +361,12 @@ impl StrokeRenderer {
             if s.spans_in(&rects, &mut v) {
                 use rayon::prelude::*;
                 let tiles = &self.cov.tiles;
+                let dual = self.dual.as_ref();
                 v.par_iter_mut().with_min_len(16).for_each(|sp| {
                     let (tx, ty) = (sp.x.div_euclid(COV_TILE), sp.y.div_euclid(COV_TILE));
                     if let Some(tile) = tiles.get(&tile_key((tx, ty))) {
-                        p.span(&TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE }, sp);
+                        let dual = dual.and_then(|d| d.tiles.get(&tile_key((tx, ty))));
+                        p.span(&TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE, dual }, sp);
                     }
                 });
                 return rects.iter().fold(Rect::EMPTY, |a, r| a.union(r));
@@ -377,7 +380,8 @@ impl StrokeRenderer {
             if tr.is_empty() { continue; }
             s.prepare(tr);
             done = done.union(&tr);
-            let t = TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE };
+            let dual = self.dual.as_ref().and_then(|d| d.tiles.get(&tile_key((tx, ty))));
+            let t = TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE, dual };
             let mut v = aurastudio_core::surface::recycle_spans(std::mem::take(&mut spans));
             if s.spans_mut(tr, &mut v) {
                 for sp in &mut v { p.span(&t, sp); }
@@ -396,6 +400,9 @@ struct TileRef<'a> {
     tile: &'a CovTile,
     x0:   i32,
     y0:   i32,
+    /// The dual brush's tile there (looked up once, not per pixel); `None`
+    /// with a dual brush: nothing there.
+    dual: Option<&'a CovTile>,
 }
 
 /// What painting a pixel needs, once per call.
@@ -438,7 +445,7 @@ impl<'a> Painter<'a> {
         let ti = ((y - t.y0) * COV_TILE + (x - t.x0)) as usize;
         let c = f16(t.tile.cov[ti]);
         if c <= 0.0 { return 0; }
-        let m = self.r.ctx.stroke_mask_wet(c, t.tile.depth.get(ti).map(|v| f16(*v)), self.r.dual.as_ref().map(|d| d.get(x, y)), x, y);
+        let m = self.r.ctx.stroke_mask_wet(c, t.tile.depth.get(ti).map(|v| f16(*v)), self.r.dual.as_ref().map(|_| t.dual.map_or(0.0, |d| f16(d.cov[ti]))), x, y);
         let mut k = (m * self.opacity).min(1.0);
         if k <= 0.0 { return 0; }
         if self.mode == PaintMode::Dissolve {

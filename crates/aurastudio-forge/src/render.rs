@@ -160,16 +160,32 @@ pub(crate) fn rect_around(d: &Dab, reach: f32) -> Rect {
 }
 
 impl BrushContext {
+    /// The tip mips (main and dual) and the texture of the last stroke are
+    /// kept: the same brush doesn't build them again at every pen-down.
     pub fn new(brush: &BrushSettings) -> Self {
+        use std::sync::Mutex;
+        type Kept<K, V> = Mutex<Vec<(K, Option<Arc<V>>)>>;
+        static TIPS: Kept<TipShape, Mips> = Mutex::new(Vec::new());
+        static TEXTURES: Kept<crate::brush::Texture, PatternImage> = Mutex::new(Vec::new());
+        // The last `max`, newest last.
+        fn kept<K: PartialEq + Clone, V>(list: &Kept<K, V>, max: usize, key: &K, make: impl FnOnce() -> Option<Arc<V>>) -> Option<Arc<V>> {
+            let mut l = list.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(i) = l.iter().position(|(k, _)| k == key) { let e = l.remove(i); let v = e.1.clone(); l.push(e); return v; }
+            let v = make();
+            l.push((key.clone(), v.clone()));
+            if l.len() > max { l.remove(0); }
+            v
+        }
         let brush = brush.bounded_for_render();
-        let mips = |t: &TipShape| match t.bitmap() {
+        let mips = |t: &TipShape| kept(&TIPS, 2, t, || match t.bitmap() {
             Some(g) if g.is_valid() => Some(Arc::new(Mips::new(g))),
             _ => None,
-        };
+        });
+        let texture = if brush.texture.enabled { kept(&TEXTURES, 1, &brush.texture, || prepare_pattern(&brush)) } else { None };
         Self {
             tip: mips(&brush.tip),
             dual_tip: if brush.dual_brush.enabled { mips(&brush.dual_brush.tip) } else { None },
-            texture: prepare_pattern(&brush),
+            texture,
             brush,
         }
     }
@@ -186,8 +202,9 @@ impl BrushContext {
         let (fx, fy) = ((x as f32 + 0.5) / s - 0.5, (y as f32 + 0.5) / s - 0.5);
         let (x0, y0) = (fx.floor(), fy.floor());
         let (tx, ty) = (fx - x0, fy - y0);
-        let a = p.sample_wrap(x0, y0) + (p.sample_wrap(x0 + 1.0, y0) - p.sample_wrap(x0, y0)) * tx;
-        let b = p.sample_wrap(x0, y0 + 1.0) + (p.sample_wrap(x0 + 1.0, y0 + 1.0) - p.sample_wrap(x0, y0 + 1.0)) * tx;
+        let (p00, p10) = (p.sample_wrap(x0, y0), p.sample_wrap(x0 + 1.0, y0));
+        let (p01, p11) = (p.sample_wrap(x0, y0 + 1.0), p.sample_wrap(x0 + 1.0, y0 + 1.0));
+        let (a, b) = (p00 + (p10 - p00) * tx, p01 + (p11 - p01) * tx);
         a + (b - a) * ty
     }
 

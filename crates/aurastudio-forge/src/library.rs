@@ -391,7 +391,13 @@ fn group_file(group: &str) -> String {
 fn tip_key(g: &GrayTile) -> String {
     let mut h = aurastudio_core::Fnv::default();
     h.bytes(&g.width.to_le_bytes()).bytes(&g.height.to_le_bytes());
-    for v in g.data.iter() { h.bytes(&v.to_le_bytes()); }
+    // (The same bytes as one call per sample, by rows of samples.)
+    let mut buf = Vec::with_capacity(g.width.max(1) as usize * 2);
+    for row in g.data.chunks(g.width.max(1) as usize) {
+        buf.clear();
+        buf.extend(row.iter().flat_map(|v| v.to_le_bytes()));
+        h.bytes(&buf);
+    }
     format!("{:016x}", h.finish())
 }
 
