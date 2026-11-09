@@ -197,6 +197,7 @@ impl Document {
             Edit::Undo => self.undo(),
             Edit::Redo => self.redo(),
             Edit::Resize { width, height } => self.resize(width, height),
+            Edit::SetMargin(m) => self.set_margin(m),
             Edit::SetDpi(d) => {
                 let ok = d.is_finite() && (1.0..=10_000.0).contains(&d) && d != self.dpi;
                 if ok { self.dpi = d; }
@@ -335,8 +336,19 @@ impl Document {
 
     fn resize(&mut self, width: u32, height: u32) -> Done {
         if width == 0 || height == 0 || (width, height) == (self.stack.width, self.stack.height) { return Done::default(); }
+        self.reframe(|s| s.resize(width, height))
+    }
+
+    fn set_margin(&mut self, margin: u32) -> Done {
+        let margin = margin.min(aurastudio_layers::MAX_MARGIN);
+        if margin == self.stack.margin { return Done::default(); }
+        self.reframe(|s| s.set_margin(margin))
+    }
+
+    /// A new frame or margin made by `f`: what falls out is cut.
+    fn reframe(&mut self, f: impl FnOnce(&mut LayerStack)) -> Done {
         let mut done = self.end_sessions();
-        self.stack.resize(width, height);
+        f(&mut self.stack);
         // Patches of the old frame no longer fit (Krita does the same).
         self.history.clear();
         self.stack.take_removed();
@@ -444,7 +456,7 @@ impl Document {
             done.refused = Some("Nothing to paint on");
             return done;
         };
-        let state = img.stroke_state(limit.as_ref());
+        let state = img.stroke_state(limit.as_ref()).clipped(self.stack.area());
         self.stroke = Some(StrokeSession { layer, label: label.to_owned(), state });
         done
     }

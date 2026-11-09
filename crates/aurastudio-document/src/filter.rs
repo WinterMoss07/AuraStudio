@@ -35,13 +35,19 @@ impl Document {
             self.filter = Some(FilterSession { layer, before, shown: Region::Nothing, last: None });
         }
         let stamp = self.selection.as_ref().map_or(0, Selection::stamp);
+        let area = self.stack.area();
         let Some(s) = self.filter.as_mut() else { return Done::default() };
         let mut img = s.before.clone();
         let mut now = Region::Nothing;
         if let Some(f) = filter {
             let sel = self.selection.as_ref().map(Selection::as_mask);
             match f.apply_until(&mut img, sel, stop) {
-                Ok(r) => if let Some(r) = r { now.add_rect(r); },
+                Ok(Some(r)) => {
+                    // (A blur spreads: not past the canvas's margin.)
+                    if !area.contains_rect(&r) { img.clear_outside(area); }
+                    now.add_rect(r.intersect(&area));
+                }
+                Ok(None) => {}
                 Err(_) => return Done::default(),
             }
             if img.fill() != s.before.fill() { now = Region::Whole; }

@@ -40,6 +40,8 @@ pub struct Stroke<'s, P: Pixel> {
     opened:  OpenBases<P>,
     limit:   Option<Limits>,
     touched: DirtyTiles,
+    /// Nothing is painted outside (the canvas and its margin).
+    clip:    Option<Rect>,
 }
 
 impl<P: Pixel> Surface<P> {
@@ -53,7 +55,7 @@ impl<P: Pixel> Surface<P> {
     /// again, on this surface only.
     pub fn stroke_state(&self, limit: Option<&Surface<u8>>) -> StrokeState<P> {
         let limit = limit.map(|surf| Limits { surf: surf.clone(), flat: HashMap::new(), open: HashMap::new() });
-        StrokeState { before: self.snapshot(), flat: HashMap::new(), opened: HashMap::new(), limit, touched: self.dirty_set() }
+        StrokeState { before: self.snapshot(), flat: HashMap::new(), opened: HashMap::new(), limit, touched: self.dirty_set(), clip: None }
     }
 }
 
@@ -64,13 +66,17 @@ pub struct StrokeState<P: Pixel> {
     opened:  OpenBases<P>,
     limit:   Option<Limits>,
     touched: DirtyTiles,
+    clip:    Option<Rect>,
 }
 
 impl<P: Pixel> StrokeState<P> {
+    /// Paint nothing outside `area`.
+    pub fn clipped(mut self, area: Rect) -> Self { self.clip = Some(area); self }
+
     /// Go on painting on `surf` (the surface it was taken from).
     pub fn on(self, surf: &mut Surface<P>) -> Stroke<'_, P> {
-        let StrokeState { before, flat, opened, limit, touched } = self;
-        Stroke { surf, before, flat, opened, limit, touched }
+        let StrokeState { before, flat, opened, limit, touched, clip } = self;
+        Stroke { surf, before, flat, opened, limit, touched, clip }
     }
 
     /// Where it painted so far.
@@ -80,8 +86,8 @@ impl<P: Pixel> StrokeState<P> {
 impl<P: Pixel> Stroke<'_, P> {
     /// Set it aside (the surface is let go; `StrokeState::on` goes on).
     pub fn detach(self) -> StrokeState<P> {
-        let Stroke { before, flat, opened, limit, touched, .. } = self;
-        StrokeState { before, flat, opened, limit, touched }
+        let Stroke { before, flat, opened, limit, touched, clip, .. } = self;
+        StrokeState { before, flat, opened, limit, touched, clip }
     }
 
     /// The tiles the stroke went through so far.
@@ -120,6 +126,7 @@ impl<P: Pixel> Stroke<'_, P> {
     /// Prepare every tile and limit tile `r` touches; the tiles' span
     /// (tx0, ty0, tx1, ty1).
     fn prepare_rect(&mut self, r: Rect) -> Option<(i32, i32, i32, i32)> {
+        let r = self.clip.map_or(r, |c| r.intersect(&c));
         let t = self.surf.tiles_of(&r)?;
         for ty in t.1..t.3 { for tx in t.0..t.2 { self.prepare_tile(tx, ty); } }
         self.prepare_limits(r);
@@ -180,7 +187,8 @@ fn limit_of(l: Option<&Limits>, x: i32, y: i32, len: usize) -> Option<&[u8]> {
 }
 
 impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
-    fn frame(&self) -> Rect { self.surf.rect() }
+    /// Where it may paint: the clip, else anywhere.
+    fn frame(&self) -> Rect { self.clip.unwrap_or(Rect::new(i32::MIN / 2, i32::MIN / 2, i32::MAX / 2, i32::MAX / 2)) }
 
     fn prepare(&mut self, rect: Rect) { self.prepare_rect(rect); }
 
@@ -188,6 +196,10 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
         let (t, shift) = (self.surf.tile as i32, self.surf.shift);
         let (tx, ty) = (x >> shift, y >> shift);
         let mut len = max.min(((tx + 1) * t - x) as usize);
+        if let Some(c) = self.clip {
+            if !c.contains(x, y) { return Span::empty(x, y); }
+            len = len.min((c.x1 - x) as usize);
+        }
         if let Some(l) = &self.limit { len = len.min((((x >> l.surf.shift) + 1) * l.surf.tile as i32 - x) as usize); }
         if len == 0 { return Span::empty(x, y); }
         self.prepare_tile(tx, ty);
@@ -206,6 +218,11 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
     }
 
     fn spans_in<'a>(&'a mut self, rects: &[Rect], out: &mut Vec<Span<'a, P>>) -> bool {
+        let clipped: Vec<Rect>;
+        let rects = match self.clip {
+            Some(c) => { clipped = rects.iter().map(|r| r.intersect(&c)).filter(|r| !r.is_empty()).collect(); &clipped[..] }
+            None => rects,
+        };
         // Prepare everything first, then hand out disjoint pieces.
         let mut all = Rect::EMPTY;
         for r in rects {
@@ -219,10 +236,10 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
         let limit: Option<&'a Limits> = limit.as_ref();
         let (before, flat, opened): (&'a Snapshot<P>, &'a FlatBases<P>, &'a OpenBases<P>) = (before, flat, opened);
         let ck = |v: i32| v.div_euclid(CH);
-        for (key, chunk) in surf.grid.chunks.iter_mut() {
+        for (key, chunk) in surf.grid.chunks_mut() {
             if key.0 < ck(tx0) || key.0 > ck(tx1 - 1) || key.1 < ck(ty0) || key.1 > ck(ty1 - 1) { continue; }
             for (i, slot) in chunk.slots.iter_mut().enumerate() {
-                let (tx, ty) = join(*key, i);
+                let (tx, ty) = join(key, i);
                 if tx < tx0 || tx >= tx1 || ty < ty0 || ty >= ty1 { continue; }
                 let Slot::Full(px) = slot else { continue };
                 let (bx, by) = (tx * t, ty * t);

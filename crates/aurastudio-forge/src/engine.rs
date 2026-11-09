@@ -159,7 +159,9 @@ impl MixerRun {
 }
 
 /// Every run of `rect`, in order, one by one through `span_mut`.
+/// (Only inside the surface's frame: an empty run ends its row.)
 pub(crate) fn for_runs<S: PaintSurface<Rgba8>>(s: &mut S, rect: Rect, mut f: impl FnMut(&mut Span<'_, Rgba8>)) {
+    let rect = rect.intersect(&s.frame());
     for y in rect.y0..rect.y1 {
         let mut x = rect.x0;
         while x < rect.x1 {

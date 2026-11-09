@@ -61,7 +61,7 @@ pub(crate) fn json_of(snap: &Snapshot) -> DocJson {
     let s = &snap.stack;
     let step = |x: &crate::Step| StepJson { label: x.label.clone(), layer: x.layer, rect: x.rect.map(|r| r.map(i64::from)), joined: x.joined, sheet: x.sheet };
     DocJson {
-        format: "aurastudio".into(), version: FORMAT_VERSION, width: s.width, height: s.height, dpi: snap.dpi,
+        format: "aurastudio".into(), version: FORMAT_VERSION, width: s.width, height: s.height, margin: Some(s.margin), dpi: snap.dpi,
         kind: snap.kind.name().into(), tile: Some(s.tile), depth: snap.depth.name().into(), frame: snap.frame,
         fps: (snap.fps != aurastudio_core::Fps::default()).then_some([snap.fps.num, snap.fps.den]),
         active: s.active_id(), layers: tree(&s.root),

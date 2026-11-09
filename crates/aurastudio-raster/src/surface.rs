@@ -293,7 +293,7 @@ impl<P: Pixel> Surface<P> {
 
     /// Back to the fill everywhere (frees every tile and the table).
     pub fn clear(&mut self) {
-        self.grid.chunks.clear();
+        self.grid.clear();
     }
 
     /// Back to the fill outside `keep` (crop to the frame, or to a
@@ -472,7 +472,7 @@ impl<P: Pixel> Surface<P> {
     /// Nothing but the fill inside `rect`.
     pub fn is_fill_in(&self, rect: Rect) -> bool {
         let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&rect) else { return true };
-        if self.grid.chunks.is_empty() { return true; }
+        if self.grid.is_empty() { return true; }
         let fill = self.fill;
         (ty0..ty1).all(|ty| (tx0..tx1).all(|tx| match self.slot(tx, ty) {
             Slot::Fill => true,

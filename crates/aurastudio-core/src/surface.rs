@@ -19,9 +19,8 @@ use crate::pixel::{Pixel, Rgba8};
 /// selection clips the stroke at the source; nothing is blended again
 /// afterwards.
 pub trait PaintSurface<P: Pixel = Rgba8> {
-    /// The document's frame (a stroke may go past it: the storage keeps
-    /// what is painted anywhere, unless it says otherwise by giving empty
-    /// runs there).
+    /// Where painting may go (the canvas and its margin): the engine asks
+    /// for no run outside.
     fn frame(&self) -> Rect;
 
     /// Called before the engine reads or writes `rect`: the storage makes

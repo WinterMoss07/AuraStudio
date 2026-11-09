@@ -102,6 +102,9 @@ pub enum Edit {
     /// New frame, the content centered (nothing is cut); the history is
     /// dropped.
     Resize { width: u32, height: u32 },
+    /// Room kept around the frame, percent per side (what lies further is
+    /// cut; the history is dropped, as for a resize).
+    SetMargin(u32),
     SetDpi(f32),
     /// Give the document another profile, pixels unchanged (undoable).
     AssignProfile(Profile),
@@ -159,6 +162,7 @@ impl Edit {
             Edit::Undo => "Undo",
             Edit::Redo => "Redo",
             Edit::Resize { .. } => "Canvas size",
+            Edit::SetMargin(_) => "Canvas margin",
             Edit::SetDpi(_) => "Resolution",
             Edit::AssignProfile(_) => "Assign profile",
         }
@@ -168,7 +172,7 @@ impl Edit {
     pub(crate) fn changes_pixels(&self) -> bool {
         matches!(self, Edit::ClearActive | Edit::Fill { .. } | Edit::Paste(_) | Edit::FilterPreview(_) | Edit::FilterApply(_) | Edit::FilterCancel
             | Edit::TransformBegin(_) | Edit::TransformPreview { .. } | Edit::TransformApply { .. } | Edit::TransformCancel
-            | Edit::Undo | Edit::Redo | Edit::Resize { .. } | Edit::RemoveActive | Edit::DuplicateActive | Edit::SetFilter(..)
+            | Edit::Undo | Edit::Redo | Edit::Resize { .. } | Edit::SetMargin(_) | Edit::RemoveActive | Edit::DuplicateActive | Edit::SetFilter(..)
             | Edit::DeleteSheet { .. } | Edit::MoveSheets { .. } | Edit::ShiftFrames { .. } | Edit::RemoveCel { .. } | Edit::MoveCel { .. } | Edit::AddCel { .. }
             | Edit::SelectionToMask(_) | Edit::Select(_) | Edit::MaskToSelection(_))
     }

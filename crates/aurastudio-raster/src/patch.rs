@@ -100,6 +100,9 @@ impl<P: Pixel> Patch<P> {
     pub fn rects(&self) -> Vec<Rect> { self.tiles().rects() }
 
     /// The smallest rectangle around the tiles.
+    /// Side of its tiles.
+    pub fn tile_size(&self) -> u32 { self.tile }
+
     pub fn bounds(&self) -> Rect {
         let t = self.tile as i32;
         self.tiles.iter().fold(Rect::EMPTY, |a, (tx, ty, _)| a.union(&Rect::from_xywh(tx * t, ty * t, self.tile, self.tile)))

@@ -130,7 +130,9 @@ pub fn read<R: Read + Seek>(input: R, max_side: u32) -> Result<Snapshot, String>
     let version = json.version;
     let mut ctx = Ctx { zip: &mut zip, version, w, h, tile, max: max_side };
     let root = ctx.build(json.layers, 0)?;
-    let stack = LayerStack::from_parts(w, h, tile, root, json.active).map_err(damaged)?;
+    let mut stack = LayerStack::from_parts(w, h, tile, root, json.active).map_err(damaged)?;
+    stack.margin = json.margin.unwrap_or(aurastudio_layers::DEFAULT_MARGIN).min(aurastudio_layers::MAX_MARGIN);
+    stack.crop_to_area();
     let selection = if json.selection { ctx.mask("selection.surface").ok() } else { None };
 
     // History: a step that can't be read is dropped, the document still

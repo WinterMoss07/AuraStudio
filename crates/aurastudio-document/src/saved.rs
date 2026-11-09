@@ -100,7 +100,7 @@ impl Document {
 /// rects) replayed, newest first from the layers as they are now, each
 /// giving the patch from its state to the one before it.
 fn import(stack: &aurastudio_layers::LayerStack, steps: Vec<SavedStep>) -> Vec<Imported> {
-    let frame = stack.frame();
+    let (frame, area) = (stack.frame(), stack.area());
     let mut state: HashMap<u64, Image> = HashMap::new();
     // Undo: the last applies first; redo: the last is the next to redo.
     let mut out: Vec<(bool, Option<Imported>)> = Vec::with_capacity(steps.len());
@@ -108,7 +108,8 @@ fn import(stack: &aurastudio_layers::LayerStack, steps: Vec<SavedStep>) -> Vec<I
         let joined = s.joined;
         let Some(img) = stack.image(s.layer) else { out.push((joined, None)); continue };
         let step = if Patch::<Rgba8>::is_patch(&s.data) {
-            Patch::from_bytes(&s.data).filter(|p| p.check()).map(|patch| Imported { label: s.label, layer: s.layer, patch, joined: s.joined, sheet: s.sheet })
+            // (A step reaching past the canvas's margin can't come back.)
+            Patch::from_bytes(&s.data).filter(|p| p.check() && (p.bounds().is_empty() || area.snapped_out(p.tile_size()).contains_rect(&p.bounds()))).map(|patch| Imported { label: s.label, layer: s.layer, patch, joined: s.joined, sheet: s.sheet })
         } else {
             let parts = old_parts(&s, frame);
             parts.and_then(|parts| {

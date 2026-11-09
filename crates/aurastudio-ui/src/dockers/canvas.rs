@@ -41,4 +41,21 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     if ui.add_enabled(!unchanged, button).clicked() {
         a.resize_to = Some(*m.canvas_edit);
     }
+
+    // Room kept around the frame: what is moved there stays, nothing goes
+    // further. Set when the value is let go (it cuts what lies past it).
+    ui.add_space(8.0);
+    let now = m.layers().margin;
+    let id = egui::Id::unique("canvas_margin");
+    let mut v = ui.data_mut(|d| *d.get_temp_mut_or(id, now));
+    ui.horizontal(|ui| {
+        ui.label("Margin");
+        let r = ui.add(egui::DragValue::new(&mut v).range(0..=aurastudio_layers::MAX_MARGIN).suffix(" %"))
+            .on_hover_text("Room kept on each side of the canvas, in percent of its size: what is moved there is kept. A smaller margin cuts what lies past it (and clears the undo history).");
+        if r.changed() { ui.data_mut(|d| d.insert_temp(id, v)); }
+        if !r.dragged() && !r.has_focus() && v != now {
+            a.margin_to = Some(v);
+            ui.data_mut(|d| d.remove::<u32>(id));
+        }
+    });
 }

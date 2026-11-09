@@ -440,6 +440,7 @@ impl App {
         // A new size: on the paint thread, after the strokes sent before
         // (`resized` follows).
         if let Some((w, h)) = actions.resize_to { self.send_edit(Edit::Resize { width: w, height: h }); }
+        if let Some(m) = actions.margin_to { self.send_edit(Edit::SetMargin(m)); }
         if self.layers_dirty && self.gpu.is_some() {
             // A document just shown: the paint thread merges it all, by
             // bands, off this thread.

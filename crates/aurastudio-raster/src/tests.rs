@@ -16,14 +16,14 @@ fn pattern(r: Rect) -> Vec<Rgba8> {
 fn empty_surfaces_hold_nothing_not_even_a_table() {
     let mut s = Image::new(6071, 8598, 16, CLEAR);
     assert_eq!(s.stored(), Stored::default());
-    assert!(s.grid.chunks.is_empty());
+    assert!(s.grid.is_empty());
     assert_eq!(s.pixel(100, 100), CLEAR);
     assert_eq!(s.pixel(-5, 3), CLEAR);
     s.write(Rect::new(70, 70, 71, 71), &[[1, 2, 3, 255]]);
     assert_eq!(s.stored().total(), 1);
     s.clear();
     assert_eq!(s.stored(), Stored::default());
-    assert!(s.grid.chunks.is_empty());
+    assert!(s.grid.is_empty());
 }
 
 #[test]
@@ -606,8 +606,11 @@ fn base_pixels_are_read_from_before_the_stroke() {
     st.end();
 }
 
+/// A surface holds pixels at any coordinate (the document keeps them to
+/// the canvas and its margin); a file keeps them up to one frame past the
+/// frame on each side.
 #[test]
-fn the_canvas_has_no_edge() {
+fn pixels_past_the_frame() {
     let mut s = Image::new(100, 100, 16, CLEAR);
     // Painted far past the frame and at negative coordinates.
     s.write(Rect::new(-500, -300, -499, -299), &[[1, 2, 3, 255]]);
@@ -615,7 +618,7 @@ fn the_canvas_has_no_edge() {
     assert_eq!(s.pixel(-500, -300), [1, 2, 3, 255]);
     assert_eq!(s.pixel(10_010, 60), [9, 9, 9, 255]);
     assert_eq!(s.pixel_bounds(), Some(Rect::new(-500, -300, 10_032, 82)));
-    assert!(s.grid.chunks.len() <= 3, "chunks only where something is: {}", s.grid.chunks.len());
+    assert!(s.grid.len() <= 3, "chunks only where something is: {}", s.grid.len());
     // A stroke past the frame is kept and undone.
     let p = {
         let mut st = s.begin_stroke(None);
@@ -628,7 +631,9 @@ fn the_canvas_has_no_edge() {
     };
     assert_eq!(s.pixel(-30, -30), [200, 0, 0, 255]);
     let back = Image::load(&s.save(), 1000).expect("load");
-    assert!(back == s, "saved with what is past the frame");
+    assert_eq!(back.pixel(-30, -30), [200, 0, 0, 255], "within a frame past it: kept");
+    assert_eq!(back.pixel(-500, -300)[3], 0, "further: dropped");
+    assert_eq!(back.pixel(10_010, 60)[3], 0);
     let mut p = p;
     assert!(p.swap(&mut s));
     assert_eq!(s.pixel(-30, -30), CLEAR);
@@ -637,4 +642,26 @@ fn the_canvas_has_no_edge() {
     assert_eq!(r.pixel(-400, -200), [1, 2, 3, 255]);
     s.clear_outside(s.rect());
     assert_eq!(s.stored(), Stored::default());
+}
+
+/// A clipped stroke paints nothing outside its area, through spans and
+/// single spans alike.
+#[test]
+fn a_clipped_stroke_stays_inside() {
+    let mut s = Image::new(64, 64, 16, CLEAR);
+    let area = Rect::new(-8, -8, 40, 40);
+    let state = s.stroke_state(None).clipped(area);
+    let mut st = state.on(&mut s);
+    let mut spans = Vec::new();
+    st.spans_in(&[Rect::new(-30, -30, 60, 60)], &mut spans);
+    for sp in &mut spans { for p in sp.pixels.iter_mut() { *p = [9, 9, 9, 255]; } }
+    drop(spans);
+    let sp = st.span_mut(50, 10, 10);
+    assert!(sp.pixels.is_empty());
+    let _ = st.end();
+    assert_eq!(s.pixel(-8, -8), [9, 9, 9, 255]);
+    assert_eq!(s.pixel(39, 39), [9, 9, 9, 255]);
+    assert_eq!(s.pixel(40, 10)[3], 0);
+    assert_eq!(s.pixel(-9, 0)[3], 0);
+    assert!(s.pixel_bounds().is_some_and(|b| area.contains_rect(&b)));
 }

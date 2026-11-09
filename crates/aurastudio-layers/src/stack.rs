@@ -25,10 +25,13 @@ pub struct LayerStack {
     /// Bottom to top.
     pub root:   Vec<Node>,
     pub(crate) active: u64,
-    /// The frame (what the document shows by default; the canvas is
-    /// unbounded).
+    /// The frame (what the document shows and exports).
     pub width:  u32,
     pub height: u32,
+    /// Room kept around the frame on each side, in percent of its width
+    /// (left and right) and height (top and bottom): what is moved there
+    /// is kept, nothing goes further (`area`).
+    pub margin: u32,
     /// Tile size of new layers (the document type's).
     pub tile:   u32,
     pub(crate) next_id: u64,
@@ -37,6 +40,18 @@ pub struct LayerStack {
     pub(crate) removed: Vec<Node>,
     /// The onion ghosts now: animation folder → ghosts, far to near.
     ghosts: Vec<(u64, Vec<Ghost>)>,
+}
+
+/// Margin of a new document, percent per side.
+pub const DEFAULT_MARGIN: u32 = 10;
+/// The largest margin.
+pub const MAX_MARGIN: u32 = 100;
+
+/// The frame `width` × `height` grown by `margin` percent on each side.
+pub fn area_of(width: u32, height: u32, margin: u32) -> Rect {
+    let m = margin.min(MAX_MARGIN) as u64;
+    let (mx, my) = ((width as u64 * m).div_ceil(100) as i32, (height as u64 * m).div_ceil(100) as i32);
+    Rect::new(-mx, -my, width as i32 + mx, height as i32 + my)
 }
 
 /// Where a node sits: the path of indices from the root.
@@ -100,7 +115,7 @@ pub(crate) fn first_layer_id(nodes: &[Node]) -> Option<u64> {
 
 impl LayerStack {
     pub fn new(width: u32, height: u32, tile: u32, start: Start) -> Self {
-        let mut s = Self { root: Vec::new(), active: 0, width, height, tile, next_id: 1, removed: Vec::new(), ghosts: Vec::new() };
+        let mut s = Self { root: Vec::new(), active: 0, width, height, margin: DEFAULT_MARGIN, tile, next_id: 1, removed: Vec::new(), ghosts: Vec::new() };
         let (mut bottom, more) = match start {
             Start::Background => (Layer { name: "Background".into(), ..Layer::new(width, height, tile, true) }, false),
             Start::Paper => (Layer { name: "Paper".into(), locked: true, ..Layer::new(width, height, tile, true) }, true),
@@ -133,7 +148,7 @@ impl LayerStack {
         if let Some(e) = bad { return Err(e); }
         if count_layers(&root) == 0 { return Err("no paint layer".into()); }
         let next_id = ids.iter().max().copied().unwrap_or(0) + 1;
-        let mut s = Self { root, active: 0, width, height, tile, next_id, removed: Vec::new(), ghosts: Vec::new() };
+        let mut s = Self { root, active: 0, width, height, margin: DEFAULT_MARGIN, tile, next_id, removed: Vec::new(), ghosts: Vec::new() };
         s.active = if ids.contains(&active) { active } else { first_layer_id(&s.root).unwrap_or(0) };
         // (Files from 0.10.0 could mark several references in a folder.)
         s.one_reference_per_folder(s.active);
@@ -301,6 +316,21 @@ impl LayerStack {
 
     /// The frame as a rect.
     pub fn frame(&self) -> Rect { Rect::of_size(self.width, self.height) }
+
+    /// Where pixels may be: the frame and its margin.
+    pub fn area(&self) -> Rect { area_of(self.width, self.height, self.margin) }
+
+    /// Clear every layer and mask outside `area` (a smaller margin or
+    /// frame, a file from before the margin).
+    pub fn crop_to_area(&mut self) {
+        let area = self.area();
+        let past = |b: Option<Rect>| b.is_some_and(|b| !area.contains_rect(&b));
+        self.walk_mut(|n| match n {
+            Node::Layer(l) if past(l.surface.pixel_bounds()) => l.surface.clear_outside(area),
+            Node::Mask(m) if past(m.mask.pixel_bounds()) => m.mask.clear_outside(area),
+            _ => {}
+        });
+    }
 
     // --- Node makers ----------------------------------------------------
 

@@ -11,6 +11,7 @@ use crate::*;
 fn paint(d: &mut Document, r: Rect, c: Rgba8) -> Done { d.stroke("Brush stroke", |s| { s.prepare(r); rect_in(s, r, c) }) }
 
 fn rect_in(s: &mut aurastudio_raster::Stroke<'_, Rgba8>, r: Rect, c: Rgba8) {
+        let r = r.intersect(&s.frame());
         for y in r.y0..r.y1 {
             let mut x = r.x0;
             while x < r.x1 {
@@ -355,10 +356,13 @@ fn transforms_move_apply_undo_cancel() {
     assert!(d.apply(Edit::TransformBegin(vec![])).refused.is_some());
     let empty = add_layer(&mut d);
     assert_eq!(d.apply(Edit::TransformBegin(vec![empty])).refused, Some("Nothing to transform"));
-    // Past the frame: kept there.
+    // Past the frame, in its margin: kept there; past the margin: cut.
+    let area = d.stack().area();
     d.apply(Edit::TransformBegin(vec![id]));
-    d.apply(Edit::TransformApply { warp: Warp { quad: corners(Rect::new(-40, 10, -20, 30)), mesh: None }, interp: Interp::Bilinear });
-    assert_eq!(px(&d, id, -30, 20), [0, 0, 255, 255]);
+    d.apply(Edit::TransformApply { warp: Warp { quad: corners(Rect::new(area.x0 - 10, 10, area.x0 + 4, 30)), mesh: None }, interp: Interp::Bilinear });
+    assert_eq!(px(&d, id, area.x0 + 1, 20), [0, 0, 255, 255]);
+    assert_eq!(px(&d, id, area.x0 - 3, 20)[3], 0);
+    assert!(d.stack().image(id).unwrap().pixel_bounds().is_some_and(|b| area.contains_rect(&b)));
 }
 
 #[test]
@@ -705,4 +709,29 @@ fn the_onion_skin_shows_the_sheets_around() {
     d.apply(Edit::SetFrame(1));
     let g = screen(&d, 21, 21);
     assert!(g[1] > 200 && g[0] < 60, "the sheet after, green: {g:?}");
+}
+
+/// The canvas is the frame and its margin: a stroke stops there, a
+/// smaller margin cuts, and a file keeps the margin.
+#[test]
+fn nothing_goes_past_the_margin() {
+    let mut d = doc(100, 50);
+    let ink = add_layer(&mut d);
+    assert_eq!(d.stack().area(), Rect::new(-10, -5, 110, 55));
+    paint(&mut d, Rect::new(-40, -40, 140, 90), [7, 7, 7, 255]);
+    let img = d.stack().image(ink).unwrap();
+    assert_eq!(img.pixel(-10, -5), [7, 7, 7, 255]);
+    assert_eq!(img.pixel(109, 54), [7, 7, 7, 255]);
+    assert_eq!(img.pixel(-11, 0)[3], 0);
+    assert_eq!(img.pixel(50, 55)[3], 0);
+    let mut b = reopened(&d);
+    assert_eq!(b.stack().margin, 10);
+    assert_eq!(px(&b, ink, -10, -5), [7, 7, 7, 255]);
+    b.apply(Edit::SetMargin(0));
+    assert_eq!((b.stack().margin, b.stack().area()), (0, Rect::new(0, 0, 100, 50)));
+    assert_eq!(px(&b, ink, -1, 0)[3], 0);
+    assert_eq!(px(&b, ink, 0, 0), [7, 7, 7, 255]);
+    // Opened again with no margin: nothing past the frame.
+    let c = reopened(&b);
+    assert!(c.stack().image(ink).unwrap().pixel_bounds().is_some_and(|r| r == Rect::new(0, 0, 100, 50)));
 }

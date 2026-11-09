@@ -70,9 +70,6 @@ fn lifted(img: &Image, src: Rect, mask: Option<&[u8]>) -> Vec<Rgba8> {
     px
 }
 
-/// How far past the frame a preview draws (a warp thrown far away).
-fn reach(s: &LayerStack) -> Rect { s.frame().grown(s.width.max(s.height) as i32) }
-
 /// Pieces a big rect is drawn by.
 const PIECE: u32 = 256;
 
@@ -164,7 +161,8 @@ impl Document {
 
     pub(crate) fn transform_preview(&mut self, warp: &Warp, interp: Interp) -> Done {
         aurastudio_core::zone!("transform preview");
-        let limit = reach(&self.stack);
+        // (Nothing goes past the canvas's margin.)
+        let limit = self.stack.area();
         let Some(s) = self.transform.as_mut() else { return Done::default() };
         let dest = warp.dest_rect(s.src).map_or(Rect::EMPTY, |d| d.intersect(&limit));
         let mut region = Region::Nothing;

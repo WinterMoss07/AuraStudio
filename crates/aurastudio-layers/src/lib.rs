@@ -28,7 +28,7 @@ pub use edit::Place;
 pub use fill::{Area, FillParams, FillSource, Refer};
 pub use node::{ghosts_in, FilterLayer, Folder, FolderBlend, Footprint, Ghost, Layer, MaskLayer, Node, Pick, Props, LABELS};
 pub use rows::Row;
-pub use stack::{LayerStack, Start};
+pub use stack::{area_of, LayerStack, Start, DEFAULT_MARGIN, MAX_MARGIN};
 pub use tree::TreeState;
 
 #[cfg(test)]

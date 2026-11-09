@@ -22,6 +22,10 @@ pub(crate) struct DocJson {
     pub version: u32,
     pub width:   u32,
     pub height:  u32,
+    /// Room around the frame, percent per side (files before it: the
+    /// default; what lies further is cut when opened).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin:  Option<u32>,
     pub dpi:     f32,
     /// Illustration, Animation or Comics (files before it: Illustration).
     #[serde(default = "illustration")]

@@ -7,7 +7,7 @@ use aurastudio_raster::{Image, Mask, Patch, Stroke};
 
 use crate::fill::Area;
 use crate::node::{Footprint, Node};
-use crate::stack::{siblings, LayerStack};
+use crate::stack::{siblings, LayerStack, MAX_MARGIN};
 
 impl LayerStack {
     /// The paint layer a stroke on the active node goes to: the active
@@ -108,8 +108,8 @@ impl LayerStack {
     }
 
     /// Change the frame, the content centered in it (Krita / Photoshop
-    /// "canvas size", center anchor). Nothing is cut: the canvas is
-    /// unbounded (`raster`'s `clear_outside` crops).
+    /// "canvas size", center anchor); what falls outside the new frame and
+    /// its margin is cut.
     pub fn resize(&mut self, width: u32, height: u32) {
         let dx = (width as i64 - self.width as i64) / 2;
         let dy = (height as i64 - self.height as i64) / 2;
@@ -121,6 +121,13 @@ impl LayerStack {
         });
         self.width = width;
         self.height = height;
+        self.crop_to_area();
+    }
+
+    /// Another margin (percent per side); what falls outside is cut.
+    pub fn set_margin(&mut self, margin: u32) {
+        self.margin = margin.min(MAX_MARGIN);
+        self.crop_to_area();
     }
 
     /// Ids of every paint layer, bottom to top (thumbnails).

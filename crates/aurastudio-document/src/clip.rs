@@ -36,10 +36,19 @@ impl Document {
     pub(crate) fn paste(&mut self, clip: &Clip) -> Done {
         if clip.px.len() as u64 != clip.rect.area() || clip.rect.is_empty() { return Done::default(); }
         let id = self.stack.add_layer("Pasted");
-        self.stack.set_active(id);
-        if let Some(img) = self.stack.image_mut(id) {
-            img.write(clip.rect, &clip.px);
-            img.compact(clip.rect.snapped_out(img.tile_size()));
+        let area = self.stack.area();
+        // (Past the canvas and its margin: cut there.)
+        let r = clip.rect.intersect(&area);
+        if let Some(img) = self.stack.image_mut(id).filter(|_| !r.is_empty()) {
+            if r == clip.rect { img.write(r, &clip.px); } else {
+                let w = clip.rect.w() as usize;
+                let px: Vec<_> = (r.y0..r.y1).flat_map(|y| {
+                    let o = (y - clip.rect.y0) as usize * w + (r.x0 - clip.rect.x0) as usize;
+                    clip.px[o..o + r.w() as usize].iter().copied()
+                }).collect();
+                img.write(r, &px);
+            }
+            img.compact(r.snapped_out(img.tile_size()));
         }
         let mut done = Done { made: Some(id), ..Done::default() };
         done.region.add_rect(clip.rect);

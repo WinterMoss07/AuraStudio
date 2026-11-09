@@ -74,8 +74,9 @@ impl<P: Pixel> Surface<P> {
     }
 
     /// Read what `save` wrote; `None` if damaged, of another pixel kind,
-    /// or with a frame larger than `max_side` on a side (pixels past the
-    /// frame are kept). Tiles are opened on all cores.
+    /// or with a frame larger than `max_side` on a side. Pixels past the
+    /// frame are kept up to one frame further on each side (the largest
+    /// margin), the rest is dropped. Tiles are opened on all cores.
     pub fn load(b: &[u8], max_side: u32) -> Option<Self> {
         aurastudio_core::zone!("raster load");
         let mut r = ByteReader::new(b);
@@ -87,10 +88,14 @@ impl<P: Pixel> Surface<P> {
         let count = r.varint()? as usize;
         if count > r.remaining() { return None; }
         let (n, max) = (s.npx(), encoded_max::<P>(s.npx()));
+        // (In tiles, wide: a tile touching the kept area stays.)
+        let (t, w, h) = (tile as i64, width as i64, height as i64);
+        let near = |v: i32, side: i64| { let p = v as i64 * t; p + t > -side && p < 2 * side };
         let mut raw = Vec::with_capacity(count);
         for _ in 0..count {
             let (tx, ty) = (i32::try_from(r.svarint()?).ok()?, i32::try_from(r.svarint()?).ok()?);
-            raw.push((tx, ty, r.blob(max)?));
+            let data = r.blob(max)?;
+            if near(tx, w) && near(ty, h) { raw.push((tx, ty, data)); }
         }
         if !r.at_end() { return None; }
         // Opened and settled on all cores, then put in place.
