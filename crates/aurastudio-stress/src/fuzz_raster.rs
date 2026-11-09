@@ -74,13 +74,18 @@ pub fn run(seed: u64, ops: u32) {
                 let patch = {
                     let mut st = s.begin_stroke(lim);
                     let mut mask = vec![0u8; (w * h) as usize];
+                    // The engine keeps the stroke's coverage (any pixel,
+                    // past the frame too): the highest so far.
+                    let mut kept: std::collections::HashMap<(i32, i32), u8> = std::collections::HashMap::new();
                     for (rect, cov) in &dabs {
                         st.prepare(*rect);
                         let mut buf = Vec::new();
                         st.spans_mut(*rect, &mut buf);
-                        for mut sp in buf {
+                        for sp in buf {
                             for i in 0..sp.len() {
-                                let m = sp.cover(i, *cov);
+                                let k = kept.entry((sp.x + i as i32, sp.y)).or_insert(0);
+                                *k = (*k).max(sp.cover(i, *cov));
+                                let m = *k;
                                 sp.pixels[i] = if m == 0 { sp.base[i] } else { paint_pixel_u8(sp.base[i], [color[0], color[1], color[2]], m, BlendMode::Normal) };
                             }
                         }

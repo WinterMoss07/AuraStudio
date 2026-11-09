@@ -66,7 +66,7 @@ impl Scenario for RasterStroke {
 }
 
 /// A round dab, coverage falling at the edge, by the `PaintSurface` rule.
-fn round(mut s: Span<'_>, (cx, cy): (f32, f32), r: f32, color: [u8; 3]) {
+fn round(s: Span<'_>, (cx, cy): (f32, f32), r: f32, color: [u8; 3]) {
     let y = s.y as f32 + 0.5 - cy;
     for i in 0..s.len() {
         let x = s.x as f32 + i as f32 + 0.5 - cx;
@@ -407,7 +407,6 @@ impl Scenario for Document {
                         let n = sp.len();
                         if n == 0 { break; }
                         sp.pixels.fill(c);
-                        sp.mask.fill(255);
                         x += n as i32;
                     }
                 }
