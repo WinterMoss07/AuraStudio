@@ -290,6 +290,8 @@ pub struct Canvas {
     lifted:     Vec<usize>,
     /// Draws two-color pages into full ones (made when first needed).
     expand:     Option<Expand>,
+    /// The atlases' `generation` the entries were last all set for.
+    placed:     u64,
 }
 
 impl Canvas {
@@ -320,6 +322,7 @@ impl Canvas {
             table_dirty: true,
             lifted: Vec::new(),
             expand: None,
+            placed: 0,
         }
     }
 
@@ -600,8 +603,11 @@ impl Canvas {
             }
             // (The moved pages' levels were copied.)
         }
-        // (A grown atlas moved its pages too.)
-        for i in 0..self.pages.len() { self.set_entry(i); }
+        // (An atlas grown or shrunk moved its pages: their entries anew.)
+        if self.generation() != self.placed {
+            self.placed = self.generation();
+            for i in 0..self.pages.len() { self.set_entry(i); }
+        }
         if std::mem::take(&mut self.table_dirty) {
             queue.write_texture(
                 TexelCopyTextureInfo { texture: &self.table, mip_level: 0, origin: Origin3d::ZERO, aspect: TextureAspect::All },

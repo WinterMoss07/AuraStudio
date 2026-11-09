@@ -23,11 +23,6 @@ pub enum CanvasQuality {
     Standard,
 }
 
-impl CanvasQuality {
-    /// Whether the canvas texture has mipmaps.
-    pub fn mipmaps(self) -> bool { self == CanvasQuality::Standard }
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct ViewUniform {

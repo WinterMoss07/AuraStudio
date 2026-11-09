@@ -359,24 +359,25 @@ impl App {
             ResizeDirection::NorthWest | ResizeDirection::SouthEast => CursorIcon::NwseResize,
             ResizeDirection::NorthEast | ResizeDirection::SouthWest => CursorIcon::NeswResize,
         }));
-        let wanted = match self.nav {
-            Some((Nav::Pan, _)) => Wanted::HandClosed,
-            Some((Nav::Rotate, _)) => Wanted::Rotate,
-            Some((Nav::Zoom, _)) => Wanted::Zoom,
-            None if edge.is_some() && self.gesture.is_none() && self.size_drag.is_none() => edge.unwrap_or(Wanted::System(CursorIcon::Default)),
-            None if self.space_down && self.over_canvas => match self.nav_mode() {
+        let edge = edge.filter(|_| self.gesture.is_none() && self.size_drag.is_none());
+        let wanted = match (self.nav, edge) {
+            (Some((Nav::Pan, _)), _) => Wanted::HandClosed,
+            (Some((Nav::Rotate, _)), _) => Wanted::Rotate,
+            (Some((Nav::Zoom, _)), _) => Wanted::Zoom,
+            (None, Some(e)) => e,
+            (None, _) if self.space_down && self.over_canvas => match self.nav_mode() {
                 Nav::Zoom => Wanted::Zoom,
                 Nav::Rotate => Wanted::Rotate,
                 Nav::Pan => Wanted::Hand,
             },
-            None if self.is_drawing || self.size_drag.is_some() => Wanted::Hidden,
-            None if self.over_canvas && !self.home => match self.tool {
+            (None, _) if self.is_drawing || self.size_drag.is_some() => Wanted::Hidden,
+            (None, _) if self.over_canvas && !self.home => match self.tool {
                 Tool::Transform => self.transform_cursor().unwrap_or(Wanted::System(CursorIcon::Default)),
                 _ if matches!(self.gesture, Some(Gesture::MoveSel { .. })) => Wanted::System(CursorIcon::Move),
                 // The loupe draws its own cross.
                 _ if self.loupe_on().is_some() => Wanted::Hidden,
                 _ if self.picking_with_alt() || matches!(self.gesture, Some(Gesture::Pick)) => Wanted::Pipette,
-                t if t.selects() && t != Tool::Transform && (self.gesture.is_some() || self.poly.is_some()) => Wanted::Cross(self.select_mark()),
+                t if t.selects() && (self.gesture.is_some() || self.poly.is_some()) => Wanted::Cross(self.select_mark()),
                 _ if self.gesture.is_some() => Wanted::System(CursorIcon::Crosshair),
                 Tool::RectSelect | Tool::EllipseSelect | Tool::Lasso
                     if self.canvas_at().is_some_and(|p| self.on_selection(p)) => Wanted::System(CursorIcon::Move),
@@ -385,8 +386,8 @@ impl App {
                 Tool::Picker => Wanted::Pipette,
                 Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect | Tool::PolySelect | Tool::MagicWand => Wanted::Cross(self.select_mark()),
             },
-            None if self.over_canvas => Wanted::System(CursorIcon::Default),
-            None => self.gpu.as_ref().map_or(Wanted::System(CursorIcon::Default), |g| crate::cursors::from_egui(g.egui_cursor())),
+            (None, _) if self.over_canvas => Wanted::System(CursorIcon::Default),
+            (None, _) => self.gpu.as_ref().map_or(Wanted::System(CursorIcon::Default), |g| crate::cursors::from_egui(g.egui_cursor())),
         };
         let (Some(window), Some(cursors)) = (&self.window, &mut self.cursors) else { return };
         cursors.apply(window, wanted);

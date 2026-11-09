@@ -1,13 +1,14 @@
 //! The stroke: dabs build up a private coverage buffer (sparse 64 px tiles,
-//! f32, plus a color per pixel with Color Dynamics and a depth with Wet
-//! Edges), then only the tiles that changed are painted onto the layer
-//! through `core::PaintSurface`, from the pixels before the stroke.
+//! 16 bits a value, plus a color per pixel with Color Dynamics and a depth
+//! with Wet Edges), then only the tiles that changed are painted onto the
+//! layer through `core::PaintSurface`, from the pixels before the stroke.
 //!
 //! The buffer and its build-up are PhotoCraft's (see NOTICE.md); the
 //! painting is AuraStudio's: runs from the storage (several cores for a
-//! big brush), the coverage kept in the stroke's 8-bit mask (dithered: a
-//! soft, low-flow stroke doesn't band), the selection as the mask's limit,
-//! 8-bit integer blends for the modes the layers have.
+//! big brush), this buffer the stroke's only coverage (dithered to 8 bits
+//! as it is painted: a soft, low-flow stroke doesn't band), the selection
+//! as the limit the spans give, 8-bit integer blends for the modes the
+//! layers have.
 
 use std::collections::HashSet;
 
@@ -256,6 +257,8 @@ pub struct StrokeRenderer {
     depth_scratch: Vec<f32>,
     dab_buf: Vec<Dab>,
     dual_buf: Vec<Dab>,
+    /// Every primary dab (tests only).
+    #[cfg(test)]
     all_dabs: Option<Vec<Dab>>,
 }
 
@@ -277,6 +280,7 @@ impl StrokeRenderer {
             depth_scratch: Vec::new(),
             dab_buf: Vec::new(),
             dual_buf: Vec::new(),
+            #[cfg(test)]
             all_dabs: None,
         }
     }
@@ -316,6 +320,7 @@ impl StrokeRenderer {
             }
         }
         self.dabs_done += dabs.len();
+        #[cfg(test)]
         if let Some(all) = self.all_dabs.as_mut() { all.extend_from_slice(&dabs); }
         dabs.clear();
         duals.clear();
