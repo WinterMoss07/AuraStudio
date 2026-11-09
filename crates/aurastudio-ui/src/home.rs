@@ -15,7 +15,7 @@ pub struct RecentFile {
     pub name:   String,
     /// "PNG · 2 hours ago"...
     pub detail: String,
-    thumb:      Option<egui::TextureHandle>,
+    thumb:      Option<crate::atlas::Pic>,
     /// Thumbnail decoded but not uploaded yet (textures need the context).
     pending:    Option<egui::ColorImage>,
 }
@@ -330,9 +330,16 @@ fn unit_combo(ui: &mut Ui, form: &mut NewForm) {
 /// The start screen, over the canvas area.
 pub fn start_screen(ctx: &egui::Context, area: Rect, recent: &mut [RecentFile], a: &mut Actions) {
     for r in recent.iter_mut() {
-        if let Some(img) = r.pending.take() {
-            // 280 pixels wide: a texture of its own (an atlas page would cost more).
-            r.thumb = Some(ctx.load_texture(format!("recent-{}", r.path.display()), img, egui::TextureOptions::LINEAR));
+        if r.thumb.is_none() {
+            // In the interface's one texture cache (dropped with the list).
+            if let Some(img) = r.pending.take() {
+                let [w, h] = img.size;
+                match crate::atlas::ui(|a| a.alloc(ctx, w, h)) {
+                    Some(at) => { crate::atlas::ui(|a| a.write(at, img)); r.thumb = Some(crate::atlas::Pic(at)); }
+                    // No room now: tried again next frame.
+                    None => r.pending = Some(img),
+                }
+            }
         }
     }
     egui::Area::new(egui::Id::unique("start_screen"))
@@ -425,10 +432,10 @@ fn recent_card(ui: &mut Ui, r: &RecentFile, card: f32, a: &mut Actions) {
     let img = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(card - 12.0, card - 12.0));
     p.rect_filled(img, 3.0, theme::PANEL);
     if let Some(t) = &r.thumb {
-        let s = t.size_vec2();
+        let s = vec2(t.0.w as f32, t.0.h as f32);
         let k = (img.width() / s.x).min(img.height() / s.y);
         let fit = Rect::from_center_size(img.center(), s * k);
-        p.image(t.id(), fit, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        crate::atlas::paint(&p, t.0, fit, Color32::WHITE);
     }
     // Long names end with "…" inside the card.
     crate::widgets::elided_text(&p, pos2(rect.left() + 8.0, img.bottom() + 12.0), &r.name,

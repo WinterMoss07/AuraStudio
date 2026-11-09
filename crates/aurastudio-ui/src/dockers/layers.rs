@@ -12,7 +12,7 @@ use aurastudio_filters::GROUPS;
 use aurastudio_layers::{FolderBlend, FolderKind, LayerStack, Node, Place, Row, LABELS};
 use egui::{pos2, vec2, Align, Color32, Frame, Layout, Rect, RichText, Sense, Stroke, Ui};
 
-use crate::atlas::{Atlas, Region};
+use crate::atlas::{ui as cache, Region};
 use crate::widgets::*;
 use aurastudio_core::BlendMode;
 use crate::{theme, Actions, Model, Notice};
@@ -32,8 +32,7 @@ const DRAFT_BLUE: Color32 = Color32::from_rgb(86, 156, 255);
 const THUMB_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
 
 pub struct LayersState {
-    /// Thumbnails live in one shared atlas.
-    atlas:    Atlas,
+    /// Thumbnails, in the interface's one texture cache.
     thumbs:   HashMap<u64, Region>,
     /// Layers the atlas had no room for, and when to try again (not every frame).
     no_room:  HashMap<u64, Instant>,
@@ -63,7 +62,6 @@ pub struct LayersState {
 impl Default for LayersState {
     fn default() -> Self {
         Self {
-            atlas: Atlas::new("layer-thumbnails", egui::TextureOptions::LINEAR, 4),
             thumbs: HashMap::new(), no_room: HashMap::new(), dirty: HashMap::new(), ppp: 0.0,
             renaming: None, label_filter: 0, pending: None, edit_filter: None,
             selected: Vec::new(), rect: None, delete_req: false,
@@ -86,7 +84,7 @@ impl LayersState {
     }
 
     pub fn invalidate_all(&mut self) {
-        for (_, r) in self.thumbs.drain() { self.atlas.free(r); }
+        cache(|a| for (_, r) in self.thumbs.drain() { a.free(r); });
         self.no_room.clear();
         self.dirty.clear();
     }
@@ -118,11 +116,10 @@ impl LayersState {
         let alive: HashSet<u64> = ids.iter().copied().collect();
         let gone: Vec<u64> = self.thumbs.keys().filter(|id| !alive.contains(id)).copied().collect();
         for id in gone {
-            if let Some(r) = self.thumbs.remove(&id) { self.atlas.free(r); }
+            if let Some(r) = self.thumbs.remove(&id) { cache(|a| a.free(r)); }
         }
         self.dirty.retain(|id, _| alive.contains(id));
         self.no_room.retain(|id, _| alive.contains(id));
-        self.atlas.tidy();
 
         // (Partial updates share a small budget per frame, from `now`.)
         let now = Instant::now();
@@ -150,7 +147,7 @@ impl LayersState {
             if let (Some(region), Some(rect)) = (self.thumbs.get(&id).copied(), rect) {
                 if (region.w as usize, region.h as usize) == (tw, th) {
                     if let Some(p) = crate::thumbnail::area_average_part(&layer.surface, tw, th, Some(rect)) {
-                        self.atlas.write_part(region, p.x, p.y, egui::ColorImage::from_rgba_unmultiplied([p.w, p.h], &p.px));
+                        cache(|a| a.write_part(region, p.x, p.y, egui::ColorImage::from_rgba_unmultiplied([p.w, p.h], &p.px)));
                     }
                     if now.elapsed() > std::time::Duration::from_millis(2) { ctx.request_repaint(); return; }
                     continue;
@@ -164,13 +161,13 @@ impl LayersState {
             let region = match same {
                 Some(r) => Some(r),
                 None => {
-                    if let Some(old) = self.thumbs.remove(&id) { self.atlas.free(old); }
-                    self.atlas.alloc(ctx, tw, th)
+                    if let Some(old) = self.thumbs.remove(&id) { cache(|a| a.free(old)); }
+                    cache(|a| a.alloc(ctx, tw, th))
                 }
             };
             match region {
                 Some(r) => {
-                    self.atlas.write(r, image);
+                    cache(|a| a.write(r, image));
                     self.thumbs.insert(id, r);
                     self.no_room.remove(&id);
                 }
@@ -1034,8 +1031,7 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         b
     } else {
         let b = Rect::from_center_size(pos2(x + THUMB / 2.0, rect.center().y), vec2(THUMB, THUMB));
-        if let Some(&region) = st.thumbs.get(&row.id) {
-            let (id, uv) = st.atlas.image(region);
+        if let Some((&region, Some((id, uv)))) = st.thumbs.get(&row.id).map(|r| (r, cache(|a| a.image_of(*r)))) {
             let s = vec2(region.w as f32, region.h as f32);
             let k = (THUMB / s.x).min(THUMB / s.y);
             let r = Rect::from_center_size(b.center(), s * k);
@@ -1140,7 +1136,7 @@ mod thumbnail_tests {
         while st.thumbs.len() < n { st.refresh_thumbnails(&ctx, &stack); frames += 1; assert!(frames <= n + 1); }
         assert_eq!(frames, n, "one per frame");
         // All in the same page.
-        assert_eq!(st.atlas.pages(), 1);
+        assert_eq!(cache(|a| a.pages()), 1);
         // A layer that just changed waits; a quiet one is rebuilt.
         let id = stack.layer_ids()[0];
         st.invalidate(id, None);

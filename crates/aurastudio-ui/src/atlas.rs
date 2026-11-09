@@ -1,8 +1,9 @@
-//! Texture atlases for the many small pictures of the interface (icons,
-//! layer thumbnails). One egui texture per picture means one GPU object,
-//! one memory block and one draw call each; here pictures share pages,
-//! made when needed (the first 256 × 256, 256 KB; the next ones 512 ×
-//! 512, 1 MB), packed in rows ("shelves").
+//! The interface's one texture cache (`ui`): icons, layer thumbnails,
+//! recent files' thumbnails, stroke previews. One egui texture per picture
+//! means one GPU object, one memory block and one draw call each; here
+//! pictures share pages, made when needed (the first 512 × 512, 1 MB; the
+//! next 1024 × 1024, 4 MB; two at most: 5 MB), packed in rows
+//! ("shelves").
 //!
 //! - A freed place is given out again to a picture that fits it (the
 //!   smallest such place, not much bigger than the picture).
@@ -20,8 +21,31 @@ use std::time::{Duration, Instant};
 use egui::{pos2, Color32, ColorImage, Context, Rect, TextureFilter, TextureHandle, TextureId, TextureOptions};
 
 /// Side of the first page when it can be small, and of the others, pixels.
-const FIRST_PAGE: usize = 256;
-pub const PAGE: usize = 512;
+const FIRST_PAGE: usize = 512;
+pub const PAGE: usize = 1024;
+
+/// Pages the interface's cache may hold (1 + 4 MB).
+const UI_PAGES: usize = 2;
+
+thread_local! {
+    static UI: std::cell::RefCell<Atlas> = std::cell::RefCell::new(Atlas::new("ui", TextureOptions::LINEAR, UI_PAGES));
+}
+
+/// The interface's one texture cache (UI thread). Not to be called again
+/// from inside `f`.
+pub fn ui<R>(f: impl FnOnce(&mut Atlas) -> R) -> R { UI.with(|a| f(&mut a.borrow_mut())) }
+
+/// A picture in the cache, freed when dropped.
+pub struct Pic(pub Region);
+
+impl Drop for Pic {
+    fn drop(&mut self) { let r = self.0; let _ = UI.try_with(|a| { if let Ok(mut a) = a.try_borrow_mut() { a.free(r); } }); }
+}
+
+/// Draw region `r` of the cache in `rect`, tinted.
+pub fn paint(painter: &egui::Painter, r: Region, rect: Rect, tint: Color32) {
+    if let Some((id, uv)) = ui(|a| a.image_of(r)) { painter.image(id, rect, uv, tint); }
+}
 
 /// Pixels around each picture (its ring).
 const RING: usize = 1;
@@ -142,12 +166,13 @@ impl Atlas {
         }
     }
 
-    /// The page texture and the part of it the picture covers (0..1).
-    pub fn image(&self, r: Region) -> (TextureId, Rect) {
-        let page = self.pages[r.page as usize].as_ref().expect("a region of a released page");
+    /// The page texture and the part of it the picture covers (0..1);
+    /// None for a region of a released page.
+    pub fn image_of(&self, r: Region) -> Option<(TextureId, Rect)> {
+        let page = self.pages.get(r.page as usize)?.as_ref()?;
         let s = page.side as f32;
         let uv = Rect::from_min_max(pos2(r.x as f32 / s, r.y as f32 / s), pos2((r.x + r.w) as f32 / s, (r.y + r.h) as f32 / s));
-        (page.tex.id(), uv)
+        Some((page.tex.id(), uv))
     }
 
     /// Once per frame: pages (not the first) empty for a while go back to the GPU.
@@ -252,7 +277,7 @@ mod tests {
             assert!((r.x as usize + r.w as usize + 1) <= PAGE && (r.y as usize + r.h as usize + 1) <= PAGE);
             for o in &rs { assert!(!overlap(r, *o), "{r:?} {o:?}"); }
             rs.push(r);
-            let (_, uv) = at.image(r);
+            let (_, uv) = at.image_of(r).unwrap();
             assert!(uv.min.x >= 0.0 && uv.max.x <= 1.0 && uv.max.y <= 1.0);
         }
         assert!(rs.len() > 100 && at.pages() > 1, "{} {}", rs.len(), at.pages());
@@ -281,17 +306,17 @@ mod tests {
         let ctx = Context::default();
         let mut at = Atlas::new("test", TextureOptions::LINEAR, 4);
         let a = at.alloc(&ctx, 20, 20).unwrap();
-        assert_eq!(at.bytes(), 256 * 256 * 4);
-        let (_, uv) = at.image(a);
-        assert!((uv.max.x - (a.x as f32 + 20.0) / 256.0).abs() < 1e-6);
+        assert_eq!(at.bytes(), FIRST_PAGE * FIRST_PAGE * 4);
+        let (_, uv) = at.image_of(a).unwrap();
+        assert!((uv.max.x - (a.x as f32 + 20.0) / FIRST_PAGE as f32).abs() < 1e-6);
         // A picture that needs the big page gets one (the small one stays).
-        let b = at.alloc(&ctx, 300, 40).unwrap();
-        assert_eq!(at.bytes(), 256 * 256 * 4 + 512 * 512 * 4);
-        let (_, uvb) = at.image(b);
-        assert!((uvb.max.x - (b.x as f32 + 300.0) / 512.0).abs() < 1e-6);
+        let b = at.alloc(&ctx, 600, 40).unwrap();
+        assert_eq!(at.bytes(), FIRST_PAGE * FIRST_PAGE * 4 + PAGE * PAGE * 4);
+        let (_, uvb) = at.image_of(b).unwrap();
+        assert!((uvb.max.x - (b.x as f32 + 600.0) / PAGE as f32).abs() < 1e-6);
         // Too wide for any page: the caller's own texture.
         assert!(!Atlas::fits(PAGE - 1, 10) && Atlas::fits(PAGE - 2, 10));
-        assert!(at.alloc(&ctx, 600, 10).is_none());
+        assert!(at.alloc(&ctx, PAGE + 10, 10).is_none());
     }
 
     /// Everything freed: the page starts over, so pictures of other sizes
@@ -341,9 +366,9 @@ mod tests {
     fn an_empty_page_other_than_the_first_goes_back_after_two_seconds() {
         let ctx = Context::default();
         let mut at = Atlas::new("test", TextureOptions::NEAREST, 3);
-        let a = at.alloc(&ctx, 200, 200).unwrap();
-        let b = at.alloc(&ctx, 200, 200).unwrap();
-        assert_eq!(at.pages(), 2, "first page 256, the 200-wide pair needs two");
+        let a = at.alloc(&ctx, 400, 400).unwrap();
+        let b = at.alloc(&ctx, 400, 400).unwrap();
+        assert_eq!(at.pages(), 2, "first page 512, the 400-wide pair needs two");
         let t0 = Instant::now();
         at.free_at(a, t0);
         at.free_at(b, t0);
@@ -352,9 +377,9 @@ mod tests {
         at.tidy_at(t0 + Duration::from_secs(3));
         assert_eq!(at.pages(), 1, "the first page stays");
         // A later picture takes a page again, in the same numbering.
-        let c = at.alloc(&ctx, 200, 200).unwrap();
-        let d = at.alloc(&ctx, 200, 200).unwrap();
-        assert!(at.image(c).0 != at.image(d).0);
+        let c = at.alloc(&ctx, 400, 400).unwrap();
+        let d = at.alloc(&ctx, 400, 400).unwrap();
+        assert!(at.image_of(c).unwrap().0 != at.image_of(d).unwrap().0);
     }
 
     /// In a smoothed atlas, the ring repeats the picture's edge pixels.

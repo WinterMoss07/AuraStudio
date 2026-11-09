@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use egui::{vec2, Color32, ImageSource, Rect, Ui};
 
-use crate::atlas::{Atlas, Region};
+use crate::atlas::{ui as cache, Region};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
@@ -115,7 +115,6 @@ impl Icon {
 /// The icons' pictures: one shared atlas, each icon drawn once per size
 /// (and per look) instead of a texture each.
 struct Icons {
-    atlas:   Atlas,
     regions: HashMap<(Icon, u32, bool), Region>,
     /// An icon the atlas had no room for, and the pass to try again at
     /// (never for good: room comes back, and rasterizing every frame
@@ -129,18 +128,17 @@ struct Icons {
 
 /// Passes before an icon the atlas had no room for is tried again.
 const RETRY_AFTER: u64 = 60;
-/// Pages the icons may take (256 KB, then 1 MB each).
-const MAX_PAGES: usize = 4;
 
 impl Icons {
     fn new() -> Self {
-        Self { atlas: Atlas::new("icons", egui::TextureOptions::LINEAR, MAX_PAGES), regions: HashMap::new(), failed: HashMap::new(), ppp: 0.0, tidied: 0 }
+        Self { regions: HashMap::new(), failed: HashMap::new(), ppp: 0.0, tidied: 0 }
     }
 
     /// Everything made for another screen scale goes (a window moved from
     /// a 150 % screen to a 200 % one must not keep both).
     fn set_scale(&mut self, ppp: f32) {
         if (self.ppp - ppp).abs() > 1e-3 {
+            cache(|a| for r in self.regions.values() { a.free(*r); });
             *self = Self::new();
             self.ppp = ppp;
         }
@@ -175,8 +173,9 @@ fn draw(ui: &Ui, icon: Icon, rect: Rect, size: f32, tint: Color32, core: bool) {
     let found = ICONS.with(|i| {
         let i = &mut *i.borrow_mut();
         i.set_scale(ppp);
-        if i.tidied != pass { i.tidied = pass; i.atlas.tidy(); }
-        if let Some(r) = i.regions.get(&key) { return Some(i.atlas.image(*r)); }
+        // (The cache is tidied once a pass.)
+        if i.tidied != pass { i.tidied = pass; cache(|a| a.tidy()); }
+        if let Some(r) = i.regions.get(&key) { return cache(|a| a.image_of(*r)); }
         if i.failed.get(&key).is_some_and(|retry| pass < *retry) { return None; }
         let image = egui_extras::image::load_svg_bytes_with_size(&svg_bytes(icon, core), egui::load::SizeHint::Size { width: px, height: px, maintain_aspect_ratio: false }, &Default::default());
         let Ok(image) = image else {
@@ -184,12 +183,12 @@ fn draw(ui: &Ui, icon: Icon, rect: Rect, size: f32, tint: Color32, core: bool) {
             i.failed.insert(key, u64::MAX);
             return None;
         };
-        match i.atlas.alloc(ctx, image.size[0], image.size[1]) {
+        match cache(|a| a.alloc(ctx, image.size[0], image.size[1])) {
             Some(r) => {
-                i.atlas.write(r, image);
+                let shown = cache(|a| { a.write(r, image); a.image_of(r) });
                 i.failed.remove(&key);
                 i.regions.insert(key, r);
-                Some(i.atlas.image(r))
+                shown
             }
             None => {
                 if !i.failed.contains_key(&key) { log::warn!("icon atlas full: {icon:?} at {px} px waits"); }
@@ -281,7 +280,7 @@ mod tests {
                 let c = used_regions();
                 for icon in all() { paint(ui, icon, r, 14.0, Color32::WHITE); }
                 seen = (b - a, c - b);
-                assert!(ICONS.with(|i| i.borrow().atlas.pages()) <= 2);
+                assert!(cache(|a| a.pages()) <= 2);
             });
         });
         assert_eq!(seen, (0, 1));
@@ -317,14 +316,15 @@ mod more_tests {
     #[test]
     fn a_full_atlas_never_hides_an_icon_for_good() {
         let ctx = egui::Context::default();
-        ICONS.with(|i| { *i.borrow_mut() = Icons { atlas: Atlas::new("icons", egui::TextureOptions::LINEAR, 1), ..Icons::new() }; i.borrow_mut().ppp = ctx.pixels_per_point(); });
+        cache(|a| *a = crate::atlas::Atlas::new("ui", egui::TextureOptions::LINEAR, 1));
+        ICONS.with(|i| { *i.borrow_mut() = Icons::new(); i.borrow_mut().ppp = ctx.pixels_per_point(); });
         // Take the whole first page.
-        let filler = ICONS.with(|i| i.borrow_mut().atlas.alloc(&ctx, 250, 250)).expect("the page");
+        let filler = cache(|a| a.alloc(&ctx, 510, 510)).expect("the page");
         frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
         assert_eq!(used_regions(), 0, "no room");
         assert_eq!(ICONS.with(|i| i.borrow().failed.len()), 1);
         // Room comes back; after the wait it shows (not before: no work every frame).
-        ICONS.with(|i| i.borrow_mut().atlas.free(filler));
+        cache(|a| a.free(filler));
         frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
         assert_eq!(used_regions(), 0, "still waiting");
         for _ in 0..RETRY_AFTER + 2 { frame(&ctx, |_| {}); }
@@ -354,7 +354,7 @@ mod more_tests {
             ctx.set_pixels_per_point(2.0);
             frame(&ctx, |ui| paint(ui, Icon::Eye, r(), 14.0, Color32::WHITE));
         }
-        assert_eq!(ICONS.with(|i| i.borrow().atlas.pages()), 1);
+        assert_eq!(cache(|a| a.pages()), 1);
         assert_eq!(used_regions(), 1);
     }
 }
