@@ -1,6 +1,7 @@
 mod app;
 mod memory;
 mod cursors;
+mod latency;
 mod paint_thread;
 mod preview;
 mod projection;

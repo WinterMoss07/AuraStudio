@@ -432,6 +432,7 @@ impl App {
     pub(super) fn send_begin(&mut self, erase: bool) {
         // Each stroke its own jitter (a brush with a seed of its own keeps it).
         self.strokes += 1;
+        crate::latency::begin_stroke();
         let seed = aurastudio_forge::stroke_seed(self.brush.seed, self.strokes);
         self.paint.send(Cmd::Begin {
             doc:   Arc::clone(&self.doc),
@@ -454,6 +455,7 @@ impl App {
         self.is_drawing = false;
         self.stroke_device = None;
         self.paint.send(Cmd::End);
+        crate::latency::end_stroke();
         self.update_cursor();
     }
 
@@ -462,6 +464,7 @@ impl App {
     fn draw_at(&mut self, at: (f32, f32), time: f64) {
         let Some((x, y)) = self.window_to_canvas(at.0, at.1) else { return };
         self.last_sent = Some(at);
+        crate::latency::sent(time);
         self.paint.send(Cmd::Sample(PenSample::new(x, y, self.pressure, time).with_pen(self.pen.0, self.pen.1)));
     }
 

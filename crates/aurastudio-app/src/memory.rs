@@ -266,7 +266,7 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuReport>
             aurastudio_ui::mb(committed), aurastudio_ui::mb(used), aurastudio_ui::mb(committed.saturating_sub(used)),
         ));
     }
-    MemoryReport { working_set, private, heap: Some(heap_bytes()), header, sections }
+    MemoryReport { working_set, private, heap: Some(heap_bytes()), header, latency: crate::latency::report(), sections }
 }
 
 /// Print `r` if AURASTUDIO_MEMLOG is set.

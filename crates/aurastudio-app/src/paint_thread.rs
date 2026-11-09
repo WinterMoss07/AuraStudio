@@ -222,6 +222,9 @@ struct Worker {
     /// The paint a Mixer Brush carries from stroke to stroke (the engine
     /// holds it during a stroke).
     mixer:         MixerState,
+    /// The newest sample painted, not merged for the screen yet (input
+    /// clock seconds): the latency report follows it.
+    painted_upto:  Option<f64>,
 }
 
 /// Painting time of a stroke against the pen's: a stroke that fell behind
@@ -327,7 +330,7 @@ impl Worker {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify, stroke: None,
             stroke_cache: StrokeCache::default(), saves: HashMap::new(), autosaving: Arc::default(), filters_taken: 0, filters_sent: Arc::default(),
-            mixer: MixerState::default(),
+            mixer: MixerState::default(), painted_upto: None,
         }
     }
 
@@ -545,6 +548,7 @@ impl Worker {
         };
         drop(d);
         if let Some(r) = r { add_rect(&mut self.pending, r.intersect(&frame)); }
+        if let Some(last) = ps.last() { self.painted_upto = Some(last.time); }
         self.stroke = Some(st);
     }
 
@@ -636,6 +640,9 @@ impl Worker {
         let mut p = self.projection.locked();
         if (p.width, p.height) != (w, h) { return; }
         for (r, px) in patches { p.push(r, px); }
+        drop(p);
+        // (After the push: a frame that takes these samples has them.)
+        if let Some(t) = self.painted_upto.take() { crate::latency::merged(t); }
     }
 
     /// Locked only to take the parts (shared tiles and patches); the

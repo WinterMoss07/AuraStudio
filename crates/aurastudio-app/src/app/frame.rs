@@ -208,10 +208,13 @@ impl App {
 
         // Upload what the paint thread merged (taken out under the
         // projection's own lock, copied to the GPU after).
-        if std::mem::take(&mut self.painted) {
+        // (The samples it shows taken first: none is missing from it.)
+        let shown = if std::mem::take(&mut self.painted) {
+            let shown = crate::latency::frame_begins();
             let patches = self.projection.locked().take_patches();
             gpu.upload_all(&patches);
-        }
+            shown
+        } else { Vec::new() };
 
         let max_canvas = gpu.max_canvas_size();
         let (view_zoom, view_angle, view_mirror) = (gpu.display_zoom(), gpu.view.angle.to_degrees(), gpu.view_mirrored());
@@ -346,6 +349,8 @@ impl App {
                 gpu.render_cached_ui(self.lift.as_mut());
             }
         }
+        // Handed to the display (presented once the swap chain shows it).
+        crate::latency::frame_shown(shown);
         let mut want_frame = false;
         if doc_busy {
             // Run the UI again in a moment.
