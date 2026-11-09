@@ -3,6 +3,48 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.23.2 — 2026-11-09
+
+Bugs fixed across the app, the Mixer brush completed, a latency report
+for each stroke, dead code and duplicates removed.
+
+**New**
+- Canvas size and margin can be undone (the history is kept; a file
+  keeps the steps made since).
+- Mixer brush: Sample all layers works (the pickup sees the canvas as
+  shown: the layers under and over the one painted); the paint is kept
+  from stroke to stroke; Load brush / Clean brush buttons in the
+  Advanced tool options.
+- Latency of each stroke, pen to screen, split by stage (input, paint,
+  waiting for a frame, frame): logged at the end of the stroke and
+  shown in Window > Memory report.
+- Layer > Alpha lock.
+
+**Fixed**
+- Escape cancels a rename (layers, folders, cels) and the color's hex
+  field instead of applying them.
+- The title bar shows the document's name, with * when changed.
+- Reset all settings to default keeps the color in use and loads the
+  brush's imported tip.
+- A new color alone no longer counts as an edit of the brush (nor goes
+  into its default).
+- Opacity, blend mode and color label apply to every selected layer,
+  as one undo step.
+- Numbers typed with a decimal comma ("1,5") are read as 1.5.
+- Color management set up again once the document is free (it was
+  skipped when busy).
+- An image's own resolution (PNG pHYs, JPEG JFIF) is kept when opened.
+- No graphics window: a message instead of a crash.
+- No alpha lock mark on the Paper.
+- Merged pieces covered by a newer one are no longer uploaded.
+- The interface no longer spins a core waiting for the document during
+  a stroke.
+
+**Removed**
+- Touch gestures and taps (never sent by any input).
+- Unused functions, fields, dependencies; strokes are recorded only
+  when a strokelog is open.
+
 ## 0.23.1 — 2026-11-09
 
 The whole painting chain reviewed, from the pen to the screen: lag and
