@@ -63,4 +63,4 @@ debug         = false
 
 [workspace.package]
 # One version for the whole app (see README, Versioning).
-version = "0.22.0"
+version = "0.23.0"

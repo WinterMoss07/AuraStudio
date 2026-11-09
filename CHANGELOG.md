@@ -3,6 +3,45 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.23.0 — 2026-11-09
+
+Advanced tool options in CSP's layout, the stroke preview, view mirrors,
+alpha lock.
+
+**Brush settings**
+- Advanced tool options is a floating window (F5, the toolbar, Tool
+  options, Window menu), no longer a docker. On top, the stroke preview;
+  on the left, CSP's categories (Brush size, Ink, Color jitter,
+  Anti-aliasing, Brush shape with Brush tip, Spraying effect, Stroke and
+  Texture, 2-Brush shape, Watercolor edge, Correction); on the right the
+  category's settings, the effects with their On switch, settings that
+  depend on a switch indented and dimmed while it is off, and an About
+  box for the setting under the pointer. At the bottom: Reset all
+  settings to default, Save all settings as default.
+- Rows as in CSP: the eye (shown in Tool options), the label over a
+  bar, the value with its arrows, and the inputs button. The button shows
+  what drives the setting: the input's icon, a double V for several, a
+  crossed box for none.
+- The dynamics popup gives each input a minimum and a maximum value,
+  its curve with its axes and its two ends (0% / 100%, Horizontal /
+  Vertical, Slow / Fast, Start / End...). Random is one of the inputs;
+  the jitter rows are gone.
+- "Show category": Tool options shows the categories' names.
+- Tool options opens with the stroke preview and the brush's name.
+- Brushes window (F6, toolbar): every brush, out of the dockers.
+
+**Canvas and layers**
+- View > Mirror horizontally / vertically, and their toolbar buttons:
+  only the view is mirrored.
+- Alpha lock (Krita), left of each paint layer's lock: strokes change
+  the color, never the alpha.
+- Animation: new sheets stack above the earlier ones (sheet 1 at the
+  bottom), as they show.
+
+**Inside**
+- One texture cache for the interface: icons, layer thumbnails, start
+  screen thumbnails and the stroke preview.
+
 ## 0.22.0 — 2026-11-09
 
 The brush editor: Photoshop's sections with CSP's tool property.
