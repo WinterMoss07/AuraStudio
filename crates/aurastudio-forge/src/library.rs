@@ -168,6 +168,10 @@ pub struct Library {
     pub presets: Vec<Preset>,
     root:        Option<PathBuf>,
     tips:        Tips,
+    /// What "Reset all settings to default" goes back to, by preset key
+    /// (`defaults.json`): set by "Save all settings as default", else the
+    /// preset before its first change.
+    defaults:    std::collections::HashMap<String, BrushSettings>,
 }
 
 /// A brush file read, its bitmaps written to the tip files: what
@@ -227,10 +231,14 @@ struct EditedFile {
 }
 
 const EDITED: &str = "edited.json";
+const DEFAULTS: &str = "defaults.json";
+
+/// A preset's key in `defaults.json`.
+fn key_of(p: &Preset) -> String { format!("{}/{}", if p.builtin { "" } else { &p.group }, p.name) }
 
 impl Library {
     /// The built-ins only, nothing kept on disk.
-    pub fn builtin() -> Self { Self { presets: builtin(), root: None, tips: Tips::default() } }
+    pub fn builtin() -> Self { Self { presets: builtin(), root: None, tips: Tips::default(), defaults: Default::default() } }
 
     /// The built-ins and the groups kept in `root` (made if missing).
     /// Returns what couldn't be read.
@@ -256,7 +264,38 @@ impl Library {
                 Err(e) => warnings.push(format!("{}: {e}", edited.display())),
             }
         }
+        let defaults = root.join(DEFAULTS);
+        if defaults.exists() {
+            match read_capped(&defaults, MAX_GROUP_BYTES).and_then(|b| serde_json::from_slice::<Vec<(String, BrushSettings)>>(&b).map_err(|e| e.to_string())) {
+                Ok(d) => lib.defaults = d.into_iter().collect(),
+                Err(e) => warnings.push(format!("{}: {e}", defaults.display())),
+            }
+        }
         (lib, warnings)
+    }
+
+    /// What preset `index` goes back to on "Reset all settings to default".
+    pub fn default_of(&self, index: usize) -> Option<BrushSettings> {
+        let p = self.presets.get(index)?;
+        Some(self.defaults.get(&key_of(p)).cloned().unwrap_or_else(|| p.settings.clone()))
+    }
+
+    /// `settings` become preset `index`'s default ("Save all settings as
+    /// default"), and its settings.
+    pub fn set_default(&mut self, index: usize, settings: BrushSettings) -> Result<(), String> {
+        let Some(p) = self.presets.get(index) else { return Ok(()) };
+        self.defaults.insert(key_of(p), settings.clone());
+        self.write_defaults()?;
+        self.keep(index, settings)
+    }
+
+    fn write_defaults(&self) -> Result<(), String> {
+        let Some(root) = &self.root else { return Ok(()) };
+        let mut v: Vec<(&String, BrushSettings)> = self.defaults.iter().map(|(k, b)| (k, without_bitmaps(b))).collect();
+        v.sort_by(|a, b| a.0.cmp(b.0));
+        let json = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+        write_atomic(&root.join(DEFAULTS), &json)
     }
 
     /// Keep `settings` as preset `index`'s, on disk too (a brush changed in
@@ -264,7 +303,12 @@ impl Library {
     pub fn keep(&mut self, index: usize, settings: BrushSettings) -> Result<(), String> {
         let Some(p) = self.presets.get_mut(index) else { return Ok(()) };
         if p.settings == settings { return Ok(()); }
-        p.settings = settings;
+        // Its first change: what it was is its default.
+        let key = key_of(p);
+        let first = !self.defaults.contains_key(&key);
+        if first { self.defaults.insert(key, std::mem::replace(&mut p.settings, settings)); } else { p.settings = settings; }
+        if first { self.write_defaults()?; }
+        let p = &self.presets[index];
         let Some(root) = &self.root else { return Ok(()) };
         if p.builtin {
             // Only those that differ from how they ship.
@@ -526,6 +570,12 @@ mod tests {
         assert_eq!(again.presets[i].settings, b);
         // Others as shipped.
         assert_eq!(again.presets[i + 1].settings, builtin()[i + 1].settings);
+        // Its default: as it shipped; a saved default replaces it.
+        let mut again = again;
+        assert_eq!(again.default_of(i).unwrap(), builtin()[i].settings);
+        again.set_default(i, b.clone()).unwrap();
+        let (third, _) = Library::open(dir.clone());
+        assert_eq!(third.default_of(i).unwrap(), b);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

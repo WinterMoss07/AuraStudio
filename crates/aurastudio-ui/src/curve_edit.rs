@@ -11,13 +11,18 @@ use crate::theme;
 /// Pixels from a point where the pointer takes it.
 const GRAB: f32 = 7.0;
 
-/// The curve through `points` in a `side` square; `x_label`: what the
-/// input is. True when the points changed.
-pub fn curve_editor(ui: &mut Ui, id_salt: &str, points: &mut Vec<[f32; 2]>, side: f32, x_label: &str) -> bool {
+/// Room for the axis labels: left (output) and below (input).
+const LEFT: f32 = 34.0;
+const BELOW: f32 = 16.0;
+
+/// The curve through `points` in a `side` square, with CSP's axes: output
+/// 0 % .. 100 % up the left, `x_label` and its two ends (`ends`) below.
+/// True when the points changed.
+pub fn curve_editor(ui: &mut Ui, id_salt: &str, points: &mut Vec<[f32; 2]>, side: f32, x_label: &str, ends: (&str, &str)) -> bool {
     if points.len() < 2 { *points = vec![[0.0, 0.0], [1.0, 1.0]]; }
     let id = ui.make_persistent_id(("curve_editor", id_salt));
-    let (outer, resp) = ui.allocate_exact_size(vec2(side, side + 16.0), Sense::click_and_drag());
-    let rect = Rect::from_min_size(outer.min, vec2(side, side)).shrink(4.0);
+    let (outer, resp) = ui.allocate_exact_size(vec2(side + LEFT, side + BELOW), Sense::click_and_drag());
+    let rect = Rect::from_min_size(outer.min + vec2(LEFT, 0.0), vec2(side, side)).shrink(4.0);
     let to_screen = |p: [f32; 2]| pos2(rect.left() + p[0] * rect.width(), rect.bottom() - p[1] * rect.height());
     let to_curve = |p: Pos2| [((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0), ((rect.bottom() - p.y) / rect.height()).clamp(0.0, 1.0)];
     let nearest = |pos: Pos2, pts: &[[f32; 2]]| pts.iter().enumerate().map(|(i, p)| (i, to_screen(*p).distance(pos))).filter(|(_, d)| *d <= GRAB).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
@@ -75,8 +80,16 @@ pub fn curve_editor(ui: &mut Ui, id_salt: &str, points: &mut Vec<[f32; 2]>, side
         let lit = dragging == Some(i) || hover == Some(i);
         p.rect_filled(Rect::from_center_size(to_screen(*q), vec2(7.0, 7.0)), 1.0, if lit { theme::TEXT } else { theme::ACCENT });
     }
-    let font = egui::FontId::proportional(10.5);
-    p.text(pos2(rect.center().x, outer.bottom() - 2.0), egui::Align2::CENTER_BOTTOM, x_label, font, theme::TEXT_WEAK);
+    let font = egui::FontId::proportional(10.0);
+    let weak = theme::TEXT_WEAK;
+    let lx = rect.left() - 4.0;
+    p.text(pos2(lx, rect.top()), egui::Align2::RIGHT_TOP, "100%", font.clone(), weak);
+    p.text(pos2(lx, rect.center().y), egui::Align2::RIGHT_CENTER, "Output", font.clone(), weak);
+    p.text(pos2(lx, rect.bottom()), egui::Align2::RIGHT_BOTTOM, "0%", font.clone(), weak);
+    let by = outer.bottom() - 1.0;
+    p.text(pos2(rect.left(), by), egui::Align2::LEFT_BOTTOM, ends.0, font.clone(), weak);
+    p.text(pos2(rect.center().x, by), egui::Align2::CENTER_BOTTOM, x_label, font.clone(), weak);
+    p.text(pos2(rect.right(), by), egui::Align2::RIGHT_BOTTOM, ends.1, font, weak);
     changed
 }
 
@@ -92,8 +105,8 @@ mod tests {
         let mut pts = vec![[0.0, 0.0], [0.4, 0.7], [1.0, 1.0]];
         let mut none = Vec::new();
         crate::test_pass(&ctx, egui::RawInput::default(), |ui| {
-            assert!(!curve_editor(ui, "a", &mut pts, 120.0, "Pen pressure"));
-            curve_editor(ui, "b", &mut none, 120.0, "Tilt");
+            assert!(!curve_editor(ui, "a", &mut pts, 120.0, "Pen pressure", ("0%", "100%")));
+            curve_editor(ui, "b", &mut none, 120.0, "Tilt", ("Horizontal", "Vertical"));
         });
         assert_eq!(pts, vec![[0.0, 0.0], [0.4, 0.7], [1.0, 1.0]]);
         assert_eq!(none, vec![[0.0, 0.0], [1.0, 1.0]]);

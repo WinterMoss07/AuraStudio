@@ -51,7 +51,10 @@ pub(crate) fn screen_to_canvas(view: &CanvasView, canvas: (u32, u32), area: Area
     let z = view.zoom as f64;
     let cx = area[0] as f64 + area[2] as f64 / 2.0 + view.pan.0 as f64;
     let cy = area[1] as f64 + area[3] as f64 / 2.0 + view.pan.1 as f64;
-    let (a, b, d, e) = (c / z, s / z, -s / z, c / z);
+    // (The mirror flips the rows, after the inverse rotation.)
+    let (fx, fy) = view.signs();
+    let (fx, fy) = (fx as f64, fy as f64);
+    let (a, b, d, e) = (fx * c / z, fx * s / z, -fy * s / z, fy * c / z);
     [
         [a, b, -(a * cx + b * cy) + canvas.0 as f64 / 2.0],
         [d, e, -(d * cx + e * cy) + canvas.1 as f64 / 2.0],
@@ -439,7 +442,7 @@ mod tests {
     /// The view of a `w` × `h` canvas at `zoom` and `angle` (radians),
     /// centered in a `sw` × `sh` frame, nudged off the pixel grid.
     fn view_at(zoom: f32, angle: f32) -> CanvasView {
-        CanvasView { zoom, angle, pan: (0.37, -0.21), fit: false }
+        CanvasView { zoom, angle, pan: (0.37, -0.21), fit: false, mirror: (false, false) }
     }
 
     /// Compare the shader with the judge over the frame: the largest
@@ -495,7 +498,7 @@ mod tests {
         canvas.prepare(device, queue, &mut prep, true);
         queue.submit([prep.finish()]);
         assert_ne!(canvas.generation(), bound);
-        let got = render(&g, &mut canvas, &CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false }, (64, 64), true);
+        let got = render(&g, &mut canvas, &CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false, mirror: (false, false) }, (64, 64), true);
         assert!(got.chunks_exact(4).all(|p| p == [255, 255, 255, 255]), "white everywhere");
     }
 
@@ -577,7 +580,7 @@ mod tests {
         let Some(g) = gpu() else { return };
         let (w, h) = (40u32, 30u32);
         let img = picture(w, h);
-        let view = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let view = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false, mirror: (false, false) };
         let got = shader_picture(&g, &img, (w, h), &view, (w, h), true);
         assert_eq!(got, img);
     }
@@ -606,7 +609,7 @@ mod tests {
         let Some(g) = gpu() else { return };
         let (w, h) = (600u32, 520u32);
         let img = line_art(w, h);
-        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false, mirror: (false, false) };
         assert_eq!(shader_picture(&g, &img, (w, h), &one, (w, h), true), img);
         for (zoom, angle) in [(0.33, 0.0), (0.12, 0.7)] {
             let view = view_at(zoom, angle);
@@ -660,7 +663,7 @@ mod tests {
         }
         let c = canvas.count();
         assert_eq!((c.uniform, c.mono, c.full), (0, 4, 2));
-        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false, mirror: (false, false) };
         let flat = |v: &[aurastudio_core::Rgba8]| v.iter().flatten().copied().collect::<Vec<u8>>();
         assert!(render(&g, &mut canvas, &one, (w, h), true) == flat(&want), "the picture after painting");
         // A whole merge (bands of a page's rows) back to blank paper: one-color
@@ -705,7 +708,7 @@ mod tests {
         let mut enc = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
         for (slot, part) in lift.draw(device, queue, &mut enc, &pipes, (w, h), (canvas.rgba_texture(), &pages)) { canvas.mark_full(slot, part); }
         queue.submit([enc.finish()]);
-        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false, mirror: (false, false) };
         let got = render(&g, &mut canvas, &one, (w, h), true);
         let at = |x: u32, y: u32| { let k = ((y * w + x) * 4) as usize; [got[k], got[k + 1], got[k + 2], got[k + 3]] };
         for (x, y) in [(235, 110), (255, 120), (256, 120), (325, 145)] { assert_eq!(at(x, y), [200, 0, 0, 255], "moved to ({x}, {y})"); }
@@ -756,7 +759,7 @@ mod tests {
         let mut canvas = crate::Canvas::new(device, w, h, false);
         let mut up = crate::upload::Uploads::default();
         let mut want = vec![[0u8; 4]; (w * h) as usize];
-        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false, mirror: (false, false) };
         let flat = |v: &[aurastudio_core::Rgba8]| v.iter().flatten().copied().collect::<Vec<u8>>();
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
         let mut rnd = |n: u32| { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed % n as u64) as u32 };
@@ -846,7 +849,7 @@ mod tests {
             canvas.upload(device, queue, &mut up, r, &px);
         }
         up.release(queue);
-        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
+        let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false, mirror: (false, false) };
         let got = render(&g, &mut canvas, &one, (w, h), true);
         let flat: Vec<u8> = want.iter().flatten().copied().collect();
         if got != flat {

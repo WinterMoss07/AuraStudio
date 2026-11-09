@@ -1,5 +1,6 @@
-//! Canvas view: screen = area_center + pan + zoom·R(angle)·(canvas −
-//! size / 2), and its exact inverse for the pen.
+//! Canvas view: screen = area_center + pan + zoom·R(angle)·F·(canvas −
+//! size / 2), F the mirror (a flip of x and / or y), and its exact
+//! inverse for the pen.
 
 /// Zoom limits: 1 % to 6400 % (Krita goes to 10000 %, CSP to 6400 %).
 pub const MIN_ZOOM: f32 = 0.01;
@@ -16,11 +17,13 @@ pub struct CanvasView {
     /// "Fit"), following window / dock resizes. Any manual zoom, pan or
     /// rotation leaves this mode.
     pub fit:   bool,
+    /// The view mirrored left-right / top-bottom (the picture is not).
+    pub mirror: (bool, bool),
 }
 
 impl Default for CanvasView {
     fn default() -> Self {
-        Self { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: true }
+        Self { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: true, mirror: (false, false) }
     }
 }
 
@@ -52,10 +55,14 @@ impl CanvasView {
         }
     }
 
+    /// The mirror's signs on x and y.
+    pub fn signs(&self) -> (f32, f32) { (if self.mirror.0 { -1.0 } else { 1.0 }, if self.mirror.1 { -1.0 } else { 1.0 }) }
+
     pub fn canvas_to_screen(&self, p: (f32, f32), canvas: (u32, u32), area: Area) -> (f32, f32) {
         let (s, c) = self.angle.sin_cos();
-        let qx = p.0 - canvas.0 as f32 / 2.0;
-        let qy = p.1 - canvas.1 as f32 / 2.0;
+        let (fx, fy) = self.signs();
+        let qx = fx * (p.0 - canvas.0 as f32 / 2.0);
+        let qy = fy * (p.1 - canvas.1 as f32 / 2.0);
         let (cx, cy) = center(area);
         (
             cx + self.pan.0 + self.zoom * (c * qx - s * qy),
@@ -68,11 +75,21 @@ impl CanvasView {
         let (cx, cy) = center(area);
         let dx = (p.0 - cx - self.pan.0) / self.zoom;
         let dy = (p.1 - cy - self.pan.1) / self.zoom;
-        // Inverse rotation: R(-angle).
+        // Inverse rotation R(-angle), then the mirror (its own inverse).
+        let (fx, fy) = self.signs();
         (
-            c * dx + s * dy + canvas.0 as f32 / 2.0,
-            -s * dx + c * dy + canvas.1 as f32 / 2.0,
+            fx * (c * dx + s * dy) + canvas.0 as f32 / 2.0,
+            fy * (-s * dx + c * dy) + canvas.1 as f32 / 2.0,
         )
+    }
+
+    /// Mirror the view left-right (`horizontal`) or top-bottom, around the
+    /// screen point `pivot` (it keeps showing the same canvas point).
+    pub fn mirror_at(&mut self, horizontal: bool, pivot: (f32, f32), canvas: (u32, u32), area: Area) {
+        let fit = self.fit;
+        self.keep_pivot(pivot, canvas, area, |v| if horizontal { v.mirror.0 = !v.mirror.0 } else { v.mirror.1 = !v.mirror.1 });
+        // (A fitted view stays fitted: the mirror doesn't change its size.)
+        self.fit = fit;
     }
 
     /// Change the view while keeping the canvas point under `pivot` (a
@@ -254,6 +271,16 @@ impl GpuState {
         self.view.rotate_at(delta, pivot, c, a);
     }
 
+    /// Mirror the view left-right or top-bottom, around the area's middle.
+    pub fn view_mirror(&mut self, horizontal: bool) {
+        let (c, a) = (self.canvas_size(), self.viewport);
+        let pivot = (a[0] + a[2] / 2.0, a[1] + a[3] / 2.0);
+        self.view.mirror_at(horizontal, pivot, c, a);
+    }
+
+    /// The view's mirror: (left-right, top-bottom).
+    pub fn view_mirrored(&self) -> (bool, bool) { self.view.mirror }
+
     pub fn view_reset_rotation(&mut self) {
         let (c, a, pivot) = (self.canvas_size(), self.viewport, self.rotation_pivot());
         let back = -self.view.angle;
@@ -294,11 +321,33 @@ mod tests {
 
     #[test]
     fn screen_and_canvas_are_inverse() {
-        let v = CanvasView { zoom: 2.7, angle: 0.6, pan: (33.0, -12.0), fit: false };
-        for p in [(0.0, 0.0), (1999.0, 999.0), (512.5, 77.25)] {
-            let s = v.canvas_to_screen(p, CANVAS, AREA);
-            assert!(close(v.screen_to_canvas(s, CANVAS, AREA), p));
+        for mirror in [(false, false), (true, false), (false, true), (true, true)] {
+            let v = CanvasView { zoom: 2.7, angle: 0.6, pan: (33.0, -12.0), fit: false, mirror };
+            for p in [(0.0, 0.0), (1999.0, 999.0), (512.5, 77.25)] {
+                let s = v.canvas_to_screen(p, CANVAS, AREA);
+                assert!(close(v.screen_to_canvas(s, CANVAS, AREA), p));
+                // The shader's matrix agrees.
+                let m = crate::display::screen_to_canvas(&v, CANVAS, AREA);
+                let q = ((m[0][0] * s.0 as f64 + m[0][1] * s.1 as f64 + m[0][2]) as f32, (m[1][0] * s.0 as f64 + m[1][1] * s.1 as f64 + m[1][2]) as f32);
+                assert!(close(q, p), "{mirror:?}: {q:?} vs {p:?}");
+            }
         }
+    }
+
+    /// Mirrored left-right: what was left of the middle shows right of it;
+    /// the point under the pivot stays.
+    #[test]
+    fn a_mirrored_view_swaps_left_and_right() {
+        let mut v = CanvasView::default();
+        v.update_fit(CANVAS, AREA);
+        let mid = (AREA[0] + AREA[2] / 2.0, AREA[1] + AREA[3] / 2.0);
+        let left = v.canvas_to_screen((100.0, 500.0), CANVAS, AREA);
+        v.mirror_at(true, mid, CANVAS, AREA);
+        let now = v.canvas_to_screen((100.0, 500.0), CANVAS, AREA);
+        assert!(left.0 < mid.0 && now.0 > mid.0 && (now.1 - left.1).abs() < 1e-3);
+        assert!(v.fit, "a fitted view stays fitted");
+        v.mirror_at(true, mid, CANVAS, AREA);
+        assert!(close(v.canvas_to_screen((100.0, 500.0), CANVAS, AREA), left));
     }
 
     #[test]
@@ -327,7 +376,7 @@ mod tests {
 
     #[test]
     fn ndc_matrix_matches_screen_mapping() {
-        let v = CanvasView { zoom: 0.8, angle: -1.1, pan: (5.0, 9.0), fit: false };
+        let v = CanvasView { zoom: 0.8, angle: -1.1, pan: (5.0, 9.0), fit: false, mirror: (false, false) };
         let m = v.ndc_matrix(CANVAS, AREA);
         let p = (300.0, 700.0);
         let ndc = (m[0][0] * p.0 + m[0][1] * p.1 + m[0][2], m[1][0] * p.0 + m[1][1] * p.1 + m[1][2]);

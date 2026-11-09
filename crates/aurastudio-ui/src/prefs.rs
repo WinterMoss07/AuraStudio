@@ -332,7 +332,7 @@ fn brushes(ui: &mut Ui, p: &mut Prefs) {
     note(ui, "Ignores a worn mouse button's double release.");
     title(ui, "Tablet pressure");
     ui.horizontal(|ui| {
-        crate::curve_edit::curve_editor(ui, "pressure_curve", &mut p.pressure_curve, 150.0, "Pen pressure");
+        crate::curve_edit::curve_editor(ui, "pressure_curve", &mut p.pressure_curve, 150.0, "Pen pressure", ("0%", "100%"));
         ui.vertical(|ui| {
             if ui.button("Straight").clicked() { p.pressure_curve = vec![[0.0, 0.0], [1.0, 1.0]]; }
             if ui.button("Soft").clicked() { p.pressure_curve = vec![[0.0, 0.0], [0.5, 0.75], [1.0, 1.0]]; }
