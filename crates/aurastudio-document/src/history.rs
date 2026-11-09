@@ -35,6 +35,9 @@ pub(crate) enum Step {
     /// Done as one (a transform: its layers and the selection; a sheet
     /// made and its first stroke); `undone`: which way the next swap goes.
     Group { steps: Vec<Step>, undone: bool },
+    /// A new canvas size or margin: the whole stack and the selection to go
+    /// back to (their tiles shared with the stack's where unchanged).
+    Frame { stack: Box<LayerStack>, selection: Option<Selection> },
 }
 
 /// What the history needs of the document to swap a step in.
@@ -53,6 +56,8 @@ impl Step {
             Step::Profile(p) => p.icc().len(),
             Step::Sheet { node, .. } => node.as_ref().map_or(0, HeapSize::heap_bytes),
             Step::Group { steps, .. } => steps.iter().map(Step::bytes).sum(),
+            // (Counted whole, though most tiles are the stack's too.)
+            Step::Frame { stack, selection } => stack.root.iter().map(HeapSize::heap_bytes).sum::<usize>() + selection.as_ref().map_or(0, HeapSize::heap_bytes),
         }
     }
 
@@ -115,6 +120,11 @@ impl Step {
                 *active = now;
                 Some(Done { region: crate::Region::Whole, tree: true, ..Done::default() })
             }
+            Step::Frame { stack, selection } => {
+                std::mem::swap(&mut **stack, t.stack);
+                std::mem::swap(selection, t.selection);
+                Some(Done { region: crate::Region::Whole, tree: true, selection: true, other: true, ..Done::default() })
+            }
             Step::Group { steps, undone } => {
                 // Back in the reverse order, forward in the order done.
                 let n = steps.len();
@@ -172,6 +182,8 @@ fn saved<'a>(label: &'a str, s: &'a Step, redo: bool) -> Option<Vec<Exported<'a>
             Step::Sheet { id, place, node: None, .. } => sheet = Some([*id, place.0, place.1 as u64]),
             // (Undone, its content isn't in the file.)
             Step::Sheet { .. } => whole = false,
+            // (The steps before it are of another frame: not in the file.)
+            Step::Frame { .. } => return None,
             _ => {}
         }
     }
@@ -272,7 +284,9 @@ impl History {
     /// sheet made with the first. The redo steps stop at one that can't
     /// come back (the later ones need it).
     pub(crate) fn export(&self, max_undo: usize) -> (Vec<Exported<'_>>, Vec<Exported<'_>>) {
-        let mut groups: Vec<Vec<Exported<'_>>> = self.undo.iter().filter_map(|(l, s)| saved(l, s, false)).collect();
+        // Only those since the last new frame (older ones fit the old one).
+        let since = self.undo.iter().rposition(|(_, s)| matches!(s, Step::Frame { .. })).map_or(0, |i| i + 1);
+        let mut groups: Vec<Vec<Exported<'_>>> = self.undo.iter().skip(since).filter_map(|(l, s)| saved(l, s, false)).collect();
         let mut n: usize = groups.iter().map(Vec::len).sum();
         let mut skip = 0;
         while n > max_undo && skip < groups.len() { n -= groups[skip].len(); skip += 1; }

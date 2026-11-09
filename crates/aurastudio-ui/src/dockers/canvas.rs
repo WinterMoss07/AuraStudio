@@ -51,7 +51,7 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     ui.horizontal(|ui| {
         ui.label("Margin");
         let r = ui.add(crate::widgets::drag(&mut v).range(0..=aurastudio_layers::MAX_MARGIN).suffix(" %"))
-            .on_hover_text("Room kept on each side of the canvas, in percent of its size: what is moved there is kept. A smaller margin cuts what lies past it (and clears the undo history).");
+            .on_hover_text("Room kept on each side of the canvas, in percent of its size: what is moved there is kept. A smaller margin cuts what lies past it (undo brings it back).");
         if r.changed() { ui.data_mut(|d| d.insert_temp(id, v)); }
         if !r.dragged() && !r.has_focus() && v != now {
             a.margin_to = Some(v);

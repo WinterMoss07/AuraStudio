@@ -344,26 +344,27 @@ impl Document {
 
     fn resize(&mut self, width: u32, height: u32) -> Done {
         if width == 0 || height == 0 || (width, height) == (self.stack.width, self.stack.height) { return Done::default(); }
-        self.reframe(|s| s.resize(width, height))
+        self.reframe("Canvas size", |s| s.resize(width, height))
     }
 
     fn set_margin(&mut self, margin: u32) -> Done {
         let margin = margin.min(aurastudio_layers::MAX_MARGIN);
         if margin == self.stack.margin { return Done::default(); }
-        self.reframe(|s| s.set_margin(margin))
+        self.reframe("Canvas margin", |s| s.set_margin(margin))
     }
 
-    /// A new frame or margin made by `f`: what falls out is cut.
-    fn reframe(&mut self, f: impl FnOnce(&mut LayerStack)) -> Done {
+    /// A new frame or margin made by `f`: what falls out is cut. Undone,
+    /// the stack as it was comes back whole (the steps before fit it).
+    fn reframe(&mut self, label: &str, f: impl FnOnce(&mut LayerStack)) -> Done {
         let mut done = self.end_sessions();
+        let before = Box::new(self.stack.clone());
         f(&mut self.stack);
-        // Patches of the old frame no longer fit (Krita does the same).
-        self.history.clear();
         self.stack.take_removed();
         self.tree = self.stack.tree_state();
-        self.selection = None;
+        let selection = self.selection.take();
         self.deselected = None;
-        done.join(Done { region: Region::Whole, other: true, ..Done::default() });
+        self.history.push(label, Step::Frame { stack: before, selection });
+        done.join(Done { region: Region::Whole, other: true, selection: true, ..Done::default() });
         done
     }
 

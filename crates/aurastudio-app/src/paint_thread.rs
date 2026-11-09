@@ -809,7 +809,8 @@ mod tests {
         }
     }
 
-    /// A resize is done on the paint thread, which tells the new size.
+    /// A resize is done on the paint thread, which tells the new size (an
+    /// undone one too).
     #[test]
     fn a_resize_is_reported() {
         let (doc, _) = doc_with_layer();
@@ -819,8 +820,11 @@ mod tests {
         });
         edit(&pt, &doc, Edit::Resize { width: 80, height: 40 });
         assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok((80, 40)));
-        let d = doc.locked();
-        assert_eq!((d.stack().width, d.stack().height), (80, 40));
+        let size = { let d = doc.locked(); (d.stack().width, d.stack().height) };
+        assert_eq!(size, (80, 40));
+        // Undone: the old size is told too.
+        edit(&pt, &doc, Edit::Undo);
+        assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok((64, 64)));
     }
 
     /// The onion skin reaches the screen: the merge for it draws the

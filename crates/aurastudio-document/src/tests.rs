@@ -630,16 +630,45 @@ fn documents_have_separate_histories() {
     assert_eq!(ws.len(), 1);
 }
 
+/// A resize keeps the pixels and is undone like any step: the steps
+/// before it still fit the frame they were made in.
 #[test]
-fn resize_keeps_everything_and_drops_the_history() {
+fn resize_keeps_everything_and_is_undone() {
     let mut d = doc(64, 64);
     let id = add_layer(&mut d);
     paint(&mut d, Rect::new(0, 0, 4, 4), [1, 1, 1, 255]);
+    d.apply(Edit::Select(SelectOp::All));
+    let n = d.history().undo_len();
     let r = d.apply(Edit::Resize { width: 128, height: 64 });
     assert_eq!(r.region, Region::Whole);
-    assert_eq!(d.history().undo_len(), 0);
+    assert_eq!(d.history().undo_len(), n + 1);
+    assert_eq!(d.history().undo_label(), Some("Canvas size"));
     assert_eq!(px(&d, id, 32, 0), [1, 1, 1, 255]);
-    let _ = Selection::all(d.space());
+    assert!(d.selection().is_none(), "the selection of the old frame goes");
+    // Undone: the frame, the pixels and the selection as they were.
+    let u = d.apply(Edit::Undo);
+    assert!(u.tree && u.selection);
+    assert_eq!((d.stack().width, d.stack().height), (64, 64));
+    assert_eq!(px(&d, id, 0, 0), [1, 1, 1, 255]);
+    assert!(d.selection().is_some());
+    // The steps before, too.
+    d.apply(Edit::Undo);
+    d.apply(Edit::Undo);
+    assert_eq!(px(&d, id, 0, 0)[3], 0);
+    for _ in 0..3 { d.apply(Edit::Redo); }
+    assert_eq!((d.stack().width, d.stack().height), (128, 64));
+    assert_eq!(px(&d, id, 32, 0), [1, 1, 1, 255]);
+    // A file keeps only the steps since the new frame (older ones fit the
+    // old one).
+    assert!(d.history().export(100).0.is_empty());
+    paint(&mut d, Rect::new(0, 0, 4, 4), [2, 2, 2, 255]);
+    assert_eq!(d.history().export(100).0.len(), 1);
+    d.apply(Edit::Undo);
+    // A margin too.
+    let m = d.stack().margin;
+    d.apply(Edit::SetMargin(m + 10));
+    d.apply(Edit::Undo);
+    assert_eq!(d.stack().margin, m);
 }
 
 /// An opacity dragged or a name typed is one undo step.
