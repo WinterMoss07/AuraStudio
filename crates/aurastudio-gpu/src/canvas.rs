@@ -442,7 +442,9 @@ impl Canvas {
         if rect.is_empty() { return; }
         let rw = rect.w() as usize;
         let p = PAGE as i32;
-        // The writes in one submission (released at the end).
+        // The writes in one submission (released at the end, unless the
+        // caller holds them for the whole frame).
+        let outer = up.is_held();
         up.hold();
         let ids: Vec<usize> = (rect.y0.div_euclid(p)..(rect.y1 - 1).div_euclid(p) + 1)
             .flat_map(|py| (rect.x0.div_euclid(p)..(rect.x1 - 1).div_euclid(p) + 1).map(move |px| (py, px)))
@@ -555,7 +557,7 @@ impl Canvas {
                 self.building.remove(&i);
             }
         }
-        up.release(queue);
+        if !outer { up.release(queue); }
     }
 
     /// The pages `rect` touches made full (a transform's preview draws into

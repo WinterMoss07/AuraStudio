@@ -481,10 +481,16 @@ impl GpuState {
 
     /// Copy merged pixels (the rows of `rect`, straight RGBA) to the canvas
     /// pages. A rect past the canvas is cut to it.
-    pub fn upload(&mut self, rect: Rect, px: &[Rgba8]) {
-        if rect.is_empty() || px.len() as u64 != rect.area() { return; }
-        self.canvas.upload(&self.device, &self.queue, &mut self.uploads, rect, px);
-        self.uploaded = true;
+    /// Upload merged pieces, all in one submission (each would close a
+    /// staging chunk of its own).
+    pub fn upload_all(&mut self, pieces: &[(Rect, Vec<Rgba8>)]) {
+        self.uploads.hold();
+        for (rect, px) in pieces {
+            if rect.is_empty() || px.len() as u64 != rect.area() { continue; }
+            self.canvas.upload(&self.device, &self.queue, &mut self.uploads, *rect, px);
+            self.uploaded = true;
+        }
+        self.uploads.release(&self.queue);
     }
 
     /// Upload the view transform and color management switch for this
@@ -507,6 +513,7 @@ impl GpuState {
     pub fn begin_frame(&mut self, lift: Option<&mut Lift>) -> Option<Frame> {
         aurastudio_core::zone!("gpu frame");
         if std::mem::take(&mut self.size_pending) { self.configure_surface(); }
+        self.uploads.trim();
         // Standard quality zoomed out samples mipmaps: made when needed,
         // dropped after a while zoomed in (a third more memory).
         let sampled = self.quality == CanvasQuality::Standard && self.view.zoom < 1.0;

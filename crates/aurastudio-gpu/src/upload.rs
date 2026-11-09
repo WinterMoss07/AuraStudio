@@ -7,8 +7,11 @@
 //! shown / hidden) left +16 MB of private bytes for good, where GL gave
 //! everything back. As Krita does with its ring of pixel buffers, the
 //! staging memory here is made once, in chunks of `CHUNK`, and reused:
-//! no buffer is made or freed per upload. At most `LIMIT` bytes wait for
-//! the GPU; past that, uploads wait for it, so the ring stays small.
+//! no buffer is made or freed per upload. A submission closes the chunks
+//! it used (a small write still takes a chunk), so writes of one frame go
+//! in one submission, and what waits for the GPU is counted in whole
+//! chunks: past `LIMIT`, uploads wait for it. Unused for `IDLE`, the ring
+//! is let go (made again at the next upload).
 
 use wgpu::util::StagingBelt;
 use wgpu::*;
@@ -17,6 +20,8 @@ use wgpu::*;
 pub const LIMIT: u64 = 4 << 20;
 /// Size of one staging buffer of the ring.
 pub const CHUNK: u64 = 1 << 20;
+/// The ring is let go after this long without uploads.
+pub const IDLE: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct Uploads {
@@ -24,8 +29,11 @@ pub struct Uploads {
     belt:   Option<StagingBelt>,
     /// Copies recorded and not yet submitted.
     enc:    Option<CommandEncoder>,
-    /// Staging bytes used since the GPU was last waited for.
+    /// Staging bytes used since the GPU was last waited for (whole
+    /// chunks once submitted).
     queued: u64,
+    /// When the last write was made.
+    last:   Option<std::time::Instant>,
     /// Waits made (for the tests and the report).
     pub flushes: u64,
     /// Writes kept in one submission (`hold` .. `release`): each submission
@@ -75,6 +83,7 @@ impl Uploads {
             self.queued += bytes;
             y += rows;
         }
+        self.last = Some(std::time::Instant::now());
         if !self.held { self.submit(queue); }
     }
 
@@ -95,6 +104,16 @@ impl Uploads {
         let (Some(enc), Some(belt)) = (self.enc.take(), self.belt.as_mut()) else { return };
         belt.finish_and_recall_on_submit(&enc);
         queue.submit([enc.finish()]);
+        // (The chunks it used are closed, partly full or not.)
+        self.queued = self.queued.next_multiple_of(CHUNK);
+    }
+
+    /// Let the ring go when nothing was uploaded for `IDLE` (its chunks are
+    /// freed once the GPU is done with them).
+    pub fn trim(&mut self) {
+        if self.held || self.enc.is_some() || self.belt.is_none() || self.last.is_some_and(|t| t.elapsed() < IDLE) { return; }
+        self.belt = None;
+        self.queued = 0;
     }
 
     /// Submit what waits and let the GPU finish it: its chunks are free
@@ -173,5 +192,37 @@ mod tests {
         }
         assert_eq!(staging(&device), first, "the ring keeps the same buffers");
         if let Some(n) = first { assert!(n > 0, "the ring is listed"); assert!(n as u64 <= LIMIT / CHUNK + 1, "{n} staging buffers"); }
+    }
+
+    /// Small writes held in one submission share a chunk; each submitted
+    /// alone takes one (counted whole); the ring goes once idle.
+    #[test]
+    fn small_writes_share_a_chunk_and_the_ring_goes_when_idle() {
+        let instance = Instance::new(InstanceDescriptor { backends: Backends::VULKAN, ..InstanceDescriptor::new_without_display_handle() });
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&RequestAdapterOptions::default())) else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor::default())).unwrap();
+        let tex = device.create_texture(&TextureDescriptor {
+            label: None, size: Extent3d { width: 256, height: 256, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: TextureDimension::D2, format: TextureFormat::Rgba8Unorm, usage: TextureUsages::COPY_DST, view_formats: &[],
+        });
+        let staging = |d: &Device| d.generate_allocator_report().map(|r| r.allocations.iter().filter(|a| a.name.contains("StagingBelt")).count());
+        let px = vec![9u8; 16 * 16 * 4];
+        let mut up = Uploads::default();
+        up.hold();
+        for i in 0..20 { up.write(&device, &queue, &tex, (i * 8, 0), (16, 16), &px); }
+        up.release(&queue);
+        assert_eq!(up.queued, CHUNK, "one chunk for the 20 writes");
+        if let Some(n) = staging(&device) { assert_eq!(n, 1); }
+        // Alone, each write closes a chunk: counted whole, the ring waits.
+        let mut alone = Uploads::default();
+        for i in 0..6 { alone.write(&device, &queue, &tex, (i * 8, 0), (16, 16), &px); }
+        assert!(alone.flushes >= 1 && alone.queued <= LIMIT);
+        let _ = device.poll(PollType::Wait { submission_index: None, timeout: None });
+        up.last = Some(std::time::Instant::now() - IDLE);
+        up.trim();
+        assert!(up.belt.is_none());
     }
 }

@@ -206,10 +206,8 @@ impl App {
         // Upload what the paint thread merged (taken out under the
         // projection's own lock, copied to the GPU after).
         if std::mem::take(&mut self.painted) {
-            let patches = self.projection.lock().unwrap().take_patches();
-            for (r, rgba) in &patches {
-                gpu.upload(*r, rgba);
-            }
+            let patches = self.projection.lock().unwrap_or_else(|e| e.into_inner()).take_patches();
+            gpu.upload_all(&patches);
         }
 
         let max_canvas = gpu.max_canvas_size();
