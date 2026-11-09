@@ -854,4 +854,25 @@ mod tests {
             panic!("pixel ({}, {}) is {:?}", bad as u32 % w, bad as u32 / w, &got[bad * 4..bad * 4 + 4]);
         }
     }
+
+    /// A picture sent whole after its pages were expected: the RGBA atlas
+    /// is made once, not grown band by band (a new texture each time).
+    #[test]
+    fn expected_pages_grow_the_atlas_once() {
+        let Some(g) = gpu() else { return };
+        let (device, queue) = (&g.device, &g.queue);
+        let (w, h) = (2000u32, 1300u32);
+        let mut canvas = crate::Canvas::new(device, w, h, false);
+        let mut up = crate::upload::Uploads::default();
+        canvas.expect(device, queue, &mut up, 48, 0);
+        let made = canvas.generation();
+        let mut seed = 3u32;
+        for y0 in (0..h).step_by(256) {
+            let r = aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 256.min(h - y0));
+            let px: Vec<aurastudio_core::Rgba8> = (0..r.area()).map(|_| { seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223); let b = seed.to_le_bytes(); [b[1], b[2], b[3], 255] }).collect();
+            canvas.upload(device, queue, &mut up, r, &px);
+        }
+        assert_eq!(canvas.count().full, 48);
+        assert_eq!(canvas.generation(), made, "no texture made after the first");
+    }
 }

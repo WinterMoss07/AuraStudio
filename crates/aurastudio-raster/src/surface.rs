@@ -101,6 +101,16 @@ impl<P: Pixel> Surface<P> {
     /// An empty set of tiles shaped like this surface.
     pub fn dirty_set(&self) -> crate::DirtyTiles { crate::DirtyTiles::new(self.tile) }
 
+    /// Each tile holding pixels (not one color): its rect, and whether its
+    /// colors vary (else: one color with its alpha, an ink tile).
+    pub fn pixel_tiles(&self) -> impl Iterator<Item = (Rect, bool)> + '_ {
+        self.grid.iter().filter_map(|(tx, ty, s)| match s {
+            Slot::Full(_) | Slot::Cold(_) => Some((self.tile_rect(tx, ty), true)),
+            Slot::Alpha(_) => Some((self.tile_rect(tx, ty), false)),
+            _ => None,
+        })
+    }
+
     /// The same pixels as `o` over `rect`: tile by tile, a tile shared by
     /// both (or of one color in both) without reading its pixels.
     pub fn same_in(&self, o: &Self, rect: Rect) -> bool {

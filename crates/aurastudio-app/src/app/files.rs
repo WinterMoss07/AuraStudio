@@ -240,6 +240,7 @@ impl App {
     /// Show `doc` in place of the current document.
     pub(super) fn install(&mut self, doc: Document) {
         let (w, h) = (doc.stack().width, doc.stack().height);
+        let pages = doc.stack().cell_estimate(aurastudio_gpu::PAGE);
         // A transform, polygon or playback of the document going away.
         self.play = None;
         self.play_next = None;
@@ -258,7 +259,7 @@ impl App {
         self.workspace.close(old);
         self.paint.send(Cmd::Forget(old));
         *self.projection.locked() = Projection::new(w, h);
-        if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
+        if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); gpu.expect_pages(pages.0, pages.1); }
         self.canvas_edit = (w, h);
         self.ui.invalidate_all_thumbnails();
         self.layers_dirty = true;
@@ -270,7 +271,8 @@ impl App {
     /// whole frame is merged again.
     pub(super) fn resized(&mut self, w: u32, h: u32) {
         *self.projection.locked() = Projection::new(w, h);
-        if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
+        let pages = self.doc.locked().stack().cell_estimate(aurastudio_gpu::PAGE);
+        if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); gpu.expect_pages(pages.0, pages.1); }
         self.canvas_edit = (w, h);
         self.ui.invalidate_all_thumbnails();
         self.layers_dirty = true;

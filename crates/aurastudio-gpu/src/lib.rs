@@ -441,6 +441,14 @@ impl GpuState {
         self.view.fit_to_area();
     }
 
+    /// The canvas about to be sent whole: room for about `full` RGBA and
+    /// `mono` two-color pages made at once (`LayerStack::cell_estimate`
+    /// with `PAGE`).
+    pub fn expect_pages(&mut self, full: u32, mono: u32) {
+        self.canvas.expect(&self.device, &self.queue, &mut self.uploads, full, mono);
+        self.rebuild_bind_groups();
+    }
+
     fn rebuild_bind_groups(&mut self) {
         self.view_bind_group = display::bind_group(&self.device, &self.canvas_bgl, &self.canvas, &self.view_buffer, &self.lut);
         self.bound = self.canvas.generation();

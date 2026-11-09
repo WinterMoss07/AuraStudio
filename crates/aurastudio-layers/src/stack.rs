@@ -232,6 +232,32 @@ impl LayerStack {
         go(&self.root, 0, &mut f);
     }
 
+    /// How the frame's cells of `side` px look from the layers shown
+    /// (an estimate, folders' visibility aside): (cells of many colors,
+    /// cells of one ink on its ground). The GPU sizes its pages with it.
+    pub fn cell_estimate(&self, side: u32) -> (u32, u32) {
+        let side = side.max(1) as i32;
+        let frame = self.frame();
+        // Per cell: colors vary, inks seen.
+        let mut cells: std::collections::HashMap<(i32, i32), (bool, u8)> = std::collections::HashMap::new();
+        self.walk(|n, _| {
+            let Node::Layer(l) = n else { return };
+            if !l.visible || l.opacity <= 0.0 { return; }
+            for (r, varied) in l.surface.pixel_tiles() {
+                let r = r.intersect(&frame);
+                if r.is_empty() { continue; }
+                for cy in r.y0.div_euclid(side)..=(r.y1 - 1).div_euclid(side) {
+                    for cx in r.x0.div_euclid(side)..=(r.x1 - 1).div_euclid(side) {
+                        let c = cells.entry((cx, cy)).or_default();
+                        if varied { c.0 = true; } else { c.1 = c.1.saturating_add(1); }
+                    }
+                }
+            }
+        });
+        let full = cells.values().filter(|c| c.0 || c.1 > 1).count() as u32;
+        (full, cells.len() as u32 - full)
+    }
+
     /// Every node, mutable, depth first.
     pub fn walk_mut(&mut self, mut f: impl FnMut(&mut Node)) { for n in &mut self.root { n.for_each_mut(&mut f); } }
 

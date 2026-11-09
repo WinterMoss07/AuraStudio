@@ -14,7 +14,9 @@ Pictures open whole and fast; bug fixes; less work done twice.
   the whole picture (2000 × 3000: 46 → 27 MB at the peak). JPG and the
   other formats go into the layer on all cores, without an RGBA copy.
 - A document just opened shows band by band instead of holding the whole
-  merged frame.
+  merged frame; the canvas texture is sized once for it (it was made
+  again about twelve times for a 2000 × 3000 picture, each time a new
+  texture and a copy left to the graphics driver).
 - PNG export keeps transparency.
 
 **Fixes**

@@ -159,6 +159,8 @@ impl Atlas {
         if free >= n { return; }
         if up.is_held() { up.release(queue); up.hold(); }
         let want = (self.cap + n - free).max(self.cap + self.cap / 4);
+        // (Exact when sized ahead, from one page of room.)
+        let want = if self.in_use() == 0 { n.max(1) } else { want };
         let (cols, rows) = Self::layout(want);
         let keep: Vec<u32> = (0..self.cap).collect();
         self.relayout(device, queue, cols * rows, &keep);
@@ -536,6 +538,15 @@ impl Canvas {
             }
         }
         if !outer { up.release(queue); }
+    }
+
+    /// Room made at once for about `full` RGBA and `mono` two-color pages
+    /// (a document about to be sent whole): the atlases grow once, not by
+    /// steps as its bands come (each step a new texture and a copy).
+    pub(crate) fn expect(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, full: u32, mono: u32) {
+        let n = self.pages.len() as u32;
+        self.rgba.reserve(device, queue, up, full.min(n));
+        self.mono.reserve(device, queue, up, mono.min(n));
     }
 
     /// The pages `rect` touches made full (a transform's preview draws into

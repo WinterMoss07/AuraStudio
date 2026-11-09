@@ -450,3 +450,19 @@ fn ghosts_report_where_they_change() {
     assert_eq!(g.tinted([0.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
     assert_eq!(g.tinted([1.0, 1.0, 1.0]), [1.0, 1.0, 1.0]);
 }
+
+/// Cells of varied colors and of one ink, as the GPU will want them.
+#[test]
+fn cells_are_estimated_from_the_tiles() {
+    let mut s = doc(600, 300);
+    assert_eq!(s.cell_estimate(256), (0, 0), "plain paper");
+    let ink = s.add_layer("ink");
+    assert!(s.set_layer_rect(ink, r(10, 10, 20, 20), &(0..100).map(|i| [0, 0, 0, (i * 2 + 1) as u8]).collect::<Vec<_>>()));
+    assert_eq!(s.cell_estimate(256), (0, 1), "one ink");
+    let photo = s.add_layer("photo");
+    assert!(s.set_layer_rect(photo, r(300, 10, 310, 20), &(0..100).map(|i| [i as u8, 9, 200, 255]).collect::<Vec<_>>()));
+    assert_eq!(s.cell_estimate(256), (1, 1));
+    // Past the frame: not counted.
+    let _ = s.set_layer_rect(photo, r(-40, -40, -30, -30), &vec![[1, 2, 3, 255]; 100]);
+    assert_eq!(s.cell_estimate(256).0, 1);
+}
