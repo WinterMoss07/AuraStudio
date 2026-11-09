@@ -214,6 +214,24 @@ impl BrushContext {
         let hardness = if dual { self.brush.dual_brush.hardness } else { self.brush.hardness };
         // A computed soft tip paints past its nominal radius (see `tip_shape`).
         let aliased = self.brush.aliased && !dual;
+        // A sampled tip: its own box (the longer side across the dab, the
+        // other squashed by the roundness), turned by the angle. The
+        // circle around the square (√2) was up to twice the pixels.
+        let mips = if dual { self.dual_tip.as_deref() } else { self.tip.as_deref() };
+        if let (true, Some((w0, h0, _))) = (sampled, mips.and_then(|m| m.levels.first())) {
+            let r = d.radius;
+            let big = (*w0).max(*h0).max(1) as f32;
+            let ro = d.roundness.max(0.5 / r.max(1e-3)).min(1.0);
+            let hu = r * (*w0 as f32 + 2.0) / big;
+            let hv = r * ro * (*h0 as f32 + 2.0) / big;
+            let (sn, cs) = d.angle.sin_cos();
+            let (hx, hy) = (hu * cs.abs() + hv * sn.abs(), hu * sn.abs() + hv * cs.abs());
+            if hx.is_finite() && hy.is_finite() {
+                let (rx, ry) = ((hx.ceil() as i32).saturating_add(1), (hy.ceil() as i32).saturating_add(1));
+                let (cx, cy) = (d.center.x.floor() as i32, d.center.y.floor() as i32);
+                return Rect::new(cx.saturating_sub(rx), cy.saturating_sub(ry), cx.saturating_add(rx).saturating_add(1), cy.saturating_add(ry).saturating_add(1));
+            }
+        }
         let reach = if sampled {
             d.radius * std::f32::consts::SQRT_2
         } else if aliased {
@@ -305,7 +323,9 @@ impl BrushContext {
             rasterize_round(d, rect, out, profile, aliased);
             return;
         }
-        for yy in 0..h {
+        // One row of the dab; the rows on all cores for a big one (an
+        // 800 px sampled tip is over a million pixels).
+        let row = |yy: usize, orow: &mut [f32], mut drow: Option<&mut [f32]>| {
             let y = rect.y0 + yy as i32;
             let dy = y as f32 + 0.5 - cy;
             for xx in 0..w {
@@ -370,14 +390,29 @@ impl BrushContext {
                 if wet {
                     val *= wet_factor(rn);
                 }
-                if let Some(slot) = depth.as_deref_mut().and_then(|dp| dp.get_mut(yy * w + xx)) {
+                if let Some(slot) = drow.as_deref_mut().and_then(|dp| dp.get_mut(xx)) {
                     *slot = (1.0 - rn).clamp(0.0, 1.0);
                 }
-                out[yy * w + xx] = val * d.alpha;
+                orow[xx] = val * d.alpha;
             }
+        };
+        match depth.as_deref_mut() {
+            Some(dp) if parallel(w * h) => {
+                use rayon::prelude::*;
+                out.par_chunks_exact_mut(w).zip(dp.par_chunks_exact_mut(w)).enumerate().for_each(|(yy, (o, d))| row(yy, o, Some(d)));
+            }
+            Some(dp) => for (yy, (o, d)) in out.chunks_exact_mut(w).zip(dp.chunks_exact_mut(w)).enumerate() { row(yy, o, Some(d)) },
+            None if parallel(w * h) => {
+                use rayon::prelude::*;
+                out.par_chunks_exact_mut(w).enumerate().for_each(|(yy, o)| row(yy, o, None));
+            }
+            None => for (yy, o) in out.chunks_exact_mut(w).enumerate() { row(yy, o, None) },
         }
     }
 
+
+    /// The stroke has a texture laid over it as a whole (not tip by tip).
+    pub(crate) fn stroke_texture(&self) -> bool { self.texture.is_some() && !self.brush.texture.each_tip }
 
     /// [`stroke_mask`](Self::stroke_mask) with Wet Edges from the stroke's depth at the pixel
     /// (the deepest any dab reaches it, see [`CoverageMap::depth`]).

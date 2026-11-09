@@ -136,6 +136,31 @@ fn sampled_tip_is_scaled_and_oriented() {
     let r = raster(&b, &Dab::round(Point::new(50.0, 50.0), 2.0, 1.0));
     assert!(r.1.iter().sum::<f32>() > 1.0);
 }
+/// A sampled tip's rect (its own box turned) holds every pixel it paints:
+/// nothing is left outside, whatever the angle, roundness or tip shape.
+#[test]
+fn a_sampled_tip_fits_its_rect() {
+    for (tw, th) in [(16, 16), (40, 10), (8, 30)] {
+        let tip = GrayTile::from_fn(tw, th, |_, _| 1.0);
+        let b = BrushSettings { tip: TipShape::Sampled(tip), ..brush() };
+        let ctx = BrushContext::new(&b);
+        for k in 0..12 {
+            let d = Dab { angle: k as f32 * 0.53, roundness: [1.0, 0.4, 0.1][k % 3], ..Dab::round(Point::new(200.3, 200.7), 60.0, 1.0) };
+            let tight = ctx.dab_rect(&d, false);
+            let wide = crate::render::rect_around(&d, d.radius * 1.5);
+            let mut v = Vec::new();
+            ctx.rasterize(&d, false, wide, &mut v);
+            for y in wide.y0..wide.y1 {
+                for x in wide.x0..wide.x1 {
+                    let a = v[(y - wide.y0) as usize * wide.w() as usize + (x - wide.x0) as usize];
+                    assert!(a <= 0.0 || (x >= tight.x0 && x < tight.x1 && y >= tight.y0 && y < tight.y1), "{tw}x{th} #{k}: ({x},{y}) outside {tight:?}");
+                }
+            }
+            assert!(tight.area() <= wide.area());
+        }
+    }
+}
+
 // ---------- spacing ----------
 
 #[test]

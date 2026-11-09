@@ -90,7 +90,11 @@ impl CoverageMap {
     }
     #[inline]
     #[cfg(test)]
-    pub fn get(&self, x: i32, y: i32) -> f32 {
+    pub fn get(&self, x: i32, y: i32) -> f32 { self.value(x, y) }
+
+    /// The coverage at a pixel (0 where nothing went).
+    #[inline]
+    pub(crate) fn value(&self, x: i32, y: i32) -> f32 {
         let (tx, ty) = (x.div_euclid(COV_TILE), y.div_euclid(COV_TILE));
         self.tiles.get(&tile_key((tx, ty))).map_or(0.0, |t| f16(t.cov[((y - ty * COV_TILE) * COV_TILE + (x - tx * COV_TILE)) as usize]))
     }
@@ -349,6 +353,11 @@ impl StrokeRenderer {
             k.sort_unstable();
             k
         } else {
+            // A 2nd tip's dab changes the mask of tiles the first tip may
+            // have painted already: those are painted again too.
+            if let Some(d) = self.dual.as_mut() {
+                for k in d.dirty.drain() { if self.cov.tiles.contains_key(&tile_key(k)) { self.cov.dirty.insert(k); } }
+            }
             self.cov.take_dirty()
         };
         if let Some(d) = self.dual.as_mut() { d.dirty.clear(); }

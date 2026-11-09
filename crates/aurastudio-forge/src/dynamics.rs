@@ -232,6 +232,10 @@ pub struct StepInput {
 /// Screen pixels per millisecond the Velocity input reads as full (a quick flick).
 pub const FULL_SPEED: f64 = 3.0;
 
+/// The speed is read over at least this much stroke time (ms): samples read
+/// in a burst carry nearly the same time and gave speed spikes.
+const SPEED_WINDOW_MS: f64 = 4.0;
+
 /// Walks a polyline and emits steps every `step_len(point)` pixels, plus airbrush steps in time.
 #[derive(Clone, Debug)]
 pub struct PathWalker {
@@ -257,6 +261,8 @@ pub struct PathWalker {
     /// The pen's speed, canvas pixels per ms (smoothed), and the factor to the Velocity input.
     speed_now: f64,
     velocity_scale: f64,
+    /// Distance and time since the speed was last read.
+    speed_run: (f64, f64),
 }
 
 impl PathWalker {
@@ -276,6 +282,7 @@ impl PathWalker {
             cell: None,
             speed_now: 0.0,
             velocity_scale: 1.0 / FULL_SPEED,
+            speed_run: (0.0, 0.0),
         }
     }
 
@@ -374,7 +381,14 @@ impl PathWalker {
         let len = (dx * dx + dy * dy).sqrt();
         // The speed, smoothed over a few samples (pen reports jitter in time).
         let dt = p.time - a.time;
-        if dt > 0.0 && dt.is_finite() { self.speed_now += (len / dt - self.speed_now) * 0.3; }
+        if dt >= 0.0 && dt.is_finite() {
+            self.speed_run.0 += len;
+            self.speed_run.1 += dt;
+            if self.speed_run.1 >= SPEED_WINDOW_MS {
+                let (l, t) = std::mem::take(&mut self.speed_run);
+                self.speed_now += (l / t - self.speed_now) * 0.3;
+            }
+        }
         if len > 1e-9 {
             self.dir = (-dy).atan2(dx) as f32;
             if self.initial_dir.is_none() {
@@ -882,6 +896,23 @@ impl DabGenerator {
 #[cfg(test)]
 mod walker_budget_tests {
     use super::*;
+
+    /// Samples read in bursts (the same time for several) read the speed
+    /// they really had, not a flick.
+    #[test]
+    fn bursts_of_samples_read_their_real_speed() {
+        let most = std::cell::Cell::new(0.0f32);
+        let mut w = PathWalker::new(None).zoom(1.0);
+        let len = |_: &StrokePoint| 0.5;
+        for i in 0..200 {
+            // 1 px per ms, read four at a time.
+            let t = (i / 4 * 4) as f64;
+            let p = StrokePoint { x: i as f64, time: t, ..StrokePoint::new(0.0, 0.0, 1.0) };
+            w.push(p, &len, &mut |s: StepInput| if i > 40 { most.set(most.get().max(s.velocity)) });
+        }
+        let real = (1.0 / FULL_SPEED) as f32;
+        assert!(most.get() < real * 1.5 && most.get() > real * 0.6, "{} for {real}", most.get());
+    }
 
     #[test]
     fn one_far_segment_emits_a_bounded_number_of_steps() {
