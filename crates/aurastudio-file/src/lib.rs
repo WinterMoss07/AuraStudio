@@ -16,7 +16,7 @@ mod schema;
 mod snapshot;
 mod write;
 
-pub use image_io::{can_open, downscale, export_image, import_image, preview, thumbnail, EXPORT_EXTENSIONS, IMAGE_EXTENSIONS};
+pub use image_io::{can_open, downscale, export_image, import_image, preview, thumbnail, thumbnail_cached, trim_thumbnails, EXPORT_EXTENSIONS, IMAGE_EXTENSIONS};
 pub use limits::EXTENSION;
 pub use read::{open, peek_origin, read};
 pub use schema::FORMAT_VERSION;

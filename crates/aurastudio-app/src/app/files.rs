@@ -448,12 +448,16 @@ impl App {
         }).collect();
         self.ui.set_recent(list);
         let (paths, proxy) = (self.recent.clone(), self.proxy.clone());
+        // (Kept on disk: a big picture isn't decoded whole at each start.)
+        let dir = dirs::cache_dir().map(|d| d.join("AuraStudio").join("thumbnails"));
         std::thread::spawn(move || {
-            for path in paths {
-                if let Some((w, h, rgba)) = aurastudio_file::thumbnail(&path, 280) {
-                    let _ = proxy.send_event(AppEvent::Thumbnail { path, w, h, rgba: rgba.into_flattened() });
+            for path in &paths {
+                let got = match &dir { Some(d) => aurastudio_file::thumbnail_cached(path, 280, d), None => aurastudio_file::thumbnail(path, 280) };
+                if let Some((w, h, rgba)) = got {
+                    let _ = proxy.send_event(AppEvent::Thumbnail { path: path.clone(), w, h, rgba: rgba.into_flattened() });
                 }
             }
+            if let Some(d) = &dir { aurastudio_file::trim_thumbnails(d, &paths, 280); }
         });
         self.request_redraw();
     }

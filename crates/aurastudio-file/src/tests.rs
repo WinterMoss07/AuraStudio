@@ -471,3 +471,24 @@ fn a4_save_and_open_time() {
         println!("write {:.0} ms, read {:.0} ms, {} MB", wt.as_secs_f64() * 1e3, t.elapsed().as_secs_f64() * 1e3, len >> 20);
     }
 }
+
+/// A thumbnail is kept on disk and read back from there; kept ones of
+/// files no longer listed go.
+#[test]
+fn thumbnails_are_kept_on_disk() {
+    let dir = std::env::temp_dir().join(format!("aurs-thumbs-{}", std::process::id()));
+    let cache = dir.join("cache");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pic = dir.join("pic.png");
+    let px: Vec<u8> = (0..600 * 400).flat_map(|i| [(i % 251) as u8, 40, 200, 255]).collect();
+    image::save_buffer(&pic, &px, 600, 400, image::ExtendedColorType::Rgba8).unwrap();
+    let first = crate::thumbnail_cached(&pic, 64, &cache).unwrap();
+    assert_eq!((first.0, first.1), (64, 43));
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+    let again = crate::thumbnail_cached(&pic, 64, &cache).unwrap();
+    assert_eq!(again, first, "the same picture, from the kept file");
+    std::fs::write(cache.join("0000000000000000.png"), b"old").unwrap();
+    crate::trim_thumbnails(&cache, std::slice::from_ref(&pic), 64);
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

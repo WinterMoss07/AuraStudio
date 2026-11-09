@@ -98,6 +98,40 @@ pub fn thumbnail(path: &Path, max: u32) -> Option<(u32, u32, Vec<Rgba8>)> {
     Some(downscale(img.as_raw().as_chunks::<4>().0, w, h, max))
 }
 
+/// `thumbnail`, kept as a small PNG in `dir`: read again from there while
+/// the file is unchanged (same size and time), not decoded whole.
+pub fn thumbnail_cached(path: &Path, max: u32, dir: &Path) -> Option<(u32, u32, Vec<Rgba8>)> {
+    let kept = dir.join(format!("{:016x}.png", thumbnail_key(path, max)?));
+    if let Some(img) = image::open(&kept).ok().map(image::DynamicImage::into_rgba8) {
+        let (w, h) = img.dimensions();
+        return Some((w, h, img.into_raw().as_chunks::<4>().0.to_vec()));
+    }
+    let (w, h, px) = thumbnail(path, max)?;
+    if std::fs::create_dir_all(dir).is_ok() {
+        let _ = image::save_buffer(&kept, px.as_flattened(), w, h, image::ExtendedColorType::Rgba8);
+    }
+    Some((w, h, px))
+}
+
+/// Remove the kept thumbnails of files not in `paths`.
+pub fn trim_thumbnails(dir: &Path, paths: &[std::path::PathBuf], max: u32) {
+    let keep: Vec<String> = paths.iter().filter_map(|p| thumbnail_key(p, max)).map(|k| format!("{k:016x}.png")).collect();
+    let Ok(list) = std::fs::read_dir(dir) else { return };
+    for e in list.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".png") && !keep.contains(&name) { let _ = std::fs::remove_file(e.path()); }
+    }
+}
+
+/// What names a file's thumbnail: its path, size and time, and `max`.
+fn thumbnail_key(path: &Path, max: u32) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let m = std::fs::metadata(path).ok()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (path, m.len(), m.modified().ok(), max).hash(&mut h);
+    Some(h.finish())
+}
+
 /// `px` (w × h) shrunk to fit in `max` × `max`, averaging the pixels.
 pub fn downscale(px: &[Rgba8], w: u32, h: u32, max: u32) -> (u32, u32, Vec<Rgba8>) {
     if w == 0 || h == 0 || px.len() != w as usize * h as usize { return (0, 0, Vec::new()); }
