@@ -132,3 +132,25 @@ fn masks_alpha_and_bytes_round_trip() {
     let p = Selection::from_predicate(s, r(0, 0, 70, 70), |x, y| x == y).unwrap();
     assert_eq!(p.mask(p.bbox()).iter().filter(|v| **v == 255).count(), 70);
 }
+
+/// A rectangle grown, shrunk or bordered from its sides gives what the
+/// distance map gives for the same pixels as a mask.
+#[test]
+fn rectangles_change_like_masks() {
+    let space = sp(200, 120);
+    for b in [r(50, 30, 150, 90), r(0, 0, 120, 120), r(0, 0, 200, 120)] {
+        let rect = Selection::rect(space, b).unwrap();
+        let mask = Selection::from_mask(space, b, &vec![255; b.area() as usize]).unwrap();
+        assert!(rect.is_rect() && !mask.is_rect());
+        let all = r(-20, -20, 220, 140);
+        let same = |a: Option<Selection>, m: Option<Selection>, what: &str| {
+            let (a, m) = (a.map(|s| s.mask(all)), m.map(|s| s.mask(all)));
+            assert_eq!(a, m, "{what} of {b:?}");
+        };
+        for k in [1.0, 2.5, 7.0] {
+            same(rect.grown(k), mask.grown(k), "grown");
+            same(rect.shrunk(k), mask.shrunk(k), "shrunk");
+            same(rect.bordered(k), mask.bordered(k), "bordered");
+        }
+    }
+}

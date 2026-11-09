@@ -7,3 +7,4 @@ edition = "2021"
 aurastudio-core    = { path = "../aurastudio-core" }
 aurastudio-raster  = { path = "../aurastudio-raster" }
 aurastudio-filters = { path = "../aurastudio-filters" }
+rayon              = "1"

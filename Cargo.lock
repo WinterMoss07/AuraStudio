@@ -399,6 +399,7 @@ dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
  "aurastudio-raster",
+ "rayon",
 ]
 
 [[package]]

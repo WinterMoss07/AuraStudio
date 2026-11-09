@@ -419,7 +419,8 @@ fn read_tip(path: &Path) -> Result<GrayTile, String> {
     let bits = b[12];
     let n = (w as usize).checked_mul(h as usize).filter(|n| *n > 0 && *n <= 1 << 28).ok_or("bad tip size")?;
     let len = n * if bits == 8 { 1 } else { 2 };
-    let mut raw = Vec::with_capacity(len);
+    // Grown as it inflates (a damaged size field reserves nothing).
+    let mut raw = Vec::new();
     flate2::read::DeflateDecoder::new(&b[13..]).take(len as u64).read_to_end(&mut raw).map_err(|e| e.to_string())?;
     if raw.len() != len { return Err("tip file cut short".into()); }
     let data: Vec<u16> = if bits == 8 { raw.iter().map(|v| u16::from(*v) * 257).collect() } else { raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect() };

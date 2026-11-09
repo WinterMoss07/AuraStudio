@@ -101,6 +101,26 @@ impl<P: Pixel> Surface<P> {
     /// An empty set of tiles shaped like this surface.
     pub fn dirty_set(&self) -> crate::DirtyTiles { crate::DirtyTiles::new(self.tile) }
 
+    /// The same pixels as `o` over `rect`: tile by tile, a tile shared by
+    /// both (or of one color in both) without reading its pixels.
+    pub fn same_in(&self, o: &Self, rect: Rect) -> bool {
+        if self.tile != o.tile { return self.read(rect) == o.read(rect); }
+        let Some((tx0, ty0, tx1, ty1)) = self.tiles_of(&rect) else { return true };
+        (ty0..ty1).all(|ty| (tx0..tx1).all(|tx| {
+            let (a, b) = (self.slot(tx, ty), o.slot(tx, ty));
+            let shared = match (a, b) {
+                (Slot::Full(x), Slot::Full(y)) => Arc::ptr_eq(x, y),
+                (Slot::Alpha(x), Slot::Alpha(y)) => Arc::ptr_eq(x, y),
+                (Slot::Cold(x), Slot::Cold(y)) => Arc::ptr_eq(x, y),
+                _ => false,
+            };
+            if shared { return true; }
+            if let (Some(x), Some(y)) = (a.color(self.fill), b.color(o.fill)) { return x == y; }
+            let part = self.tile_rect(tx, ty).intersect(&rect);
+            self.read(part) == o.read(part)
+        }))
+    }
+
     /// Rows `y0..` of the frame, full width (`rows`: whole rows), written
     /// as new tiles in their best form, on all cores (a picture opened, by
     /// bands). `y0` off the tile grid: an ordinary write.

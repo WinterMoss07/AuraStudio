@@ -57,7 +57,9 @@ pub struct Selection {
 
 impl PartialEq for Selection {
     fn eq(&self, o: &Self) -> bool {
-        self.space() == o.space() && self.bbox == o.bbox && self.mask.read(self.bbox) == o.mask.read(o.bbox)
+        // (A copy keeps its stamp; two rectangles are their boxes.)
+        if self.stamp == o.stamp { return true; }
+        self.space() == o.space() && self.bbox == o.bbox && (self.is_rect && o.is_rect || self.mask.same_in(&o.mask, self.bbox))
     }
 }
 

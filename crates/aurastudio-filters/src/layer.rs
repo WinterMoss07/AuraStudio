@@ -47,6 +47,8 @@ pub struct Stopped;
 enum Out<P> {
     Uniform(P),
     Pixels(Vec<P>),
+    /// Left as it is (its tiles stay shared).
+    Same,
 }
 
 /// One filter over a surface: `run` on a window of pixels (edges
@@ -58,6 +60,8 @@ struct Job<'a, P: Pixel> {
     run:     RunFn<'a, P>,
     uniform: UniformFn<'a, P>,
     stop:    StopFn<'a>,
+    /// The fill is unchanged: a piece outside the selection is left alone.
+    keep:    bool,
 }
 
 impl<P: Pixel> Job<'_, P> {
@@ -66,6 +70,7 @@ impl<P: Pixel> Job<'_, P> {
         let m = self.sel.map(|s| s.uniform_in(c));
         // Outside the selection: as it was.
         if m == Some(Some(0)) {
+            if self.keep { return Out::Same; }
             return match self.src.uniform_in(c) { Some(u) => Out::Uniform(u), None => Out::Pixels(self.src.read(c)) };
         }
         if let Some(u) = self.src.uniform_in(win) {
@@ -104,7 +109,7 @@ impl<P: Pixel> Job<'_, P> {
             let outs: Option<Vec<Out<P>>> = pieces[i..j].par_iter().map(|c| (!(self.stop)()).then(|| self.piece(*c))).collect();
             let outs = outs.ok_or(Stopped)?;
             for (c, o) in pieces[i..j].iter().zip(outs) {
-                match o { Out::Uniform(p) => dst.fill_rect(*c, p), Out::Pixels(v) => dst.write(*c, &v) }
+                match o { Out::Uniform(p) => dst.fill_rect(*c, p), Out::Pixels(v) => dst.write(*c, &v), Out::Same => {} }
             }
             i = j;
         }
@@ -141,7 +146,7 @@ fn apply_job<P: Pixel>(img: &mut Surface<P>, sel: Option<&Mask>, reach: u32, run
     let src = img.clone();
     if new_fill != fill { img.set_fill(new_fill); }
     if let Some(a) = area {
-        let job = Job { src: &src, sel, reach, run, uniform, stop };
+        let job = Job { src: &src, sel, reach, run, uniform, stop, keep: new_fill == fill };
         job.drive(img, a)?;
     }
     let frame = if new_fill != fill { img.rect() } else { Rect::EMPTY };
