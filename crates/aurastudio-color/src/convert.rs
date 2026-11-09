@@ -73,9 +73,9 @@ pub fn convert_buffer(from: &Profile, to: &Profile, intent: Intent, px: &mut [Rg
     let options = TransformOptions { rendering_intent: intent.to_moxcms(), ..Default::default() };
     let t = from.cms().create_transform_8bit(Layout::Rgba, to.cms(), Layout::Rgba, options).map_err(|e| err("no transform between these profiles", e))?;
     px.par_chunks_mut(PIECE).try_for_each(|part| {
-        let src: Vec<u8> = part.iter().flatten().copied().collect();
-        let mut dst = vec![0u8; src.len()];
-        t.transform(&src, &mut dst).map_err(|e| err("transform failed", e))?;
+        // (The pixels read in place: one buffer for the result.)
+        let mut dst = vec![0u8; part.len() * 4];
+        t.transform(part.as_flattened(), &mut dst).map_err(|e| err("transform failed", e))?;
         for (p, d) in part.iter_mut().zip(dst.chunks_exact(4)) { *p = [d[0], d[1], d[2], p[3]]; }
         Ok(())
     })

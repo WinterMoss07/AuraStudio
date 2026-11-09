@@ -41,36 +41,33 @@ pub fn gaussian(px: &mut [u16], w: usize, h: usize, sigma: f32) {
     if sigma >= 2.0 {
         let d = (sigma * 3.0 * (2.0 * std::f32::consts::PI).sqrt() / 4.0 + 0.5).floor() as usize;
         let boxes = if d % 2 == 1 { [(d / 2, d / 2); 3] } else { [(d / 2, d / 2 - 1), (d / 2 - 1, d / 2), (d / 2, d / 2)] };
-        let mut tmp = vec![0u16; w];
-        for row in px.chunks_exact_mut(w) {
-            for &(l, r) in &boxes { box_row(row, &mut tmp, l, r); }
-        }
+        px.par_chunks_exact_mut(w).for_each_init(|| vec![0u16; w], |tmp, row| {
+            for &(l, r) in &boxes { box_row(row, tmp, l, r); }
+        });
         let mut prev = vec![0u16; px.len()];
         for &(l, r) in &boxes { box_columns(px, &mut prev, w, h, l, r); }
         return;
     }
     let k = kernel(sigma);
     let r = k.len() / 2;
-    let mut tmp = vec![0u16; w];
-    for row in px.chunks_exact_mut(w) {
+    px.par_chunks_exact_mut(w).for_each_init(|| vec![0u16; w], |tmp, row| {
         tmp.copy_from_slice(row);
         for (i, o) in row.iter_mut().enumerate() {
             let mut s = 0.0;
             for (j, kv) in k.iter().enumerate() { s += kv * tmp[(i + j).saturating_sub(r).min(w - 1)] as f32; }
             *o = (s + 0.5) as u16;
         }
-    }
-    // Columns: whole rows at a time (row-major, no transpose).
+    });
+    // Columns: whole rows at a time (row-major, no transpose), on all cores.
     let prev = px.to_vec();
-    let mut acc = vec![0f32; w];
-    for y in 0..h {
+    px.par_chunks_exact_mut(w).enumerate().for_each_init(|| vec![0f32; w], |acc, (y, out)| {
         acc.fill(0.0);
         for (j, kv) in k.iter().enumerate() {
             let sy = (y + j).saturating_sub(r).min(h - 1);
             for (a, &v) in acc.iter_mut().zip(&prev[sy * w..(sy + 1) * w]) { *a += kv * v as f32; }
         }
-        for (o, a) in px[y * w..(y + 1) * w].iter_mut().zip(&acc) { *o = (a + 0.5) as u16; }
-    }
+        for (o, a) in out.iter_mut().zip(acc.iter()) { *o = (a + 0.5) as u16; }
+    });
 }
 
 /// The normalized Gaussian, ±3σ.
@@ -97,21 +94,28 @@ fn box_row(row: &mut [u16], tmp: &mut [u16], l: usize, r: usize) {
 /// rows (whole rows at a time).
 fn box_columns(px: &mut [u16], prev: &mut [u16], w: usize, h: usize, l: usize, r: usize) {
     prev.copy_from_slice(px);
+    let prev = &*prev;
     let inv = 1.0 / (l + 1 + r) as f32;
     let row = |y: isize| { let y = y.clamp(0, h as isize - 1) as usize; y * w..(y + 1) * w };
-    let mut sum = vec![0u32; w];
-    for j in -(l as isize)..=r as isize {
-        for (s, &v) in sum.iter_mut().zip(&prev[row(j)]) { *s += v as u32; }
-    }
-    for y in 0..h {
-        for (o, &s) in px[y * w..(y + 1) * w].iter_mut().zip(&sum) { *o = (s as f32 * inv + 0.5) as u16; }
-        let (add, sub) = (row(y as isize + r as isize + 1), row(y as isize - l as isize));
-        for ((s, &a), &b) in sum.iter_mut().zip(&prev[add]).zip(&prev[sub]) { *s = *s + a as u32 - b as u32; }
-    }
+    // Bands of rows on all cores, each with its own running sums.
+    let band = h.div_ceil(rayon::current_num_threads().max(1) * 2).max(32);
+    px.par_chunks_mut(w * band).enumerate().for_each(|(b, out)| {
+        let y0 = (b * band) as isize;
+        let mut sum = vec![0u32; w];
+        for j in y0 - l as isize..=y0 + r as isize {
+            for (s, &v) in sum.iter_mut().zip(&prev[row(j)]) { *s += v as u32; }
+        }
+        for (k, o) in out.chunks_exact_mut(w).enumerate() {
+            let y = y0 + k as isize;
+            for (o, &s) in o.iter_mut().zip(&sum) { *o = (s as f32 * inv + 0.5) as u16; }
+            let (add, sub) = (row(y + r as isize + 1), row(y - l as isize));
+            for ((s, &a), &b) in sum.iter_mut().zip(&prev[add]).zip(&prev[sub]) { *s = *s + a as u32 - b as u32; }
+        }
+    });
 }
 
 /// Gaussian blur of straight RGBA (premultiplied while blurring: no dark
-/// fringe around a line); the four planes on four cores.
+/// fringe around a line); each plane's rows on all cores.
 pub fn blur_rgba(src: &[Rgba8], w: usize, h: usize, sigma: f32) -> Vec<Rgba8> {
     if sigma <= 0.0 { return src.to_vec(); }
     let mut planes = premultiply(src);

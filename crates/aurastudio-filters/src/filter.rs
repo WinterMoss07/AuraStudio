@@ -152,9 +152,18 @@ impl Prepared {
     pub fn run(&self, src: &[Rgba8], w: usize, h: usize) -> Vec<Rgba8> {
         if src.len() != w * h || w == 0 || h == 0 { return src.to_vec(); }
         aurastudio_core::zone!("filter");
+        // Spatial filters make their own result; the others work on a copy.
+        match &self.op {
+            Op::Blur(s) => return blur::blur_rgba(src, w, h, *s),
+            Op::Unsharp { amount, sigma, threshold } => return spatial::unsharp(src, w, h, *amount, *sigma, *threshold),
+            Op::Lines { radius, round, grow } => return spatial::lines(src, w, h, *radius, *round, *grow),
+            Op::Edges(s) => return spatial::find_edges(src, w, h, *s),
+            Op::Emboss { angle, height, amount } => return spatial::emboss(src, w, h, *angle, *height, *amount),
+            Op::Shadow { angle, distance, spread, size, opacity } => return spatial::drop_shadow(src, w, h, *angle, *distance, *spread, *size, *opacity, self.color),
+            _ => {}
+        }
         let mut out = src.to_vec();
         match &self.op {
-            Op::Identity => {}
             Op::Lut(t) => out.par_iter_mut().with_min_len(4096).for_each(|p| *p = t.map(*p)),
             Op::Threshold(t) => out.par_iter_mut().with_min_len(4096).for_each(|p| {
                 let v = if tone::threshold_white([p[0], p[1], p[2]], *t) { 255 } else { 0 };
@@ -171,12 +180,7 @@ impl Prepared {
             }),
             Op::Sepia(m) => per_color(&mut out, |c| std::array::from_fn(|k| m[k][0] * c[0] + m[k][1] * c[1] + m[k][2] * c[2])),
             Op::Opacity(a) => out.par_iter_mut().with_min_len(4096).for_each(|p| p[3] = (p[3] as f32 * a + 0.5) as u8),
-            Op::Blur(s) => out = blur::blur_rgba(src, w, h, *s),
-            Op::Unsharp { amount, sigma, threshold } => out = spatial::unsharp(src, w, h, *amount, *sigma, *threshold),
-            Op::Lines { radius, round, grow } => out = spatial::lines(src, w, h, *radius, *round, *grow),
-            Op::Edges(s) => out = spatial::find_edges(src, w, h, *s),
-            Op::Emboss { angle, height, amount } => out = spatial::emboss(src, w, h, *angle, *height, *amount),
-            Op::Shadow { angle, distance, spread, size, opacity } => out = spatial::drop_shadow(src, w, h, *angle, *distance, *spread, *size, *opacity, self.color),
+            _ => {}
         }
         out
     }
