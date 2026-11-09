@@ -668,11 +668,11 @@ mod tests {
         let one = CanvasView { zoom: 1.0, angle: 0.0, pan: (0.0, 0.0), fit: false };
         let flat = |v: &[aurastudio_core::Rgba8]| v.iter().flatten().copied().collect::<Vec<u8>>();
         assert!(render(&g, &mut canvas, &one, (w, h), true) == flat(&want), "the picture after painting");
-        // A whole merge (bands of 128 rows) back to blank paper: one-color
+        // A whole merge (bands of a page's rows) back to blank paper: one-color
         // pages, the atlases small again.
         let big = canvas.count().bytes;
         want.fill([255; 4]);
-        for y0 in (0..h).step_by(128) { send(&mut canvas, &want, aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 128.min(h - y0))); }
+        for y0 in (0..h).step_by(256) { send(&mut canvas, &want, aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 256.min(h - y0))); }
         assert!(render(&g, &mut canvas, &one, (w, h), true) == flat(&want), "the picture after the merge");
         let c = canvas.count();
         assert_eq!((c.uniform, c.mono, c.full), (6, 0, 0));

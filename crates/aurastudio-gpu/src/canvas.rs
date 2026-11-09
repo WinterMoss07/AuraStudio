@@ -8,10 +8,11 @@
 //!
 //! The page table (a small texture, one texel a page) tells the canvas
 //! shader which, where in its atlas, and the colors. Pages change kind as
-//! they are painted: a partial upload to a uniform or two-color page is
-//! applied to its known content (kept here, small) and the page sorted
-//! again; a full page is sorted again once a whole page of pixels comes
-//! (the merge of a whole page, or a page rebuilt by rows). The atlases
+//! they are painted: a partial upload to a uniform page is applied to its
+//! color and the page sorted again; one to a two-color page with its two
+//! colors is written as bytes, else the page is made full on the GPU
+//! (drawn from the R8 atlas: no copy of its pixels is kept here); a page
+//! is sorted again whenever a whole page of pixels comes. The atlases
 //! grow and shrink by whole pages (copied, mipmaps included); their pages
 //! are 256-aligned, so each one's mipmaps (down to 1 px) never mix with
 //! a neighbor's. Pages past the canvas edge repeat its last row and
@@ -39,8 +40,8 @@ const FULL: u32 = 2;
 /// What a page holds.
 enum Page {
     Uniform(Rgba8),
-    /// pixel = mix(a, b, t): `t` one byte a pixel (also in the R8 atlas).
-    Mono { a: Rgba8, b: Rgba8, t: Box<[u8]>, slot: u32 },
+    /// pixel = mix(a, b, t): `t` one byte a pixel, in the R8 atlas only.
+    Mono { a: Rgba8, b: Rgba8, slot: u32 },
     Full { slot: u32 },
 }
 
@@ -87,7 +88,8 @@ fn mix_of(a: Rgba8, b: Rgba8, p: Rgba8) -> Option<u8> {
     (0..4).all(|c| (a[c] as i32 + (d[c] * k + if d[c] >= 0 { 127 } else { -127 }) / 255 - p[c] as i32).abs() <= MONO_TOLERANCE).then_some(k as u8)
 }
 
-/// The pixels of a two-color page.
+/// The pixels of a two-color page (as `EXPAND` draws them).
+#[cfg(test)]
 fn expand(a: Rgba8, b: Rgba8, t: &[u8]) -> Vec<Rgba8> {
     let lut: Vec<Rgba8> = (0..256).map(|k| std::array::from_fn(|c| {
         let d = b[c] as i32 - a[c] as i32;
@@ -253,13 +255,6 @@ impl Atlas {
     }
 }
 
-/// A full page put together by rows (a whole merge in bands): sorted
-/// again once complete.
-struct Rows {
-    next: u32,
-    px:   Vec<Rgba8>,
-}
-
 /// A full page as the transform preview draws into it: its canvas rect,
 /// its place in the RGBA atlas, its slot.
 pub(crate) type FullPage = (Rect, (u32, u32), u32);
@@ -288,9 +283,10 @@ pub struct Canvas {
     table_view: TextureView,
     entries:    Vec<[u32; 4]>,
     table_dirty: bool,
-    building:   HashMap<usize, Rows>,
     /// Pages a transform's preview made full (`take_lifted`).
     lifted:     Vec<usize>,
+    /// Draws two-color pages into full ones (made when first needed).
+    expand:     Option<Expand>,
 }
 
 impl Canvas {
@@ -319,8 +315,8 @@ impl Canvas {
             table, table_view,
             entries: vec![[UNIFORM, 0, 0, 0]; n],
             table_dirty: true,
-            building: HashMap::new(),
             lifted: Vec::new(),
+            expand: None,
         }
     }
 
@@ -364,14 +360,22 @@ impl Canvas {
         if self.entries[i] != e { self.entries[i] = e; self.table_dirty = true; }
     }
 
-    /// Page `i`'s pixels as they are (a full page: None, they are on the
-    /// GPU only).
-    fn known(&self, i: usize) -> Option<Vec<Rgba8>> {
-        match &self.pages[i] {
-            Page::Uniform(c) => Some(vec![*c; N]),
-            Page::Mono { a, b, t, .. } => Some(expand(*a, *b, t)),
-            Page::Full { .. } => None,
-        }
+    /// Two-color page `i` made full: its pixels drawn on the GPU from the
+    /// R8 atlas into an RGBA slot.
+    fn mono_to_full(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, i: usize) {
+        let Page::Mono { a, b, slot: m } = self.pages[i] else { return };
+        // (A growing atlas copies its texture: the writes held first.)
+        if self.rgba.in_use() == self.rgba.cap && up.is_held() { up.release(queue); up.hold(); }
+        let slot = self.rgba.alloc(device, queue);
+        let (mx, my) = self.mono.origin(m);
+        let (rx, ry) = self.rgba.origin(slot);
+        let ex = self.expand.get_or_insert_with(|| Expand::new(device));
+        ex.draw(device, up.encoder(device), (&self.mono.texture, &self.rgba.texture), (rx, ry), (mx as i32 - rx as i32, my as i32 - ry as i32), a, b);
+        self.rgba.mark(slot, Rect::new(0, 0, PAGE as i32, PAGE as i32));
+        self.mono.free(m);
+        self.pages[i] = Page::Full { slot };
+        self.set_entry(i);
+        if !up.is_held() { up.release(queue); }
     }
 
     /// Repeat the canvas's last column and row over the rest of page `i`.
@@ -401,7 +405,7 @@ impl Canvas {
                 let (x, y) = self.mono.origin(slot);
                 up.write(device, queue, &self.mono.texture, (x, y), (PAGE, PAGE), &t);
                 self.mono.mark(slot, all);
-                Page::Mono { a, b, t: t.into_boxed_slice(), slot }
+                Page::Mono { a, b, slot }
             }
             Sorted::Full => {
                 let slot = full_slot.unwrap_or_else(|| self.rgba.alloc(device, queue));
@@ -491,70 +495,45 @@ impl Canvas {
                     // (Sorted above; a full page's pixels taken again.)
                     if let Page::Uniform(c) = self.pages[i] { if matches!(k, Sorted::Uniform(u) if u == c) { continue; } }
                     let page = if matches!(k, Sorted::Full) { self.whole_page(i, rect, src) } else { Vec::new() };
-                    self.building.remove(&i);
                     self.set_page(device, queue, up, i, &page, k);
                     continue;
                 }
                 // A two-color page painted with its two colors (ink on
-                // paper): its bytes there, nothing sorted again.
+                // paper): its bytes there, nothing sorted again. Else it
+                // is made full, and the part written as for a full page.
                 if !whole {
-                    if let Page::Mono { a, b, t, slot } = &mut self.pages[i] {
-                        let (a, b, slot) = (*a, *b, *slot);
+                    if let Page::Mono { a, b, slot } = self.pages[i] {
                         let mut ks = Vec::with_capacity((lx1 - lx0) * (ly1 - ly0));
                         let fits = (ly0..ly1).all(|y| (lx0..lx1).all(|x| mix_of(a, b, at(x, y)).map(|k| ks.push(k)).is_some()));
                         if fits {
-                            let w = lx1 - lx0;
-                            for (r, y) in (ly0..ly1).enumerate() { t[y * PAGE as usize + lx0..y * PAGE as usize + lx1].copy_from_slice(&ks[r * w..(r + 1) * w]); }
                             let (ox, oy) = self.mono.origin(slot);
-                            up.write(device, queue, &self.mono.texture, (ox + lx0 as u32, oy + ly0 as u32), (w as u32, (ly1 - ly0) as u32), &ks);
+                            up.write(device, queue, &self.mono.texture, (ox + lx0 as u32, oy + ly0 as u32), ((lx1 - lx0) as u32, (ly1 - ly0) as u32), &ks);
                             self.mono.mark(slot, Rect::new(lx0 as i32, ly0 as i32, lx1 as i32, ly1 as i32));
-                            self.building.remove(&i);
-                            // Painted over with one of them: one color now.
-                            let first = t[0];
-                            if t.iter().all(|k| *k == first) {
-                                let c = expand(a, b, &[first])[0];
-                                self.set_page(device, queue, up, i, &[], Sorted::Uniform(c));
-                            }
                             continue;
                         }
+                        self.mono_to_full(device, queue, up, i);
                     }
                 }
-                if whole || !matches!(self.pages[i], Page::Full { .. }) {
-                    // All of the page known: sorted again.
-                    let mut page = if whole { vec![[0; 4]; N] } else { self.known(i).unwrap_or_else(|| vec![[0; 4]; N]) };
-                    for y in ly0..ly1 { for x in lx0..lx1 { page[y * PAGE as usize + x] = at(x, y); } }
-                    self.pad(i, &mut page);
-                    // (Unchanged: nothing to do.)
-                    if let Page::Uniform(c) = self.pages[i] { if page.iter().all(|q| *q == c) { continue; } }
-                    let sorted = sort(&page);
-                    self.building.remove(&i);
-                    self.set_page(device, queue, up, i, &page, sorted);
+                if let (false, Page::Full { slot }) = (whole, &self.pages[i]) {
+                    // A full page: the part written as it is.
+                    let slot = *slot;
+                    let mut block = Vec::with_capacity((lx1 - lx0) * (ly1 - ly0));
+                    for y in ly0..ly1 { for x in lx0..lx1 { block.push(at(x, y)); } }
+                    let (ox, oy) = self.rgba.origin(slot);
+                    up.write(device, queue, &self.rgba.texture, (ox + lx0 as u32, oy + ly0 as u32), ((lx1 - lx0) as u32, (ly1 - ly0) as u32), block.as_flattened());
+                    self.rgba.mark(slot, Rect::new(lx0 as i32, ly0 as i32, lx1 as i32, ly1 as i32));
                     continue;
                 }
-                // A full page: the part written as it is.
-                let Page::Full { slot } = self.pages[i] else { continue };
-                let mut block = Vec::with_capacity((lx1 - lx0) * (ly1 - ly0));
-                for y in ly0..ly1 { for x in lx0..lx1 { block.push(at(x, y)); } }
-                let (ox, oy) = self.rgba.origin(slot);
-                up.write(device, queue, &self.rgba.texture, (ox + lx0 as u32, oy + ly0 as u32), ((lx1 - lx0) as u32, (ly1 - ly0) as u32), block.as_flattened());
-                self.rgba.mark(slot, Rect::new(lx0 as i32, ly0 as i32, lx1 as i32, ly1 as i32));
-                // Rows of the whole width, in order from the top: put
-                // together, the page is sorted again once complete.
-                if lx0 == 0 && lx1 == PAGE as usize {
-                    let rows = self.building.entry(i).or_insert_with(|| Rows { next: 0, px: Vec::new() });
-                    if rows.next as usize == ly0 {
-                        if rows.px.is_empty() { rows.px = vec![[0; 4]; N]; }
-                        rows.px[ly0 * PAGE as usize..ly1 * PAGE as usize].copy_from_slice(&block);
-                        rows.next = ly1 as u32;
-                        if ly1 == PAGE as usize {
-                            let Some(Rows { px: done, .. }) = self.building.remove(&i) else { continue };
-                            let sorted = sort(&done);
-                            if !matches!(sorted, Sorted::Full) { self.set_page(device, queue, up, i, &done, sorted); }
-                        }
-                        continue;
-                    }
-                }
-                self.building.remove(&i);
+                // All of the page known (sent whole, or one color): sorted
+                // again.
+                let fill = match self.pages[i] { Page::Uniform(c) if !whole => c, _ => [0; 4] };
+                let mut page = vec![fill; N];
+                for y in ly0..ly1 { for x in lx0..lx1 { page[y * PAGE as usize + x] = at(x, y); } }
+                self.pad(i, &mut page);
+                // (Unchanged: nothing to do.)
+                if let Page::Uniform(c) = self.pages[i] { if page.iter().all(|q| *q == c) { continue; } }
+                let sorted = sort(&page);
+                self.set_page(device, queue, up, i, &page, sorted);
             }
         }
         if !outer { up.release(queue); }
@@ -571,11 +550,12 @@ impl Canvas {
             .flat_map(|py| (rect.x0.div_euclid(p)..(rect.x1 - 1).div_euclid(p) + 1).map(move |px| (py, px)))
             .map(|(py, px)| (py as u32 * self.cols + px as u32) as usize).collect();
         for &i in &ids {
-            if let Some(page) = self.known(i) {
-                self.set_page(device, queue, up, i, &page, Sorted::Full);
-                if !self.lifted.contains(&i) { self.lifted.push(i); }
+            match self.pages[i] {
+                Page::Uniform(c) => self.set_page(device, queue, up, i, &vec![c; N], Sorted::Full),
+                Page::Mono { .. } => self.mono_to_full(device, queue, up, i),
+                Page::Full { .. } => continue,
             }
-            self.building.remove(&i);
+            if !self.lifted.contains(&i) { self.lifted.push(i); }
         }
         // (Places taken once all are made: the atlas may have grown.)
         for &i in &ids {
@@ -636,6 +616,88 @@ impl Canvas {
         }
         self.rgba.mip.rebuild(enc, &self.rgba.texture);
         self.mono.mip.rebuild(enc, &self.mono.texture);
+    }
+}
+
+/// A two-color page drawn into an RGBA slot: pixel = a + (b − a)·t/255,
+/// rounded as `sort` gives them back.
+const EXPAND: &str = r#"
+@group(0) @binding(0) var m: texture_2d<f32>;
+// shift: R8 atlas pixel − RGBA atlas pixel.
+struct E { shift: vec4<i32>, a: vec4<i32>, b: vec4<i32> }
+@group(0) @binding(1) var<uniform> e: E;
+
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = vec2(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let k = i32(round(textureLoad(m, vec2<i32>(pos.xy) + e.shift.xy, 0).r * 255.0));
+    let d = e.b - e.a;
+    let r = select(vec4(-127), vec4(127), d >= vec4(0));
+    return vec4<f32>(e.a + (d * k + r) / 255) / 255.0;
+}
+"#;
+
+struct Expand {
+    pipe: RenderPipeline,
+    bgl:  BindGroupLayout,
+}
+
+impl Expand {
+    fn new(device: &Device) -> Self {
+        let module = device.create_shader_module(ShaderModuleDescriptor { label: Some("expand"), source: ShaderSource::Wgsl(EXPAND.into()) });
+        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("expand"),
+            entries: &[
+                BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::FRAGMENT, ty: BindingType::Texture { sample_type: TextureSampleType::Float { filterable: false }, view_dimension: TextureViewDimension::D2, multisampled: false }, count: None },
+                BindGroupLayoutEntry { binding: 1, visibility: ShaderStages::FRAGMENT, ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            ],
+        });
+        let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: Some("expand"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
+        let pipe = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("expand"),
+            layout: Some(&layout),
+            vertex: VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[Some(ColorTargetState { format: TextureFormat::Rgba8Unorm, blend: None, write_mask: ColorWrites::ALL })] }),
+            primitive: PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self { pipe, bgl }
+    }
+
+    /// The page at `shift` from `to` in the R8 atlas, into the RGBA page
+    /// at `to` (level 0).
+    #[allow(clippy::too_many_arguments)]
+    fn draw(&self, device: &Device, enc: &mut CommandEncoder, (mono, rgba): (&Texture, &Texture), to: (u32, u32), shift: (i32, i32), a: Rgba8, b: Rgba8) {
+        use wgpu::util::DeviceExt;
+        let level0 = TextureViewDescriptor { base_mip_level: 0, mip_level_count: Some(1), ..Default::default() };
+        let (src, dst) = (mono.create_view(&level0), rgba.create_view(&level0));
+        let v: [i32; 12] = [shift.0, shift.1, 0, 0, a[0] as i32, a[1] as i32, a[2] as i32, a[3] as i32, b[0] as i32, b[1] as i32, b[2] as i32, b[3] as i32];
+        let u = device.create_buffer_init(&util::BufferInitDescriptor { label: Some("expand"), contents: bytemuck::cast_slice(&v), usage: BufferUsages::UNIFORM });
+        let bind = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("expand"), layout: &self.bgl,
+            entries: &[
+                BindGroupEntry { binding: 0, resource: BindingResource::TextureView(&src) },
+                BindGroupEntry { binding: 1, resource: u.as_entire_binding() },
+            ],
+        });
+        let mut pass = enc.begin_render_pass(&RenderPassDescriptor {
+            label: Some("expand"),
+            color_attachments: &[Some(RenderPassColorAttachment { view: &dst, depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } })],
+            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        });
+        pass.set_viewport(to.0 as f32, to.1 as f32, PAGE as f32, PAGE as f32, 0.0, 1.0);
+        pass.set_scissor_rect(to.0, to.1, PAGE, PAGE);
+        pass.set_pipeline(&self.pipe);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 

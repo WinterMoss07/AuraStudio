@@ -87,6 +87,13 @@ impl Uploads {
         if !self.held { self.submit(queue); }
     }
 
+    /// The encoder the writes go in (to record GPU work after them, in
+    /// order); submitted with them.
+    pub fn encoder(&mut self, device: &Device) -> &mut CommandEncoder {
+        self.last = Some(std::time::Instant::now());
+        self.enc.get_or_insert_with(|| device.create_command_encoder(&CommandEncoderDescriptor { label: Some("uploads") }))
+    }
+
     /// Keep the next writes in one submission, until `release`.
     pub fn hold(&mut self) { self.held = true; }
 
@@ -101,8 +108,8 @@ impl Uploads {
     /// Submit the recorded copies; their chunks come back to the ring
     /// once the GPU has done them.
     fn submit(&mut self, queue: &Queue) {
-        let (Some(enc), Some(belt)) = (self.enc.take(), self.belt.as_mut()) else { return };
-        belt.finish_and_recall_on_submit(&enc);
+        let Some(enc) = self.enc.take() else { return };
+        if let Some(belt) = self.belt.as_mut() { belt.finish_and_recall_on_submit(&enc); }
         queue.submit([enc.finish()]);
         // (The chunks it used are closed, partly full or not.)
         self.queued = self.queued.next_multiple_of(CHUNK);

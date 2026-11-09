@@ -51,8 +51,9 @@ pub fn canvas_frame() -> Duration { Duration::from_micros(CANVAS_FRAME_US.load(O
 fn is_filter(c: &Cmd) -> bool { matches!(c, Cmd::Edit { edit: Edit::FilterPreview(_) | Edit::FilterApply(_) | Edit::FilterCancel, .. }) }
 
 /// Rows merged at a time when the whole frame is merged again (the
-/// interface gets the document between two).
-const BAND: u32 = 128;
+/// interface gets the document between two): a row of GPU pages, each
+/// sent whole (sorted into its smallest kind).
+const BAND: u32 = aurastudio_gpu::PAGE;
 
 pub enum Cmd {
     /// A stroke on the layer strokes go to now; `limit`: stay inside the
