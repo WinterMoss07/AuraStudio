@@ -11,7 +11,7 @@ use aurastudio_tools::arc::Ctx as ArcCtx;
 use aurastudio_tools::shapes;
 use aurastudio_ui::{Group, SelectCmd, Tool};
 
-use super::{pixel_in, App, Gesture, Preview};
+use super::{pixel_in, App, AppEvent, BrushFiles, Gesture, Preview};
 use super::pointer::pt;
 use crate::paint_thread::Cmd;
 
@@ -449,9 +449,21 @@ impl App {
             .pick_files()
             .unwrap_or_default();
         if picked.is_empty() { return; }
+        // Read on a thread (a .brushset can be 2 GB); added when back.
+        let (importer, proxy) = (self.library.importer(), self.proxy.clone());
+        let spawned = std::thread::Builder::new().name("brush import".into()).spawn(move || {
+            let files = picked.into_iter().map(|p| { let r = importer.read(&p); (p, r) }).collect();
+            let _ = proxy.send_event(AppEvent::BrushesRead(BrushFiles(files)));
+        });
+        self.ui.notify(if spawned.is_ok() { "Importing brushes…" } else { "Import failed: no thread" });
+        self.request_redraw();
+    }
+
+    /// Brush files read on the import thread, into the library.
+    pub(super) fn brushes_read(&mut self, files: BrushFiles) {
         let (mut added, mut failed) = (0, Vec::new());
-        for path in &picked {
-            match self.library.import(path) {
+        for (path, read) in files.0 {
+            match read.and_then(|r| self.library.add(r)) {
                 Ok(i) => {
                     log::info!("brushes imported from {}: {} in \"{}\"", path.display(), i.count, i.group);
                     for w in &i.warnings { log::info!("  {w}"); }

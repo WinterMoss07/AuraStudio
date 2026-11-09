@@ -22,6 +22,7 @@ pub use document::{DocId, Document, DEFAULT_DPI};
 pub use edit::Edit;
 pub use history::{History, DEFAULT_BUDGET};
 pub use region::{Done, Region};
+pub use saved::SnapshotParts;
 pub use select::{SelectOp, Shape, Wand};
 pub use transform::{Lift, LiftLayer};
 pub use workspace::{SharedDoc, Workspace};

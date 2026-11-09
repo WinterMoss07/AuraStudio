@@ -48,6 +48,8 @@ pub fn set_canvas_frame(d: Duration) { CANVAS_FRAME_US.store((d.as_micros() as u
 
 pub fn canvas_frame() -> Duration { Duration::from_micros(CANVAS_FRAME_US.load(Ordering::Relaxed)) }
 
+fn is_filter(c: &Cmd) -> bool { matches!(c, Cmd::Edit { edit: Edit::FilterPreview(_) | Edit::FilterApply(_) | Edit::FilterCancel, .. }) }
+
 /// Rows merged at a time when the whole frame is merged again (the
 /// interface gets the document between two).
 const BAND: u32 = 128;
@@ -96,6 +98,8 @@ pub enum Event {
     /// The tree changed (an undo of a layer step): the list and every
     /// thumbnail to refresh.
     TreeChanged,
+    /// The canvas has a new size (the screen follows).
+    Resized(u32, u32),
     /// Short message for the options bar ("Nothing to undo"...).
     Notice(&'static str),
     /// A save finished: the document revision now on disk, or the error.
@@ -105,6 +109,9 @@ pub enum Event {
 pub struct PaintThread {
     tx:     Option<Sender<Cmd>>,
     handle: Option<JoinHandle<()>>,
+    /// Filter commands sent so far: a preview under way stops when more
+    /// were sent than the worker took (it would be thrown away).
+    filters_sent: Arc<AtomicU64>,
 }
 
 impl PaintThread {
@@ -112,6 +119,7 @@ impl PaintThread {
     pub fn spawn(projection: SharedProjection, notify: impl Fn(Event) + Send + Sync + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
         let worker = Worker::new(projection, Arc::new(notify));
+        let filters_sent = Arc::clone(&worker.filters_sent);
         let handle = std::thread::Builder::new()
             .name("paint".into())
             .spawn(move || {
@@ -125,10 +133,11 @@ impl PaintThread {
             })
             .ok();
         if handle.is_none() { log::error!("the paint thread could not start"); }
-        Self { tx: Some(tx), handle }
+        Self { tx: Some(tx), handle, filters_sent }
     }
 
     pub fn send(&self, cmd: Cmd) {
+        if is_filter(&cmd) { self.filters_sent.fetch_add(1, Ordering::AcqRel); }
         if let Some(tx) = &self.tx { let _ = tx.send(cmd); }
     }
 }
@@ -176,6 +185,9 @@ struct Worker {
     folder_cache: FolderCache,
     /// The last save's encodings per document (incremental saves).
     saves:      HashMap<DocId, Arc<Mutex<SaveCaches>>>,
+    /// Filter commands taken from the queue, and sent (`PaintThread`).
+    filters_taken: u64,
+    filters_sent:  Arc<AtomicU64>,
 }
 
 /// Painting time of a stroke against the pen's: a stroke that fell behind
@@ -212,7 +224,6 @@ impl StrokePace {
 
 /// A preview another one waiting makes useless.
 fn superseded(cmd: &Cmd, queue: &VecDeque<Cmd>) -> bool {
-    let is_filter = |c: &Cmd| matches!(c, Cmd::Edit { edit: Edit::FilterPreview(_) | Edit::FilterApply(_) | Edit::FilterCancel, .. });
     let is_xform = |c: &Cmd| matches!(c, Cmd::Edit { edit: Edit::TransformPreview { .. } | Edit::TransformApply { .. } | Edit::TransformCancel, .. });
     match cmd {
         Cmd::Edit { edit: Edit::FilterPreview(_), .. } => queue.iter().any(is_filter),
@@ -237,7 +248,7 @@ impl Worker {
     fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
         Self {
             doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify, stroke: None,
-            stroke_cache: StrokeCache::default(), folder_cache: FolderCache::default(), saves: HashMap::new(),
+            stroke_cache: StrokeCache::default(), folder_cache: FolderCache::default(), saves: HashMap::new(), filters_taken: 0, filters_sent: Arc::default(),
         }
     }
 
@@ -272,6 +283,7 @@ impl Worker {
             let mut flush = false;
             let t0 = Instant::now();
             while let Some(cmd) = queue.pop_front() {
+                if is_filter(&cmd) { self.filters_taken += 1; }
                 if superseded(&cmd, &queue) { continue; }
                 match cmd {
                     Cmd::Begin { doc, brush, limit, zoom } => {
@@ -365,17 +377,24 @@ impl Worker {
         let _name = edit.label();
         profiling::scope!("edit", _name);
         let (undo, redo, begin) = (matches!(edit, Edit::Undo), matches!(edit, Edit::Redo), matches!(edit, Edit::TransformBegin(_)));
-        let (done, frame, started, lift) = {
+        let (taken, sent) = (self.filters_taken, Arc::clone(&self.filters_sent));
+        let stop = move || sent.load(Ordering::Acquire) > taken;
+        let (done, frame, started, lift, size) = {
             let mut d = doc.lock().unwrap_or_else(|e| e.into_inner());
-            let done = d.apply(edit);
+            let before = (d.stack().width, d.stack().height);
+            let done = d.apply_until(edit, &stop);
+            let size = (d.stack().width, d.stack().height);
+            if size != before { log::info!("canvas resize: {}x{} -> {}x{}", before.0, before.1, size.0, size.1); }
+            let size = (size != before).then_some(size);
             let started = begin.then(|| match done.refused {
                 Some(why) => Err(why),
                 None => d.transform_source().ok_or("Nothing to transform"),
             });
             // The box first: the app takes the lift only for a box it has.
             let lift = started.as_ref().is_some_and(Result::is_ok).then(|| d.transform_lift(None)).flatten();
-            (done, d.stack().frame(), started, lift)
+            (done, d.stack().frame(), started, lift, size)
         };
+        if let Some((w, h)) = size { events.push(Event::Resized(w, h)); }
         if let Some(s) = started { events.push(Event::TransformStarted(s)); }
         if let Some(l) = lift { events.push(Event::TransformLift(Box::new(l))); }
         if (undo || redo) && !done.changed() { events.push(Event::Notice(if undo { "Nothing to undo" } else { "Nothing to redo" })); }
@@ -496,17 +515,18 @@ impl Worker {
         for (r, px) in patches { p.push(r, px); }
     }
 
-    /// Locked only to take the snapshot (shared tiles); written on a thread
-    /// of its own.
+    /// Locked only to take the parts (shared tiles and patches); the
+    /// preview merge, packing and writing are done on a thread of its own.
     fn save(&mut self, doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool) {
-        let (snap, id) = {
+        let (parts, id) = {
             let d = doc.lock().unwrap_or_else(|e| e.into_inner());
-            (d.snapshot(origin.as_deref()), d.id())
+            (d.snapshot_parts(origin.as_deref()), d.id())
         };
         let caches = Arc::clone(self.saves.entry(id).or_default());
         let notify = Arc::clone(&self.notify);
         let spawned = std::thread::Builder::new().name("save".into()).spawn(move || {
             profiling::register_thread!("save");
+            let snap = parts.finish();
             // (An autosave has its own file: the caches are the document's.)
             let result = if auto {
                 aurastudio_file::save(&snap, &path, &mut SaveCaches::default())
@@ -578,6 +598,20 @@ mod tests {
         let mut screen = vec![[0u8; 4]; 64 * 64];
         for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
         assert_eq!(screen[32 * 64 + 30], [0, 0, 0, 255]);
+    }
+
+    /// A resize is done on the paint thread, which tells the new size.
+    #[test]
+    fn a_resize_is_reported() {
+        let (doc, _) = doc_with_layer();
+        let (ev_tx, ev_rx) = channel();
+        let pt = PaintThread::spawn(proj(64, 64), move |e| {
+            if let Event::Resized(w, h) = e { let _ = ev_tx.send((w, h)); }
+        });
+        edit(&pt, &doc, Edit::Resize { width: 80, height: 40 });
+        assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok((80, 40)));
+        let d = doc.lock().unwrap();
+        assert_eq!((d.stack().width, d.stack().height), (80, 40));
     }
 
     /// The onion skin reaches the screen: the merge for it draws the

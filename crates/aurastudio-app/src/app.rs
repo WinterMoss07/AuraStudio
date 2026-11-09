@@ -25,7 +25,6 @@ use aurastudio_core::{DocType, Point};
 use aurastudio_document::{Document, Edit, SelectMode, SharedDoc, Workspace};
 use aurastudio_file::EXTENSION;
 use aurastudio_forge::{Brush, Library};
-use aurastudio_gpu::GpuState;
 use aurastudio_input::{Device, Input};
 use aurastudio_layers::FillParams;
 use aurastudio_tools::arc::ArcTool;
@@ -189,6 +188,34 @@ pub enum AppEvent {
     TransformShown(u64),
     /// The tree changed (an undo of a layer step...).
     TreeChanged,
+    /// A document read on its thread, or why not.
+    Opened { what: Opening, result: Result<Read, String> },
+    /// The canvas was resized on the paint thread.
+    Resized(u32, u32),
+    /// Brush files read on the import thread.
+    BrushesRead(BrushFiles),
+}
+
+/// Brush files read, each or why not.
+pub(crate) struct BrushFiles(pub Vec<(PathBuf, Result<aurastudio_forge::ReadFile, String>)>);
+
+impl std::fmt::Debug for BrushFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "BrushFiles({})", self.0.len()) }
+}
+
+/// A document read on the open thread.
+pub(crate) struct Read(pub Box<Document>);
+
+impl std::fmt::Debug for Read {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "Read({})", self.0.name) }
+}
+
+/// What is being opened on the open thread.
+#[derive(Debug)]
+pub(crate) enum Opening {
+    File(PathBuf),
+    /// The autosave left by a session that didn't close normally.
+    Recovery,
 }
 
 /// The GPU preview's mesh for `warp` (lift.rs): a grid over the source
@@ -372,6 +399,8 @@ pub struct App {
     /// A change outside strokes (visibility, opacity, add/remove/clear
     /// layer, resize) needs a full-canvas recomposite.
     layers_dirty: bool,
+    /// A document is being read on the open thread.
+    opening: bool,
     last_frame:   Option<Instant>,
     /// Shortest time between two frames outside strokes: one display
     /// refresh (egui asks for frames "right away" when animating).
@@ -451,6 +480,7 @@ impl App {
                 paint_thread::Event::TransformLift(l) => AppEvent::TransformLift(l),
                 paint_thread::Event::TransformShown(n) => AppEvent::TransformShown(n),
                 paint_thread::Event::TreeChanged => AppEvent::TreeChanged,
+                paint_thread::Event::Resized(w, h) => AppEvent::Resized(w, h),
             });
         });
         // Start with the pen.
@@ -534,6 +564,7 @@ impl App {
             painted:      false,
             // Upload the first composite.
             layers_dirty: true,
+            opening: false,
             last_frame:   None,
             frame_interval: UI_FRAME,
             deferred_frame: None,
@@ -650,6 +681,9 @@ impl ApplicationHandler<AppEvent> for App {
                 self.ui.invalidate_thumbnail(layer_id, rect);
                 self.request_redraw();
             }
+            AppEvent::Opened { what, result } => self.opened(what, result),
+            AppEvent::Resized(w, h) => self.resized(w, h),
+            AppEvent::BrushesRead(files) => self.brushes_read(files),
             AppEvent::TreeChanged => {
                 self.on_painted();
                 self.ui.invalidate_all_thumbnails();
@@ -959,15 +993,4 @@ fn gpu_quality(q: aurastudio_ui::CanvasQuality) -> aurastudio_gpu::CanvasQuality
 /// The canvas pixel under `p`, if inside a `size` canvas.
 fn pixel_in(p: Point, (w, h): (u32, u32)) -> Option<(i32, i32)> {
     (p.x >= 0.0 && p.y >= 0.0 && p.x < w as f64 && p.y < h as f64).then_some((p.x as i32, p.y as i32))
-}
-
-/// Send the whole merged image to the GPU, in bands of rows: the full
-/// image never exists in RAM (a B4 page at 600 dpi is 200 MB).
-fn upload_all(doc: &Document, gpu: &mut GpuState) {
-    let s = doc.stack();
-    let (w, h) = (s.width, s.height);
-    for y0 in (0..h).step_by(64) {
-        let r = aurastudio_core::Rect::from_xywh(0, y0 as i32, w, 64.min(h - y0));
-        gpu.upload(r, &doc.screen(r));
-    }
 }

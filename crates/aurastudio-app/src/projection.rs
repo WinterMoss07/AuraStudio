@@ -31,9 +31,6 @@ impl Projection {
     pub fn pending_bytes(&self) -> u64 { self.patches.iter().map(|p| p.1.len() as u64 * 4).sum() }
 
     pub fn take_patches(&mut self) -> Vec<(Rect, Vec<Rgba8>)> { std::mem::take(&mut self.patches) }
-
-    /// Drop what is queued: the whole image is about to be sent again.
-    pub fn clear(&mut self) { self.patches.clear(); }
 }
 
 /// Add `r` to the changed areas, merged with one when that costs no more

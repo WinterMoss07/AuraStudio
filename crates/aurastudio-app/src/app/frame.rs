@@ -7,13 +7,12 @@ use std::time::{Duration, Instant};
 
 use aurastudio_color::{monitor_profile, DisplaySetup, Intent, MonitorChoice, ViewMode};
 use aurastudio_core::DocType;
-use aurastudio_document::Edit;
+use aurastudio_document::{Edit, Region};
 use aurastudio_tools::xform::Xform;
 use aurastudio_ui::{Actions, Loupe, Model, Overlay, Tool, TransformInfo, TransformMode, TransformOverlay};
 
-use super::{gpu_quality, lock_soon, save_prefs, save_recent, upload_all, Ants, App, Gesture, Pending};
+use super::{gpu_quality, lock_soon, save_prefs, save_recent, Ants, App, Gesture, Pending};
 use crate::paint_thread;
-use crate::projection::Projection;
 use crate::window::Screen;
 
 impl App {
@@ -440,22 +439,13 @@ impl App {
         if actions.undo { self.undo(); }
         if actions.redo { self.redo(); }
         if actions.clear_layer { self.clear_active_layer(); }
-        let Some(gpu) = &mut self.gpu else { return };
-        if actions.resize_to.is_some() || self.layers_dirty {
-            // New size, or a document just shown: merge everything again
-            // (rare, never during a stroke).
-            let mut doc = self.doc.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((w, h)) = actions.resize_to {
-                log::info!("canvas resize: {}x{} -> {w}x{h} (undo history cleared)", doc.stack().width, doc.stack().height);
-                doc.apply(Edit::Resize { width: w, height: h });
-                *self.projection.lock().unwrap_or_else(|e| e.into_inner()) = Projection::new(w, h);
-                gpu.resize_canvas(w, h);
-                self.ui.invalidate_all_thumbnails();
-            }
-            // Pieces the paint thread merged before are superseded (it
-            // can't merge more meanwhile: the document is locked here).
-            self.projection.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            upload_all(&doc, gpu);
+        // A new size: on the paint thread, after the strokes sent before
+        // (`resized` follows).
+        if let Some((w, h)) = actions.resize_to { self.send_edit(Edit::Resize { width: w, height: h }); }
+        if self.layers_dirty && self.gpu.is_some() {
+            // A document just shown: the paint thread merges it all, by
+            // bands, off this thread.
+            self.show(Region::Whole);
             self.layers_dirty = false;
             want_frame = true;
         }

@@ -10,7 +10,7 @@ use aurastudio_document::{Document, Edit};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_ui::{Dialog, DialogChoice, EditCmd, FileCmd};
 
-use super::{ago, autosave_after, has_extension, recovery_path, save_recent, App, AppEvent, Pending, APP_TITLE, MAX_RECENT, PLACEHOLDER};
+use super::{ago, autosave_after, has_extension, recovery_path, save_recent, App, AppEvent, Opening, Pending, Read, APP_TITLE, MAX_RECENT, PLACEHOLDER};
 use crate::paint_thread::Cmd;
 use crate::projection::Projection;
 
@@ -163,32 +163,77 @@ impl App {
         if let Some(path) = picked { self.request(Pending::Open(path)); }
     }
 
-    /// Open an .aurs document, or an image as a new document.
+    /// Open an .aurs document, or an image as a new document: read on a
+    /// thread, shown when it arrives (`opened`).
     pub(super) fn open_path(&mut self, path: &Path) {
         let (id, max) = (self.workspace.reserve_id(), self.max_canvas());
-        let opened = if has_extension(path, EXTENSION) {
-            aurastudio_file::open(path, max).map(|snap| {
-                let mut d = Document::from_snapshot(id, &aurastudio_file::doc_name(path), snap);
-                d.path = Some(path.to_path_buf());
-                d
-            })
-        } else {
-            aurastudio_file::import_image(path, max, DocType::Illustration.default_tile_size())
-                .map(|(name, stack)| Document::from_stack(id, &name, stack, DocType::Illustration))
-        };
-        match opened {
-            Ok(doc) => {
-                log::info!("opened {}", path.display());
-                self.install(doc);
-                self.home = false;
-                self.add_recent(path);
+        let path = path.to_path_buf();
+        self.read_document(Opening::File(path.clone()), move || {
+            if has_extension(&path, EXTENSION) {
+                aurastudio_file::open(&path, max).map(|snap| {
+                    let mut d = Document::from_snapshot(id, &aurastudio_file::doc_name(&path), snap);
+                    d.path = Some(path.clone());
+                    d
+                })
+            } else {
+                aurastudio_file::import_image(&path, max, DocType::Illustration.default_tile_size())
+                    .map(|(name, stack)| Document::from_stack(id, &name, stack, DocType::Illustration))
+            }.map_err(|e| e.to_string())
+        });
+    }
+
+    /// Read a document on a thread; one at a time.
+    fn read_document(&mut self, what: Opening, read: impl FnOnce() -> Result<Document, String> + Send + 'static) {
+        if self.opening {
+            self.ui.notify("Already opening a document");
+            self.request_redraw();
+            return;
+        }
+        let proxy = self.proxy.clone();
+        let spawned = std::thread::Builder::new().name("open".into()).spawn(move || {
+            profiling::register_thread!("open");
+            let result = read().map(|d| Read(Box::new(d)));
+            let _ = proxy.send_event(AppEvent::Opened { what, result });
+        });
+        match spawned {
+            Ok(_) => {
+                self.opening = true;
+                self.ui.notify("Opening…");
             }
-            Err(e) => {
+            Err(e) => self.ui.notify(&format!("Can't open: {e}")),
+        }
+        self.request_redraw();
+    }
+
+    /// A document read on its thread (`read_document`).
+    pub(super) fn opened(&mut self, what: Opening, result: Result<Read, String>) {
+        self.opening = false;
+        match (what, result) {
+            (Opening::File(path), Ok(Read(doc))) => {
+                log::info!("opened {}", path.display());
+                self.install(*doc);
+                self.home = false;
+                self.add_recent(&path);
+                self.ui.notify(&format!("Opened {}", aurastudio_file::doc_name(&path)));
+            }
+            (Opening::File(path), Err(e)) => {
                 log::warn!("open {}: {e}", path.display());
-                self.ui.notify(&format!("Can't open {}: {e}", aurastudio_file::doc_name(path)));
-                self.request_redraw();
+                self.ui.notify(&format!("Can't open {}: {e}", aurastudio_file::doc_name(&path)));
+            }
+            (Opening::Recovery, Ok(Read(mut doc))) => {
+                // Unsaved: it isn't in its own file yet.
+                doc.touch();
+                self.install(*doc);
+                self.home = false;
+                self.ui.notify("Recovered unsaved work");
+            }
+            (Opening::Recovery, Err(e)) => {
+                log::warn!("recovery: {e}");
+                self.ui.notify(&format!("Can't recover: {e}"));
+                if let Some(p) = recovery_path() { let _ = std::fs::remove_file(p); }
             }
         }
+        self.request_redraw();
     }
 
     /// Show `doc` in place of the current document.
@@ -218,6 +263,17 @@ impl App {
         self.layers_dirty = true;
         self.request_redraw();
         crate::memory::event("document shown (new / opened)");
+    }
+
+    /// The paint thread resized the canvas: the screen follows, then the
+    /// whole frame is merged again.
+    pub(super) fn resized(&mut self, w: u32, h: u32) {
+        *self.projection.lock().unwrap_or_else(|e| e.into_inner()) = Projection::new(w, h);
+        if let Some(gpu) = &mut self.gpu { gpu.resize_canvas(w, h); }
+        self.canvas_edit = (w, h);
+        self.ui.invalidate_all_thumbnails();
+        self.layers_dirty = true;
+        self.request_redraw();
     }
 
     /// Ctrl+S (`save_as`: Ctrl+Shift+S, or no .aurs file yet: ask where).
@@ -300,12 +356,11 @@ impl App {
         let (doc, proxy) = (Arc::clone(&self.doc), self.proxy.clone());
         self.ui.notify("Exporting…");
         std::thread::spawn(move || {
-            let (pixels, w, h) = {
-                let d = doc.lock().unwrap();
-                let (w, h) = (d.stack().width, d.stack().height);
-                // Without the draft layers (CSP).
-                (d.merged(aurastudio_core::Rect::of_size(w, h), aurastudio_layers::Pick::EXPORT), w, h)
-            };
+            // Locked only to copy the tree (shared tiles); merged after.
+            let stack = doc.lock().unwrap_or_else(|e| e.into_inner()).stack_for_file();
+            let (w, h) = (stack.width, stack.height);
+            // Without the draft layers (CSP).
+            let pixels = aurastudio_compose::merge(&stack, aurastudio_core::Rect::of_size(w, h), aurastudio_compose::Opts { pick: aurastudio_layers::Pick::EXPORT, ..Default::default() });
             let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             let msg = match aurastudio_file::export_image(&pixels, w, h, &path) {
                 Ok(()) => format!("Exported {file}"),
@@ -358,23 +413,14 @@ impl App {
     pub(super) fn recover(&mut self) {
         let Some(path) = recovery_path() else { return };
         let (id, max) = (self.workspace.reserve_id(), self.max_canvas());
-        match aurastudio_file::open(&path, max) {
-            Ok(snap) => {
-                let origin = snap.origin.clone();
-                let name = origin.as_deref().map_or_else(|| "Untitled".into(), aurastudio_file::doc_name);
-                let mut doc = Document::from_snapshot(id, &name, snap);
-                doc.path = origin;
-                // Unsaved: it isn't in its own file yet.
-                doc.touch();
-                self.install(doc);
-                self.ui.notify("Recovered unsaved work");
-            }
-            Err(e) => {
-                log::warn!("recovery: {e}");
-                self.ui.notify(&format!("Can't recover: {e}"));
-                let _ = std::fs::remove_file(path);
-            }
-        }
+        self.read_document(Opening::Recovery, move || {
+            let snap = aurastudio_file::open(&path, max).map_err(|e| e.to_string())?;
+            let origin = snap.origin.clone();
+            let name = origin.as_deref().map_or_else(|| "Untitled".into(), aurastudio_file::doc_name);
+            let mut doc = Document::from_snapshot(id, &name, snap);
+            doc.path = origin;
+            Ok(doc)
+        });
     }
 
     /// Put `path` first in the recent files.

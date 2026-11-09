@@ -25,7 +25,7 @@ pub mod tone;
 pub use color::{HueRange, BW_DEFAULTS, RANGE_NAMES};
 pub use filter::{Filter, Prepared};
 pub use histogram::Histogram;
-pub use layer::{blur_mask, mix, spread_mask};
+pub use layer::{blur_mask, mix, spread_mask, StopFn, Stopped};
 pub use lut::Lut8;
 pub use params::{idx, Kind, Param, Unit, GROUPS};
 pub use tone::LevelsChannel;

@@ -8,6 +8,7 @@ use aurastudio_animation::Onion;
 use aurastudio_color::Profile;
 use aurastudio_core::{Rect, Rgba8};
 use aurastudio_file::{OnionMarks, Snapshot, Step as SavedStep, SAVED_UNDO_STEPS};
+use aurastudio_layers::LayerStack;
 use aurastudio_raster::{legacy, Image, Patch};
 use aurastudio_selection::Selection;
 
@@ -17,25 +18,58 @@ use crate::{DocId, Document};
 /// Size of the preview saved in files.
 const PREVIEW: u32 = 512;
 
+/// What a save takes from the document under its lock: shared tiles and
+/// patches. The preview merge and the packing of the steps (the slow part)
+/// are done by `finish`, off the lock.
+pub struct SnapshotParts {
+    snap: Snapshot,
+    undo: Vec<(String, u64, Patch<Rgba8>)>,
+    redo: Vec<(String, u64, Patch<Rgba8>)>,
+}
+
+impl SnapshotParts {
+    pub fn revision(&self) -> u64 { self.snap.revision }
+
+    pub fn finish(self) -> Snapshot {
+        aurastudio_core::zone!("document snapshot finish");
+        let Self { mut snap, undo, redo } = self;
+        let steps = |v: Vec<(String, u64, Patch<Rgba8>)>| v.into_iter().map(|(label, layer, p)| SavedStep { label, layer, rect: None, data: p.to_bytes() }).collect();
+        snap.undo = steps(undo);
+        snap.redo = steps(redo);
+        snap.preview = Some(aurastudio_compose::preview(&snap.stack, PREVIEW));
+        snap
+    }
+}
+
 impl Document {
     /// What a save writes: the document without the previews under way.
-    pub fn snapshot(&self, origin: Option<&Path>) -> Snapshot {
-        aurastudio_core::zone!("document snapshot");
+    pub fn snapshot(&self, origin: Option<&Path>) -> Snapshot { self.snapshot_parts(origin).finish() }
+
+    /// The tree as it would be without the filter or transform previews
+    /// under way (shared tiles).
+    pub fn stack_for_file(&self) -> LayerStack {
         let mut stack = self.stack.clone();
         if let Some(f) = &self.filter { if let Some(i) = stack.image_mut(f.layer()) { *i = f.before().clone(); } }
         if let Some(t) = &self.transform { for (id, before) in t.befores() { if let Some(i) = stack.image_mut(id) { *i = before.clone(); } } }
+        stack
+    }
+
+    /// `snapshot`, but only what needs the lock.
+    pub fn snapshot_parts(&self, origin: Option<&Path>) -> SnapshotParts {
+        aurastudio_core::zone!("document snapshot");
+        let stack = self.stack_for_file();
         let (undo, redo) = self.history.export(SAVED_UNDO_STEPS);
-        let steps = |v: Vec<crate::history::Exported<'_>>| v.into_iter().map(|e| SavedStep { label: e.label.to_owned(), layer: e.layer, rect: None, data: e.patch.to_bytes() }).collect();
+        let take = |v: Vec<crate::history::Exported<'_>>| v.into_iter().map(|e| (e.label.to_owned(), e.layer, e.patch.clone())).collect();
         let t = &self.timeline;
         let onion = (t.onion != Onion::default()).then(|| OnionMarks { enabled: t.onion.enabled, mobile: t.onion.mobile.iter().map(|(k, v)| (*k, *v)).collect(), fixed: t.onion.fixed.iter().map(|(k, v)| (*k, *v)).collect() });
-        let preview = Some(aurastudio_compose::preview(&stack, PREVIEW));
-        Snapshot {
+        let snap = Snapshot {
             dpi: self.dpi, kind: self.kind, depth: self.depth, frame: t.frame(), fps: t.fps, onion,
             profile: (!self.profile.is_srgb()).then(|| (self.profile.name().to_owned(), self.profile.icc().to_vec())),
             selection: self.selection.as_ref().map(|s| s.as_mask().clone()),
-            undo: steps(undo), redo: steps(redo), preview, origin: origin.map(Path::to_path_buf), revision: self.revision,
+            undo: Vec::new(), redo: Vec::new(), preview: None, origin: origin.map(Path::to_path_buf), revision: self.revision,
             stack,
-        }
+        };
+        SnapshotParts { snap, undo: take(undo), redo: take(redo) }
     }
 
     /// A document from an opened file (it counts as saved). Old rect-based

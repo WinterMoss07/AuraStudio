@@ -126,12 +126,82 @@ pub struct Imported {
     pub warnings: Vec<String>,
 }
 
+/// Full tips kept past the ones in use, at most (a brush picked again soon
+/// isn't read from the disk again).
+const TIP_BUDGET: u64 = 64 << 20;
+
+/// Full tips read so far, by key, with when each was last used.
+#[derive(Default)]
+struct TipCache {
+    map:  HashMap<String, (Arc<GrayTile>, u64)>,
+    tick: u64,
+}
+
+impl TipCache {
+    fn get(&mut self, key: &str) -> Option<Arc<GrayTile>> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.map.get_mut(key).map(|(g, t)| { *t = tick; Arc::clone(g) })
+    }
+
+    fn insert(&mut self, key: String, g: Arc<GrayTile>) {
+        self.tick += 1;
+        self.map.insert(key, (g, self.tick));
+    }
+
+    /// Keep `used`, then the most recent others within `TIP_BUDGET`.
+    fn trim(&mut self, used: &[String]) {
+        let mut rest: Vec<(u64, String, u64)> = self.map.iter().filter(|(k, _)| !used.contains(k)).map(|(k, (g, t))| (*t, k.clone(), g.data.len() as u64 * 2)).collect();
+        rest.sort_unstable_by_key(|r| std::cmp::Reverse(r.0));
+        let mut bytes = 0;
+        for (_, k, n) in rest {
+            bytes += n;
+            if bytes > TIP_BUDGET { self.map.remove(&k); }
+        }
+    }
+}
+
+type Tips = Arc<Mutex<TipCache>>;
+
 /// The brushes: built-ins, then every imported group.
 pub struct Library {
     pub presets: Vec<Preset>,
     root:        Option<PathBuf>,
-    /// Full tips read so far, by key.
-    tips:        Mutex<HashMap<String, Arc<GrayTile>>>,
+    tips:        Tips,
+}
+
+/// A brush file read, its bitmaps written to the tip files: what
+/// `Library::add` puts in the library. Made by an `Importer`, on any
+/// thread.
+pub struct ReadFile {
+    stem:     String,
+    presets:  Vec<Preset>,
+    warnings: Vec<String>,
+}
+
+/// Reads brush files off the interface (`Library::importer`).
+#[derive(Clone)]
+pub struct Importer {
+    root: Option<PathBuf>,
+    tips: Tips,
+}
+
+impl Importer {
+    /// Read a brush file (.abr, .brush, .brushset); its bitmaps go to the
+    /// tip files when the library has a place on disk.
+    pub fn read(&self, path: &Path) -> Result<ReadFile, String> {
+        let kind = BrushFile::of(path).ok_or("not a brush file (.abr, .brush, .brushset)")?;
+        let bytes = read_capped(path, 2 << 30)?;
+        let stem = path.file_stem().map_or_else(|| "Imported".into(), |s| s.to_string_lossy().into_owned());
+        let (presets, warnings) = match kind {
+            BrushFile::Abr => { let i = crate::import::read_abr(&bytes, &stem)?; (i.presets, i.warnings) }
+            BrushFile::Procreate => { let i = crate::import::read_procreate(&bytes, &stem)?; (i.presets, i.warnings) }
+        };
+        if presets.is_empty() { return Err("the file holds no brushes".into()); }
+        let mut presets: Vec<Preset> = presets.into_iter().map(Preset::from_photocraft).collect();
+        if let Some(root) = &self.root { store_tips(root, &self.tips, &mut presets)?; }
+        Ok(ReadFile { stem, presets, warnings })
+    }
 }
 
 impl Default for Library {
@@ -152,7 +222,7 @@ struct GroupFile {
 
 impl Library {
     /// The built-ins only, nothing kept on disk.
-    pub fn builtin() -> Self { Self { presets: builtin(), root: None, tips: Mutex::new(HashMap::new()) } }
+    pub fn builtin() -> Self { Self { presets: builtin(), root: None, tips: Tips::default() } }
 
     /// The built-ins and the groups kept in `root` (made if missing).
     /// Returns what couldn't be read.
@@ -181,20 +251,22 @@ impl Library {
     /// Read a brush file (.abr, .brush, .brushset) into a new group named
     /// after it, kept on disk when the library has a place there.
     pub fn import(&mut self, path: &Path) -> Result<Imported, String> {
-        let kind = BrushFile::of(path).ok_or("not a brush file (.abr, .brush, .brushset)")?;
-        let bytes = read_capped(path, 2 << 30)?;
-        let stem = path.file_stem().map_or_else(|| "Imported".into(), |s| s.to_string_lossy().into_owned());
+        let read = self.importer().read(path)?;
+        self.add(read)
+    }
+
+    /// What reads brush files for this library, on another thread.
+    pub fn importer(&self) -> Importer { Importer { root: self.root.clone(), tips: Arc::clone(&self.tips) } }
+
+    /// A file read by the importer, as a new group named after it.
+    pub fn add(&mut self, read: ReadFile) -> Result<Imported, String> {
+        let ReadFile { stem, mut presets, warnings } = read;
         let group = self.free_group_name(&stem);
-        let (presets, warnings) = match kind {
-            BrushFile::Abr => { let i = crate::import::read_abr(&bytes, &group)?; (i.presets, i.warnings) }
-            BrushFile::Procreate => {
-                let i = crate::import::read_procreate(&bytes, &group)?;
-                (i.presets, i.warnings)
-            }
-        };
-        if presets.is_empty() { return Err("the file holds no brushes".into()); }
-        let mut presets: Vec<Preset> = presets.into_iter().map(|p| Preset { group: group.clone(), ..Preset::from_photocraft(p) }).collect();
-        if let Some(root) = self.root.clone() { self.save_group(&root, &group, &mut presets)?; }
+        for p in &mut presets {
+            p.group = group.clone();
+            p.kind = kind_of(&p.settings, &group);
+        }
+        if let Some(root) = &self.root { write_group(root, &group, &presets)?; }
         let count = presets.len();
         self.presets.extend(presets);
         Ok(Imported { group, count, warnings })
@@ -226,12 +298,12 @@ impl Library {
         let Some(root) = &self.root else { return };
         let load = |t: &mut StoredTile| {
             if t.full.is_some() { return; }
-            let mut cache = self.tips.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(g) = cache.get(&t.key) { t.full = Some(Arc::clone(g)); return; }
+            if let Some(g) = self.tips.lock().unwrap_or_else(PoisonError::into_inner).get(&t.key) { t.full = Some(g); return; }
+            // Read without the cache locked (an importer may write to it).
             match read_tip(&root.join("tips").join(format!("{}.tip", t.key))) {
                 Ok(g) if g.width == t.width && g.height == t.height => {
                     let g = Arc::new(g);
-                    cache.insert(t.key.clone(), Arc::clone(&g));
+                    self.tips.lock().unwrap_or_else(PoisonError::into_inner).insert(t.key.clone(), Arc::clone(&g));
                     t.full = Some(g);
                 }
                 _ => {}
@@ -242,46 +314,12 @@ impl Library {
         if let Pattern::Stored(t) = &mut b.texture.pattern { load(t); }
     }
 
-    /// Forget the full tips no brush uses now (the brush in use is `keep`).
+    /// Forget the full tips no brush uses now (the brush in use is `keep`),
+    /// but the last used within a budget.
     pub fn trim_tips(&self, keep: &BrushSettings) {
         let mut used = Vec::new();
         for t in [stored_tip(&keep.tip), stored_tip(&keep.dual_brush.tip), stored_pattern(&keep.texture.pattern)].into_iter().flatten() { used.push(t.key.clone()); }
-        self.tips.lock().unwrap_or_else(PoisonError::into_inner).retain(|k, _| used.contains(k));
-    }
-
-    /// Write `presets` as the group `group`: bitmaps to tip files, the
-    /// settings to the group file; the presets then hold stored tips.
-    fn save_group(&self, root: &Path, group: &str, presets: &mut [Preset]) -> Result<(), String> {
-        let tips = root.join("tips");
-        std::fs::create_dir_all(&tips).map_err(|e| e.to_string())?;
-        std::fs::create_dir_all(root.join("groups")).map_err(|e| e.to_string())?;
-        let mut cache = self.tips.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut store = |g: &GrayTile| -> Result<StoredTile, String> {
-            let key = tip_key(g);
-            let file = tips.join(format!("{key}.tip"));
-            if !file.exists() { write_atomic(&file, &encode_tip(g))?; }
-            let full = Arc::new(g.clone());
-            cache.insert(key.clone(), Arc::clone(&full));
-            Ok(StoredTile { key, width: g.width, height: g.height, preview: Arc::new(g.preview(PREVIEW_SIDE)), full: Some(full) })
-        };
-        for p in presets.iter_mut() {
-            let b = &mut p.settings;
-            if let TipShape::Sampled(g) = &b.tip { b.tip = TipShape::Stored(store(g)?); }
-            if let TipShape::Sampled(g) = &b.dual_brush.tip { b.dual_brush.tip = TipShape::Stored(store(g)?); }
-            if let Pattern::Tile(g) = &b.texture.pattern { b.texture.pattern = Pattern::Stored(store(g)?); }
-        }
-        drop(cache);
-        // The file holds keys and previews (a loaded tip would write its bitmap).
-        let mut kept = presets.to_vec();
-        for p in &mut kept {
-            let b = &mut p.settings;
-            if let TipShape::Stored(t) = &mut b.tip { t.full = None; }
-            if let TipShape::Stored(t) = &mut b.dual_brush.tip { t.full = None; }
-            if let Pattern::Stored(t) = &mut b.texture.pattern { t.full = None; }
-        }
-        let file = GroupFile { group: group.into(), presets: kept };
-        let json = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
-        write_atomic(&root.join("groups").join(group_file(group)), &json)
+        self.tips.lock().unwrap_or_else(PoisonError::into_inner).trim(&used);
     }
 
     /// Delete the tip files no group refers to.
@@ -298,6 +336,44 @@ impl Library {
             if !used.contains(&key) { let _ = std::fs::remove_file(&p); }
         }
     }
+}
+
+/// The bitmaps of `presets` to tip files (and the cache); the presets then
+/// hold stored tips.
+fn store_tips(root: &Path, cache: &Tips, presets: &mut [Preset]) -> Result<(), String> {
+    let tips = root.join("tips");
+    std::fs::create_dir_all(&tips).map_err(|e| e.to_string())?;
+    let store = |g: &GrayTile| -> Result<StoredTile, String> {
+        let key = tip_key(g);
+        let file = tips.join(format!("{key}.tip"));
+        if !file.exists() { write_atomic(&file, &encode_tip(g))?; }
+        let full = Arc::new(g.clone());
+        cache.lock().unwrap_or_else(PoisonError::into_inner).insert(key.clone(), Arc::clone(&full));
+        Ok(StoredTile { key, width: g.width, height: g.height, preview: Arc::new(g.preview(PREVIEW_SIDE)), full: Some(full) })
+    };
+    for p in presets.iter_mut() {
+        let b = &mut p.settings;
+        if let TipShape::Sampled(g) = &b.tip { b.tip = TipShape::Stored(store(g)?); }
+        if let TipShape::Sampled(g) = &b.dual_brush.tip { b.dual_brush.tip = TipShape::Stored(store(g)?); }
+        if let Pattern::Tile(g) = &b.texture.pattern { b.texture.pattern = Pattern::Stored(store(g)?); }
+    }
+    Ok(())
+}
+
+/// The group file of `presets`: keys and previews only (a loaded tip would
+/// write its bitmap).
+fn write_group(root: &Path, group: &str, presets: &[Preset]) -> Result<(), String> {
+    std::fs::create_dir_all(root.join("groups")).map_err(|e| e.to_string())?;
+    let mut kept = presets.to_vec();
+    for p in &mut kept {
+        let b = &mut p.settings;
+        if let TipShape::Stored(t) = &mut b.tip { t.full = None; }
+        if let TipShape::Stored(t) = &mut b.dual_brush.tip { t.full = None; }
+        if let Pattern::Stored(t) = &mut b.texture.pattern { t.full = None; }
+    }
+    let file = GroupFile { group: group.into(), presets: kept };
+    let json = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
+    write_atomic(&root.join("groups").join(group_file(group)), &json)
 }
 
 fn stored_tip(t: &TipShape) -> Option<&StoredTile> { if let TipShape::Stored(s) = t { Some(s) } else { None } }
@@ -397,13 +473,31 @@ mod tests {
     }
 
     #[test]
+    fn tips_kept_are_the_used_then_the_latest_within_budget() {
+        let big = |n: u16| Arc::new(GrayTile { width: 4096, height: 2048, data: vec![n; 4096 * 2048].into() });
+        let mut c = TipCache::default();
+        for k in ["a", "b", "c", "d", "e"] { c.insert(k.into(), big(1)); }
+        c.get("a");
+        // 16 MB each, "a" in use: four others fill the 64 MB budget; a
+        // fifth pushes out the oldest, "b".
+        c.trim(&["a".to_string()]);
+        let mut kept: Vec<&str> = c.map.keys().map(String::as_str).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["a", "b", "c", "d", "e"]);
+        c.insert("f".into(), big(1));
+        c.trim(&["a".to_string()]);
+        assert!(!c.map.contains_key("b") && c.map.contains_key("a") && c.map.contains_key("f"));
+    }
+
+    #[test]
     fn imported_groups_come_back_with_their_tips() {
         let dir = std::env::temp_dir().join(format!("forge-lib-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let tip = GrayTile::from_fn(300, 200, |x, y| if (x + y) % 3 == 0 { 1.0 } else { 0.25 });
         let mut presets = vec![Preset { name: "My Grass".into(), kind: Kind::Paint, group: "Mine".into(), folder: vec!["A".into()], settings: BrushSettings { tip: TipShape::Sampled(tip.clone()), ..Default::default() }, builtin: false }];
         let (lib, _) = Library::open(dir.clone());
-        lib.save_group(&dir, "Mine", &mut presets).unwrap();
+        store_tips(&dir, &lib.tips, &mut presets).unwrap();
+        write_group(&dir, "Mine", &presets).unwrap();
         let (lib, warnings) = Library::open(dir.clone());
         assert!(warnings.is_empty(), "{warnings:?}");
         let p = lib.presets.iter().find(|p| p.name == "My Grass").unwrap();

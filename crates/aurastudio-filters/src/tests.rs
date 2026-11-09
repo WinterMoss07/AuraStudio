@@ -186,6 +186,15 @@ fn a_selection_keeps_the_rest_exactly() {
 }
 
 #[test]
+fn a_stopped_filter_says_so() {
+    let f = with(Kind::GaussianBlur, &[3.0]);
+    let mut s = layer();
+    assert_eq!(f.apply_until(&mut s, None, &|| true), Err(crate::Stopped));
+    let mut t = layer();
+    assert_eq!(f.apply_until(&mut t, None, &|| false), Ok(f.apply_to(&mut layer(), None)));
+}
+
+#[test]
 fn the_paper_changes_everywhere() {
     let mut s = Image::new(64, 64, 32, [255, 255, 255, 255]);
     s.fill_rect(Rect::new(0, 0, 8, 8), [0, 0, 0, 255]);

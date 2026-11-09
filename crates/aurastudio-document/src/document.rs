@@ -151,7 +151,11 @@ impl Document {
     // --- Changing ----------------------------------------------------------
 
     /// Do `e`. The only way the document changes.
-    pub fn apply(&mut self, e: Edit) -> Done {
+    pub fn apply(&mut self, e: Edit) -> Done { self.apply_until(e, &|| false) }
+
+    /// `apply`; a filter preview asks `stop` between its pieces and, when
+    /// stopped, leaves the layer as the last preview made it.
+    pub fn apply_until(&mut self, e: Edit, stop: aurastudio_filters::StopFn<'_>) -> Done {
         aurastudio_core::zone!("document apply");
         let label = e.label();
         // A stroke still open ends first (its patch is of the layer as it
@@ -183,7 +187,7 @@ impl Document {
             Edit::Fill { x, y, color, params } => self.fill(x, y, color, params),
             Edit::Paste(clip) => self.paste(&clip),
             Edit::Select(op) => self.select(&op),
-            Edit::FilterPreview(f) => self.filter_preview(f.as_ref()),
+            Edit::FilterPreview(f) => self.filter_preview(f.as_ref(), stop),
             Edit::FilterApply(f) => self.filter_apply(&f),
             Edit::FilterCancel => self.filter_cancel(),
             Edit::TransformBegin(ids) => self.transform_begin(&ids),

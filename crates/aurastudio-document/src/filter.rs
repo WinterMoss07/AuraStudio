@@ -27,7 +27,8 @@ impl FilterSession {
 }
 
 impl Document {
-    pub(crate) fn filter_preview(&mut self, filter: Option<&Filter>) -> Done {
+    /// Stopped (`stop`): nothing changes, the next preview comes.
+    pub(crate) fn filter_preview(&mut self, filter: Option<&Filter>, stop: aurastudio_filters::StopFn<'_>) -> Done {
         if self.filter.is_none() {
             let Some(layer) = self.paint_id() else { return Done::refused("Layer is locked or is a folder") };
             let Some(before) = self.stack.image(layer).cloned() else { return Done::default() };
@@ -35,14 +36,17 @@ impl Document {
         }
         let stamp = self.selection.as_ref().map_or(0, Selection::stamp);
         let Some(s) = self.filter.as_mut() else { return Done::default() };
-        s.last = filter.map(|f| (f.clone(), stamp));
         let mut img = s.before.clone();
         let mut now = Region::Nothing;
         if let Some(f) = filter {
             let sel = self.selection.as_ref().map(Selection::as_mask);
-            if let Some(r) = f.apply_to(&mut img, sel) { now.add_rect(r); }
+            match f.apply_until(&mut img, sel, stop) {
+                Ok(r) => if let Some(r) = r { now.add_rect(r); },
+                Err(_) => return Done::default(),
+            }
             if img.fill() != s.before.fill() { now = Region::Whole; }
         }
+        s.last = filter.map(|f| (f.clone(), stamp));
         let mut region = std::mem::replace(&mut s.shown, now.clone());
         region.add(now);
         let layer = s.layer;
@@ -54,7 +58,7 @@ impl Document {
         // Shown already with these values: kept as it is.
         let stamp = self.selection.as_ref().map_or(0, Selection::stamp);
         let shown = self.filter.as_ref().is_some_and(|s| s.last.as_ref().is_some_and(|(f, k)| f == filter && *k == stamp));
-        let mut done = if shown { Done::default() } else { self.filter_preview(Some(filter)) };
+        let mut done = if shown { Done::default() } else { self.filter_preview(Some(filter), &|| false) };
         let Some(s) = self.filter.take() else { return done };
         if shown { done.layers.push(s.layer); }
         let before = Before(s.before.snapshot(), s.before.fill());

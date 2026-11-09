@@ -178,6 +178,14 @@ fn filters_preview_cancel_apply_and_undo() {
     assert_eq!(d.history().undo_len(), n + 1);
     d.apply(Edit::Undo);
     assert_eq!(px(&d, id, 15, 15), [200, 100, 50, 255]);
+    // A preview stopped midway changes nothing; Apply then filters.
+    d.apply(Edit::FilterPreview(Some(Filter::new(Kind::Sepia))));
+    let sepia = px(&d, id, 15, 15);
+    assert!(!d.apply_until(Edit::FilterPreview(Some(inv.clone())), &|| true).changed());
+    assert_eq!(px(&d, id, 15, 15), sepia);
+    d.apply(Edit::FilterApply(inv.clone()));
+    assert_eq!(px(&d, id, 15, 15), [55, 155, 205, 255]);
+    d.apply(Edit::Undo);
     // Applied with the values shown: kept as shown (not filtered twice).
     d.apply(Edit::FilterPreview(Some(inv.clone())));
     let done = d.apply(Edit::FilterApply(inv.clone()));

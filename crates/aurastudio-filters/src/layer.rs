@@ -36,6 +36,12 @@ pub fn mix<P: Pixel>(a: P, b: P, m: u8) -> P {
 type RunFn<'a, P> = &'a (dyn Fn(&[P], usize, usize) -> Vec<P> + Sync);
 /// What an area of one color becomes.
 type UniformFn<'a, P> = &'a (dyn Fn(P) -> P + Sync);
+/// Asked between pieces: true stops the work (a newer preview waits).
+pub type StopFn<'a> = &'a (dyn Fn() -> bool + Sync);
+
+/// The work was stopped before the end: the surface is half done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stopped;
 
 /// What a piece became.
 enum Out<P> {
@@ -51,6 +57,7 @@ struct Job<'a, P: Pixel> {
     reach:   i32,
     run:     RunFn<'a, P>,
     uniform: UniformFn<'a, P>,
+    stop:    StopFn<'a>,
 }
 
 impl<P: Pixel> Job<'_, P> {
@@ -87,19 +94,21 @@ impl<P: Pixel> Job<'_, P> {
     }
 
     /// Work `area` from `src` into `dst`, batch after batch of pieces.
-    fn drive(&self, dst: &mut Surface<P>, area: Rect) {
+    fn drive(&self, dst: &mut Surface<P>, area: Rect) -> Result<(), Stopped> {
         let pieces = self.src.chunks(area, piece_side(self.reach as u32));
         let win = |c: &Rect| c.grown(self.reach).area();
         let mut i = 0;
         while i < pieces.len() {
             let (mut j, mut px) = (i, 0u64);
             while j < pieces.len() && (j == i || px + win(&pieces[j]) <= BATCH_PX) { px += win(&pieces[j]); j += 1; }
-            let outs: Vec<Out<P>> = pieces[i..j].par_iter().map(|c| self.piece(*c)).collect();
+            let outs: Option<Vec<Out<P>>> = pieces[i..j].par_iter().map(|c| (!(self.stop)()).then(|| self.piece(*c))).collect();
+            let outs = outs.ok_or(Stopped)?;
             for (c, o) in pieces[i..j].iter().zip(outs) {
                 match o { Out::Uniform(p) => dst.fill_rect(*c, p), Out::Pixels(v) => dst.write(*c, &v) }
             }
             i = j;
         }
+        Ok(())
     }
 }
 
@@ -122,23 +131,26 @@ fn area_of<P: Pixel>(img: &Surface<P>, sel: Option<&Mask>, reach: i32) -> Option
 /// Run `job`'s filter over `img`: the far fill first (from the fill's own
 /// result), then the area from a copy of the pixels before. Returns what
 /// changed (the frame when the fill did).
-fn apply_job<P: Pixel>(img: &mut Surface<P>, sel: Option<&Mask>, reach: u32, run: RunFn<'_, P>, uniform: UniformFn<'_, P>) -> Option<Rect> {
+fn apply_job<P: Pixel>(img: &mut Surface<P>, sel: Option<&Mask>, reach: u32, run: RunFn<'_, P>, uniform: UniformFn<'_, P>, stop: StopFn<'_>) -> Result<Option<Rect>, Stopped> {
     let reach = reach.min(i32::MAX as u32 / 4) as i32;
     let area = area_of(img, sel, reach);
     let fill = img.fill();
     let new_fill = match sel { None => uniform(fill), Some(s) => mix(fill, uniform(fill), s.fill()) };
-    if area.is_none() && new_fill == fill { return None; }
+    if area.is_none() && new_fill == fill { return Ok(None); }
     // Tiles are shared until written: the copy costs the tile table.
     let src = img.clone();
     if new_fill != fill { img.set_fill(new_fill); }
     if let Some(a) = area {
-        let job = Job { src: &src, sel, reach, run, uniform };
-        job.drive(img, a);
+        let job = Job { src: &src, sel, reach, run, uniform, stop };
+        job.drive(img, a)?;
     }
     let frame = if new_fill != fill { img.rect() } else { Rect::EMPTY };
     let changed = area.unwrap_or(Rect::EMPTY).union(&frame);
-    (!changed.is_empty()).then_some(changed)
+    Ok((!changed.is_empty()).then_some(changed))
 }
+
+/// Never stops.
+fn never() -> bool { false }
 
 impl Filter {
     /// Where applying it to `img` within `sel` would change stored pixels
@@ -148,17 +160,23 @@ impl Filter {
     /// Apply it to a layer, inside `sel` (a selection's coverage mixes the
     /// result with the layer as it was). Returns the area that changed.
     pub fn apply_to(&self, img: &mut Image, sel: Option<&Mask>) -> Option<Rect> { self.prepare().apply_to(img, sel) }
+
+    /// `apply_to`, asking `stop` between pieces.
+    pub fn apply_until(&self, img: &mut Image, sel: Option<&Mask>, stop: StopFn<'_>) -> Result<Option<Rect>, Stopped> { self.prepare().apply_until(img, sel, stop) }
 }
 
 impl Prepared {
     /// `Filter::apply_to`, prepared once (a preview applied again and
     /// again).
-    pub fn apply_to(&self, img: &mut Image, sel: Option<&Mask>) -> Option<Rect> {
-        if self.is_identity() { return None; }
+    pub fn apply_to(&self, img: &mut Image, sel: Option<&Mask>) -> Option<Rect> { self.apply_until(img, sel, &never).ok().flatten() }
+
+    /// `apply_to`, asking `stop` between pieces.
+    pub fn apply_until(&self, img: &mut Image, sel: Option<&Mask>, stop: StopFn<'_>) -> Result<Option<Rect>, Stopped> {
+        if self.is_identity() { return Ok(None); }
         aurastudio_core::zone!("filter layer");
         let run = |px: &[Rgba8], w: usize, h: usize| self.run(px, w, h);
         let uniform = |c: Rgba8| self.on_uniform(c);
-        apply_job(img, sel, self.reach, &run, &uniform)
+        apply_job(img, sel, self.reach, &run, &uniform, stop)
     }
 }
 
@@ -168,7 +186,7 @@ pub fn blur_mask(mask: &mut Mask, sigma: f32) -> Option<Rect> {
     if sigma <= 0.0 { return None; }
     aurastudio_core::zone!("filter blur mask");
     let run = |px: &[u8], w: usize, h: usize| blur::blur_u8(px, w, h, sigma);
-    apply_job(mask, None, blur::reach(sigma), &run, &|c| c)
+    apply_job(mask, None, blur::reach(sigma), &run, &|c| c, &never).ok().flatten()
 }
 
 /// Grow (max) or shrink (min) a mask by `radius` px, square or round (a
@@ -182,5 +200,5 @@ pub fn spread_mask(mask: &mut Mask, radius: f32, round: bool, grow: bool) -> Opt
         if round { extreme::disc(&mut v, w, h, radius, op) } else { extreme::square(&mut v, w, h, radius.round() as usize, op) }
         v
     };
-    apply_job(mask, None, radius.ceil() as u32, &run, &|c| c)
+    apply_job(mask, None, radius.ceil() as u32, &run, &|c| c, &never).ok().flatten()
 }
