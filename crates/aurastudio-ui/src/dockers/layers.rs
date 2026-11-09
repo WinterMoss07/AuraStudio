@@ -418,6 +418,14 @@ pub fn menu_entries(ui: &mut Ui, st: &mut LayersState, m: &mut Model, a: &mut Ac
             ui.close();
         }
     }
+    // Alpha lock: the active paint layer's (as its row's mark).
+    let layer = m.layers().active_node().and_then(|n| match n { Node::Layer(l) if !l.background => Some(n.props().alpha_lock), _ => None });
+    let label = format!("{} Alpha lock", if layer == Some(true) { "✔" } else { "   " });
+    let r = ui.add_enabled(layer.is_some(), egui::Button::new(label)).on_disabled_hover_text("Only a paint layer's transparency can be locked");
+    if r.clicked() {
+        if let Some(on) = layer { let id = m.layers().active_id(); m.apply(Edit::SetAlphaLock(id, !on)); }
+        ui.close();
+    }
     crate::widgets::menu(ui, "Color label", |ui| {
         if let Some(l) = label_list(ui, m.layers().active_node().map(Node::props).unwrap_or_default().label) {
             set_label(st, l, m);
@@ -986,8 +994,9 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
 
     // Marks before the lock: reference (lighthouse), draft (pencil); a
     // parent folder's shown fainter.
-    // Alpha lock, just left of the lock (Krita); paint layers only.
-    let alpha = if matches!(node, Node::Layer(_)) {
+    // Alpha lock, just left of the lock (Krita); paint layers only, not
+    // the paper (opaque: nothing to keep).
+    let alpha = if matches!(node, Node::Layer(l) if !l.background) {
         let r = Rect::from_center_size(pos2(lock.left() - 10.0, rect.center().y), vec2(20.0, 22.0));
         paint_alpha_lock(ui, r, props.alpha_lock, resp.hovered(), active);
         r
@@ -1091,8 +1100,9 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         }
         if edit.lost_focus() {
             let new_name = buf.trim().to_owned();
+            let keep = crate::widgets::committed(ui, &edit);
             st.renaming = None;
-            if !new_name.is_empty() && new_name != name {
+            if keep && !new_name.is_empty() && new_name != name {
                 m.apply(Edit::Rename(row.id, new_name));
                 return Some(RowEvent::Renamed);
             }

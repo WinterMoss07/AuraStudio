@@ -320,7 +320,7 @@ fn controls(ui: &mut Ui, st: &mut AnimPanel, m: &mut Model, a: &mut Actions) {
         });
         ui.horizontal(|ui| {
             let mut fps = m.doc.timeline().fps.num / m.doc.timeline().fps.den.max(1);
-            if ui.add(egui::DragValue::new(&mut fps).range(1..=120).suffix(" fps").speed(0.2)).on_hover_text("Frames per second").changed() {
+            if ui.add(crate::widgets::drag(&mut fps).range(1..=120).suffix(" fps").speed(0.2)).on_hover_text("Frames per second").changed() {
                 m.apply(Edit::SetFps(aurastudio_core::Fps::new(fps, 1)));
             }
             ui.label(RichText::new(format!("{t} / {last}")).color(theme::TEXT)).on_hover_text("Current frame / frame of the last sheet");
@@ -549,8 +549,9 @@ fn grid(ui: &mut Ui, st: &mut AnimPanel, ls: &mut LayersState, notice: &mut Noti
             if *first { edit.request_focus(); *first = false; }
             if edit.lost_focus() {
                 let new = buf.trim().to_owned();
+                let keep = crate::widgets::committed(ui, &edit);
                 st.rename = None;
-                if !new.is_empty() {
+                if keep && !new.is_empty() {
                     m.apply(Edit::Rename(folder, new));
                 }
             }

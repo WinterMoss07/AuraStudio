@@ -227,6 +227,7 @@ impl App {
         let canvas_edit = &mut self.canvas_edit;
         let home = self.home;
         let maximized = self.window.as_ref().is_some_and(|w| w.is_maximized());
+        let title = self.title.clone();
         let tool_before = self.tool;
         let tool = &mut self.tool;
         let tool_memory = &mut self.tool_memory;
@@ -256,9 +257,15 @@ impl App {
         profiling::scope!("frame", if run_ui { "UI run" } else { "UI cached" });
         // Outside a stroke, wait a little for it: a merge on the paint
         // thread takes it band by band and lets go between two. During a
-        // stroke, a short wait: the paint thread lets the UI in between two
-        // samples.
-        let wait = if self.is_drawing { Duration::from_millis(3) } else { Duration::from_millis(15) };
+        // stroke, no wait (a wait spins a core the stroke needs), unless the
+        // UI has gone without it a while: then a short one, the paint
+        // thread lets the UI in between two samples.
+        let starved = self.ui_blocked_since.is_some_and(|t| t.elapsed() > Duration::from_millis(30));
+        let wait = match (self.is_drawing, starved) {
+            (true, false) => Duration::ZERO,
+            (true, true) => Duration::from_millis(3),
+            _ => Duration::from_millis(15),
+        };
         match if run_ui { lock_soon(doc, wait) } else { None } {
             Some(mut doc) => gpu.render(self.lift.as_mut(), |root| {
             *ui_saw_canvas = over_canvas;
@@ -329,6 +336,7 @@ impl App {
                 max_canvas,
                 home,
                 maximized,
+                title: &title,
             };
             aurastudio_ui::show(root, ui_state, &mut model, &mut actions);
             done = std::mem::take(&mut model.done);

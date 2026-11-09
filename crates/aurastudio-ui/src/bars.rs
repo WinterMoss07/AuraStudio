@@ -189,7 +189,7 @@ pub fn menu_bar(root: &mut egui::Ui, state: &mut UiState, m: &mut Model, a: &mut
                     let room = Rect::from_min_max(pos2(from, ui.max_rect().top()), pos2(ui.cursor().max.x, ui.max_rect().bottom()));
                     // Centered on the window, unless the menus reach there.
                     let font = egui::FontId::proportional(14.0);
-                    let galley = ui.painter().layout_no_wrap("AuraStudio".to_owned(), font, theme::TEXT);
+                    let galley = ui.painter().layout_no_wrap(if m.title.is_empty() { "AuraStudio" } else { m.title }.to_owned(), font, theme::TEXT);
                     let w = galley.size().x;
                     let x = (bar.center().x - w / 2.0).max(from).min(room.right() - w);
                     if x >= from {

@@ -242,14 +242,14 @@ pub fn new_dialog(ctx: &egui::Context, form: &mut NewForm, max_side: u32, a: &mu
                     let digits = if form.unit == Unit::Px { 0 } else { 2 };
                     egui::Grid::new("new_size").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                         ui.label("Width");
-                        ui.add(egui::DragValue::new(&mut form.w).range(0.01..=100_000.0).speed(speed).max_decimals(digits));
+                        ui.add(crate::widgets::drag(&mut form.w).range(0.01..=100_000.0).speed(speed).max_decimals(digits));
                         unit_combo(ui, form);
                         ui.end_row();
                         ui.label("Height");
-                        ui.add(egui::DragValue::new(&mut form.h).range(0.01..=100_000.0).speed(speed).max_decimals(digits));
+                        ui.add(crate::widgets::drag(&mut form.h).range(0.01..=100_000.0).speed(speed).max_decimals(digits));
                         ui.end_row();
                         ui.label("Resolution");
-                        ui.add(egui::DragValue::new(&mut form.dpi).range(1.0..=2400.0).speed(1.0).suffix(" dpi"));
+                        ui.add(crate::widgets::drag(&mut form.dpi).range(1.0..=2400.0).speed(1.0).suffix(" dpi"));
                         ui.end_row();
                     });
                     ui.add_space(4.0);

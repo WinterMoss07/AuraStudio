@@ -457,7 +457,7 @@ fn value_row(ui: &mut Ui, id: &str, v: f32, range: Range, w: f32, enabled: bool)
             }
         }
         let mut val = v;
-        let dv = egui::DragValue::new(&mut val).range(lo..=hi).speed(((hi - lo) / 300.0).max(0.1)).max_decimals(0).suffix(unit.suffix());
+        let dv = crate::widgets::drag(&mut val).range(lo..=hi).speed(((hi - lo) / 300.0).max(0.1)).max_decimals(0).suffix(unit.suffix());
         if ui.add_enabled_ui(enabled, |ui| ui.add_sized(vec2(48.0, 16.0), dv)).inner.changed() { out = Some(val); }
         // The arrows: one unit up or down.
         let (ar, aresp) = ui.allocate_exact_size(vec2(9.0, 16.0), if enabled { Sense::click() } else { Sense::hover() });

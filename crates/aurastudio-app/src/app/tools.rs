@@ -460,7 +460,10 @@ impl App {
     pub(super) fn brush_default(&mut self, d: aurastudio_ui::BrushDefault) {
         use aurastudio_ui::BrushDefault as D;
         match d {
-            D::Reset => if let Some(s) = self.library.default_of(self.preset) {
+            D::Reset => if let Some(mut s) = self.library.default_of(self.preset) {
+                // The color is the user's, not the brush's.
+                s.color = self.brush.color;
+                self.library.load_tips(&mut s);
                 self.brush = s;
                 self.ui.notify("Brush reset to its default");
             },

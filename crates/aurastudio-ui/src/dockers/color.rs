@@ -78,7 +78,7 @@ pub fn show(ui: &mut Ui, st: &mut ColorState, m: &mut Model) {
         ui.painter().rect_stroke(swatch, 3.0, Stroke::new(1.0_f32, theme::BORDER), egui::StrokeKind::Middle);
 
         let edit = ui.put(field, egui::TextEdit::singleline(&mut st.hex).align(egui::Align2::CENTER_TOP));
-        if edit.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) && edit.has_focus() {
+        if crate::widgets::committed(ui, &edit) || ui.input(|i| i.key_pressed(egui::Key::Enter)) && edit.has_focus() {
             if let Some(c) = parse_hex(&st.hex) {
                 m.brush.set_color8(c);
             }

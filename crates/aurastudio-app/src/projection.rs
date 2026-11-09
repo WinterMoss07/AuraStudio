@@ -22,9 +22,12 @@ impl Projection {
     pub fn new(width: u32, height: u32) -> Self { Self { width, height, patches: Vec::new() } }
 
     /// Queue a merged piece (newer pieces are uploaded after, over older
-    /// ones).
+    /// ones). Older pieces it covers whole are dropped: they'd be uploaded
+    /// for nothing (a UI that waits piles them up).
     pub fn push(&mut self, rect: Rect, px: Vec<Rgba8>) {
-        if !rect.is_empty() && px.len() as u64 == rect.area() { self.patches.push((rect, px)); }
+        if rect.is_empty() || px.len() as u64 != rect.area() { return; }
+        self.patches.retain(|(r, _)| !rect.contains_rect(r));
+        self.patches.push((rect, px));
     }
 
     /// Bytes of the merged pieces waiting.
@@ -70,6 +73,16 @@ mod tests {
         let mut list = Vec::new();
         for i in 0..(MAX_RECTS as i32 + 1) { add_rect(&mut list, Rect::new(i * 100, 0, i * 100 + 10, 10)); }
         assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn a_covered_patch_is_dropped() {
+        let mut p = Projection::new(100, 100);
+        p.push(Rect::new(2, 2, 4, 4), vec![[1; 4]; 4]);
+        p.push(Rect::new(3, 3, 6, 6), vec![[2; 4]; 9]);
+        p.push(Rect::new(0, 0, 5, 5), vec![[3; 4]; 25]);
+        let rects: Vec<Rect> = p.take_patches().into_iter().map(|x| x.0).collect();
+        assert_eq!(rects, [Rect::new(3, 3, 6, 6), Rect::new(0, 0, 5, 5)]);
     }
 
     #[test]

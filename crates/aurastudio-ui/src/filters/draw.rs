@@ -225,7 +225,7 @@ pub fn slider(ui: &mut Ui, id: &str, spec: Spec, v: &mut f32) -> bool {
         ui.label(RichText::new(label).color(theme::TEXT));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !unit.is_empty() { ui.label(RichText::new(unit).color(theme::TEXT_WEAK)); }
-            ui.add(egui::DragValue::new(v).range(lo..=hi).speed(((hi - lo) / 400.0).max(step)).fixed_decimals(decimals));
+            ui.add(crate::widgets::drag(v).range(lo..=hi).speed(((hi - lo) / 400.0).max(step)).fixed_decimals(decimals));
         });
     });
     let id = ui.scope_id().with(("filter_slider", id));
@@ -306,7 +306,7 @@ pub fn angle(ui: &mut Ui, label: &str, deg: &mut f32, default: f32) -> bool {
         ui.label(RichText::new(label).color(theme::TEXT));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(RichText::new("°").color(theme::TEXT_WEAK));
-            ui.add(egui::DragValue::new(deg).range(-180.0..=180.0).speed(1.0).fixed_decimals(0));
+            ui.add(crate::widgets::drag(deg).range(-180.0..=180.0).speed(1.0).fixed_decimals(0));
         });
     });
     *deg != before

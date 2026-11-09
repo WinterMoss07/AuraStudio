@@ -111,8 +111,9 @@ pub fn show(ui: &mut Ui, st: &mut CelState, m: &mut Model) {
             if *first { edit.request_focus(); *first = false; }
             if edit.lost_focus() {
                 let name = buf.trim().to_owned();
+                let keep = crate::widgets::committed(ui, &edit);
                 st.rename = None;
-                if !name.is_empty() && name != t.name && !anim.template.iter().any(|x| x.name == name) {
+                if keep && !name.is_empty() && name != t.name && !anim.template.iter().any(|x| x.name == name) {
                     m.apply(Edit::RenameCel { folder, at: r, name });
                 }
             }

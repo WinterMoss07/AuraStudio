@@ -10,10 +10,10 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
 
     egui::Grid::new("canvas_size").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
         ui.label("Width");
-        ui.add(egui::DragValue::new(&mut m.canvas_edit.0).range(1..=m.max_canvas).suffix(" px"));
+        ui.add(crate::widgets::drag(&mut m.canvas_edit.0).range(1..=m.max_canvas).suffix(" px"));
         ui.end_row();
         ui.label("Height");
-        ui.add(egui::DragValue::new(&mut m.canvas_edit.1).range(1..=m.max_canvas).suffix(" px"));
+        ui.add(crate::widgets::drag(&mut m.canvas_edit.1).range(1..=m.max_canvas).suffix(" px"));
         ui.end_row();
     });
 
@@ -50,7 +50,7 @@ pub fn show(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
     let mut v = ui.data_mut(|d| *d.get_temp_mut_or(id, now));
     ui.horizontal(|ui| {
         ui.label("Margin");
-        let r = ui.add(egui::DragValue::new(&mut v).range(0..=aurastudio_layers::MAX_MARGIN).suffix(" %"))
+        let r = ui.add(crate::widgets::drag(&mut v).range(0..=aurastudio_layers::MAX_MARGIN).suffix(" %"))
             .on_hover_text("Room kept on each side of the canvas, in percent of its size: what is moved there is kept. A smaller margin cuts what lies past it (and clears the undo history).");
         if r.changed() { ui.data_mut(|d| d.insert_temp(id, v)); }
         if !r.dragged() && !r.has_focus() && v != now {

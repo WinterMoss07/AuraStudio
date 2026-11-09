@@ -518,7 +518,7 @@ pub fn transform_options(ui: &mut Ui, m: &mut Model, a: &mut Actions) {
         egui::Grid::new("transform_numbers").num_columns(4).spacing(vec2(6.0, 4.0)).show(ui, |ui| {
             let field = |ui: &mut Ui, label: &str, v: &mut f64, suffix: &str, speed: f64| {
                 ui.label(RichText::new(label).small().color(theme::TEXT_WEAK));
-                ui.add(egui::DragValue::new(v).speed(speed).max_decimals(1).suffix(suffix));
+                ui.add(crate::widgets::drag(v).speed(speed).max_decimals(1).suffix(suffix));
             };
             field(ui, "X", &mut n[0], " px", 1.0);
             field(ui, "Y", &mut n[1], " px", 1.0);

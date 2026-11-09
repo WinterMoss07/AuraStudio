@@ -13,6 +13,26 @@ use crate::theme;
 // HSV computed on sRGB-encoded values, like Krita, CSP and Photoshop show
 // it (egui's own Hsva works on linear values: mid gray would read V=21%).
 
+/// A text field left this frame by Enter or a click away, not by Escape
+/// (Escape cancels the edit).
+pub fn committed(ui: &egui::Ui, edit: &egui::Response) -> bool {
+    edit.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape))
+}
+
+/// A typed number, "1,5" read as 1.5 (a decimal comma), "−2" as -2.
+pub fn parse_number(text: &str) -> Option<f64> {
+    let t: String = text.chars().filter(|c| !c.is_whitespace())
+        .map(|c| match c { ',' => '.', '−' => '-', c => c })
+        .filter(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))
+        .collect();
+    t.parse().ok()
+}
+
+/// A drag value that reads a decimal comma.
+pub fn drag<N: egui::emath::Numeric>(v: &mut N) -> egui::DragValue<'_> {
+    egui::DragValue::new(v).custom_parser(parse_number)
+}
+
 pub fn rgb_to_hsv([r, g, b]: [f32; 3]) -> [f32; 3] {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -174,7 +194,7 @@ pub fn channel_row(
     ));
 
     let mut shown = (*value * display_max).round() as i32;
-    let dv = egui::DragValue::new(&mut shown).range(0..=display_max as i32).speed(1.0);
+    let dv = crate::widgets::drag(&mut shown).range(0..=display_max as i32).speed(1.0);
     // egui's default minimum widget width (40) is wider than the box.
     let min_w = std::mem::replace(&mut ui.spacing_mut().interact_size.x, box_w);
     let changed_box = ui.put(box_rect, dv).changed();
@@ -309,8 +329,7 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
         if left || clicked_away || enter || escape {
             ui.data_mut(|d| d.remove::<(String, bool)>(editing_id));
             if escape || clicked_away && text.is_empty() { return None; }
-            let digits: String = text.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
-            return digits.parse::<f32>().ok().map(|v| v.clamp(lo, hi));
+            return parse_number(&text).map(|v| (v as f32).clamp(lo, hi));
         }
         ui.data_mut(|d| d.insert_temp(editing_id, (text, true)));
         return None;
@@ -440,6 +459,15 @@ pub fn popup_below(button: &egui::Response, close: egui::PopupCloseBehavior, f: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decimal_comma_is_read() {
+        assert_eq!(parse_number("1,5"), Some(1.5));
+        assert_eq!(parse_number(" 12.25 px"), Some(12.25));
+        assert_eq!(parse_number("−3"), Some(-3.0));
+        assert_eq!(parse_number("50 %"), Some(50.0));
+        assert_eq!(parse_number("abc"), None);
+    }
 
     #[test]
     fn displayed_zero_saturation_is_a_true_gray() {

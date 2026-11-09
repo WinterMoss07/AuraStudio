@@ -73,6 +73,8 @@ pub struct Model<'a> {
     pub home:               bool,
     /// The window is maximized (its title bar button shows "restore").
     pub maximized:          bool,
+    /// The window's title: "name* — AuraStudio" (painted on the title bar).
+    pub title:              &'a str,
     /// Selected tool and the fill tool's settings.
     pub tool:               &'a mut Tool,
     /// The tool and brush last used in each toolbox group.
@@ -607,7 +609,7 @@ fn select_dialog(ctx: &egui::Context, state: &mut UiState, a: &mut Actions) {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(if kind == SelectKind::Feather { "Radius" } else { "By" });
-                let r = ui.add(egui::DragValue::new(&mut v).range(1.0..=500.0).speed(0.5).max_decimals(0).suffix(" px"));
+                let r = ui.add(crate::widgets::drag(&mut v).range(1.0..=500.0).speed(0.5).max_decimals(0).suffix(" px"));
                 r.request_focus();
             });
             ui.add_space(12.0);

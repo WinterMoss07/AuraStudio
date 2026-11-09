@@ -244,6 +244,7 @@ fn lift_mesh(warp: &aurastudio_transform::Warp, src: aurastudio_core::Rect) -> O
 fn lock_soon(doc: &SharedDoc, wait: Duration) -> Option<std::sync::MutexGuard<'_, aurastudio_document::Document>> {
     use std::sync::atomic::Ordering;
     if let Ok(d) = doc.try_lock() { return Some(d); }
+    if wait.is_zero() { return None; }
     // Taken (a stroke, a merge): ask the paint thread to let us in between
     // two of its steps.
     crate::paint_thread::UI_WANTS_DOC.store(true, Ordering::Release);
@@ -804,7 +805,20 @@ impl ApplicationHandler<AppEvent> for App {
                 ));
         }
 
-        let window = Arc::new(event_loop.create_window(attrs).unwrap());
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                // No window: say so and leave (a panic said nothing).
+                log::error!("no window: {e}");
+                rfd::MessageDialog::new()
+                    .set_title("AuraStudio")
+                    .set_description(format!("AuraStudio can't open its window.\n\n{e}"))
+                    .set_level(rfd::MessageLevel::Error)
+                    .show();
+                event_loop.exit();
+                return;
+            }
+        };
         crate::memory::mark("window");
         let size   = {
             let d = self.doc.locked();

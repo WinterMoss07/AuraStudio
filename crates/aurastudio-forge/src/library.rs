@@ -284,6 +284,8 @@ impl Library {
     /// default"), and its settings.
     pub fn set_default(&mut self, index: usize, settings: BrushSettings) -> Result<(), String> {
         let Some(p) = self.presets.get(index) else { return Ok(()) };
+        // A default has no color of its own: the preset's stays.
+        let settings = BrushSettings { color: p.settings.color, ..settings };
         self.defaults.insert(key_of(p), settings.clone());
         self.write_defaults()?;
         self.keep(index, settings)
@@ -302,6 +304,9 @@ impl Library {
     /// the editor is found again next time).
     pub fn keep(&mut self, index: usize, settings: BrushSettings) -> Result<(), String> {
         let Some(p) = self.presets.get_mut(index) else { return Ok(()) };
+        // The color in use is not the brush's: a new color alone changes
+        // nothing kept.
+        let settings = BrushSettings { color: p.settings.color, ..settings };
         if p.settings == settings { return Ok(()); }
         // Its first change: what it was is its default.
         let key = key_of(p);
@@ -576,6 +581,25 @@ mod tests {
         again.set_default(i, b.clone()).unwrap();
         let (third, _) = Library::open(dir.clone());
         assert_eq!(third.default_of(i).unwrap(), b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Painting in another color changes no brush: none is kept as edited,
+    /// and its default keeps no color.
+    #[test]
+    fn a_color_alone_is_not_an_edit() {
+        let dir = std::env::temp_dir().join(format!("forge-color-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut lib, _) = Library::open(dir.clone());
+        let i = lib.presets.iter().position(|p| p.builtin).unwrap();
+        let mut b = lib.presets[i].settings.clone();
+        b.color = [0.9, 0.1, 0.2, 1.0];
+        lib.keep(i, b.clone()).unwrap();
+        assert!(lib.defaults.is_empty());
+        assert!(!dir.join(EDITED).exists());
+        b.size = 31.0;
+        lib.set_default(i, b).unwrap();
+        assert_eq!(lib.default_of(i).unwrap().color, builtin()[i].settings.color);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -225,11 +225,11 @@ fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut 
     }
     ui.horizontal(|ui| {
         ui.set_width(WIDTH);
-        ui.add(egui::DragValue::new(&mut lv[0]).range(0.0..=253.0).speed(1.0)).on_hover_text("Input black");
+        ui.add(crate::widgets::drag(&mut lv[0]).range(0.0..=253.0).speed(1.0)).on_hover_text("Input black");
         ui.add_space(78.0);
-        ui.add(egui::DragValue::new(&mut lv[1]).range(0.01..=9.99).speed(0.01).fixed_decimals(2)).on_hover_text("Midtones");
+        ui.add(crate::widgets::drag(&mut lv[1]).range(0.01..=9.99).speed(0.01).fixed_decimals(2)).on_hover_text("Midtones");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(egui::DragValue::new(&mut lv[2]).range(2.0..=255.0).speed(1.0)).on_hover_text("Input white");
+            ui.add(crate::widgets::drag(&mut lv[2]).range(2.0..=255.0).speed(1.0)).on_hover_text("Input white");
         });
     });
     ui.add_space(4.0);
@@ -239,9 +239,9 @@ fn levels(ui: &mut Ui, f: &mut Filter, src: &Source, st: &mut State, info: &mut 
     }
     ui.horizontal(|ui| {
         ui.set_width(WIDTH);
-        ui.add(egui::DragValue::new(&mut lv[3]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output black");
+        ui.add(crate::widgets::drag(&mut lv[3]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output black");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(egui::DragValue::new(&mut lv[4]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output white");
+            ui.add(crate::widgets::drag(&mut lv[4]).range(0.0..=255.0).speed(1.0)).on_hover_text("Output white");
         });
     });
     lv[0] = lv[0].min(253.0);
