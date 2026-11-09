@@ -2,6 +2,7 @@
 //! what to do in `Actions`.
 
 pub mod theme;
+mod advanced;
 mod animation;
 mod atlas;
 mod memory;
@@ -28,6 +29,7 @@ use egui_dock::{DockArea, DockState};
 
 pub use dockers::layers::LayerCmd;
 use dockers::Tab;
+pub use advanced::{BrushDefault, PREVIEW as PREVIEW_SIZE};
 pub use filters::FilterAction;
 pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
@@ -61,6 +63,8 @@ pub struct Model<'a> {
     /// Current view, for display: zoom (1.0 = 100 %) and angle in degrees.
     pub view_zoom:          f32,
     pub view_angle:         f32,
+    /// The view is mirrored left to right, top to bottom.
+    pub view_mirror:        (bool, bool),
     /// The preferences (Edit > Preferences…), and the monitor profile's
     /// name (None: no profile found, shown as sRGB).
     pub prefs:              &'a mut Prefs,
@@ -125,7 +129,7 @@ impl Model<'_> {
 
 /// View commands from the View menu (the app also binds them to keys).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewCmd { ZoomIn, ZoomOut, ActualSize, Fit, RotateLeft, RotateRight, ResetRotation }
+pub enum ViewCmd { ZoomIn, ZoomOut, ActualSize, Fit, RotateLeft, RotateRight, ResetRotation, MirrorH, MirrorV }
 
 /// What the app must do after the UI ran (what the document did is in
 /// `Model::done`).
@@ -167,6 +171,12 @@ pub struct Actions {
     pub play:        Option<bool>,
     /// The title bar: the window to minimize, maximize, close or move.
     pub window:      Option<WindowCmd>,
+    /// Open the Advanced tool options window.
+    pub advanced:    bool,
+    /// Draw this brush's stroke preview (`UiState::set_preview` with it).
+    pub preview:     Option<Brush>,
+    /// Advanced tool options: back to the brush's default, or save it.
+    pub brush_default: Option<BrushDefault>,
 }
 
 /// What the title bar asks of the window.
@@ -248,6 +258,8 @@ pub struct UiState {
     /// one each second while it is shown).
     memory_open:   bool,
     memory:        Option<memory::MemoryReport>,
+    /// The Advanced tool options and Brushes windows, the stroke preview.
+    advanced:      advanced::AdvancedState,
     /// Where the pointer was in the last frame (the Delete key goes by it).
     pointer:       Option<egui::Pos2>,
     tool_list:     dockers::tool_list::ToolListState,
@@ -287,6 +299,7 @@ impl UiState {
             layers:        Default::default(),
             memory_open:   false,
             memory:        None,
+            advanced:      Default::default(),
             pointer:       None,
             tool_list:     Default::default(),
             cel:           Default::default(),
@@ -341,6 +354,9 @@ impl UiState {
     }
 
     /// The memory report window is open: the app should measure.
+    /// The stroke preview asked with `Actions::preview` (straight RGBA).
+    pub fn set_preview(&mut self, w: u32, h: u32, rgba: &[u8]) { self.advanced.preview.set(w, h, rgba); }
+
     pub fn memory_wanted(&self) -> bool { self.memory_open }
 
     /// The latest measure, for the window.
@@ -411,7 +427,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
     state.anim.rect = None;
 
     bars::menu_bar(root, state, model, actions);
-    bars::toolbar(root, model, actions);
+    bars::toolbar(root, &mut state.advanced, model, actions);
     bars::status_bar(root, model);
 
     if let Some(tab) = state.focus_tab.take() {
@@ -445,6 +461,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
                 m:      model,
                 a:      actions,
                 content: &mut state.dock_layout.content,
+                preview: state.advanced.preview.region(),
             };
             let (bar, sep) = (style.tab_bar.height, style.separator.width);
             DockArea::new(&mut state.dock)
@@ -459,6 +476,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
             state.dock_layout.enforce(&mut state.dock, bar, sep);
         });
 
+    if std::mem::take(&mut actions.advanced) { state.advanced.open = true; }
     if let Some(tab) = actions.show_docker.take() { dockers::set_shown(&mut state.dock, tab, true); }
     // The Animation panel (Animation documents): under the canvas or
     // beside the dockers.
@@ -468,6 +486,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
     }
 
     memory::window(ctx, &mut state.memory_open, state.memory.as_ref());
+    advanced::windows(ctx, &mut state.advanced, model, actions);
 
     bars::notice_overlay(ctx, root.available_rect_before_wrap(), &mut state.notice);
     if let Some(card) = canvas_card(ctx, root.available_rect_before_wrap(), model) {

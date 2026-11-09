@@ -443,6 +443,34 @@ impl App {
 
     /// Brushes > Import: Photoshop .abr, Procreate .brush / .brushset, each
     /// file a new group of the library (kept on disk).
+    /// The brush's stroke preview, made on a thread of its own.
+    pub(super) fn stroke_preview(&mut self, brush: aurastudio_forge::BrushSettings) {
+        let proxy = self.proxy.clone();
+        let (w, h) = aurastudio_ui::PREVIEW_SIZE;
+        let spawned = std::thread::Builder::new().name("stroke preview".into()).spawn(move || {
+            let rgba = crate::preview::stroke_preview(&brush, w, h);
+            let _ = proxy.send_event(AppEvent::Preview { w, h, rgba });
+        });
+        // (No thread: no preview, the interface may ask again.)
+        if spawned.is_err() { self.ui.set_preview(0, 0, &[]); }
+    }
+
+    /// Advanced tool options: the brush back to its default, or these
+    /// settings as its default.
+    pub(super) fn brush_default(&mut self, d: aurastudio_ui::BrushDefault) {
+        use aurastudio_ui::BrushDefault as D;
+        match d {
+            D::Reset => if let Some(s) = self.library.default_of(self.preset) {
+                self.brush = s;
+                self.ui.notify("Brush reset to its default");
+            },
+            D::Save => match self.library.set_default(self.preset, self.brush.clone()) {
+                Ok(()) => self.ui.notify("Saved as the brush's default"),
+                Err(e) => self.ui.notify(&format!("Default not saved: {e}")),
+            },
+        }
+    }
+
     pub(super) fn import_brushes(&mut self) {
         let picked = rfd::FileDialog::new()
             .set_title("Import brushes")

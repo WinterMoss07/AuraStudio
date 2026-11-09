@@ -2,6 +2,7 @@ mod app;
 mod memory;
 mod cursors;
 mod paint_thread;
+mod preview;
 mod projection;
 mod rescue;
 mod size_drag;

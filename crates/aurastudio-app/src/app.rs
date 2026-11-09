@@ -177,6 +177,8 @@ pub enum AppEvent {
     Notice(String),
     /// A start screen thumbnail was decoded.
     Thumbnail { path: PathBuf, w: u32, h: u32, rgba: Vec<u8> },
+    /// The brush's stroke preview was drawn.
+    Preview { w: u32, h: u32, rgba: Vec<u8> },
     /// A save finished (see paint_thread::Event::Saved).
     Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
     /// The selection changed.
@@ -594,6 +596,8 @@ impl App {
             ViewCmd::RotateLeft    => gpu.view_rotate_at(-step, turn),
             ViewCmd::RotateRight   => gpu.view_rotate_at(step, turn),
             ViewCmd::ResetRotation => gpu.view_reset_rotation(),
+            ViewCmd::MirrorH       => gpu.view_mirror(true),
+            ViewCmd::MirrorV       => gpu.view_mirror(false),
         }
         self.request_redraw();
     }
@@ -705,6 +709,10 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::Thumbnail { path, w, h, rgba } => {
                 self.ui.set_recent_thumbnail(&path, w, h, &rgba);
+                self.request_redraw();
+            }
+            AppEvent::Preview { w, h, rgba } => {
+                self.ui.set_preview(w, h, &rgba);
                 self.request_redraw();
             }
         }

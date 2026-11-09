@@ -138,6 +138,14 @@ pub fn menu_bar(root: &mut egui::Ui, state: &mut UiState, m: &mut Model, a: &mut
                             ui.close();
                         }
                     }
+                    ui.separator();
+                    for (label, cmd, on) in [("Mirror horizontally", ViewCmd::MirrorH, m.view_mirror.0), ("Mirror vertically", ViewCmd::MirrorV, m.view_mirror.1)] {
+                        let mut v = on;
+                        if ui.checkbox(&mut v, label).on_hover_text("Only the view: the picture is not changed").changed() {
+                            a.view = Some(cmd);
+                            ui.close();
+                        }
+                    }
                     ui.label(RichText::new("Wheel: zoom · Space+drag: pan · Shift+Space+drag: rotate · Ctrl+Space+drag: zoom")
                         .small().color(theme::TEXT_WEAK));
                 });
@@ -157,6 +165,9 @@ pub fn menu_bar(root: &mut egui::Ui, state: &mut UiState, m: &mut Model, a: &mut
                     // (The Cel template goes with the timeline and the X-sheet.)
                     let mut on = dockers::is_shown(&state.dock, Tab::CelTemplate);
                     if ui.checkbox(&mut on, Tab::CelTemplate.title()).changed() { dockers::set_shown(&mut state.dock, Tab::CelTemplate, on); }
+                    ui.separator();
+                    ui.add(egui::Checkbox::new(&mut state.advanced.open, "Advanced tool options")).on_hover_text("Every setting of the brush (F5)");
+                    ui.add(egui::Checkbox::new(&mut state.advanced.brushes_open, "Brushes")).on_hover_text("Every brush, in a window of its own (F6)");
                     ui.separator();
                     ui.checkbox(&mut state.memory_open, "Memory report")
                         .on_hover_text("Every megabyte the app holds, by name, to compare with Task Manager");
@@ -224,9 +235,9 @@ fn window_button(ui: &mut egui::Ui, cmd: WindowCmd, maximized: bool) -> egui::Re
 }
 
 /// Toolbar under the menu: fixed actions.
-pub fn toolbar(root: &mut egui::Ui, m: &mut Model, a: &mut Actions) {
+pub fn toolbar(root: &mut egui::Ui, adv: &mut crate::advanced::AdvancedState, m: &mut Model, a: &mut Actions) {
     use crate::icons::Icon;
-    use crate::widgets::icon_button;
+    use crate::widgets::{icon_button, icon_toggle};
     egui::Panel::top("options_bar")
         .exact_size(36.0)
         .show_separator_line(false)
@@ -241,6 +252,14 @@ pub fn toolbar(root: &mut egui::Ui, m: &mut Model, a: &mut Actions) {
                 ui.add_space(8.0);
                 if icon_button(ui, Icon::Copy, "Copy (Ctrl+C)", doc) { a.edit = Some(crate::EditCmd::Copy); }
                 if icon_button(ui, Icon::Paste, "Paste (Ctrl+V)", doc) { a.edit = Some(crate::EditCmd::Paste); }
+                ui.add_space(8.0);
+                // The view's mirrors (the picture stays as it is).
+                if icon_toggle(ui, Icon::FlipH, "Mirror the view horizontally", doc, m.view_mirror.0).clicked() && doc { a.view = Some(ViewCmd::MirrorH); }
+                if icon_toggle(ui, Icon::FlipV, "Mirror the view vertically", doc, m.view_mirror.1).clicked() && doc { a.view = Some(ViewCmd::MirrorV); }
+                ui.add_space(8.0);
+                // The brushes and every setting of the brush, in their windows.
+                if icon_toggle(ui, Icon::Brush, "Brushes (F6)", doc, adv.brushes_open).clicked() && doc { adv.brushes_open = !adv.brushes_open; }
+                if icon_toggle(ui, Icon::FilterLayer, "Advanced tool options (F5)", doc, adv.open).clicked() && doc { adv.open = !adv.open; }
 
             });
         });

@@ -214,7 +214,7 @@ impl App {
         }
 
         let max_canvas = gpu.max_canvas_size();
-        let (view_zoom, view_angle) = (gpu.display_zoom(), gpu.view.angle.to_degrees());
+        let (view_zoom, view_angle, view_mirror) = (gpu.display_zoom(), gpu.view.angle.to_degrees(), gpu.view_mirrored());
         // (Compared with `self.prefs` after the frame: one copy.)
         let mut prefs = self.prefs.clone();
         let display_profile = self.display_profile.as_ref().map(|p| p.name());
@@ -322,6 +322,7 @@ impl App {
                 to_points: &to_points,
                 view_zoom,
                 view_angle,
+                view_mirror,
                 prefs: &mut prefs,
                 display_profile,
                 canvas_edit,
@@ -407,6 +408,8 @@ impl App {
         self.follow_transform_targets();
         if let Some(cmd) = actions.edit { self.edit_cmd(cmd); }
         if actions.import_brushes { self.import_brushes(); }
+        if let Some(b) = actions.preview { self.stroke_preview(b); }
+        if let Some(d) = actions.brush_default { self.brush_default(d); }
         if let Some(action) = actions.filter {
             use aurastudio_ui::FilterAction as F;
             let edit = match action { F::Preview(f) => Edit::FilterPreview(f), F::Apply(f) => Edit::FilterApply(f), F::Cancel => Edit::FilterCancel };
