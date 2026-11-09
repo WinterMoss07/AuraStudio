@@ -415,6 +415,9 @@ pub struct App {
     ui_blocked_since: Option<Instant>,
     /// What the paint thread was doing when the UI started waiting.
     ui_blocked_by: crate::paint_thread::Work,
+    /// Color management to set up again once the document is free (it
+    /// was busy when asked).
+    color_pending: bool,
     /// A frame is needed: drawn in about_to_wait, or right away by
     /// render_if_due.
     redraw_wanted: bool,
@@ -577,6 +580,7 @@ impl App {
             deferred_frame: None,
             ui_blocked_since: None,
             ui_blocked_by: crate::paint_thread::Work::Idle,
+            color_pending: false,
             redraw_wanted: false,
             ui_dirty:     true,
             memory_at:    None,
@@ -741,6 +745,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.tick_playback();
         self.tick_memory();
         self.update_title();
+        if self.color_pending { self.apply_color_management(); }
 
         self.wakes.tick();
         if self.repaint_at.is_some_and(|t| Instant::now() >= t) {

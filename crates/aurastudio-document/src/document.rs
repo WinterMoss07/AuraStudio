@@ -101,6 +101,12 @@ impl Document {
     pub fn profile(&self) -> &Profile { &self.profile }
     pub fn history(&self) -> &History { &self.history }
     pub fn dpi(&self) -> f32 { self.dpi }
+
+    /// Made at this resolution (an image that says its own), not a change.
+    pub fn with_dpi(mut self, dpi: f32) -> Self {
+        if dpi.is_finite() && (1.0..=10_000.0).contains(&dpi) { self.dpi = dpi; }
+        self
+    }
     pub fn selection(&self) -> Option<&Selection> { self.selection.as_ref() }
     pub fn revision(&self) -> u64 { self.revision }
     pub fn is_modified(&self) -> bool { self.revision != self.saved_revision }

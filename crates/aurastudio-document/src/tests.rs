@@ -657,6 +657,30 @@ fn a_setting_changed_again_and_again_is_one_step() {
     assert_eq!(d.stack().node(id).unwrap().opacity(), 1.0);
 }
 
+/// The opacity of several selected layers dragged: one step for all,
+/// joined while the same ones are dragged.
+#[test]
+fn a_setting_of_several_nodes_is_one_step() {
+    let mut d = doc(32, 32);
+    let a = add_layer(&mut d);
+    let b = add_layer(&mut d);
+    let n = d.history().undo_len();
+    for k in 1..=5 {
+        let v = 1.0 - k as f32 * 0.1;
+        d.apply(Edit::Each(vec![Edit::SetOpacity(a, v), Edit::SetOpacity(b, v)]));
+    }
+    assert_eq!(d.history().undo_len(), n + 1);
+    assert!((d.stack().node(a).unwrap().opacity() - 0.5).abs() < 1e-6);
+    assert!((d.stack().node(b).unwrap().opacity() - 0.5).abs() < 1e-6);
+    // Only one of them now: a step of its own.
+    d.apply(Edit::Each(vec![Edit::SetOpacity(a, 0.2)]));
+    assert_eq!(d.history().undo_len(), n + 2);
+    d.apply(Edit::Undo);
+    d.apply(Edit::Undo);
+    assert_eq!(d.stack().node(a).unwrap().opacity(), 1.0);
+    assert_eq!(d.stack().node(b).unwrap().opacity(), 1.0);
+}
+
 /// A stroke over many pen samples, the document let go in between: one
 /// undo step, the same as painted at once; an edit of pixels meanwhile
 /// ends it first.

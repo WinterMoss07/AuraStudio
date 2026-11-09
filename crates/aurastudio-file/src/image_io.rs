@@ -42,6 +42,61 @@ pub fn import_image(path: &Path, max_side: u32, tile: u32) -> Result<(String, La
     Ok((name, stack))
 }
 
+/// The resolution an image file says it has, dots per inch: a PNG's pHYs
+/// chunk, a JPEG's JFIF header. None when it says none (or only a ratio).
+pub fn image_dpi(path: &Path) -> Option<f32> {
+    use std::io::Read;
+    // The header is near the start: no need to read the whole file.
+    let mut head = Vec::new();
+    std::fs::File::open(path).ok()?.take(1 << 16).read_to_end(&mut head).ok()?;
+    dpi_of(&head)
+}
+
+fn dpi_of(b: &[u8]) -> Option<f32> {
+    let be32 = |s: &[u8]| u32::from_be_bytes([s[0], s[1], s[2], s[3]]);
+    let dpi = if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        // Chunks: length, type, data, CRC; pHYs comes before the pixels.
+        let mut at = 8;
+        loop {
+            let c = b.get(at..at + 8)?;
+            let (len, kind) = (be32(c) as usize, &c[4..8]);
+            if kind == b"IDAT" || kind == b"IEND" { return None; }
+            if kind == b"pHYs" {
+                let d = b.get(at + 8..at + 17)?;
+                // Unit 1: per meter; 0: a ratio only.
+                if d[8] != 1 { return None; }
+                break be32(d) as f32 * 0.0254;
+            }
+            at += 12 + len;
+        }
+    } else if b.starts_with(&[0xFF, 0xD8]) {
+        // Segments: FF, marker, length (with itself); JFIF is APP0.
+        let mut at = 2;
+        loop {
+            let s = b.get(at..at + 4)?;
+            if s[0] != 0xFF || s[1] == 0xDA { return None; }
+            let len = u16::from_be_bytes([s[2], s[3]]) as usize;
+            if s[1] == 0xE0 {
+                let d = b.get(at + 4..at + 2 + len)?;
+                if d.len() >= 12 && d.starts_with(b"JFIF\0") {
+                    let x = u16::from_be_bytes([d[8], d[9]]) as f32;
+                    match d[7] {
+                        1 => break x,
+                        2 => break x * 2.54,
+                        _ => return None,
+                    }
+                }
+            }
+            at += 2 + len;
+        }
+    } else {
+        return None;
+    };
+    // (Rounded: 2834 dots per meter is 72 dpi.)
+    let dpi = dpi.round();
+    (1.0..=10_000.0).contains(&dpi).then_some(dpi)
+}
+
 fn too_big(max_side: u32) -> String { format!("image bigger than this GPU allows ({max_side} px)") }
 
 /// A PNG decoded by bands into tiles. `None`: not a PNG, or an interlaced
@@ -225,3 +280,36 @@ pub fn downscale(px: &[Rgba8], w: u32, h: u32, max: u32) -> (u32, u32, Vec<Rgba8
 
 /// The preview a save stores: the merged image shrunk to `PREVIEW_MAX`.
 pub fn preview(merged: &[Rgba8], w: u32, h: u32) -> (u32, u32, Vec<Rgba8>) { downscale(merged, w, h, PREVIEW_MAX) }
+
+#[cfg(test)]
+mod dpi_tests {
+    use super::dpi_of;
+
+    #[test]
+    fn a_png_or_jpeg_says_its_resolution() {
+        // PNG: signature, an IHDR, then pHYs at 11811 dots per meter (300 dpi).
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend([0, 0, 0, 13]);
+        png.extend(b"IHDR");
+        png.extend([0; 13 + 4]);
+        png.extend([0, 0, 0, 9]);
+        png.extend(b"pHYs");
+        png.extend(11811u32.to_be_bytes());
+        png.extend(11811u32.to_be_bytes());
+        png.extend([1, 0, 0, 0, 0]);
+        assert_eq!(dpi_of(&png), Some(300.0));
+        // A ratio only: nothing.
+        let n = png.len();
+        png[n - 5] = 0;
+        assert_eq!(dpi_of(&png), None);
+        // JPEG: JFIF at 150 dpi; then in dots per cm.
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 16];
+        jpg.extend(b"JFIF\0");
+        jpg.extend([1, 2, 1, 0, 150, 0, 150, 0, 0]);
+        assert_eq!(dpi_of(&jpg), Some(150.0));
+        jpg[13] = 2;
+        jpg[15] = 118;
+        assert_eq!(dpi_of(&jpg), Some(300.0));
+        assert_eq!(dpi_of(b"GIF89a"), None);
+    }
+}

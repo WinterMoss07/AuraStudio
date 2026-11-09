@@ -178,7 +178,10 @@ impl App {
                 })
             } else {
                 aurastudio_file::import_image(&path, max, DocType::Illustration.default_tile_size())
-                    .map(|(name, stack)| Document::from_stack(id, &name, stack, DocType::Illustration))
+                    .map(|(name, stack)| {
+                        let d = Document::from_stack(id, &name, stack, DocType::Illustration);
+                        match aurastudio_file::image_dpi(&path) { Some(dpi) => d.with_dpi(dpi), None => d }
+                    })
             }.map_err(|e| e.to_string())
         });
     }

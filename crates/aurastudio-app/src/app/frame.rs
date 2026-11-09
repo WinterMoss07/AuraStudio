@@ -491,7 +491,14 @@ impl App {
     /// the canvas shader and the color docker, or none (sRGB-like monitor,
     /// or off in Preferences).
     pub(super) fn apply_color_management(&mut self) {
-        let document = match self.doc.try_lock() { Ok(d) => d.profile().clone(), Err(_) => return };
+        // Busy: done when it is free (about_to_wait asks again).
+        let document = match self.doc.try_lock() { Ok(d) => d.profile().clone(), Err(_) => {
+            self.color_pending = true;
+            let at = Instant::now() + Duration::from_millis(20);
+            self.repaint_at = Some(self.repaint_at.map_or(at, |t| t.min(at)));
+            return;
+        } };
+        self.color_pending = false;
         let lut = match (&self.display_profile, self.prefs.color_managed) {
             (Some(monitor), true) => {
                 let intent = if self.prefs.perceptual { Intent::Perceptual } else { Intent::RelativeColorimetric };

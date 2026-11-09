@@ -51,6 +51,9 @@ pub enum Edit {
     /// One per folder: the others of its folder lose it.
     SetReference(u64, bool),
     SetFilter(u64, Filter),
+    /// Node settings of several nodes (the selected ones) as one step:
+    /// opacity, blend mode... (other edits in it are ignored).
+    Each(Vec<Edit>),
     // Selection masks.
     /// The selection kept as a mask node named so.
     SelectionToMask(String),
@@ -138,6 +141,7 @@ impl Edit {
             Edit::SetAlphaLock(..) => "Alpha lock",
             Edit::SetReference(..) => "Reference layer",
             Edit::SetFilter(..) => "Filter settings",
+            Edit::Each(v) => v.first().map_or("Layers", Edit::label),
             Edit::SelectionToMask(_) => "Save selection",
             Edit::MaskToSelection(_) => "Load selection",
             Edit::SetFrame(_) => "Frame",
@@ -186,6 +190,9 @@ impl Edit {
         match self {
             Edit::Rename(id, _) | Edit::SetOpacity(id, _) | Edit::SetBlend(id, _) | Edit::SetFolderBlend(id, _) | Edit::SetLabel(id, _) | Edit::SetFilter(id, _) => Some(*id),
             Edit::RenameCel { folder, .. } => Some(*folder),
+            // The same nodes again: one key for the set (its own range, not
+            // a node's).
+            Edit::Each(v) => v.iter().try_fold(1u64 << 63, |k, e| Some(k ^ e.joins()?.wrapping_mul(0x9E37_79B9_7F4A_7C15))),
             _ => None,
         }
     }
@@ -203,6 +210,7 @@ impl Edit {
             Edit::ShiftFrames { folder, .. } | Edit::DeleteSheet { folder, .. } | Edit::MoveSheets { folder, .. } | Edit::AddCel { folder, .. }
             | Edit::RemoveCel { folder, .. } | Edit::RenameCel { folder, .. } | Edit::MoveCel { folder, .. } | Edit::SetCel { folder, .. }
             | Edit::SetCelReference { folder, .. } | Edit::SetTemplateState { folder, .. } => vec![*folder],
+            Edit::Each(v) => v.iter().flat_map(|e| e.nodes(s)).collect(),
             _ => Vec::new(),
         }
     }
@@ -218,6 +226,15 @@ pub(crate) fn apply_tree(e: Edit, s: &mut LayerStack) -> (bool, Option<u64>) {
     }
     let made = |id: Option<u64>| (id.is_some(), id);
     match e {
+        Edit::Each(v) => {
+            let mut changed = false;
+            for e in v {
+                if e.joins().is_some() || matches!(e, Edit::SetVisible(..) | Edit::SetLocked(..) | Edit::SetClip(..) | Edit::SetDraft(..) | Edit::SetAlphaLock(..)) {
+                    changed |= apply_tree(e, s).0;
+                }
+            }
+            (changed, None)
+        }
         Edit::AddLayer(name) => made(Some(s.add_layer(&name))),
         Edit::AddFolder(name) => made(Some(s.add_folder(&name))),
         Edit::AddAnimationFolder { name, group } => made(Some(s.add_animation_folder_in(&name, group))),

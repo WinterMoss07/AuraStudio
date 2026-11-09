@@ -391,9 +391,8 @@ pub fn apply(cmd: LayerCmd, st: &mut LayersState, m: &mut Model) {
 
 /// Give the selected nodes color label `l`.
 fn set_label(st: &LayersState, l: u8, m: &mut Model) {
-    for id in st.selection(m.layers()) {
-        m.apply(Edit::SetLabel(id, l));
-    }
+    let each = st.selection(m.layers()).into_iter().map(|id| Edit::SetLabel(id, l)).collect();
+    m.apply(Edit::Each(each));
 }
 
 /// The Layer menu's entries for the marks and folders.
@@ -597,15 +596,16 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
             let b = egui::Button::new(format!("{}…", f.filter.kind.name())).min_size(vec2(96.0, 24.0));
             if ui.add(b).clicked() { st.edit_filter = Some((id, false)); }
         } else {
-            node_blend_combo(ui, m);
+            node_blend_combo(ui, st, m);
         }
         // The rest of the row (available_width overshoots in a row).
         let w = (full - (ui.cursor().left() - left)).max(40.0);
         let pct = (m.layers().active_node().map_or(1.0, Node::opacity) * 100.0).round();
         if let Some(v) = crate::widgets::fill_slider(ui, "layer_opacity", crate::widgets::percent("Opacity"), pct, w)
         {
-            let id = m.layers().active_id();
-            m.apply(Edit::SetOpacity(id, v / 100.0));
+            // Every selected node (Krita, CSP).
+            let each = st.selection(m.layers()).into_iter().map(|id| Edit::SetOpacity(id, v / 100.0)).collect();
+            m.apply(Edit::Each(each));
         }
     });
 
@@ -825,27 +825,29 @@ fn label_filter_swatches(ui: &mut Ui, mask: &mut u16, layers: &LayerStack) {
     });
 }
 
-/// Blend combo for the active node; folders also offer Pass Through.
-fn node_blend_combo(ui: &mut Ui, m: &mut Model) {
-    let id = m.layers().active_id();
+/// Blend combo for the active node; folders also offer Pass Through. The
+/// mode picked goes to every selected node that has one (Pass Through to
+/// the folders only).
+fn node_blend_combo(ui: &mut Ui, st: &LayersState, m: &mut Model) {
     let Some(node) = m.layers().active_node() else { return };
     let label = node.blend_name();
-    let mut edit = None;
+    // The mode picked: None for Pass Through.
+    let mut picked: Option<Option<BlendMode>> = None;
     match node {
         Node::Layer(l) => {
             let mut b = l.blend;
             egui::ComboBox::from_id_salt("node_blend").selected_text(label).width(104.0).show_ui(ui, |ui| {
                 for mode in BlendMode::ALL {
-                    if ui.selectable_value(&mut b, mode, mode.name()).changed() { edit = Some(Edit::SetBlend(id, b)); }
+                    if ui.selectable_value(&mut b, mode, mode.name()).changed() { picked = Some(Some(b)); }
                 }
             });
         }
         Node::Folder(f) => {
             let mut b = f.blend;
             egui::ComboBox::from_id_salt("node_blend").selected_text(label).width(104.0).show_ui(ui, |ui| {
-                if ui.selectable_value(&mut b, FolderBlend::PassThrough, "Pass Through").changed() { edit = Some(Edit::SetFolderBlend(id, b)); }
+                if ui.selectable_value(&mut b, FolderBlend::PassThrough, "Pass Through").changed() { picked = Some(None); }
                 for mode in BlendMode::ALL {
-                    if ui.selectable_value(&mut b, FolderBlend::Isolated(mode), mode.name()).changed() { edit = Some(Edit::SetFolderBlend(id, b)); }
+                    if ui.selectable_value(&mut b, FolderBlend::Isolated(mode), mode.name()).changed() { picked = Some(Some(mode)); }
                 }
             });
         }
@@ -853,9 +855,14 @@ fn node_blend_combo(ui: &mut Ui, m: &mut Model) {
             egui::ComboBox::from_id_salt("node_blend").selected_text(label).width(104.0).show_ui(ui, |_| {});
         }
     }
-    if let Some(e) = edit {
-        m.apply(e);
-    }
+    let Some(mode) = picked else { return };
+    let each = st.selection(m.layers()).into_iter().filter_map(|id| match (m.layers().node(id), mode) {
+        (Some(Node::Layer(_)), Some(b)) => Some(Edit::SetBlend(id, b)),
+        (Some(Node::Folder(_)), Some(b)) => Some(Edit::SetFolderBlend(id, FolderBlend::Isolated(b))),
+        (Some(Node::Folder(_)), None) => Some(Edit::SetFolderBlend(id, FolderBlend::PassThrough)),
+        _ => None,
+    }).collect();
+    m.apply(Edit::Each(each));
 }
 
 enum RowEvent { Select(egui::Modifiers), ToggleVisible, ToggleLock, ToggleAlphaLock, ToggleCollapse, Renamed, EditFilter, Mark(LayerCmd) }
