@@ -61,7 +61,7 @@ impl Category {
     }
 
     /// The effect's switch, for categories that are one.
-    pub fn switch(self) -> Option<(fn(&Brush) -> bool, fn(&mut Brush, bool))> {
+    pub fn switch(self) -> Option<Toggle> {
         Some(match self {
             Category::ColorJitter => (|b| b.color_dynamics.enabled, |b, v| b.color_dynamics.enabled = v),
             Category::Spraying => (|b| b.scattering.enabled, |b, v| b.scattering.enabled = v),
@@ -71,6 +71,9 @@ impl Category {
         })
     }
 }
+
+/// A switch: read it, set it.
+pub type Toggle = (fn(&Brush) -> bool, fn(&mut Brush, bool));
 
 /// The engine's switch a dynamic needs on (Photoshop's sections, not
 /// shown: an input turns it on).
@@ -181,8 +184,10 @@ const fn switch(get: fn(&Brush) -> bool, set: fn(&mut Brush, bool)) -> Kind { Ki
 const fn s(id: &'static str, cat: Category, label: &'static str, kind: Kind, help: &'static str) -> Setting {
     Setting { id, cat, label, kind, inputs: None, when: None, under: None, help }
 }
-const fn driven(id: &'static str, cat: Category, label: &'static str, kind: Kind, help: &'static str, dynamic: fn(&mut Brush) -> &mut Dynamic, gate: Gate, random: bool) -> Setting {
-    Setting { id, cat, label, kind, inputs: Some(Inputs { dynamic, gate, random, angle: false }), when: None, under: None, help }
+/// The pen inputs of a setting (not an angle).
+const fn ins(dynamic: fn(&mut Brush) -> &mut Dynamic, gate: Gate, random: bool) -> Inputs { Inputs { dynamic, gate, random, angle: false } }
+const fn driven(id: &'static str, cat: Category, label: &'static str, kind: Kind, help: &'static str, inputs: Inputs) -> Setting {
+    Setting { id, cat, label, kind, inputs: Some(inputs), when: None, under: None, help }
 }
 const fn under(st: Setting, parent: &'static str) -> Setting { Setting { under: Some(parent), ..st } }
 
@@ -194,14 +199,14 @@ pub fn all() -> &'static [Setting] {
     static ALL: [Setting; 44] = [
         // Brush size.
         driven("size", BrushSize, "Brush size", slider(1.0, crate::MAX_BRUSH_SIZE as f32, Some(100.0), Unit::Pixels, |b| b.size.round(), |b, v| b.resize_with_dual_brush(v.round().max(1.0))),
-            "The diameter of the tip, in pixels of the picture.", |b| &mut b.shape_dynamics.size, Gate::Shape, true),
+            "The diameter of the tip, in pixels of the picture.", ins(|b| &mut b.shape_dynamics.size, Gate::Shape, true)),
         s("tilt_scale", BrushSize, "Tilt scale", slider(0.0, 200.0, None, Unit::Percent, |b| p100(b.shape_dynamics.tilt_scale), |b, v| b.shape_dynamics.tilt_scale = v / 100.0),
             "With the size following the tilt: how much bigger a flat pen makes it."),
         // Ink.
         driven("opacity", Ink, "Opacity", pct(|b| p100(b.opacity), |b, v| b.opacity = v / 100.0),
-            "The most a stroke covers what is under it, however much you go over it.", |b| &mut b.transfer.opacity, Gate::Transfer, true),
+            "The most a stroke covers what is under it, however much you go over it.", ins(|b| &mut b.transfer.opacity, Gate::Transfer, true)),
         driven("flow", Ink, "Brush density", pct(|b| p100(b.flow), |b, v| b.flow = v / 100.0),
-            "How much paint each tip lays: low, a stroke builds up where tips overlap.", |b| &mut b.transfer.flow, Gate::Transfer, true),
+            "How much paint each tip lays: low, a stroke builds up where tips overlap.", ins(|b| &mut b.transfer.flow, Gate::Transfer, true)),
         s("blend", Ink, "Blend mode", Kind::Blend, "How the paint mixes with the pixels under it (Multiply darkens, Screen lightens...)."),
         s("behind", Ink, "Paint behind", switch(|b| b.behind, |b, v| b.behind = v), "Paint only shows where the layer is transparent, as if laid under it."),
         s("mixer_on", Ink, "Color mixing", switch(|b| b.mixer.enabled, |b, v| b.mixer.enabled = v), "The brush picks up the colors it goes over and mixes them with its own (Mixer brush)."),
@@ -226,7 +231,7 @@ pub fn all() -> &'static [Setting] {
         Setting { inputs: Some(Inputs { dynamic: |b| &mut b.shape_dynamics.angle, gate: Gate::Shape, random: true, angle: true }),
             ..s("angle", BrushTip, "Angle", slider(-180.0, 180.0, None, Unit::Degrees, |b| b.angle.round(), |b, v| b.angle = v), "The turn of the tip.") },
         driven("roundness", BrushTip, "Thickness", pct(|b| p100(b.roundness), |b, v| b.roundness = (v / 100.0).max(0.01)),
-            "Squashes the tip: 100 % is round.", |b| &mut b.shape_dynamics.roundness, Gate::Shape, true),
+            "Squashes the tip: 100 % is round.", ins(|b| &mut b.shape_dynamics.roundness, Gate::Shape, true)),
         s("flip_x", BrushTip, "Flip horizontally", switch(|b| b.flip_x, |b, v| b.flip_x = v), "The tip mirrored left to right."),
         s("flip_y", BrushTip, "Flip vertically", switch(|b| b.flip_y, |b, v| b.flip_y = v), "The tip mirrored top to bottom."),
         s("flip_x_jitter", BrushTip, "Random horizontal flip", switch(|b| b.shape_dynamics.flip_x_jitter, |b, v| { b.shape_dynamics.flip_x_jitter = v; if v { Gate::Shape.wake(b); b.shape_dynamics.flip_x_jitter = true; } }), "Each tip may be mirrored left to right."),
@@ -375,7 +380,7 @@ pub fn paint_glyph(p: &Painter, r: Rect, g: Glyph, color: Color32) {
             let pts: Vec<Pos2> = (0..=10).map(|i| { let a = 0.3 + i as f32 * 0.5; at(4.5 * a.cos(), 4.5 * a.sin()) }).collect();
             let end = *pts.last().unwrap_or(&c);
             p.add(Shape::line(pts, st));
-            p.add(Shape::line(vec![end + vec2(-2.5 * k, -1.0 * k), end, end + vec2(0.5 * k, -2.8 * k)], st));
+            p.add(Shape::line(vec![end + vec2(-2.5 * k, -k), end, end + vec2(0.5 * k, -2.8 * k)], st));
         }
         // An arrow along the stroke.
         Glyph::Input(Control::Direction | Control::InitialDirection) => {
@@ -415,7 +420,14 @@ fn paint_driven(p: &Painter, r: Rect, d: Driven, color: Color32) {
 
 /// A value: its bar (dragged), the number (typed or dragged), its
 /// arrows. `w`: the whole width. The new value when it changed.
-fn value_row(ui: &mut Ui, id: &str, v: f32, lo: f32, hi: f32, mid: Option<f32>, unit: Unit, w: f32, enabled: bool) -> Option<f32> {
+/// A value's range: its ends, the value at the bar's middle, its unit.
+#[derive(Clone, Copy)]
+struct Range { lo: f32, hi: f32, mid: Option<f32>, unit: Unit }
+
+const PERCENT: Range = Range { lo: 0.0, hi: 100.0, mid: None, unit: Unit::Percent };
+
+fn value_row(ui: &mut Ui, id: &str, v: f32, range: Range, w: f32, enabled: bool) -> Option<f32> {
+    let Range { lo, hi, mid, unit } = range;
     // Bar position 0..1 of a value, and back (the middle at `mid`).
     let to_t = |v: f32| match mid {
         Some(m) if v <= m => 0.5 * (v - lo) / (m - lo).max(1e-6),
@@ -512,7 +524,7 @@ pub fn row(ui: &mut Ui, st: &Setting, b: &mut Brush, width: f32, eye: Option<&mu
             match &st.kind {
                 Kind::Slider { lo, hi, mid, unit, get, set } => {
                     label(ui);
-                    if let Some(v) = value_row(ui, st.id, get(b), *lo, *hi, *mid, *unit, w, enabled) { set(b, v); }
+                    if let Some(v) = value_row(ui, st.id, get(b), Range { lo: *lo, hi: *hi, mid: *mid, unit: *unit }, w, enabled) { set(b, v); }
                 }
                 Kind::Switch { get, set } => {
                     let mut v = get(b);
@@ -552,7 +564,7 @@ fn dynamics_popup(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
             ui.horizontal(|ui| {
                 ui.add_space(150.0);
                 ui.add_sized(vec2(96.0, 16.0), egui::Label::new(egui::RichText::new(label).color(if on { theme::TEXT_WEAK } else { theme::TEXT_WEAK.gamma_multiply(0.45) })));
-                out = value_row(ui, &id, (v * 100.0).round(), 0.0, 100.0, None, Unit::Percent, 210.0, on);
+                out = value_row(ui, &id, (v * 100.0).round(), PERCENT, 210.0, on);
             });
             out.map(|v| v / 100.0)
         };
@@ -582,7 +594,7 @@ fn dynamics_popup(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
                     ui.horizontal(|ui| {
                         ui.add_space(150.0);
                         ui.add_sized(vec2(96.0, 16.0), egui::Label::new(egui::RichText::new("Fade length").color(theme::TEXT_WEAK)));
-                        if let Some(v) = value_row(ui, &format!("{}_fade", st.id), d.fade_steps as f32, 1.0, 1000.0, Some(25.0), Unit::Count, 210.0, true) { d.fade_steps = v.round().max(1.0) as u32; }
+                        if let Some(v) = value_row(ui, &format!("{}_fade", st.id), d.fade_steps as f32, Range { lo: 1.0, hi: 1000.0, mid: Some(25.0), unit: Unit::Count }, 210.0, true) { d.fade_steps = v.round().max(1.0) as u32; }
                     });
                 }
             }
