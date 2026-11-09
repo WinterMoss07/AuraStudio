@@ -46,7 +46,7 @@ static CANVAS_FRAME_US: AtomicU64 = AtomicU64::new(16_667);
 /// are shown at once all the same).
 pub fn set_canvas_frame(d: Duration) { CANVAS_FRAME_US.store((d.as_micros() as u64).clamp(1_000, 100_000), Ordering::Relaxed); }
 
-fn canvas_frame() -> Duration { Duration::from_micros(CANVAS_FRAME_US.load(Ordering::Relaxed)) }
+pub fn canvas_frame() -> Duration { Duration::from_micros(CANVAS_FRAME_US.load(Ordering::Relaxed)) }
 
 /// Rows merged at a time when the whole frame is merged again (the
 /// interface gets the document between two).
@@ -588,7 +588,7 @@ mod tests {
         let a = d.stack().root.iter().find(|n| n.is_animation()).unwrap().id();
         d.apply(Edit::SetActive(a));
         d.apply(Edit::SetFrame(1));
-        let ink = |d: &mut Document, r: Rect| { d.stroke("Brush stroke", |s| { use aurastudio_core::PaintSurface; s.prepare(r); let mut v = Vec::new(); s.spans_mut(r, &mut v); for sp in v { sp.pixels.fill([0, 0, 0, 255]); sp.mask.fill(255); } }); };
+        let ink = |d: &mut Document, r: Rect| { d.stroke("Brush stroke", |s| { use aurastudio_core::PaintSurface; s.prepare(r); let mut v = Vec::new(); s.spans_mut(r, &mut v); for sp in v { sp.pixels.fill([0, 0, 0, 255]); } }); };
         ink(&mut d, Rect::new(4, 4, 12, 12));
         d.apply(Edit::SetFrame(3));
         d.apply(Edit::SetActive(a));
@@ -791,7 +791,7 @@ mod tests {
                 use aurastudio_core::PaintSurface;
                 let r = Rect::new(30, 0, 33, 64);
                 s.prepare(r);
-                for y in 0..64 { let sp = s.span_mut(30, y, 3); for i in 0..sp.len() { sp.pixels[i] = [0, 0, 0, 255]; sp.mask[i] = 255; } }
+                for y in 0..64 { let sp = s.span_mut(30, y, 3); for i in 0..sp.len() { sp.pixels[i] = [0, 0, 0, 255]; } }
             });
             d.apply(Edit::SetReference(ink, true));
             d.apply(Edit::SetActive(color));

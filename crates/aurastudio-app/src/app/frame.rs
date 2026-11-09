@@ -20,12 +20,11 @@ impl App {
     /// Shortest time between two frames showing new paint: the paint
     /// thread merges once per canvas frame, a little early is let through
     /// (two clocks: waiting for the next one would show it a frame late).
-    pub(super) fn paint_frame(&self) -> Duration { self.canvas_frame * 3 / 4 }
+    pub(super) fn paint_frame(&self) -> Duration { paint_thread::canvas_frame() * 3 / 4 }
 
     /// Interface size and 100 % zoom meaning, from the settings.
     pub(super) fn apply_settings(&mut self) {
-        self.canvas_frame = Duration::from_secs_f64(1.0 / self.prefs.canvas_fps.max(1) as f64);
-        paint_thread::set_canvas_frame(self.canvas_frame);
+        paint_thread::set_canvas_frame(Duration::from_secs_f64(1.0 / self.prefs.canvas_fps.max(1) as f64));
         self.apply_onion_look();
         let Some(gpu) = &mut self.gpu else { return };
         gpu.set_pixel_exact(!self.prefs.hidpi_scaling);
@@ -216,7 +215,7 @@ impl App {
 
         let max_canvas = gpu.max_canvas_size();
         let (view_zoom, view_angle) = (gpu.display_zoom(), gpu.view.angle.to_degrees());
-        let prefs_before = self.prefs.clone();
+        // (Compared with `self.prefs` after the frame: one copy.)
         let mut prefs = self.prefs.clone();
         let display_profile = self.display_profile.as_ref().map(|p| p.name());
         let ui_state   = &mut self.ui;
@@ -379,8 +378,8 @@ impl App {
         // egui's cursor wish over its widgets is known now.
         self.apply_cursor();
 
-        if prefs != prefs_before {
-            let color = (prefs.color_managed, prefs.perceptual) != (prefs_before.color_managed, prefs_before.perceptual);
+        if prefs != self.prefs {
+            let color = (prefs.color_managed, prefs.perceptual) != (self.prefs.color_managed, self.prefs.perceptual);
             self.prefs = prefs;
             save_prefs(&self.prefs);
             self.apply_settings();

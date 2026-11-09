@@ -143,14 +143,17 @@ impl App {
     }
 
     fn moved(&mut self, e: Event) {
+        // (The window edge under the cursor, asked once per move.)
+        let edge = self.resize_edge(self.cursor);
+        let edge_changed = edge.is_some() != self.edge_hover;
+        self.edge_hover = edge.is_some();
         // The outline moves with the cursor: a frame is needed.
         if self.over_canvas || self.outline_shown {
-            self.update_cursor();
+            self.update_outline();
+            self.apply_cursor_at(edge);
             self.request_canvas_frame();
-        }
-        if self.resize_edge(self.cursor).is_some() != self.edge_hover {
-            self.edge_hover = !self.edge_hover;
-            self.apply_cursor();
+        } else if edge_changed {
+            self.apply_cursor_at(edge);
         }
         // The loupe is UI: a UI frame (also when it just left).
         if self.loupe_on().is_some() || self.loupe_shown { self.request_redraw(); }
@@ -343,9 +346,12 @@ impl App {
     }
 
     /// The one place the window cursor is set (egui only suggests one).
-    pub(super) fn apply_cursor(&mut self) {
+    pub(super) fn apply_cursor(&mut self) { self.apply_cursor_at(self.resize_edge(self.cursor)); }
+
+    /// The same, the window edge under the cursor known (`edge`).
+    fn apply_cursor_at(&mut self, edge: Option<ResizeDirection>) {
         use crate::cursors::Wanted;
-        let edge = self.resize_edge(self.cursor).map(|d| Wanted::System(match d {
+        let edge = edge.map(|d| Wanted::System(match d {
             ResizeDirection::East | ResizeDirection::West => CursorIcon::EwResize,
             ResizeDirection::North | ResizeDirection::South => CursorIcon::NsResize,
             ResizeDirection::NorthWest | ResizeDirection::SouthEast => CursorIcon::NwseResize,
@@ -387,8 +393,10 @@ impl App {
     /// Follow the scaling of the window's monitor, asked from Windows on
     /// every move / resize / focus (winit missed a 200 % -> 100 % move).
     pub(super) fn refresh_dpi(&mut self, why: &str) {
-        // AURASTUDIO_DPI=96...: pretend Windows reports this DPI (testing).
-        let forced = std::env::var("AURASTUDIO_DPI").ok().and_then(|v| v.parse::<u32>().ok());
+        // AURASTUDIO_DPI=96...: pretend Windows reports this DPI (testing;
+        // read once, not at every move).
+        static FORCED: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+        let forced = *FORCED.get_or_init(|| std::env::var("AURASTUDIO_DPI").ok().and_then(|v| v.parse::<u32>().ok()));
         let real = forced.or_else(|| self.hwnd().and_then(crate::system::window_dpi)).map(|d| d as f32 / 96.0);
         let Some(gpu) = &mut self.gpu else { return };
         if let Some(scale) = gpu.set_dpi_scale(real) {
@@ -420,7 +428,7 @@ impl App {
     pub(super) fn send_begin(&mut self, erase: bool) {
         // Each stroke its own jitter (a brush with a seed of its own keeps it).
         self.strokes += 1;
-        let seed = if self.brush.seed != 0 { self.brush.seed } else { aurastudio_core::Fnv::default().u64(self.strokes).u64(0xF0E6E).finish().max(1) };
+        let seed = aurastudio_forge::stroke_seed(self.brush.seed, self.strokes);
         self.paint.send(Cmd::Begin {
             doc:   Arc::clone(&self.doc),
             brush: Box::new(Brush { erase: erase || self.brush.erase, seed, ..self.brush.clone() }),

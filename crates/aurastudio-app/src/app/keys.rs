@@ -38,6 +38,8 @@ impl App {
         // (Alt+E must not pick the eraser).
         let alt   = self.modifiers.alt_key();
         if self.ui.has_dialog() { return; }
+        // A tool group's key (looked up once).
+        let group = match key.logical_key.as_ref() { Key::Character(c) if !ctrl && !alt && !key.repeat => Group::from_key(c), _ => None };
         match key.logical_key.as_ref() {
             Key::Character(c) if ctrl && !key.repeat && ["n", "o", "s", "e", "w"].iter().any(|k| c.eq_ignore_ascii_case(k)) => {
                 let cmd = match c.to_ascii_lowercase().as_str() {
@@ -84,8 +86,8 @@ impl App {
             Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("c") => self.edit_cmd(EditCmd::Copy),
             Key::Character(c) if ctrl && !key.repeat && c.eq_ignore_ascii_case("v") => self.edit_cmd(EditCmd::Paste),
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => self.select(SelectCmd::None),
-            Key::Character(c) if !ctrl && !alt && !key.repeat && Group::from_key(c).is_some() => {
-                if let Some(g) = Group::from_key(c) { self.select_group(g); }
+            Key::Character(_) if group.is_some() => {
+                if let Some(g) = group { self.select_group(g); }
             }
             // Arc outline: Enter paints it, Escape drops it.
             Key::Named(NamedKey::Enter) if self.arc.active() => self.finish_arcs(),

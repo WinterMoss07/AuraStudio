@@ -378,10 +378,6 @@ pub struct App {
     frame_interval: Duration,
     /// A frame wanted before `frame_interval` was over: drawn at this time.
     deferred_frame: Option<Instant>,
-    /// One canvas frame while the canvas changes (Preferences, "Canvas
-    /// frame rate"): the paint thread merges at this pace, and new paint
-    /// is shown as soon as it is merged.
-    canvas_frame: Duration,
     /// Since when the UI couldn't run (document held by the paint thread).
     ui_blocked_since: Option<Instant>,
     /// A frame is needed: drawn in about_to_wait, or right away by
@@ -541,7 +537,6 @@ impl App {
             last_frame:   None,
             frame_interval: UI_FRAME,
             deferred_frame: None,
-            canvas_frame: UI_FRAME,
             ui_blocked_since: None,
             redraw_wanted: false,
             ui_dirty:     true,
@@ -720,7 +715,7 @@ impl ApplicationHandler<AppEvent> for App {
             let interval = if self.painted {
                 self.paint_frame()
             } else if self.is_drawing {
-                self.canvas_frame
+                paint_thread::canvas_frame()
             } else if self.ui_dirty && !dragging && self.nav.is_none() {
                 self.frame_interval.max(UI_FRAME)
             } else {
