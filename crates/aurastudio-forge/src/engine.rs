@@ -3,6 +3,7 @@
 //! Normal brushes go through the stroke buffer (`stroke.rs`); a Mixer Brush
 //! paints dab by dab, each one picking up what is on the layer now.
 
+use aurastudio_core::math::to_u8;
 use aurastudio_core::{PaintSurface, Rect, Rgba8, Span};
 
 use crate::brush::BrushSettings;
@@ -91,7 +92,7 @@ impl Forge {
     fn stroke_brush(&mut self) -> BrushSettings {
         self.strokes += 1;
         let mut b = self.brush.clone();
-        if b.seed == 0 { b.seed = crate::rng::mix64(self.strokes ^ 0x00F0_46E5).max(1); }
+        b.seed = crate::rng::stroke_seed(b.seed, self.strokes);
         b
     }
 
@@ -107,7 +108,7 @@ impl Forge {
             }
             let run = self.mixer.as_mut()?;
             run.generator.push(&[pt], &mut run.dabs, &mut run.duals);
-            let r = self.paint_mixer(s);
+            let r = run.paint(s, &mut self.state);
             return (!r.is_empty()).then_some(r);
         }
         if self.stroke.is_none() {
@@ -125,9 +126,7 @@ impl Forge {
     pub fn end_stroke<S: PaintSurface<Rgba8>>(&mut self, s: &mut S) -> Option<Rect> {
         if let Some(mut run) = self.mixer.take() {
             run.generator.finish(&mut run.dabs, &mut run.duals);
-            self.mixer = Some(run);
-            let r = self.paint_mixer(s);
-            self.mixer = None;
+            let r = run.paint(s, &mut self.state);
             let m = &self.brush.mixer;
             self.state.end_stroke(self.brush.color, m.clean_after_stroke, m.load_after_stroke);
             return (!r.is_empty()).then_some(r);
@@ -138,27 +137,29 @@ impl Forge {
         (!r.is_empty()).then_some(r)
     }
 
-    /// The Mixer Brush's dabs waiting, painted one after the other.
-    fn paint_mixer<S: PaintSurface<Rgba8>>(&mut self, s: &mut S) -> Rect {
-        let Some(run) = self.mixer.as_mut() else { return Rect::EMPTY };
+}
+
+impl MixerRun {
+    /// The dabs waiting, painted one after the other.
+    fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, state: &mut MixerState) -> Rect {
         let mut done = Rect::EMPTY;
-        let dabs = std::mem::take(&mut run.dabs);
-        run.duals.clear();
+        let dabs = std::mem::take(&mut self.dabs);
+        self.duals.clear();
         for d in &dabs {
-            let rect = run.ctx.dab_rect(d, false);
+            let rect = self.ctx.dab_rect(d, false);
             if rect.is_empty() { continue; }
-            run.ctx.rasterize(d, false, rect, &mut run.cov);
-            mixer_dab(s, &run.cov, rect, d, &run.ctx.brush, &mut self.state);
+            self.ctx.rasterize(d, false, rect, &mut self.cov);
+            mixer_dab(s, &self.cov, rect, d, &self.ctx.brush, state);
             done = done.union(&rect);
         }
-        run.dabs = dabs;
-        run.dabs.clear();
+        self.dabs = dabs;
+        self.dabs.clear();
         done
     }
 }
 
-/// Every run of `rect`, in order (two passes of one dab read, then write).
-fn for_runs<S: PaintSurface<Rgba8>>(s: &mut S, rect: Rect, mut f: impl FnMut(&mut Span<'_, Rgba8>)) {
+/// Every run of `rect`, in order, one by one through `span_mut`.
+pub(crate) fn for_runs<S: PaintSurface<Rgba8>>(s: &mut S, rect: Rect, mut f: impl FnMut(&mut Span<'_, Rgba8>)) {
     for y in rect.y0..rect.y1 {
         let mut x = rect.x0;
         while x < rect.x1 {
@@ -215,17 +216,16 @@ fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab
         let r = res.unwrap_or([0.0; 4]);
         let p = pickup.unwrap_or([0.0; 4]);
         let paint: [f32; 3] = std::array::from_fn(|c| (r[c] * wr + p[c] * wp) / total);
-        let paint8 = paint.map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        let paint8 = paint.map(to_u8);
         let dep = total.min(1.0) * flow;
         for_runs(s, rect, |sp| {
             for i in 0..sp.len() {
                 let mut k = at(sp.x + i as i32, sp.y) * dep;
                 if let Some(l) = sp.limit { k *= l[i] as f32 / 255.0; }
-                let k8 = (k.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                let k8 = to_u8(k);
                 if k8 == 0 { continue; }
                 let px = sp.pixels[i];
-                // (The mask says the pixel changed; the paint itself builds on what is there.)
-                sp.cover(i, 255);
+                // (The paint builds on what is there, not on the base.)
                 sp.pixels[i] = aurastudio_core::blend::paint_pixel_u8(px, paint8, k8, aurastudio_core::BlendMode::Normal);
             }
         });

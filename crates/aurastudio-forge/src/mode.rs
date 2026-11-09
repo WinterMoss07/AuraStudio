@@ -138,7 +138,6 @@ pub fn blend_channel(mode: PaintMode, cb: f32, cs: f32) -> f32 {
 #[inline]
 fn channel(mode: PaintMode, cb: f32, cs: f32, hi: f32) -> f32 {
     match mode {
-        PaintMode::Normal | PaintMode::Dissolve => cs,
         PaintMode::Darken => cb.min(cs),
         PaintMode::Multiply => cb * cs,
         PaintMode::ColorBurn => color_burn(cb, cs),
@@ -207,8 +206,8 @@ fn channel(mode: PaintMode, cb: f32, cs: f32, hi: f32) -> f32 {
                 (cb / (1.0 - cs)).min(1.0)
             }
         }
-        // Non-separable modes are handled by `blend_rgb`; fall back to source.
-        PaintMode::DarkerColor | PaintMode::LighterColor | PaintMode::Hue | PaintMode::Saturation | PaintMode::Color | PaintMode::Luminosity => cs,
+        // The source itself; non-separable modes are handled by `blend_rgb`.
+        PaintMode::Normal | PaintMode::Dissolve | PaintMode::DarkerColor | PaintMode::LighterColor | PaintMode::Hue | PaintMode::Saturation | PaintMode::Color | PaintMode::Luminosity => cs,
     }
 }
 

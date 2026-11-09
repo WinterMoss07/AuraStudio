@@ -43,6 +43,7 @@ pub(crate) use tile::GrayTile;
 pub use engine::{Forge, PenSample};
 pub use library::{Kind, Library, Preset};
 pub use mode::PaintMode;
+pub use rng::stroke_seed;
 
 /// The settings of a brush (the name the rest of the app uses).
 pub type Brush = BrushSettings;

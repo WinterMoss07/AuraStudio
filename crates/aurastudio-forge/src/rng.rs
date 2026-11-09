@@ -13,6 +13,14 @@ pub fn mix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// The jitter seed of stroke number `n` with a brush whose seed is
+/// `seed`: its own when it has one (a replay's stays the same), else one
+/// per stroke.
+#[inline]
+pub fn stroke_seed(seed: u64, n: u64) -> u64 {
+    if seed != 0 { seed } else { mix64(n ^ 0x00F0_46E5).max(1) }
+}
+
 /// Uniform in [0, 1).
 #[inline]
 pub fn rand01(seed: u64, index: u64, stream: u64) -> f32 {

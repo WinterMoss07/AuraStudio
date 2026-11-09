@@ -51,16 +51,11 @@ pub fn grid_center(x: f64, y: f64, diameter: f32) -> (f32, f32) {
     (snap(x) as f32, snap(y) as f32)
 }
 
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
 /// Wet Edges: how much paint stays at a pixel whose nearest dab reaches it at `rn` (0 at a dab's
 /// centre, 1 at its rim). The interior keeps half the paint, the rim all of it.
 #[inline]
 fn wet_factor(rn: f32) -> f32 {
-    0.5 + 0.5 * smoothstep(0.5, 1.0, rn)
+    0.5 + 0.5 * aurastudio_core::math::smoothstep((rn - 0.5) * 2.0)
 }
 
 /// Combine brush coverage `v` with a mask value `t` (texture/dual tip) at `depth`.

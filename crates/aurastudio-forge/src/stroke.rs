@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 
-use aurastudio_core::math::mul255;
+use aurastudio_core::math::{from_u8 as from8, mul255, to_u8 as to8};
 use aurastudio_core::{PaintSurface, Rect, Rgba8, Span};
 use rustc_hash::FxHashMap;
 
@@ -304,9 +304,8 @@ impl StrokeRenderer {
             self.ctx.rasterize_into(d, false, rect, &mut self.scratch, wet.then_some(&mut self.depth_scratch));
             let rgb = [d.color[0], d.color[1], d.color[2]];
             let col = self.per_dab_color.then_some(&rgb[..]);
+            // (Bounds track the full dab rectangle, even fully transparent parts.)
             self.cov.accumulate(rect, &self.scratch, d.opacity, col, wet.then_some(&self.depth_scratch[..]));
-            // Bounds track the full dab rectangle (even fully transparent parts).
-            self.cov.bounds = self.cov.bounds.union(&rect);
         }
         if let Some(dm) = self.dual.as_mut() {
             for d in &duals {
@@ -353,7 +352,7 @@ impl StrokeRenderer {
         // Big strokes: every dirty tile's runs at once, on all cores.
         let rects: Vec<Rect> = keys.iter()
             .map(|&(tx, ty)| Rect::new(tx * COV_TILE, ty * COV_TILE, (tx + 1) * COV_TILE, (ty + 1) * COV_TILE).intersect(&bounds))
-            .filter(|r| !r.is_empty() && self.cov.tiles.contains_key(&tile_key((r.x0.div_euclid(COV_TILE), r.y0.div_euclid(COV_TILE)))))
+            .filter(|r| !r.is_empty())
             .collect();
         let area: usize = rects.iter().map(|r| r.area() as usize).sum();
         if area >= PARALLEL_PIXELS {
@@ -385,16 +384,7 @@ impl StrokeRenderer {
                 spans = aurastudio_core::surface::recycle_spans(v);
             } else {
                 drop(v);
-                for y in tr.y0..tr.y1 {
-                    let mut x = tr.x0;
-                    while x < tr.x1 {
-                        let mut sp = s.span_mut(x, y, (tr.x1 - x) as usize);
-                        let n = sp.len();
-                        if n == 0 { break; }
-                        p.span(&t, &mut sp);
-                        x += n as i32;
-                    }
-                }
+                crate::engine::for_runs(s, tr, |sp| p.span(&t, sp));
             }
         }
         done
@@ -507,12 +497,6 @@ impl<'a> Painter<'a> {
         [to8(o[0]), to8(o[1]), to8(o[2]), to8(o[3])]
     }
 }
-
-#[inline(always)]
-fn from8(v: u8) -> f32 { v as f32 * (1.0 / 255.0) }
-
-#[inline(always)]
-fn to8(v: f32) -> u8 { (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8 }
 
 #[cfg(test)]
 mod coverage_tests;
