@@ -426,6 +426,20 @@ fn pictures_import_and_export() {
         let l = s.image(ids[0]).unwrap();
         assert_eq!(l.read(l.rect()), want.as_raw().as_chunks::<4>().0, "{name}");
     }
+    // Decoded whole (JPEG, BMP, 16-bit PNG): the same pixels as the image
+    // crate gives.
+    let rgb = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8]));
+    let deep = image::ImageBuffer::<image::Rgb<u16>, _>::from_fn(w, h, |x, y| image::Rgb([(x * 200) as u16, (y * 100) as u16, 7]));
+    for (file, img) in [("a.jpg", image::DynamicImage::ImageRgb8(rgb.clone())), ("a.bmp", image::DynamicImage::ImageRgb8(rgb)), ("deep.png", image::DynamicImage::ImageRgb16(deep))] {
+        let path = dir.join(file);
+        img.save(&path).unwrap();
+        let want = image::open(&path).unwrap().to_rgba8();
+        let (_, s) = import_image(&path, 16384, 64).unwrap();
+        let l = s.image(s.layer_ids()[0]).unwrap();
+        let got = l.read(l.rect());
+        let worst = got.iter().flatten().zip(want.as_raw()).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+        assert!(worst <= 1, "{file}: off by {worst}");
+    }
     let px: Vec<Rgba8> = (0..30 * 20).map(|i| [i as u8, 50, 200, 255]).collect();
     let png = dir.join("photo.png");
     export_image(&px, 30, 20, &png).unwrap();

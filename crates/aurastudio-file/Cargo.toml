@@ -15,6 +15,8 @@ serde_json = "1"
 zip        = { version = "9", default-features = false }
 image      = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "tiff", "gif"] }
 lz4_flex   = "0.14"
+# PNG read row by row (the image crate decodes it whole).
+png        = "0.18"
 
 [dev-dependencies]
 aurastudio-animation = { path = "../aurastudio-animation" }

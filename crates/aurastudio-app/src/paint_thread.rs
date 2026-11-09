@@ -455,7 +455,7 @@ impl Worker {
     }
 
     /// Merge the whole frame again by bands, the document locked for one at
-    /// a time (the interface runs between two), shown once complete.
+    /// a time (the interface runs between two), each band shown as it comes.
     fn merge_whole(&mut self, doc: SharedDoc) {
         profiling::scope!("merge whole");
         self.stroke_cache = StrokeCache::default();
@@ -465,25 +465,23 @@ impl Worker {
         };
         // (What was waiting is part of it.)
         self.pending.clear();
-        // Shown once all of it is merged: band by band, a deleted layer
-        // left the screen in two halves.
-        let mut bands = Vec::new();
+        // Only asked for a canvas just made (a document shown, a resize):
+        // each band goes to the screen at once, nothing is held.
         for y0 in (0..h).step_by(BAND as usize) {
             let r = Rect::from_xywh(0, y0 as i32, w, BAND.min(h - y0));
             let px = {
                 let d = doc.lock().unwrap_or_else(|e| e.into_inner());
                 // (Resized meanwhile: a new whole merge comes.)
-                if (d.stack().width, d.stack().height) != (w, h) { bands.clear(); break; }
+                if (d.stack().width, d.stack().height) != (w, h) { break; }
                 aurastudio_compose::merge(d.stack(), r, Opts { ghosts: true, ..Default::default() })
             };
-            bands.push((r, px));
-            let_ui_in();
-        }
-        let mut p = self.projection.lock().unwrap_or_else(|e| e.into_inner());
-        if (p.width, p.height) == (w, h) && !bands.is_empty() {
-            for (r, px) in bands { p.push(r, px); }
-            drop(p);
+            {
+                let mut p = self.projection.lock().unwrap_or_else(|e| e.into_inner());
+                if (p.width, p.height) != (w, h) { break; }
+                p.push(r, px);
+            }
             (self.notify)(Event::Painted);
+            let_ui_in();
         }
         self.doc = Some(doc);
     }

@@ -665,3 +665,22 @@ fn a_clipped_stroke_stays_inside() {
     assert_eq!(s.pixel(-9, 0)[3], 0);
     assert!(s.pixel_bounds().is_some_and(|b| area.contains_rect(&b)));
 }
+
+/// A picture written by bands or by the whole frame at once gives the
+/// same tiles as plain writes, each in its best form.
+#[test]
+fn bands_and_frame_fills_match_plain_writes() {
+    let (w, h) = (300u32, 200u32);
+    let px: Vec<Rgba8> = (0..w * h).map(|i| { let (x, y) = (i % w, i / w); if y < 64 { [255; 4] } else if x < 100 { [0, 0, 0, (x * 2) as u8] } else { [(x % 256) as u8, (y % 256) as u8, 7, 255] } }).collect();
+    let mut plain = Image::new(w, h, 32, [0; 4]);
+    plain.write(plain.rect(), &px);
+    plain.compact(plain.rect());
+    let mut banded = Image::new(w, h, 32, [0; 4]);
+    for y0 in (0..h).step_by(64) { let n = 64.min(h - y0); banded.write_band(y0, &px[(y0 * w) as usize..((y0 + n) * w) as usize]); }
+    let mut whole = Image::new(w, h, 32, [0; 4]);
+    whole.fill_frame(|y0, out| out.copy_from_slice(&px[(y0 * w) as usize..(y0 * w) as usize + out.len()]));
+    for s in [&banded, &whole] {
+        assert_eq!(s.read(s.rect()), px);
+        assert_eq!(s.stored(), plain.stored());
+    }
+}

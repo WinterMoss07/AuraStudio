@@ -3,7 +3,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use aurastudio_core::{Rect, Rgba8};
+use aurastudio_core::Rgba8;
 use aurastudio_layers::{LayerStack, Start};
 use aurastudio_raster::Image;
 
@@ -20,15 +20,82 @@ pub fn can_open(path: &Path) -> bool {
     ext == EXTENSION || IMAGE_EXTENSIONS.contains(&ext.as_str())
 }
 
-/// Rows written at a time when a picture becomes a surface: no second
-/// full-size RGBA copy of an RGB or grey picture.
+/// Rows of a PNG decoded before they become tiles (the next band is
+/// decoded while those are made).
 const BAND: u32 = 256;
 
 /// Open an image (PNG, JPG...) as a new stack with tiles of `tile`: the
 /// picture as the bottom layer named after the file, an empty layer
 /// above it active. Returns the name and the stack.
+/// A PNG is decoded row by row into the tiles (no copy of the whole
+/// picture); other formats are decoded whole, then made into tiles on all
+/// cores straight from the decoded pixels (no RGBA copy).
 pub fn import_image(path: &Path, max_side: u32, tile: u32) -> Result<(String, LayerStack), String> {
     aurastudio_core::zone!("import image");
+    let name = crate::doc_name(path);
+    let surface = match import_png(path, max_side, tile)? {
+        Some(s) => s,
+        None => import_decoded(path, max_side, tile)?,
+    };
+    let (w, h) = (surface.width(), surface.height());
+    let stack = LayerStack::new(w, h, tile, Start::Image { name: name.clone(), surface });
+    Ok((name, stack))
+}
+
+fn too_big(max_side: u32) -> String { format!("image bigger than this GPU allows ({max_side} px)") }
+
+/// A PNG decoded by bands into tiles. `None`: not a PNG, or an interlaced
+/// one (decoded whole).
+fn import_png(path: &Path, max_side: u32, tile: u32) -> Result<Option<Image>, String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut magic = [0u8; 8];
+    if file.read_exact(&mut magic).is_err() || magic != *b"\x89PNG\r\n\x1a\n" { return Ok(None); }
+    let mut dec = png::Decoder::new(io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec.read_info().map_err(|e| e.to_string())?;
+    let (w, h, interlaced) = { let i = reader.info(); (i.width, i.height, i.interlaced) };
+    if interlaced { return Ok(None); }
+    if w == 0 || h == 0 { return Err("empty image".into()); }
+    if w > max_side || h > max_side { return Err(too_big(max_side)); }
+    let (color, _) = reader.output_color_type();
+    let to_rgba: fn(&[u8], &mut [Rgba8]) = match color {
+        png::ColorType::Rgba => |s, d| { for (d, s) in d.iter_mut().zip(s.as_chunks::<4>().0) { *d = *s; } },
+        png::ColorType::Rgb => |s, d| { for (d, s) in d.iter_mut().zip(s.as_chunks::<3>().0) { *d = [s[0], s[1], s[2], 255]; } },
+        png::ColorType::GrayscaleAlpha => |s, d| { for (d, s) in d.iter_mut().zip(s.as_chunks::<2>().0) { *d = [s[0], s[0], s[0], s[1]]; } },
+        png::ColorType::Grayscale => |s, d| { for (d, s) in d.iter_mut().zip(s) { *d = [*s, *s, *s, 255]; } },
+        png::ColorType::Indexed => return Ok(None),
+    };
+    let mut surface = Image::new(w, h, tile, LayerStack::clear_pixel(false));
+    let band = BAND.max(surface.tile_size());
+    let wu = w as usize;
+    let read = |reader: &mut png::Reader<_>, y0: u32| -> Result<Vec<Rgba8>, String> {
+        let n = band.min(h - y0) as usize;
+        let mut out = vec![[0u8; 4]; wu * n];
+        for r in 0..n {
+            let row = reader.next_row().map_err(|e| e.to_string())?.ok_or("PNG cut short")?;
+            to_rgba(row.data(), &mut out[r * wu..(r + 1) * wu]);
+        }
+        Ok(out)
+    };
+    // Tiles of one band made while the next one is decoded.
+    let mut next = Some(read(&mut reader, 0)?);
+    let mut y0 = 0;
+    while let Some(rows) = next.take() {
+        let after = y0 + band;
+        let (decoded, ()) = rayon::join(
+            || if after < h { read(&mut reader, after).map(Some) } else { Ok(None) },
+            || surface.write_band(y0, &rows),
+        );
+        next = decoded?;
+        y0 = after;
+    }
+    Ok(Some(surface))
+}
+
+/// Any picture the image crate reads, decoded whole, then made into tiles
+/// on all cores from its own pixels.
+fn import_decoded(path: &Path, max_side: u32, tile: u32) -> Result<Image, String> {
     let mut reader = image::ImageReader::open(path).map_err(|e| e.to_string())?.with_guessed_format().map_err(|e| e.to_string())?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(max_side);
@@ -36,28 +103,29 @@ pub fn import_image(path: &Path, max_side: u32, tile: u32) -> Result<(String, La
     limits.max_alloc = Some(max_side as u64 * max_side as u64 * 4 * 2);
     reader.limits(limits);
     let img = reader.decode().map_err(|e| match e {
-        image::ImageError::Limits(_) => format!("image bigger than this GPU allows ({max_side} px)"),
+        image::ImageError::Limits(_) => too_big(max_side),
         e => e.to_string(),
     })?;
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 { return Err("empty image".into()); }
-    let name = crate::doc_name(path);
+    // Rare forms (16-bit, float): one RGBA copy first.
+    let img = match img {
+        image::DynamicImage::ImageRgb8(_) | image::DynamicImage::ImageRgba8(_) | image::DynamicImage::ImageLuma8(_) | image::DynamicImage::ImageLumaA8(_) => img,
+        other => image::DynamicImage::ImageRgba8(other.to_rgba8()),
+    };
     let mut surface = Image::new(w, h, tile, LayerStack::clear_pixel(false));
-    for y0 in (0..h).step_by(BAND as usize) {
-        let y1 = (y0 + BAND).min(h);
-        let rect = Rect::from_xywh(0, y0 as i32, w, y1 - y0);
-        match img.as_rgba8() {
-            Some(rgba) => {
-                let row = w as usize * 4;
-                surface.write(rect, rgba.as_raw()[y0 as usize * row..y1 as usize * row].as_chunks::<4>().0);
-            }
-            None => surface.write(rect, img.crop_imm(0, y0, w, y1 - y0).to_rgba8().as_raw().as_chunks::<4>().0),
+    let wu = w as usize;
+    surface.fill_frame(|y0, out| {
+        let o = y0 as usize * wu;
+        match &img {
+            image::DynamicImage::ImageRgb8(b) => for (d, s) in out.iter_mut().zip(b.as_raw()[o * 3..].as_chunks::<3>().0) { *d = [s[0], s[1], s[2], 255]; },
+            image::DynamicImage::ImageRgba8(b) => for (d, s) in out.iter_mut().zip(b.as_raw()[o * 4..].as_chunks::<4>().0) { *d = *s; },
+            image::DynamicImage::ImageLuma8(b) => for (d, s) in out.iter_mut().zip(&b.as_raw()[o..]) { *d = [*s, *s, *s, 255]; },
+            image::DynamicImage::ImageLumaA8(b) => for (d, s) in out.iter_mut().zip(b.as_raw()[o * 2..].as_chunks::<2>().0) { *d = [s[0], s[0], s[0], s[1]]; },
+            _ => {}
         }
-    }
-    drop(img);
-    surface.compact(surface.rect().snapped_out(tile));
-    let stack = LayerStack::new(w, h, tile, Start::Image { name: name.clone(), surface });
-    Ok((name, stack))
+    });
+    Ok(surface)
 }
 
 /// Export the merged image (`merged`: frame-sized straight RGBA) to PNG or

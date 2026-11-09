@@ -101,6 +101,55 @@ impl<P: Pixel> Surface<P> {
     /// An empty set of tiles shaped like this surface.
     pub fn dirty_set(&self) -> crate::DirtyTiles { crate::DirtyTiles::new(self.tile) }
 
+    /// Rows `y0..` of the frame, full width (`rows`: whole rows), written
+    /// as new tiles in their best form, on all cores (a picture opened, by
+    /// bands). `y0` off the tile grid: an ordinary write.
+    pub fn write_band(&mut self, y0: u32, rows: &[P]) {
+        let w = self.width as usize;
+        if w == 0 || rows.is_empty() || !rows.len().is_multiple_of(w) { return; }
+        if !y0.is_multiple_of(self.tile) {
+            let r = Rect::from_xywh(0, y0 as i32, self.width, (rows.len() / w) as u32);
+            self.write(r, rows);
+            self.compact(r);
+            return;
+        }
+        for (tx, ty, s) in self.band_slots(y0, rows) { self.set_slot(tx, ty, s); }
+        self.drop_table_if_empty();
+    }
+
+    /// The whole frame from `rows(y0, out)`, which fills `out` with the
+    /// frame's rows from `y0` (full width): tile rows made on all cores.
+    pub fn fill_frame(&mut self, rows: impl Fn(u32, &mut [P]) + Sync) {
+        use rayon::prelude::*;
+        let (w, h, t) = (self.width, self.height, self.tile);
+        let this = &*self;
+        let slots: Vec<Vec<(i32, i32, Slot<P>)>> = (0..h).step_by(t as usize).collect::<Vec<_>>().into_par_iter().map(|y0| {
+            let mut buf = vec![this.fill; (w * t.min(h - y0)) as usize];
+            rows(y0, &mut buf);
+            this.band_slots(y0, &buf)
+        }).collect();
+        for (tx, ty, s) in slots.into_iter().flatten() { self.set_slot(tx, ty, s); }
+        self.drop_table_if_empty();
+    }
+
+    /// The tiles of whole rows from `y0` (on the tile grid; any number of
+    /// rows), each in its best form.
+    fn band_slots(&self, y0: u32, rows: &[P]) -> Vec<(i32, i32, Slot<P>)> {
+        use rayon::prelude::*;
+        let (w, t) = (self.width as usize, self.tile as usize);
+        let n = rows.len() / w.max(1);
+        let (cols, bands) = (w.div_ceil(t), n.div_ceil(t));
+        (0..cols * bands).into_par_iter().map(|k| {
+            let (tx, band) = (k % cols, k / cols);
+            let mut px = vec![self.fill; t * t];
+            let (x0, ry) = (tx * t, band * t);
+            let cw = t.min(w - x0);
+            for y in 0..t.min(n - ry) { let o = (ry + y) * w + x0; px[y * t..y * t + cw].copy_from_slice(&rows[o..o + cw]); }
+            let ty = (y0 >> self.shift) as i32 + band as i32;
+            (tx as i32, ty, self.settled_slot(Slot::Full(Arc::new(FullTile { px, info: None }))))
+        }).filter(|(_, _, s)| !s.is_fill()).collect()
+    }
+
     /// Change the fill color (the Paper's color): every pixel not stored
     /// takes it; stored tiles keep theirs (a stored tile of the new color
     /// becomes the fill).
