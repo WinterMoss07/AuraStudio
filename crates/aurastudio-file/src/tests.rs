@@ -145,7 +145,7 @@ fn every_layer_setting_comes_back() {
         l.surface.write(Rect::new(0, 0, 70, h as i32), &px);
         l
     };
-    let props = |label: u8, clip, reference, draft| Props { label, clip, reference, draft };
+    let props = |label: u8, clip, reference, draft| Props { label, clip, reference, draft, alpha_lock: draft };
     let mut paper = layer(next(), "Paper", true, &mut rnd);
     paper.locked = true;
     let mut lines = layer(next(), "Lines", false, &mut rnd);

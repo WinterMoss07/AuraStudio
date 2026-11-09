@@ -735,3 +735,21 @@ fn nothing_goes_past_the_margin() {
     let c = reopened(&b);
     assert!(c.stack().image(ink).unwrap().pixel_bounds().is_some_and(|r| r == Rect::new(0, 0, 100, 50)));
 }
+
+/// Alpha lock: strokes recolor what is there and nothing else; undone as
+/// one step; the lock itself is undone.
+#[test]
+fn an_alpha_locked_layer_keeps_its_alpha() {
+    let mut d = doc(64, 64);
+    let id = add_layer(&mut d);
+    paint(&mut d, Rect::new(10, 10, 20, 20), [0, 0, 255, 255]);
+    d.apply(Edit::SetAlphaLock(id, true));
+    assert!(d.stack().node(id).unwrap().props().alpha_lock);
+    paint(&mut d, Rect::new(0, 0, 40, 40), [255, 0, 0, 255]);
+    assert_eq!(px(&d, id, 15, 15), [255, 0, 0, 255]);
+    assert_eq!(px(&d, id, 30, 30)[3], 0);
+    d.apply(Edit::Undo);
+    assert_eq!(px(&d, id, 15, 15), [0, 0, 255, 255]);
+    d.apply(Edit::Undo);
+    assert!(!d.stack().node(id).unwrap().props().alpha_lock);
+}

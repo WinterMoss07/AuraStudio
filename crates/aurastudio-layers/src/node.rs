@@ -32,6 +32,8 @@ pub struct Props {
     /// A draft layer (CSP): shown, but left out of fills, references and
     /// exported images.
     pub draft:     bool,
+    /// Alpha lock (Krita): strokes change the color, never the alpha.
+    pub alpha_lock: bool,
 }
 
 /// What a cleared layer holds: white for the background, else

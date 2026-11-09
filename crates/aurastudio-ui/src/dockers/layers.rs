@@ -729,6 +729,10 @@ pub fn show(ui: &mut Ui, st: &mut LayersState, notice: &mut Notice, m: &mut Mode
             RowEvent::ToggleLock => {
                 m.toggle_locked(id);
             }
+            RowEvent::ToggleAlphaLock => {
+                let on = m.layers().node(id).is_some_and(|n| n.props().alpha_lock);
+                m.apply(Edit::SetAlphaLock(id, !on));
+            }
             RowEvent::Renamed => {
             }
             RowEvent::ToggleCollapse => {
@@ -846,7 +850,7 @@ fn node_blend_combo(ui: &mut Ui, m: &mut Model) {
     }
 }
 
-enum RowEvent { Select(egui::Modifiers), ToggleVisible, ToggleLock, ToggleCollapse, Renamed, EditFilter, Mark(LayerCmd) }
+enum RowEvent { Select(egui::Modifiers), ToggleVisible, ToggleLock, ToggleAlphaLock, ToggleCollapse, Renamed, EditFilter, Mark(LayerCmd) }
 
 enum RowMenu { Cmd(LayerCmd), Label(u8), Rename, Duplicate, Delete, EditFilter }
 
@@ -982,7 +986,13 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
 
     // Marks before the lock: reference (lighthouse), draft (pencil); a
     // parent folder's shown fainter.
-    let mut marks_left = lock.left();
+    // Alpha lock, just left of the lock (Krita); paint layers only.
+    let alpha = if matches!(node, Node::Layer(_)) {
+        let r = Rect::from_center_size(pos2(lock.left() - 10.0, rect.center().y), vec2(20.0, 22.0));
+        paint_alpha_lock(ui, r, props.alpha_lock, resp.hovered(), active);
+        r
+    } else { Rect::NOTHING };
+    let mut marks_left = if alpha.is_positive() { alpha.left() } else { lock.left() };
     let mut mark_rects: Vec<(Rect, LayerCmd)> = Vec::new();
     for (on, by_parent, icon, cmd) in [
         (props.reference, row.reference_by_parent, Icon::Reference, LayerCmd::Reference),
@@ -1114,11 +1124,25 @@ fn row_content(ui: &mut Ui, st: &mut LayersState, m: &mut Model, row: &Row, rect
         let pt = pt?;
         if eye.contains(pt) { return Some(RowEvent::ToggleVisible); }
         if lock.contains(pt) { return Some(RowEvent::ToggleLock); }
+        if alpha.contains(pt) { return Some(RowEvent::ToggleAlphaLock); }
         if toggle_rect.contains(pt) { return Some(RowEvent::ToggleCollapse); }
         if let Some((_, cmd)) = mark_rects.iter().find(|(r, _)| r.contains(pt)) { return Some(RowEvent::Mark(*cmd)); }
         return Some(RowEvent::Select(ui.input(|i| i.modifiers)));
     }
     None
+}
+
+/// The alpha lock: a checkered square, lit when on (shown faintly when
+/// off, brighter under the pointer).
+fn paint_alpha_lock(ui: &Ui, r: Rect, on: bool, hovered: bool, active: bool) {
+    let col = if on { if active { theme::TEXT } else { Color32::from_rgb(240, 200, 90) } } else if hovered { theme::TEXT_WEAK } else { theme::TEXT_WEAK.gamma_multiply(0.35) };
+    let b = Rect::from_center_size(r.center(), vec2(11.0, 11.0));
+    let p = ui.painter();
+    p.rect_stroke(b, 1.0, Stroke::new(1.0_f32, col), egui::StrokeKind::Middle);
+    let h = b.width() / 2.0;
+    for (i, j) in [(0.0, 0.0), (1.0, 1.0)] {
+        p.rect_filled(Rect::from_min_size(b.min + vec2(i * h, j * h), vec2(h, h)), 0.0, if on { col } else { col.gamma_multiply(0.6) });
+    }
 }
 
 #[cfg(test)]

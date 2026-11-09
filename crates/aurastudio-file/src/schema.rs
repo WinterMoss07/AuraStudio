@@ -132,6 +132,8 @@ pub(crate) struct PropsJson {
     pub reference: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub draft:     bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub alpha_lock: bool,
 }
 
 impl PropsJson {
@@ -139,13 +141,13 @@ impl PropsJson {
 
     pub fn of(p: Props) -> Self {
         let label = if p.label == 0 { String::new() } else { LABELS.get(p.label as usize).map_or(String::new(), |l| l.0.to_owned()) };
-        PropsJson { label, clip: p.clip, reference: p.reference, draft: p.draft }
+        PropsJson { label, clip: p.clip, reference: p.reference, draft: p.draft, alpha_lock: p.alpha_lock }
     }
 
     /// (An unknown label name: none.)
     pub fn props(&self) -> Props {
         let label = LABELS.iter().position(|l| l.0 == self.label && !self.label.is_empty()).unwrap_or(0) as u8;
-        Props { label, clip: self.clip, reference: self.reference, draft: self.draft }
+        Props { label, clip: self.clip, reference: self.reference, draft: self.draft, alpha_lock: self.alpha_lock }
     }
 }
 

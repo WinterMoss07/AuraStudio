@@ -186,6 +186,39 @@ fn limit_of(l: Option<&Limits>, x: i32, y: i32, len: usize) -> Option<&[u8]> {
     }
 }
 
+impl Stroke<'_, aurastudio_core::Rgba8> {
+    /// Alpha lock: the pixels of `r` the stroke went through get back the
+    /// alpha they had before it (the color changes, not the coverage).
+    pub fn keep_alpha(&mut self, r: Rect) {
+        let r = self.clip.map_or(r, |c| r.intersect(&c));
+        let Some((tx0, ty0, tx1, ty1)) = self.surf.tiles_of(&r) else { return };
+        let shift = self.surf.shift;
+        for ty in ty0..ty1 {
+            for tx in tx0..tx1 {
+                let tr = self.surf.tile_rect(tx, ty);
+                let part = tr.intersect(&r);
+                if part.is_empty() || !self.touched.touches(tr) { continue; }
+                let Stroke { surf, before, flat, opened, .. } = self;
+                let base = base_of(before, flat, opened, tx, ty);
+                let Slot::Full(p) = surf.grid.get_mut(tx, ty) else { continue };
+                let px = &mut Arc::make_mut(p).px;
+                for y in part.y0..part.y1 {
+                    let row = ((y - tr.y0) as usize) << shift;
+                    for x in part.x0..part.x1 {
+                        let o = row + (x - tr.x0) as usize;
+                        if let (Some(d), Some(b)) = (px.get_mut(o), base.get(o)) { d[3] = b[3]; }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `keep_alpha` over everything the stroke went through.
+    pub fn keep_alpha_all(&mut self) {
+        for r in self.touched.rects() { self.keep_alpha(r); }
+    }
+}
+
 impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
     /// Where it may paint: the clip, else anywhere.
     fn frame(&self) -> Rect { self.clip.unwrap_or(Rect::new(i32::MIN / 2, i32::MIN / 2, i32::MAX / 2, i32::MAX / 2)) }

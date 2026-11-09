@@ -684,3 +684,20 @@ fn bands_and_frame_fills_match_plain_writes() {
         assert_eq!(s.stored(), plain.stored());
     }
 }
+
+/// Alpha lock: the stroke's color stays, each pixel keeps its alpha.
+#[test]
+fn a_kept_alpha_changes_only_the_color() {
+    let mut s = Image::new(64, 64, 16, CLEAR);
+    s.write(Rect::new(10, 10, 30, 30), &vec![[0, 0, 255, 128]; 400]);
+    {
+        let mut st = s.begin_stroke(None);
+        dab(&mut st, Rect::new(0, 0, 40, 40), [255, 0, 0], 255);
+        st.keep_alpha(Rect::new(0, 0, 40, 40));
+        st.end();
+    }
+    // Painted inside, with the alpha it had; nothing outside.
+    assert_eq!(s.pixel(20, 20), [255, 0, 0, 128]);
+    assert_eq!(s.pixel(5, 5)[3], 0);
+    assert_eq!(s.pixel(35, 20)[3], 0);
+}

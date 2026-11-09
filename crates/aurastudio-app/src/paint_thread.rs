@@ -435,7 +435,7 @@ impl Worker {
             if done.tree { events.push(Event::TreeChanged); }
         }
         // The layer gone: nothing left to paint on (the stroke stops).
-        let Some(r) = d.paint(|s| st.engine.stroke_to(s, p)) else { return };
+        let Some(r) = d.paint_area(|s| st.engine.stroke_to(s, p)) else { return };
         drop(d);
         if let Some(r) = r { add_rect(&mut self.pending, r.intersect(&frame)); }
         self.stroke = Some(st);
@@ -448,7 +448,7 @@ impl Worker {
         let Some(doc) = self.doc.clone() else { return };
         let (done, frame) = {
             let mut d = doc.locked();
-            d.paint(|s| st.engine.end_stroke(s));
+            d.paint_area(|s| st.engine.end_stroke(s));
             (d.end_stroke(), d.stack().frame())
         };
         // Each stroke builds its own (a stroke begins with a new one): the

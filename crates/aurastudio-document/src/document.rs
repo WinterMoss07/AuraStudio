@@ -59,6 +59,8 @@ pub(crate) struct StrokeSession {
     layer: u64,
     label: String,
     state: aurastudio_raster::StrokeState<Rgba8>,
+    /// The layer's alpha is locked: strokes change only the color.
+    keep_alpha: bool,
 }
 
 impl Document {
@@ -457,7 +459,8 @@ impl Document {
             return done;
         };
         let state = img.stroke_state(limit.as_ref()).clipped(self.stack.area());
-        self.stroke = Some(StrokeSession { layer, label: label.to_owned(), state });
+        let keep_alpha = self.stack.node(layer).is_some_and(|n| n.props().alpha_lock);
+        self.stroke = Some(StrokeSession { layer, label: label.to_owned(), state, keep_alpha });
         done
     }
 
@@ -492,12 +495,23 @@ impl Document {
     /// layer is gone (the stroke stops; an edit taking the layer away ends
     /// the stroke first, recorded).
     pub fn paint<R>(&mut self, f: impl FnOnce(&mut Stroke<'_, Rgba8>) -> R) -> Option<R> {
-        let StrokeSession { layer, label, state } = self.stroke.take()?;
+        let StrokeSession { layer, label, state, keep_alpha } = self.stroke.take()?;
         let Some(img) = self.stack.image_mut(layer) else { self.new_sheet = None; return None };
         let mut stroke = state.on(img);
         let r = f(&mut stroke);
-        self.stroke = Some(StrokeSession { layer, label, state: stroke.detach() });
+        self.stroke = Some(StrokeSession { layer, label, state: stroke.detach(), keep_alpha });
         Some(r)
+    }
+
+    /// `paint` for a brush giving where it painted: on an alpha-locked
+    /// layer, that area keeps its alpha at once (shown as it will be).
+    pub fn paint_area(&mut self, f: impl FnOnce(&mut Stroke<'_, Rgba8>) -> Option<aurastudio_core::Rect>) -> Option<Option<aurastudio_core::Rect>> {
+        let keep = self.stroke.as_ref().is_some_and(|s| s.keep_alpha);
+        self.paint(|s| {
+            let r = f(s);
+            if let (true, Some(r)) = (keep, r) { s.keep_alpha(r); }
+            r
+        })
     }
 
     /// End the stroke under way: one undo step of the tiles it changed
@@ -507,7 +521,10 @@ impl Document {
         aurastudio_core::zone!("document end stroke");
         let mut done = Done::default();
         let Some(img) = self.stack.image_mut(st.layer) else { self.drop_new_sheet(&mut done); return done };
-        let patch = st.state.on(img).end();
+        let mut stroke = st.state.on(img);
+        // (Whatever painted without saying where: kept now.)
+        if st.keep_alpha { stroke.keep_alpha_all(); }
+        let patch = stroke.end();
         if self.record_paint(&st.label, st.layer, patch, None, &mut done) {
             self.revision += 1;
             done.other = true;

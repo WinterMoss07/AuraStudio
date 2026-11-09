@@ -46,6 +46,8 @@ pub enum Edit {
     SetLabel(u64, u8),
     SetClip(u64, bool),
     SetDraft(u64, bool),
+    /// Alpha lock (paint layers): strokes keep the pixels' alpha.
+    SetAlphaLock(u64, bool),
     /// One per folder: the others of its folder lose it.
     SetReference(u64, bool),
     SetFilter(u64, Filter),
@@ -133,6 +135,7 @@ impl Edit {
             Edit::SetLabel(..) => "Color label",
             Edit::SetClip(..) => "Clipping",
             Edit::SetDraft(..) => "Draft layer",
+            Edit::SetAlphaLock(..) => "Alpha lock",
             Edit::SetReference(..) => "Reference layer",
             Edit::SetFilter(..) => "Filter settings",
             Edit::SelectionToMask(_) => "Save selection",
@@ -195,7 +198,7 @@ impl Edit {
                 if ids.is_empty() { vec![s.active_id()] } else { ids.clone() }
             }
             Edit::Rename(id, _) | Edit::SetVisible(id, _) | Edit::SetLocked(id, _) | Edit::SetCollapsed(id, _) | Edit::SetOpacity(id, _)
-            | Edit::SetBlend(id, _) | Edit::SetFolderBlend(id, _) | Edit::SetLabel(id, _) | Edit::SetClip(id, _) | Edit::SetDraft(id, _)
+            | Edit::SetBlend(id, _) | Edit::SetFolderBlend(id, _) | Edit::SetLabel(id, _) | Edit::SetClip(id, _) | Edit::SetDraft(id, _) | Edit::SetAlphaLock(id, _)
             | Edit::SetReference(id, _) | Edit::SetFilter(id, _) | Edit::ApplyToFolder(id) => vec![*id],
             Edit::ShiftFrames { folder, .. } | Edit::DeleteSheet { folder, .. } | Edit::MoveSheets { folder, .. } | Edit::AddCel { folder, .. }
             | Edit::RemoveCel { folder, .. } | Edit::RenameCel { folder, .. } | Edit::MoveCel { folder, .. } | Edit::SetCel { folder, .. }
@@ -245,6 +248,7 @@ pub(crate) fn apply_tree(e: Edit, s: &mut LayerStack) -> (bool, Option<u64>) {
         Edit::SetLabel(id, l) => node(s, id, |n| set(&mut n.props_mut().label, l.min(aurastudio_layers::LABELS.len() as u8 - 1))),
         Edit::SetClip(id, v) => node(s, id, |n| set(&mut n.props_mut().clip, v)),
         Edit::SetDraft(id, v) => node(s, id, |n| set(&mut n.props_mut().draft, v)),
+        Edit::SetAlphaLock(id, v) => node(s, id, |n| set(&mut n.props_mut().alpha_lock, v)),
         Edit::SetReference(id, on) => {
             let was = s.node(id).map(|n| n.props().reference);
             s.set_reference(id, on);
