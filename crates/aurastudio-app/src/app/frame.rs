@@ -359,17 +359,24 @@ impl App {
         }
         // The UI waits while the paint thread holds the document: how long.
         match (doc_busy, self.ui_blocked_since) {
-            (true, None) => self.ui_blocked_since = Some(t0),
+            (true, None) => {
+                self.ui_blocked_since = Some(t0);
+                self.ui_blocked_by = crate::paint_thread::current_work();
+            }
             (false, Some(t)) if run_ui => {
                 self.ui_blocked_since = None;
                 if t.elapsed() > Duration::from_millis(100) {
                     // What the paint thread was most likely busy with.
-                    let work = if self.is_drawing {
-                        format!("stroke, brush {} {:.0} px", self.library.presets.get(self.preset).map_or("?", |p| p.name.as_str()), self.brush.size)
-                    } else if self.xf.is_some() || self.xf_pending {
-                        "transform preview".to_owned()
-                    } else {
-                        "an edit".to_owned()
+                    use crate::paint_thread::Work;
+                    let brush = || format!("brush {} {:.0} px", self.library.presets.get(self.preset).map_or("?", |p| p.name.as_str()), self.brush.size);
+                    let work = match self.ui_blocked_by {
+                        Work::Stroke => format!("stroke, {}", brush()),
+                        Work::StrokeEnd => format!("end of a stroke, {}", brush()),
+                        Work::Merge => "merge for the screen".to_owned(),
+                        Work::Save => "saving".to_owned(),
+                        Work::Edit if self.xf.is_some() || self.xf_pending => "transform preview".to_owned(),
+                        Work::Edit => "an edit".to_owned(),
+                        Work::Idle => "nothing known".to_owned(),
                     };
                     log::warn!("UI waited {:.0} ms for the document (paint thread busy: {work})", t.elapsed().as_secs_f64() * 1000.0);
                 }

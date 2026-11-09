@@ -328,7 +328,7 @@ impl BrushContext {
         let row = |yy: usize, orow: &mut [f32], mut drow: Option<&mut [f32]>| {
             let y = rect.y0 + yy as i32;
             let dy = y as f32 + 0.5 - cy;
-            for xx in 0..w {
+            for (xx, slot) in orow.iter_mut().enumerate() {
                 let x = rect.x0 + xx as i32;
                 let dx = x as f32 + 0.5 - cx;
                 let (u, v) = to_tip(dx, dy);
@@ -390,13 +390,13 @@ impl BrushContext {
                 if wet {
                     val *= wet_factor(rn);
                 }
-                if let Some(slot) = drow.as_deref_mut().and_then(|dp| dp.get_mut(xx)) {
-                    *slot = (1.0 - rn).clamp(0.0, 1.0);
+                if let Some(ds) = drow.as_deref_mut().and_then(|dp| dp.get_mut(xx)) {
+                    *ds = (1.0 - rn).clamp(0.0, 1.0);
                 }
-                orow[xx] = val * d.alpha;
+                *slot = val * d.alpha;
             }
         };
-        match depth.as_deref_mut() {
+        match depth {
             Some(dp) if parallel(w * h) => {
                 use rayon::prelude::*;
                 out.par_chunks_exact_mut(w).zip(dp.par_chunks_exact_mut(w)).enumerate().for_each(|(yy, (o, d))| row(yy, o, Some(d)));

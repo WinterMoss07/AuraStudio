@@ -227,7 +227,7 @@ fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab
             if k <= 0.0 { continue; }
             let p = sp.pixels[i];
             let a = p[3] as f32 / 255.0;
-            for c in 0..3 { o.acc[c] += p[c] as f32 / 255.0 * k * a; }
+            for (c, v) in o.acc.iter_mut().enumerate() { *v += p[c] as f32 / 255.0 * k * a; }
             o.wsum += k;
             o.asum += k * a;
         }
@@ -273,7 +273,7 @@ fn mixer_dab<S: PaintSurface<Rgba8>>(s: &mut S, cov: &[f32], rect: Rect, d: &Dab
     let mut v: Vec<Span<'_, Rgba8>> = Vec::new();
     if parallel(rect.area() as usize) && s.spans_mut(rect, &mut v) {
         use rayon::prelude::*;
-        let got = if wet > 0.0 { v.par_iter().map(|sp| sample(sp)).reduce(Sampled::default, Sampled::add) } else { Sampled::default() };
+        let got = if wet > 0.0 { v.par_iter().map(&sample).reduce(Sampled::default, Sampled::add) } else { Sampled::default() };
         if let Some((paint8, dep)) = mixed(got) { v.par_iter_mut().with_min_len(8).for_each(|sp| paint_run(sp, paint8, dep)); }
     } else {
         drop(v);

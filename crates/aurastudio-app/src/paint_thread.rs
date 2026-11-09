@@ -32,6 +32,31 @@ pub static UI_WANTS_DOC: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// How long the paint thread holds back for the interface, at most.
 const MAX_YIELD: Duration = Duration::from_millis(4);
 
+/// Most pen samples painted together (the screen still gets a frame
+/// between two batches of a stroke far behind).
+const MAX_BATCH: usize = 64;
+
+/// What the paint thread is doing (the interface says what it waited for).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Work { Idle, Stroke, StrokeEnd, Edit, Merge, Save }
+
+static WORK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+fn work(w: Work) { WORK.store(w as u8, Ordering::Relaxed); }
+
+/// What the paint thread is doing now.
+pub fn current_work() -> Work {
+    match WORK.load(Ordering::Relaxed) {
+        1 => Work::Stroke,
+        2 => Work::StrokeEnd,
+        3 => Work::Edit,
+        4 => Work::Merge,
+        5 => Work::Save,
+        _ => Work::Idle,
+    }
+}
+
 /// Wait (briefly) while the interface asks for the document.
 fn let_ui_in() {
     if !UI_WANTS_DOC.load(Ordering::Acquire) { return; }
@@ -206,10 +231,11 @@ struct StrokePace {
 }
 
 impl StrokePace {
-    fn sample(&mut self, pen_time: f64, took: Duration) {
+    /// `n` samples painted together in `took`, the last at `pen_time`.
+    fn sample(&mut self, pen_time: f64, took: Duration, n: u32) {
         let now = Instant::now();
         let (t0, p0) = *self.start.get_or_insert((now - took, pen_time));
-        self.samples += 1;
+        self.samples += n;
         self.painting += took;
         if took > self.slowest.0 { self.slowest = (took, self.samples); }
         let behind = (now - t0).saturating_sub(Duration::from_secs_f64((pen_time - p0).max(0.0)));
@@ -220,7 +246,7 @@ impl StrokePace {
     fn report(&self) -> Option<String> {
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
         (self.behind.0 > Duration::from_millis(100)).then(|| format!(
-            "stroke behind the pen by up to {:.0} ms (sample {} of {}): {:.0} ms painting in all, slowest sample {:.0} ms (#{}), slowest merge {:.0} ms",
+            "stroke behind the pen by up to {:.0} ms (sample {} of {}): {:.0} ms painting in all, slowest batch {:.0} ms (to #{}), slowest merge {:.0} ms",
             ms(self.behind.0), self.behind.1, self.samples, ms(self.painting), ms(self.slowest.0), self.slowest.1, ms(self.slowest_merge)))
     }
 }
@@ -259,6 +285,7 @@ impl Worker {
         loop {
             // Sleep until there is work, then take everything queued.
             if queue.is_empty() {
+                work(Work::Idle);
                 // Painted, not merged yet: wake for the next canvas frame.
                 let merge_at = (!self.pending.is_empty()).then(|| self.last_update + canvas_frame());
                 let cmd = match merge_at {
@@ -299,16 +326,28 @@ impl Worker {
                         self.stroke = Some(Painting { engine, begun: false, limit, layer: 0, pace: StrokePace::default() });
                     }
                     Cmd::Sample(p) => {
+                        // Every sample waiting is painted at once: the dabs
+                        // are the same, the layer is painted once, a stroke
+                        // that fell behind catches up.
+                        let mut ps = vec![p];
+                        while ps.len() < MAX_BATCH {
+                            let Some(Cmd::Sample(q)) = queue.front() else { break };
+                            ps.push(*q);
+                            queue.pop_front();
+                        }
                         let t = Instant::now();
-                        self.sample(p, &mut events);
-                        if let Some(s) = &mut self.stroke { s.pace.sample(p.time, t.elapsed()); }
+                        work(Work::Stroke);
+                        self.sample(&ps, &mut events);
+                        if let (Some(s), Some(last)) = (&mut self.stroke, ps.last()) { s.pace.sample(last.time, t.elapsed(), ps.len() as u32); }
                     }
                     Cmd::End => {
+                        work(Work::StrokeEnd);
                         self.finish_stroke(&mut events);
                         flush = true;
                     }
                     Cmd::Edit { doc, edit, seq } => {
                         if self.stroke.is_some() { self.finish_stroke(&mut events); }
+                        work(Work::Edit);
                         self.edit(doc, edit, seq, &mut events);
                         flush = true;
                     }
@@ -366,8 +405,12 @@ impl Worker {
     }
 
     /// What an edit did, shown and told.
-    fn report(&mut self, frame: Rect, done: &Done, events: &mut Vec<Event>) {
-        self.add_region_in(frame, &done.region);
+    fn report(&mut self, frame: Rect, done: &Done, events: &mut Vec<Event>) { self.report_merging(frame, done, &done.region, events); }
+
+    /// `report`, merging `merge` (what the screen doesn't show yet) of
+    /// what changed.
+    fn report_merging(&mut self, frame: Rect, done: &Done, merge: &Region, events: &mut Vec<Event>) {
+        self.add_region_in(frame, merge);
         if done.selection { events.push(Event::Selection); }
         if done.tree { events.push(Event::TreeChanged); }
         let rect = done.region.bounds().flatten();
@@ -414,7 +457,8 @@ impl Worker {
         self.publish_held();
     }
 
-    fn sample(&mut self, p: PenSample, events: &mut Vec<Event>) {
+    fn sample(&mut self, ps: &[PenSample], events: &mut Vec<Event>) {
+        let Some(&p) = ps.first() else { return };
         let Some(doc) = self.doc.clone() else { return };
         let Some(mut st) = self.stroke.take() else { return };
         let_ui_in();
@@ -435,7 +479,7 @@ impl Worker {
             if done.tree { events.push(Event::TreeChanged); }
         }
         // The layer gone: nothing left to paint on (the stroke stops).
-        let Some(r) = d.paint_area(|s| st.engine.stroke_to(s, p)) else { return };
+        let Some(r) = d.paint_area(|s| st.engine.stroke_through(s, ps)) else { return };
         drop(d);
         if let Some(r) = r { add_rect(&mut self.pending, r.intersect(&frame)); }
         self.stroke = Some(st);
@@ -446,15 +490,23 @@ impl Worker {
         let Some(mut st) = self.stroke.take() else { return };
         if let Some(r) = st.pace.report() { log::warn!("{r}"); }
         let Some(doc) = self.doc.clone() else { return };
-        let (done, frame) = {
+        let (done, frame, last) = {
             let mut d = doc.locked();
-            d.paint_area(|s| st.engine.end_stroke(s));
-            (d.end_stroke(), d.stack().frame())
+            let last = d.paint_area(|s| st.engine.end_stroke(s)).flatten();
+            (d.end_stroke(), d.stack().frame(), last)
         };
         // Each stroke builds its own (a stroke begins with a new one): the
         // memory goes back now, not at the next stroke.
         self.stroke_cache.clear();
-        self.report(frame, &done, events);
+        if done.tree {
+            // (A sheet made for it went: the time shows another drawing.)
+            self.report(frame, &done, events);
+        } else {
+            // What the stroke painted is on the screen already: only its
+            // last dabs are merged, not the whole stroke again.
+            if let Some(r) = last { add_rect(&mut self.pending, r.intersect(&frame)); }
+            self.report_merging(frame, &done, &Region::Nothing, events);
+        }
         self.publish_held();
     }
 
@@ -493,6 +545,7 @@ impl Worker {
     /// Merge the layers of the changed areas into the projection.
     fn update_projection(&mut self) {
         profiling::scope!("merge for the screen");
+        work(Work::Merge);
         self.last_update = Instant::now();
         let rects = std::mem::take(&mut self.pending);
         let Some(doc) = self.doc.clone() else { return };
@@ -524,6 +577,7 @@ impl Worker {
     /// Locked only to take the parts (shared tiles and patches); the
     /// preview merge, packing and writing are done on a thread of its own.
     fn save(&mut self, doc: SharedDoc, path: PathBuf, origin: Option<PathBuf>, auto: bool) {
+        work(Work::Save);
         let (parts, id) = {
             let d = doc.locked();
             (d.snapshot_parts(origin.as_deref()), d.id())
@@ -611,6 +665,31 @@ mod tests {
         let mut screen = vec![[0u8; 4]; 64 * 64];
         for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
         assert_eq!(screen[32 * 64 + 30], [0, 0, 0, 255]);
+    }
+
+    /// Samples sent faster than painted are painted together; the screen
+    /// ends exactly as the layers merge though the stroke is not merged
+    /// again at its end.
+    #[test]
+    fn the_screen_matches_the_stroke_without_a_second_merge() {
+        let (doc, id) = doc_with_layer();
+        let projection = proj(64, 64);
+        let pt = PaintThread::spawn(Arc::clone(&projection), |_| {});
+        pt.send(Cmd::Show { doc: Arc::clone(&doc), region: Region::Whole });
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(3.0)), limit: None, zoom: 1.0 });
+        for i in 0..300 {
+            let t = i as f32 / 300.0;
+            pt.send(Cmd::Sample(PenSample::new(6.0 + 52.0 * t, 32.0 + 20.0 * (t * 6.0).sin(), 0.5 + t / 2.0, i as f64 * 0.001)));
+        }
+        pt.send(Cmd::End);
+        drop(pt);
+        let patches = projection.locked().take_patches();
+        let mut screen = vec![[0u8; 4]; 64 * 64];
+        for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
+        let d = doc.locked();
+        let merged = d.merged(Rect::new(0, 0, 64, 64), aurastudio_layers::Pick::ALL);
+        assert_eq!(screen, merged);
+        assert_eq!(d.stack().image(id).map(|i| i.pixel(6, 32)[3]), Some(255));
     }
 
     /// A resize is done on the paint thread, which tells the new size.

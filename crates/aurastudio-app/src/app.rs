@@ -412,6 +412,8 @@ pub struct App {
     deferred_frame: Option<Instant>,
     /// Since when the UI couldn't run (document held by the paint thread).
     ui_blocked_since: Option<Instant>,
+    /// What the paint thread was doing when the UI started waiting.
+    ui_blocked_by: crate::paint_thread::Work,
     /// A frame is needed: drawn in about_to_wait, or right away by
     /// render_if_due.
     redraw_wanted: bool,
@@ -573,6 +575,7 @@ impl App {
             frame_interval: UI_FRAME,
             deferred_frame: None,
             ui_blocked_since: None,
+            ui_blocked_by: crate::paint_thread::Work::Idle,
             redraw_wanted: false,
             ui_dirty:     true,
             memory_at:    None,
