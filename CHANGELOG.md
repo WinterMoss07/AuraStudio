@@ -3,6 +3,16 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.23.4 — 2026-11-10
+
+Dependencies brought up to date (the Dependabot pull requests).
+
+- pollster 0.4 (wgpu's own: one copy instead of two).
+- zip 9.5, flate2 1.1.11, log 0.4.35 (fixes; the files read and
+  written the same).
+- tracy-client stays 0.18: the profiler crate uses that one, and two
+  Tracy clients would not see each other's zones.
+
 ## 0.23.3 — 2026-11-10
 
 The interface we built lately, made consistent and lighter: one slider,

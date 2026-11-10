@@ -201,7 +201,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "aurastudio"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "arboard",
  "aurastudio-animation",
@@ -229,7 +229,7 @@ dependencies = [
  "log",
  "lz4_flex",
  "mimalloc",
- "pollster 0.3.0",
+ "pollster",
  "profiling",
  "raw-window-handle",
  "rfd",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-animation"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-compose",
  "aurastudio-core",
@@ -251,14 +251,14 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-arch"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "aurastudio-color"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "moxcms 0.9.1",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-compose"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -279,11 +279,11 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-core"
-version = "0.23.3"
+version = "0.23.4"
 
 [[package]]
 name = "aurastudio-diag"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "tracy-client",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-document"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-animation",
  "aurastudio-color",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-file"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-animation",
  "aurastudio-compose",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-filters"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "aurastudio-raster",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-forge"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "flate2",
@@ -353,20 +353,20 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-gpu"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "aurastudio-raster",
  "bytemuck",
  "half",
  "log",
- "pollster 0.3.0",
+ "pollster",
  "wgpu",
 ]
 
 [[package]]
 name = "aurastudio-input"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "crossbeam-queue",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-layers"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-raster"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "lz4_flex",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-selection"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "aurastudio-filters",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-stress"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-color",
  "aurastudio-compose",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-tools"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "aurastudio-input",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-transform"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-core",
  "rayon",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "aurastudio-ui"
-version = "0.23.3"
+version = "0.23.4"
 dependencies = [
  "aurastudio-animation",
  "aurastudio-core",
@@ -680,6 +680,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
 dependencies = [
  "crossbeam-utils",
+]
+
+[[package]]
+name = "constant_time_eq"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb6feb175df65d0a3ccd3e73484e940d0ac664e8034f0519fd49a93db3071d9"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -1156,9 +1165,9 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flate2"
-version = "1.1.10"
+version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
 dependencies = [
  "crc32fast",
  "miniz_oxide 0.9.1",
@@ -1296,8 +1305,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1879,9 +1890,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "loom"
@@ -2618,12 +2629,6 @@ dependencies = [
 
 [[package]]
 name = "pollster"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
-
-[[package]]
-name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
@@ -2916,7 +2921,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "percent-encoding",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -3619,9 +3624,9 @@ dependencies = [
 
 [[package]]
 name = "typed-path"
-version = "0.12.3"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
 
 [[package]]
 name = "unicode-general-category"
@@ -4633,6 +4638,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeroize"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "zerotrie"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4667,16 +4692,21 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.0.5"
+version = "9.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
+checksum = "0700e6c427aff64acdbf02e85fbfd946c2ee12319d1af013092f3a2178914ff8"
 dependencies = [
+ "constant_time_eq",
  "crc32fast",
  "flate2",
+ "getrandom 0.4.3",
  "indexmap",
+ "libc",
  "memchr",
  "nix",
  "typed-path",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
