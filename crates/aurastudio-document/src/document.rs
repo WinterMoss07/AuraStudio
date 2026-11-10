@@ -510,14 +510,15 @@ impl Document {
         Some(r)
     }
 
-    /// `paint` for a brush giving where it painted: on an alpha-locked
-    /// layer, that area keeps its alpha at once (shown as it will be).
-    pub fn paint_area(&mut self, f: impl FnOnce(&mut Stroke<'_, Rgba8>) -> Option<aurastudio_core::Rect>) -> Option<Option<aurastudio_core::Rect>> {
+    /// `paint` for a brush giving where it painted (rects): on an
+    /// alpha-locked layer, those areas keep their alpha at once (shown as
+    /// they will be).
+    pub fn paint_area(&mut self, f: impl FnOnce(&mut Stroke<'_, Rgba8>) -> Vec<aurastudio_core::Rect>) -> Option<Vec<aurastudio_core::Rect>> {
         let keep = self.stroke.as_ref().is_some_and(|s| s.keep_alpha);
         self.paint(|s| {
-            let r = f(s);
-            if let (true, Some(r)) = (keep, r) { s.keep_alpha(r); }
-            r
+            let rects = f(s);
+            if keep { for r in &rects { s.keep_alpha(*r); } }
+            rects
         })
     }
 

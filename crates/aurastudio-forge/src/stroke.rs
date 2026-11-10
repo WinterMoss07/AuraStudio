@@ -345,8 +345,9 @@ impl StrokeRenderer {
     }
 
     /// Paint the coverage tiles changed since the last call (`all`: every
-    /// tile) onto `s`. Returns the area painted.
-    pub fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, all: bool) -> Rect {
+    /// tile) onto `s`. Returns where it painted: the tiles, joined along
+    /// their rows (a diagonal stroke is not its mostly empty box).
+    pub fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, all: bool) -> Vec<Rect> {
         let keys: Vec<(i32, i32)> = if all {
             self.cov.dirty.clear();
             let mut k: Vec<_> = self.cov.tiles.keys().copied().map(tile_coords).collect();
@@ -361,7 +362,7 @@ impl StrokeRenderer {
             self.cov.take_dirty()
         };
         if let Some(d) = self.dual.as_mut() { d.dirty.clear(); }
-        if keys.is_empty() { return Rect::EMPTY; }
+        if keys.is_empty() { return Vec::new(); }
         let bounds = self.bounds();
         let p = Painter::new(self);
         // Big strokes: every dirty tile's runs at once, on all cores.
@@ -383,17 +384,17 @@ impl StrokeRenderer {
                         p.span(&TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE, dual }, sp);
                     }
                 });
-                return rects.iter().fold(Rect::EMPTY, |a, r| a.union(r));
+                return join_rows(rects);
             }
         }
-        let mut done = Rect::EMPTY;
+        let mut done = Vec::new();
         let mut spans: Vec<Span<'_, Rgba8>> = Vec::new();
         for (tx, ty) in keys {
             let Some(tile) = self.cov.tiles.get(&tile_key((tx, ty))) else { continue };
             let tr = Rect::new(tx * COV_TILE, ty * COV_TILE, (tx + 1) * COV_TILE, (ty + 1) * COV_TILE).intersect(&bounds);
             if tr.is_empty() { continue; }
             s.prepare(tr);
-            done = done.union(&tr);
+            done.push(tr);
             let dual = self.dual.as_ref().and_then(|d| d.tiles.get(&tile_key((tx, ty))));
             let t = TileRef { tile, x0: tx * COV_TILE, y0: ty * COV_TILE, dual };
             let mut v = aurastudio_core::surface::recycle_spans(std::mem::take(&mut spans));
@@ -405,8 +406,22 @@ impl StrokeRenderer {
                 crate::engine::for_runs(s, tr, |sp| p.span(&t, sp));
             }
         }
-        done
+        join_rows(done)
     }
+}
+
+/// Tile rects joined where they touch along a row (same top and bottom),
+/// in row order.
+fn join_rows(mut rects: Vec<Rect>) -> Vec<Rect> {
+    rects.sort_unstable_by_key(|r| (r.y0, r.x0));
+    let mut out: Vec<Rect> = Vec::with_capacity(rects.len());
+    for r in rects {
+        match out.last_mut() {
+            Some(l) if l.y0 == r.y0 && l.y1 == r.y1 && l.x1 == r.x0 => l.x1 = r.x1,
+            _ => out.push(r),
+        }
+    }
+    out
 }
 
 /// A coverage tile and where it lies.

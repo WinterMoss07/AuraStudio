@@ -542,12 +542,12 @@ impl Worker {
             if done.tree { events.push(Event::TreeChanged); }
         }
         // The layer gone: nothing left to paint on (the stroke stops).
-        let Some(r) = d.paint_area(|s| st.engine.stroke_through(s, ps)) else {
+        let Some(rects) = d.paint_area(|s| st.engine.stroke_through(s, ps)) else {
             self.mixer = st.engine.take_mixer_state();
             return;
         };
         drop(d);
-        if let Some(r) = r { add_rect(&mut self.pending, r.intersect(&frame)); }
+        for r in rects { add_rect(&mut self.pending, r.intersect(&frame)); }
         if let Some(last) = ps.last() { self.painted_upto = Some(last.time); }
         self.stroke = Some(st);
     }
@@ -559,7 +559,7 @@ impl Worker {
         let Some(doc) = self.doc.clone() else { self.mixer = st.engine.take_mixer_state(); return };
         let (done, frame, last) = {
             let mut d = doc.locked();
-            let last = d.paint_area(|s| st.engine.end_stroke(s)).flatten();
+            let last = d.paint_area(|s| st.engine.end_stroke(s)).unwrap_or_default();
             (d.end_stroke(), d.stack().frame(), last)
         };
         self.mixer = st.engine.take_mixer_state();
@@ -572,7 +572,7 @@ impl Worker {
         } else {
             // What the stroke painted is on the screen already: only its
             // last dabs are merged, not the whole stroke again.
-            if let Some(r) = last { add_rect(&mut self.pending, r.intersect(&frame)); }
+            for r in last { add_rect(&mut self.pending, r.intersect(&frame)); }
             self.report_merging(frame, &done, &Region::Nothing, events);
         }
         self.publish_held();

@@ -118,14 +118,15 @@ impl Forge {
     }
 
     /// Paint from the last sample to `p` (the first one starts the
-    /// stroke). Returns the area painted.
-    pub fn stroke_to<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, p: PenSample) -> Option<Rect> { self.stroke_through(s, &[p]) }
+    /// stroke). Returns where it painted.
+    pub fn stroke_to<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, p: PenSample) -> Vec<Rect> { self.stroke_through(s, &[p]) }
 
     /// Paint through every sample of `ps` at once: their dabs as one by
     /// one, the layer painted once (samples that waited are caught up in
-    /// one go). Returns the area painted.
-    pub fn stroke_through<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, ps: &[PenSample]) -> Option<Rect> {
-        if ps.is_empty() { return None; }
+    /// one go). Returns where it painted: rects that may overlap, not
+    /// their box (a diagonal stroke's box is mostly empty).
+    pub fn stroke_through<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, ps: &[PenSample]) -> Vec<Rect> {
+        if ps.is_empty() { return Vec::new(); }
         let pts: Vec<StrokePoint> = ps.iter().map(|p| p.point()).collect();
         if self.brush.mixer.enabled && !self.brush.erase {
             if self.mixer.is_none() {
@@ -134,44 +135,43 @@ impl Forge {
                 let dual = b.dual_brush.enabled.then(|| CoverageMap::new(0));
                 self.mixer = Some(MixerRun { ctx: BrushContext::new(&b), generator: DabGenerator::new(&b, self.zoom), dabs: Vec::new(), duals: Vec::new(), cov: Vec::new(), dual });
             }
-            let run = self.mixer.as_mut()?;
+            let Some(run) = self.mixer.as_mut() else { return Vec::new() };
             run.generator.push(&pts, &mut run.dabs, &mut run.duals);
-            let r = run.paint(s, &mut self.state, self.sampler.as_ref());
-            return (!r.is_empty()).then_some(r);
+            return run.paint(s, &mut self.state, self.sampler.as_ref());
         }
         if self.stroke.is_none() {
             let b = self.stroke_brush();
             self.stroke = Some(StrokeRenderer::new(&b, self.zoom));
         }
-        let st = self.stroke.as_mut()?;
+        let Some(st) = self.stroke.as_mut() else { return Vec::new() };
         st.push(&pts);
-        let r = st.paint(s, false);
-        (!r.is_empty()).then_some(r)
+        st.paint(s, false)
     }
 
     /// The stroke is over: what smoothing still owed is painted, the next
     /// stroke starts afresh.
-    pub fn end_stroke<S: PaintSurface<Rgba8>>(&mut self, s: &mut S) -> Option<Rect> {
+    pub fn end_stroke<S: PaintSurface<Rgba8>>(&mut self, s: &mut S) -> Vec<Rect> {
         if let Some(mut run) = self.mixer.take() {
             run.generator.finish(&mut run.dabs, &mut run.duals);
             let r = run.paint(s, &mut self.state, self.sampler.as_ref());
             self.sampler = None;
             let m = &self.brush.mixer;
             self.state.end_stroke(self.brush.color, m.clean_after_stroke, m.load_after_stroke);
-            return (!r.is_empty()).then_some(r);
+            return r;
         }
-        let mut st = self.stroke.take()?;
+        let Some(mut st) = self.stroke.take() else { return Vec::new() };
         st.finish();
-        let r = st.paint(s, false);
-        (!r.is_empty()).then_some(r)
+        st.paint(s, false)
     }
 
 }
 
 impl MixerRun {
     /// The dabs waiting, painted one after the other (the 2nd tip's first).
-    fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, state: &mut MixerState, around: Option<&Sampler>) -> Rect {
-        let mut done = Rect::EMPTY;
+    /// Returns their rects, each joined with the one before when that costs
+    /// no more area (dabs follow each other and overlap).
+    fn paint<S: PaintSurface<Rgba8>>(&mut self, s: &mut S, state: &mut MixerState, around: Option<&Sampler>) -> Vec<Rect> {
+        let mut done: Vec<Rect> = Vec::new();
         let dabs = std::mem::take(&mut self.dabs);
         let duals = std::mem::take(&mut self.duals);
         if let Some(dm) = self.dual.as_mut() {
@@ -186,7 +186,10 @@ impl MixerRun {
             if rect.is_empty() { continue; }
             self.ctx.rasterize(d, false, rect, &mut self.cov);
             mixer_dab(s, &self.cov, rect, d, &self.ctx, self.dual.as_ref(), state, around);
-            done = done.union(&rect);
+            match done.last_mut() {
+                Some(l) if l.union(&rect).area() <= l.area() + rect.area() => *l = l.union(&rect),
+                _ => done.push(rect),
+            }
         }
         (self.dabs, self.duals) = (dabs, duals);
         self.dabs.clear();
@@ -343,6 +346,27 @@ mod tests {
             f.stroke_to(s, PenSample::new(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t, 1.0, t as f64 * 0.2));
         }
         f.end_stroke(s);
+    }
+
+    /// A diagonal stroke says where it painted as tile rects that cover
+    /// every changed pixel, far smaller than its box; a Mixer brush too.
+    #[test]
+    fn a_diagonal_stroke_reports_rects_not_its_box() {
+        for b in [brush(10.0), BrushSettings { mixer: crate::mixer::MixerSettings { enabled: true, ..Default::default() }, ..brush(10.0) }] {
+            let pts: Vec<PenSample> = (0..=100).map(|i| PenSample::new(10.0 + i as f32 * 9.0, 10.0 + i as f32 * 9.0, 1.0, i as f64 * 0.004)).collect();
+            let blank = [255, 255, 255, 255];
+            let mut s = FlatSurface::new(1000, 1000, blank);
+            let mut f = Forge::new(b.clone());
+            let mut rects = f.stroke_through(&mut s, &pts);
+            rects.extend(f.end_stroke(&mut s));
+            let area: u64 = rects.iter().map(|r| r.area()).sum();
+            assert!(area < 1000 * 1000 / 4, "mixer {}: {area} px reported", b.mixer.enabled);
+            for y in 0..1000 {
+                for x in 0..1000 {
+                    if s.pixels[(y * 1000 + x) as usize] != blank { assert!(rects.iter().any(|r| r.contains(x, y)), "({x}, {y}) painted, not reported"); }
+                }
+            }
+        }
     }
 
     /// The samples of a stroke one by one or all at once paint the same

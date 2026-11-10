@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use aurastudio_core::{Rect, Rgba8};
 
-/// Above this many pending rectangles, they are merged into one: cheaper
-/// than issuing hundreds of tiny uploads.
+/// Above this many pending rectangles, they are joined per GPU page (one
+/// box per page touched): cheaper than hundreds of tiny merges and
+/// uploads, still not the box of a whole diagonal stroke.
 const MAX_RECTS: usize = 128;
 
 pub struct Projection {
@@ -48,11 +49,23 @@ pub fn add_rect(list: &mut Vec<Rect>, r: Rect) {
         }
     }
     list.push(r);
-    if list.len() > MAX_RECTS {
-        let all = list.iter().fold(r, |a, b| a.union(b));
-        list.clear();
-        list.push(all);
+    if list.len() > MAX_RECTS { *list = by_page(list); }
+}
+
+/// The rects joined per GPU page: one box in each page they touch.
+fn by_page(list: &[Rect]) -> Vec<Rect> {
+    let p = aurastudio_gpu::PAGE as i32;
+    let mut pages: std::collections::BTreeMap<(i32, i32), Rect> = std::collections::BTreeMap::new();
+    for r in list {
+        for py in r.y0.div_euclid(p)..=(r.y1 - 1).div_euclid(p) {
+            for px in r.x0.div_euclid(p)..=(r.x1 - 1).div_euclid(p) {
+                let part = r.intersect(&Rect::new(px * p, py * p, px * p + p, py * p + p));
+                if part.is_empty() { continue; }
+                pages.entry((py, px)).and_modify(|b| *b = b.union(&part)).or_insert(part);
+            }
+        }
     }
+    pages.into_values().collect()
 }
 
 #[cfg(test)]
@@ -69,10 +82,17 @@ mod tests {
     }
 
     #[test]
-    fn too_many_rects_collapse_into_one() {
+    fn too_many_rects_join_per_page() {
         let mut list = Vec::new();
         for i in 0..(MAX_RECTS as i32 + 1) { add_rect(&mut list, Rect::new(i * 100, 0, i * 100 + 10, 10)); }
-        assert_eq!(list.len(), 1);
+        let p = aurastudio_gpu::PAGE as i32;
+        assert_eq!(list.len() as i32, (MAX_RECTS as i32 * 100 + 10 + p - 1) / p);
+        // A diagonal: one box per page it crosses, not its whole box.
+        let mut list = Vec::new();
+        for i in 0..(MAX_RECTS as i32 + 1) { add_rect(&mut list, Rect::new(i * 20, i * 20, i * 20 + 8, i * 20 + 8)); }
+        let area: u64 = list.iter().map(|r| r.area()).sum();
+        let whole = Rect::new(0, 0, MAX_RECTS as i32 * 20 + 8, MAX_RECTS as i32 * 20 + 8).area();
+        assert!(area * 4 < whole, "{area} of {whole}");
     }
 
     #[test]
