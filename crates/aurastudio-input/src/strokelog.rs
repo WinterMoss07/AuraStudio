@@ -101,7 +101,7 @@ fn decode_stroke(b: &[u8], curve: &TransferCurve) -> Option<Stroke> {
         t += r.varint()?;
         let device = device_of(d, id)?;
         let pressure = if device == Device::Mouse { 1.0 } else { curve.eval(pressure_raw) };
-        events.push(Event { kind: kind_of(k, a)?, device, source: Source::Strokelog, target, x, y, pressure, pressure_raw, tilt, rotation, time: Micros(t) });
+        events.push(Event { kind: kind_of(k, a)?, device, source: Source::Strokelog, target, x, y, pressure, pressure_raw, tilt, rotation, time: Micros(t), routed: false });
     }
     r.at_end().then_some(Stroke { context, events })
 }
@@ -156,7 +156,7 @@ pub fn replay(stroke: &Stroke, start: Micros, speed: f64) -> Vec<Event> {
     stroke.events.iter().map(|e| {
         let dt = e.time.0 - t0;
         let t = if speed <= 0.0 { 0 } else { (dt as f64 / speed) as u64 };
-        Event { time: Micros(start.0 + t), source: Source::Strokelog, ..*e }
+        Event { time: Micros(start.0 + t), source: Source::Strokelog, routed: false, ..*e }
     }).collect()
 }
 
@@ -211,7 +211,7 @@ mod tests {
     use super::*;
 
     fn ev(kind: Kind, x: f64, t: u64) -> Event {
-        Event { kind, device: Device::Pen, source: Source::Live, target: Target::Canvas, x, y: 2.5, pressure: 0.25, pressure_raw: 0.5, tilt: (12.5, -40.0), rotation: 90.0, time: Micros(t) }
+        Event { kind, device: Device::Pen, source: Source::Live, target: Target::Canvas, x, y: 2.5, pressure: 0.25, pressure_raw: 0.5, tilt: (12.5, -40.0), rotation: 90.0, time: Micros(t), routed: false }
     }
 
     fn stroke() -> Stroke {

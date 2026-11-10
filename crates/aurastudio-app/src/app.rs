@@ -355,6 +355,10 @@ pub struct App {
     cursor_for_mouse: bool,
     /// Where the current stroke's last sample was sent (window pixels).
     last_sent: Option<(f32, f32)>,
+    /// A stroke begun at this press, to route from the pen's thread
+    /// (stroke_route.rs) once the press is handled; the route open.
+    route_wanted: Option<Device>,
+    route:     Option<crate::stroke_route::StrokeRoute>,
     modifiers:  ModifiersState,
     /// Monitor ICC profile (None: not found, treated as sRGB).
     display_profile: Option<aurastudio_color::Profile>,
@@ -570,6 +574,8 @@ impl App {
             pen_near: false,
             cursor_for_mouse: true,
             last_sent: None,
+            route_wanted: None,
+            route:     None,
             modifiers:  ModifiersState::empty(),
             display_profile: None,
             space_down: false,

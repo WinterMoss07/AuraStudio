@@ -8,6 +8,7 @@ mod preview;
 mod projection;
 mod rescue;
 mod size_drag;
+mod stroke_route;
 mod system;
 mod window;
 

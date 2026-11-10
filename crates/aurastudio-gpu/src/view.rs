@@ -185,6 +185,10 @@ impl ViewSnapshot {
         let (x, y) = self.view.canvas_to_screen(p, self.canvas, self.area);
         (x / self.ppp, y / self.ppp)
     }
+
+    /// Window position (physical pixels) -> canvas pixels, as
+    /// `GpuState::screen_to_canvas` (on any thread).
+    pub fn screen_to_canvas(&self, p: (f32, f32)) -> (f32, f32) { self.view.screen_to_canvas(p, self.canvas, self.area) }
 }
 
 /// The view, through the window: the methods the app calls.

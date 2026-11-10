@@ -41,8 +41,24 @@ impl App {
             let [x, y, w, h] = gpu.viewport();
             let (x, y, w, h) = (x as f64, y as f64, w as f64, h as f64);
             self.input.set_frame(aurastudio_input::FrameInfo { canvas: (x, y, x + w, y + h), ui_wants_pointer: gpu.ui_is_dragging() });
+            // (A routed stroke maps through the view as it is now.)
+            if let Some(r) = &self.route { r.set_view(gpu.view_snapshot()); }
         }
-        for e in self.input.poll() { self.on_pointer(e); }
+        let mut events = self.input.poll();
+        for i in 0..events.len() {
+            self.on_pointer(events[i]);
+            // A stroke just began: the rest of it comes from the pen's
+            // thread, these events first.
+            if let Some(device) = self.route_wanted.take() { self.open_route(device, &mut events[i + 1..]); }
+        }
+    }
+
+    /// Route the stroke `device` draws (stroke_route.rs): its samples and
+    /// its end go from the capturing thread to the paint thread.
+    fn open_route(&mut self, device: Device, rest: &mut [Event]) {
+        let (Some(gpu), Some(tx), Some(last)) = (&self.gpu, self.paint.sender(), self.last_sent) else { return };
+        let (route, sink) = crate::stroke_route::StrokeRoute::new(tx, gpu.view_snapshot(), last, self.pressure);
+        if self.input.route(device, sink, rest) { self.route = Some(route); }
     }
 
     fn on_pointer(&mut self, e: Event) {
@@ -170,7 +186,8 @@ impl App {
         } else if self.is_drawing && self.stroke_device == Some(e.device) && e.kind == Kind::Move {
             self.pressure = e.pressure;
             self.pen = (e.tilt, e.rotation);
-            self.draw_at(self.cursor, e.time.0 as f64 / 1e6);
+            // (Routed: already sent from the pen's thread.)
+            if e.routed { self.last_sent = Some(self.cursor); } else { self.draw_at(self.cursor, e.time.0 as f64 / 1e6); }
             self.request_canvas_frame();
         }
     }
@@ -181,7 +198,10 @@ impl App {
         if self.nav.is_some() {
             if self.nav_button == NavButton::Left { self.end_nav(); }
         } else if self.is_drawing {
-            if self.stroke_device == Some(e.device) { self.end_stroke(e.time.0 as f64 / 1e6); }
+            if self.stroke_device == Some(e.device) {
+                // (Routed: its last sample and its end went already.)
+                if e.routed { self.stroke_ended(); } else { self.end_stroke(e.time.0 as f64 / 1e6); }
+            }
         } else if self.xf.as_ref().is_some_and(|x| x.drag.is_some()) {
             self.xform_release();
         } else if self.gesture.is_some() {
@@ -451,6 +471,7 @@ impl App {
         self.last_sent = None;
         self.send_begin(erase);
         self.draw_at(self.cursor, time);
+        self.route_wanted = self.stroke_device;
     }
 
     /// Open a stroke on the paint thread with the current brush.
@@ -474,13 +495,22 @@ impl App {
     }
 
     pub(super) fn end_stroke(&mut self, time: f64) {
+        // (Ended here: nothing more comes from the pen's thread.)
+        if self.route.take().is_some() { self.input.unroute(); }
         // The tip lifted where no sample went yet: the stroke ends there
         // (at the pressure last given; a press alone: one dot).
         if self.last_sent != Some(self.cursor) { self.draw_at(self.cursor, time); }
-        self.is_drawing = false;
-        self.stroke_device = None;
         self.paint.send(Cmd::End);
         crate::latency::end_stroke();
+        self.stroke_ended();
+    }
+
+    /// The stroke is over (its end sent, here or by its route).
+    fn stroke_ended(&mut self) {
+        self.route = None;
+        self.route_wanted = None;
+        self.is_drawing = false;
+        self.stroke_device = None;
         self.update_cursor();
     }
 

@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 aurastudio-core = { path = "../aurastudio-core" }
-crossbeam-queue = "0.3"
 lz4_flex = "0.14"
 
 [target.'cfg(windows)'.dependencies]

@@ -9,7 +9,6 @@ use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crossbeam_queue::SegQueue;
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::UI::Input::Pointer::{GetPointerDeviceRects, GetPointerPenInfo, GetPointerPenInfoHistory, GetPointerType, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_PEN_INFO};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
@@ -28,7 +27,7 @@ use crate::state::RawSample;
 const SUBCLASS_ID: usize = 0x4155_5241_494E;
 
 struct HookState {
-    out:      Arc<SegQueue<RawSample>>,
+    out:      Arc<crate::Feed>,
     origin:   Arc<Origin>,
     counters: Arc<Counters>,
     /// Push samples (false: WinTab captures, only count).
@@ -109,7 +108,7 @@ unsafe extern "system" fn proc_(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
 pub struct Hook { hwnd: HWND, state: Box<HookState> }
 
 impl Hook {
-    pub fn install(hwnd: isize, out: Arc<SegQueue<RawSample>>, origin: Arc<Origin>, counters: Arc<Counters>, capture: bool) -> Result<Hook, String> {
+    pub fn install(hwnd: isize, out: Arc<crate::Feed>, origin: Arc<Origin>, counters: Arc<Counters>, capture: bool) -> Result<Hook, String> {
         let hwnd = HWND(hwnd as *mut c_void);
         let state = Box::new(HookState { out, origin, counters, capture, rects: RefCell::new(HashMap::new()), time: RefCell::new(TimeMap::default()), contact: std::cell::Cell::new(false) });
         let data = (&*state as *const HookState) as usize;

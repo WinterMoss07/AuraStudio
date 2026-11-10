@@ -63,6 +63,9 @@ pub struct Event {
     pub rotation: f32,
     /// On the app's one clock.
     pub time:     Micros,
+    /// Already handed to the stroke route the app opened (`Input::route`)
+    /// when it was made: the app must not send it again.
+    pub routed:   bool,
 }
 
 impl Event {

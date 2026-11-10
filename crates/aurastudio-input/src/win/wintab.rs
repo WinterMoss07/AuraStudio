@@ -8,7 +8,6 @@ use std::ffi::{c_char, c_void};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crossbeam_queue::SegQueue;
 use windows::core::PCSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
@@ -141,7 +140,7 @@ struct State {
     /// Where the pen last was (window pixels): leaving range happens there.
     last_at:  (f64, f64),
     time:     TimeMap,
-    out:      Arc<SegQueue<RawSample>>,
+    out:      Arc<crate::Feed>,
     /// Wakes the app's loop: samples waiting.
     waker:    Arc<crate::Waker>,
     origin:   Arc<Origin>,
@@ -306,7 +305,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 impl Thread {
     /// Start capturing; `Err` (with a reason in plain words) when WinTab is
     /// missing or does not open.
-    pub fn start(out: Arc<SegQueue<RawSample>>, origin: Arc<Origin>, counters: Arc<Counters>, waker: Arc<crate::Waker>) -> Result<Thread, String> {
+    pub fn start(out: Arc<crate::Feed>, origin: Arc<Origin>, counters: Arc<Counters>, waker: Arc<crate::Waker>) -> Result<Thread, String> {
         let (tx, rx) = std::sync::mpsc::channel::<Result<isize, String>>();
         let handle = std::thread::Builder::new().name("pen input".into()).spawn(move || {
             let api = match Api::load() { Ok(a) => a, Err(e) => { let _ = tx.send(Err(e)); return; } };

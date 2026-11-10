@@ -202,6 +202,10 @@ impl PaintThread {
         Self { tx: Some(tx), handle, filters_sent }
     }
 
+    /// A sender of its own (the pen's thread sends a routed stroke's
+    /// samples straight here).
+    pub fn sender(&self) -> Option<Sender<Cmd>> { self.tx.clone() }
+
     pub fn send(&self, cmd: Cmd) {
         if is_filter(&cmd) { self.filters_sent.fetch_add(1, Ordering::AcqRel); }
         if let Some(tx) = &self.tx { let _ = tx.send(cmd); }

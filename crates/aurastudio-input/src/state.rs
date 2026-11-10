@@ -65,7 +65,7 @@ impl Machine {
         Event {
             kind, device: s.device, source: Source::Live, target, x: s.x, y: s.y,
             pressure: if s.device == Device::Mouse { 1.0 } else { self.curve.eval(s.pressure) },
-            pressure_raw: s.pressure, tilt: s.tilt, rotation: s.rotation, time: s.time,
+            pressure_raw: s.pressure, tilt: s.tilt, rotation: s.rotation, time: s.time, routed: false,
         }
     }
 
