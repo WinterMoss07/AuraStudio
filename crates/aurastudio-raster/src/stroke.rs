@@ -269,8 +269,7 @@ impl<P: Pixel> PaintSurface<P> for Stroke<'_, P> {
         let limit: Option<&'a Limits> = limit.as_ref();
         let (before, flat, opened): (&'a Snapshot<P>, &'a FlatBases<P>, &'a OpenBases<P>) = (before, flat, opened);
         let ck = |v: i32| v.div_euclid(CH);
-        for (key, chunk) in surf.grid.chunks_mut() {
-            if key.0 < ck(tx0) || key.0 > ck(tx1 - 1) || key.1 < ck(ty0) || key.1 > ck(ty1 - 1) { continue; }
+        for (key, chunk) in surf.grid.chunks_mut_in((ck(tx0), ck(ty0), ck(tx1 - 1), ck(ty1 - 1))) {
             for (i, slot) in chunk.slots.iter_mut().enumerate() {
                 let (tx, ty) = join(key, i);
                 if tx < tx0 || tx >= tx1 || ty < ty0 || ty >= ty1 { continue; }

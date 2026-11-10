@@ -2,6 +2,13 @@
 //! where something is stored, found by index in a dense array of chunk
 //! slots (no hashing). The array spans the chunks written so far (the
 //! canvas and its margin: the document keeps writes inside).
+//!
+//! Chunks are shared (`Arc`): a copy of the table (a stroke's base, a
+//! snapshot of the stack for the screen's merge) costs one count per
+//! chunk; a write copies only the chunk it goes to, once, while the copy
+//! lives.
+
+use std::sync::Arc;
 
 use aurastudio_core::Pixel;
 
@@ -24,7 +31,7 @@ pub(crate) struct Grid<P: Pixel> {
     y0:    i32,
     cols:  i32,
     rows:  i32,
-    cells: Vec<Option<Box<Chunk<P>>>>,
+    cells: Vec<Option<Arc<Chunk<P>>>>,
 }
 
 impl<P: Pixel> Default for Grid<P> {
@@ -64,7 +71,7 @@ impl<P: Pixel> Grid<P> {
         let (x0, y0) = if self.cells.is_empty() { k } else { (self.x0.min(k.0), self.y0.min(k.1)) };
         let (x1, y1) = if self.cells.is_empty() { (k.0 + 1, k.1 + 1) } else { ((self.x0 + self.cols).max(k.0 + 1), (self.y0 + self.rows).max(k.1 + 1)) };
         let (cols, rows) = (x1 - x0, y1 - y0);
-        let mut cells: Vec<Option<Box<Chunk<P>>>> = (0..cols * rows).map(|_| None).collect();
+        let mut cells: Vec<Option<Arc<Chunk<P>>>> = (0..cols * rows).map(|_| None).collect();
         for (i, c) in std::mem::take(&mut self.cells).into_iter().enumerate() {
             let (x, y) = (self.x0 + i as i32 % self.cols, self.y0 + i as i32 / self.cols);
             cells[((y - y0) * cols + (x - x0)) as usize] = c;
@@ -78,14 +85,16 @@ impl<P: Pixel> Grid<P> {
     pub fn get_mut(&mut self, tx: i32, ty: i32) -> &mut Slot<P> {
         let (k, i) = split(tx, ty);
         let at = self.reach(k);
-        &mut self.cells[at].get_or_insert_with(|| Box::new(Chunk { slots: (0..CN).map(|_| Slot::Fill).collect() })).slots[i]
+        &mut Arc::make_mut(self.cells[at].get_or_insert_with(|| Arc::new(Chunk { slots: (0..CN).map(|_| Slot::Fill).collect() }))).slots[i]
     }
 
     /// Put `s` at (tx, ty). A fill where no chunk exists makes none.
     pub fn set(&mut self, tx: i32, ty: i32, s: Slot<P>) {
         if s.is_fill() {
             let (k, i) = split(tx, ty);
-            if let Some(c) = self.index(k).and_then(|at| self.cells[at].as_mut()) { c.slots[i] = Slot::Fill; }
+            if let Some(c) = self.index(k).and_then(|at| self.cells[at].as_mut()) {
+                if !c.slots[i].is_fill() { Arc::make_mut(c).slots[i] = Slot::Fill; }
+            }
             return;
         }
         *self.get_mut(tx, ty) = s;
@@ -107,10 +116,20 @@ impl<P: Pixel> Grid<P> {
     /// Chunks made.
     pub fn len(&self) -> usize { self.cells.iter().filter(|c| c.is_some()).count() }
 
-    /// Every chunk made, with its key.
+    /// Every chunk made, with its key (each one unshared).
     pub fn chunks_mut(&mut self) -> impl Iterator<Item = ((i32, i32), &mut Chunk<P>)> {
+        self.chunks_mut_in((i32::MIN, i32::MIN, i32::MAX, i32::MAX))
+    }
+
+    /// The chunks made with keys in `(kx0, ky0)..=(kx1, ky1)`, unshared
+    /// (the others are left shared).
+    pub fn chunks_mut_in(&mut self, (kx0, ky0, kx1, ky1): (i32, i32, i32, i32)) -> impl Iterator<Item = ((i32, i32), &mut Chunk<P>)> {
         let (x0, y0, cols) = (self.x0, self.y0, self.cols.max(1));
-        self.cells.iter_mut().enumerate().filter_map(move |(i, c)| c.as_deref_mut().map(|c| ((x0 + i as i32 % cols, y0 + i as i32 / cols), c)))
+        self.cells.iter_mut().enumerate().filter_map(move |(i, c)| {
+            let k = (x0 + i as i32 % cols, y0 + i as i32 / cols);
+            if k.0 < kx0 || k.0 > kx1 || k.1 < ky0 || k.1 > ky1 { return None; }
+            c.as_mut().map(|c| (k, Arc::make_mut(c)))
+        })
     }
 
     fn chunks(&self) -> impl Iterator<Item = ((i32, i32), &Chunk<P>)> {
@@ -130,6 +149,6 @@ impl<P: Pixel> Grid<P> {
 
     /// Bytes of the table itself: the array, and each chunk's slots.
     pub fn table_bytes(&self) -> usize {
-        self.cells.len() * std::mem::size_of::<Option<Box<Chunk<P>>>>() + self.len() * (CN * std::mem::size_of::<Slot<P>>() + std::mem::size_of::<Chunk<P>>())
+        self.cells.len() * std::mem::size_of::<Option<Arc<Chunk<P>>>>() + self.len() * (CN * std::mem::size_of::<Slot<P>>() + std::mem::size_of::<Chunk<P>>())
     }
 }

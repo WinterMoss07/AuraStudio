@@ -79,6 +79,24 @@ fn copies_share_tiles_until_one_writes() {
     assert_ne!(a.pixel(1, 1), b.pixel(1, 1));
 }
 
+/// A copy shares the table's chunks too: a write unshares only the chunk
+/// it goes to, and the copy keeps what it had.
+#[test]
+fn copies_share_table_chunks_until_one_writes() {
+    let mut a = Image::new(4096, 4096, 16, CLEAR);
+    a.write(Rect::new(0, 0, 16, 16), &pattern(Rect::new(0, 0, 16, 16)));
+    a.write(Rect::new(2048, 2048, 2064, 2064), &pattern(Rect::new(2048, 2048, 2064, 2064)));
+    let b = a.clone();
+    a.write(Rect::new(1, 1, 2, 2), &[[0, 0, 0, 255]]);
+    a.fill_rect(Rect::new(3000, 3000, 3016, 3016), [9, 9, 9, 255]);
+    assert_eq!(b.pixel(3000, 3000), CLEAR);
+    assert_ne!(a.pixel(1, 1), b.pixel(1, 1));
+    assert_eq!(a.pixel(2050, 2050), b.pixel(2050, 2050));
+    // The far chunk is still the same one in both.
+    let (Slot::Full(pa), Slot::Full(pb)) = (a.slot(128, 128), b.slot(128, 128)) else { panic!("pixel tiles") };
+    assert!(Arc::ptr_eq(pa, pb));
+}
+
 #[test]
 fn bounds() {
     let mut s = Image::new(300, 300, 32, CLEAR);
