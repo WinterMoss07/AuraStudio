@@ -80,7 +80,10 @@ impl App {
                 self.cursor = pos;
                 if !self.is_drawing && self.nav.is_none() {
                     self.over_canvas = self.gpu.as_ref().is_some_and(|g| g.is_canvas_at(pos));
+                    // Hovering, the cursor follows the pen's tilt and turn.
+                    if matches!(e.device, Device::Pen | Device::Eraser) { self.pen = (e.tilt, e.rotation); }
                 }
+                self.follow_direction(pos);
                 self.cursor_in_window = true;
                 self.moved(e);
             }
@@ -316,16 +319,51 @@ impl App {
         // Alt + right drag: the brush stays where the drag started.
         if let Some(d) = &self.size_drag {
             self.outline_shown = true;
-            if let Some(gpu) = &mut self.gpu { let r = self.brush.outline_radius() * gpu.zoom(); gpu.set_brush_cursor(Some((d.anchor, r))); }
+            let c = self.brush_cursor_at(d.anchor);
+            if let Some(gpu) = &mut self.gpu { gpu.set_brush_cursor(c); }
             return;
         }
         let show = !self.home && self.over_canvas && self.cursor_in_window && !self.space_down && self.nav.is_none()
             && self.tool.paints() && !self.picking_with_alt() && self.gesture.is_none() && self.prefs.brush_outline;
         self.outline_shown = show;
-        if let Some(gpu) = &mut self.gpu {
-            let outline = show.then(|| (self.cursor, self.brush.outline_radius() * gpu.zoom()));
-            gpu.set_brush_cursor(outline);
+        let c = if show { self.brush_cursor_at(self.cursor) } else { None };
+        if let Some(gpu) = &mut self.gpu { gpu.set_brush_cursor(c); }
+    }
+
+    /// The brush cursor at window position `at`: the outline of the dab the
+    /// brush would lay there (hovering: at full pressure; drawing: the
+    /// pen's), turned and squashed as the dab would be on screen.
+    fn brush_cursor_at(&mut self, at: (f32, f32)) -> Option<aurastudio_gpu::BrushCursor> {
+        /// Longer side of a sampled tip's picture for its outline, pixels.
+        const MASK: u32 = 128;
+        let hover = !self.is_drawing;
+        let ((tilt_x, tilt_y), rotation) = self.pen;
+        let pen = aurastudio_forge::StrokePoint { x: 0.0, y: 0.0, pressure: self.pressure, tilt_x, tilt_y, rotation, wheel: 0.0, time: 0.0 };
+        let d = self.brush.cursor_dab(pen, self.cursor_dir, hover);
+        let gpu = self.gpu.as_mut()?;
+        if d.sampled && self.brush.cursor_mask_id(MASK) != gpu.cursor_mask_id() {
+            if let Some(m) = self.brush.cursor_mask(MASK) { gpu.set_cursor_mask(m.id, m.width, m.height, &m.alpha); }
         }
+        // Window offset -> canvas offset -> the tip's coordinates.
+        let w = gpu.window_to_canvas_linear();
+        let t = d.to_tip;
+        let to_tip = [t[0] * w[0] + t[1] * w[2], t[0] * w[1] + t[1] * w[3], t[2] * w[0] + t[3] * w[2], t[2] * w[1] + t[3] * w[3]];
+        let zoom = gpu.zoom();
+        let shape = if d.sampled { aurastudio_gpu::CursorShape::Mask } else { aurastudio_gpu::CursorShape::Round };
+        Some(aurastudio_gpu::BrushCursor { center: at, to_tip, extent: d.reach * zoom, radius: d.radius * zoom, shape })
+    }
+
+    /// The way the pen goes (for a tip turned by the direction): from
+    /// where it last was a few canvas pixels back.
+    fn follow_direction(&mut self, pos: (f32, f32)) {
+        let Some(gpu) = &self.gpu else { return };
+        let p = gpu.screen_to_canvas(pos);
+        let Some(from) = self.dir_from else { self.dir_from = Some(p); return };
+        let (dx, dy) = (p.0 - from.0, p.1 - from.1);
+        if dx.hypot(dy) < 3.0 { return; }
+        // (Counter-clockwise, y up, as the brush engine reads it.)
+        self.cursor_dir = (-dy).atan2(dx);
+        self.dir_from = Some(p);
     }
 
     /// Pointer, keys or view drag changed: outline and cursor follow.

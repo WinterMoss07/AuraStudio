@@ -755,14 +755,6 @@ impl BrushSettings {
         for (d, v) in self.color.iter_mut().zip(c) { *d = v as f32 / 255.0; }
     }
 
-    /// Resize the primary tip and keep an enabled Dual Brush tip at the same relative size.
-    /// An explicit Dual Brush size edit should bypass this and retain the requested diameter.
-    ///
-    /// As in Photoshop, the dual diameter is multiplied by the size ratio unrounded and only capped
-    /// at the top ([`MAX_BRUSH_SIZE`]): a 100 px brush with a 20 px dual tip shrunk to 1 px has a
-    /// 0.2 px dual tip and grows back to exactly 20 px. A sub-pixel floor here would lose the
-    /// proportion on the way back up; rendering bounds the diameter itself
-    /// ([`Self::bounded_for_render`]).
     /// A number for what the brush is (as saved: its settings, its tips by
     /// name), the same from one run to the next: the stroke previews kept
     /// on disk are named by it. The color, the seed and the Tool options
@@ -774,6 +766,14 @@ impl BrushSettings {
         bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3))
     }
 
+    /// Resize the primary tip and keep an enabled Dual Brush tip at the same relative size.
+    /// An explicit Dual Brush size edit should bypass this and retain the requested diameter.
+    ///
+    /// As in Photoshop, the dual diameter is multiplied by the size ratio unrounded and only capped
+    /// at the top ([`MAX_BRUSH_SIZE`]): a 100 px brush with a 20 px dual tip shrunk to 1 px has a
+    /// 0.2 px dual tip and grows back to exactly 20 px. A sub-pixel floor here would lose the
+    /// proportion on the way back up; rendering bounds the diameter itself
+    /// ([`Self::bounded_for_render`]).
     pub fn resize_with_dual_brush(&mut self, new_size: f32) {
         if self.dual_brush.enabled && self.size.is_finite() && self.size > 0.0 && new_size.is_finite() && new_size > 0.0 {
             let scaled = self.dual_brush.size * (new_size / self.size);

@@ -529,7 +529,7 @@ pub fn dynamic_angle(d: &Dynamic, s: &StepInput) -> f32 { d.links().map(|l| cont
 
 /// A 0..1 multiplier from a dynamic: control lerps from `minimum` to 1, jitter reduces randomly,
 /// never below `minimum`.
-fn scalar(d: &Dynamic, s: &StepInput, r: f32) -> f32 {
+pub(crate) fn scalar(d: &Dynamic, s: &StepInput, r: f32) -> f32 {
     if !d.is_active() {
         return 1.0;
     }

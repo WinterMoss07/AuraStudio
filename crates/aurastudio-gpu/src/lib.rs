@@ -9,6 +9,7 @@
 //! canvas's pages; `mip`: mipmaps on demand; `upload`: the staging ring; `lift`: the transform preview.
 
 mod canvas;
+mod cursor;
 mod display;
 mod lift;
 mod mip;
@@ -23,6 +24,7 @@ use wgpu::util::DeviceExt;
 use wgpu::*;
 
 pub use canvas::{Canvas, PageCount, PAGE};
+pub use cursor::{BrushCursor, CursorShape};
 pub use display::CanvasQuality;
 pub use lift::{Lift, Pieces, GRID as LIFT_GRID};
 pub use view::{wrap_angle, CanvasView, ViewSnapshot};
@@ -59,18 +61,6 @@ fn present_mode(caps: &SurfaceCapabilities, vsync: bool) -> PresentMode {
 /// a third for Mailbox.
 fn swapchain_images(mode: PresentMode) -> u64 { if mode == PresentMode::Mailbox { 3 } else { 2 } }
 
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CursorUniform {
-    center: [f32; 2],
-    radius: f32,
-    cross:  f32,
-    screen: [f32; 2],
-    _pad:   [f32; 2],
-}
-
-/// Below this outline radius (screen pixels) a crosshair is shown instead.
-const MIN_OUTLINE_RADIUS: f32 = 3.0;
 
 /// Graphics APIs the window can be drawn with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,10 +182,8 @@ pub struct GpuState {
     color_managed:   bool,
     /// Brush outline: pipeline, uniform, and where to draw it (center in
     /// physical pixels, radius in screen pixels); `None`: hidden.
-    cursor_pipeline: RenderPipeline,
-    cursor_buffer:   Buffer,
-    cursor_bind:     BindGroup,
-    brush_cursor:    Option<((f32, f32), f32)>,
+    cursor:          cursor::CursorPass,
+    brush_cursor:    Option<BrushCursor>,
     pub canvas:      Canvas,
     /// Window area (physical pixels) where the canvas is drawn: x, y,
     /// width, height.
@@ -308,7 +296,7 @@ impl GpuState {
         let (canvas_shader, canvas_layout) = display::canvas_program(&device, &canvas_bgl);
         let canvas_pipeline = display::canvas_pipeline(&device, &canvas_shader, &canvas_layout, format, "fs_main");
         let (canvas_high, high_ms) = display::HighPipeline::start(&device, canvas_shader, canvas_layout, format, backend == Backend::OpenGl);
-        let (cursor_pipeline, cursor_buffer, cursor_bind) = cursor_pipeline(&device, format);
+        let cursor = cursor::CursorPass::new(&device, format);
         // No mipmaps yet: made the first time a zoomed-out view needs them.
         let canvas = Canvas::new(&device, canvas_size.0.max(1), canvas_size.1.max(1), false);
         let view_bind_group = display::bind_group(&device, &canvas_bgl, &canvas, &view_buffer, &lut);
@@ -322,7 +310,7 @@ impl GpuState {
             uploads: upload::Uploads::default(), uploaded: false,
             view_buffer, view_bind_group, bound, canvas_bgl,
             view: CanvasView::default(), lut, color_managed: false,
-            cursor_pipeline, cursor_buffer, cursor_bind, brush_cursor: None,
+            cursor, brush_cursor: None,
             canvas,
             viewport: [0.0, 0.0, size.0.max(1) as f32, size.1.max(1) as f32],
             clear_color: [0.4, 0.4, 0.4],
@@ -362,6 +350,7 @@ impl GpuState {
             "canvas {w}x{h} in pages of {PAGE}: {} one-color (no pixels), {} two-color (1 byte a pixel), {} full (4 bytes){}; a single texture would be {:.1} MB",
             c.uniform, c.mono, c.full, if self.canvas.mipmaps() { ", with mipmaps" } else { "" }, (w as u64 * h as u64 * 4) as f64 / 1048576.0,
         ), c.bytes));
+        if self.cursor.bytes() > 0 { m.known.push(("brush cursor: the tip's picture".into(), self.cursor.bytes())); }
         let lut = self.lut.size as u64;
         m.known.push((format!("display lookup table {lut}^3"), lut * lut * lut * 8));
         let images = swapchain_images(self.config.present_mode);
@@ -473,7 +462,21 @@ impl GpuState {
 
     /// Show the brush outline at `center` (physical window pixels) with
     /// `radius` in screen pixels, or hide it.
-    pub fn set_brush_cursor(&mut self, cursor: Option<((f32, f32), f32)>) { self.brush_cursor = cursor; }
+    pub fn set_brush_cursor(&mut self, cursor: Option<BrushCursor>) { self.brush_cursor = cursor; }
+
+    /// The sampled tip's picture the cursor outlines (`id`: the same
+    /// picture, sent once).
+    pub fn set_cursor_mask(&mut self, id: u64, w: u32, h: u32, alpha: &[u8]) { self.cursor.set_mask(&self.device, &self.queue, id, w, h, alpha); }
+
+    pub fn cursor_mask_id(&self) -> Option<u64> { self.cursor.mask_id() }
+
+    /// A window offset (physical pixels) as a canvas offset, row-major: the
+    /// view's zoom, rotation and mirror.
+    pub fn window_to_canvas_linear(&self) -> [f32; 4] {
+        let o = self.screen_to_canvas((0.0, 0.0));
+        let (a, b) = (self.screen_to_canvas((1.0, 0.0)), self.screen_to_canvas((0.0, 1.0)));
+        [a.0 - o.0, b.0 - o.0, a.1 - o.1, b.1 - o.1]
+    }
 
     /// The window is now `size` physical pixels.
     pub fn resize(&mut self, size: (u32, u32)) {
@@ -603,19 +606,8 @@ impl GpuState {
     pub fn end_frame(&mut self, frame: Frame, window_size: (u32, u32)) {
         aurastudio_core::zone!("gpu present");
         let Frame { encoder: mut enc, view, output, suboptimal } = frame;
-        if let Some(((cx, cy), r)) = self.brush_cursor {
-            let u = CursorUniform {
-                center: [cx, cy],
-                radius: r.max(MIN_OUTLINE_RADIUS),
-                cross: if r < MIN_OUTLINE_RADIUS { 1.0 } else { 0.0 },
-                screen: [self.config.width as f32, self.config.height as f32],
-                _pad: [0.0; 2],
-            };
-            self.queue.write_buffer(&self.cursor_buffer, 0, bytemuck::cast_slice(&[u]));
-            let mut pass = over_pass(&mut enc, &view, "cursor_pass");
-            pass.set_pipeline(&self.cursor_pipeline);
-            pass.set_bind_group(0, &self.cursor_bind, &[]);
-            pass.draw(0..6, 0..1);
+        if let Some(c) = &self.brush_cursor {
+            self.cursor.draw(&self.queue, &mut enc, &view, c, (self.config.width, self.config.height));
         }
         self.queue.submit(std::iter::once(enc.finish()));
         self.queue.present(output);
@@ -654,57 +646,3 @@ pub fn over_pass<'e>(enc: &'e mut CommandEncoder, view: &TextureView, label: &st
     })
 }
 
-/// Pipeline drawing the brush outline (shaders/cursor.wgsl), premultiplied
-/// alpha over the frame.
-fn cursor_pipeline(device: &Device, format: TextureFormat) -> (RenderPipeline, Buffer, BindGroup) {
-    let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-        label:   Some("cursor_bgl"),
-        entries: &[BindGroupLayoutEntry {
-            binding:    0,
-            visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-            ty: BindingType::Buffer { ty: BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-            count: None,
-        }],
-    });
-    let buffer = device.create_buffer(&BufferDescriptor {
-        label:              Some("cursor_buffer"),
-        size:               std::mem::size_of::<CursorUniform>() as u64,
-        usage:              BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind = device.create_bind_group(&BindGroupDescriptor {
-        label:   Some("cursor_bind"),
-        layout:  &layout,
-        entries: &[BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-    });
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label:  Some("cursor_shader"),
-        source: ShaderSource::Wgsl(include_str!("shaders/cursor.wgsl").into()),
-    });
-    let pl = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: Some("cursor_pl"), bind_group_layouts: &[Some(&layout)], immediate_size: 0,
-    });
-    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label:  Some("cursor_pipeline"),
-        layout: Some(&pl),
-        vertex: VertexState {
-            module: &shader, entry_point: Some("vs_main"), buffers: &[],
-            compilation_options: PipelineCompilationOptions::default(),
-        },
-        fragment: Some(FragmentState {
-            module: &shader, entry_point: Some("fs_main"),
-            targets: &[Some(ColorTargetState {
-                format,
-                blend: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: ColorWrites::ALL,
-            })],
-            compilation_options: PipelineCompilationOptions::default(),
-        }),
-        primitive: PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
-    (pipeline, buffer, bind)
-}

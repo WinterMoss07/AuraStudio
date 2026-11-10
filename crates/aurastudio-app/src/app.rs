@@ -353,6 +353,10 @@ pub struct App {
     /// The pen's tilt (degrees toward +x / +y) and barrel rotation at the
     /// last sample.
     pen:        ((f32, f32), f32),
+    /// The way the pen last went (radians, counter-clockwise, y up), and
+    /// the canvas point it is measured from: the cursor's direction.
+    cursor_dir: f32,
+    dir_from:   Option<(f32, f32)>,
     /// The device drawing the stroke (only its samples go in it).
     stroke_device: Option<Device>,
     /// The pen is near the tablet (between ProximityIn and Out), and the
@@ -570,6 +574,8 @@ impl App {
             size_drag:  None,
             pressure:   1.0,
             pen:        ((0.0, 0.0), 0.0),
+            cursor_dir: 0.0,
+            dir_from:   None,
             stroke_device: None,
             pen_near: false,
             cursor_for_mouse: true,

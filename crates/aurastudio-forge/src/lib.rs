@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 mod brush;
 mod curve;
+mod cursor;
 mod dynamics;
 mod engine;
 pub mod import;
@@ -38,6 +39,7 @@ mod tile;
 pub use brush::{BrushSettings, ColorDynamics, Control, DualBrush, Dynamic, Link, MaskMode, Pattern, PatternStyle, Pose, Scattering, ShapeDynamics, Smoothing, TipShape, Transfer, INPUTS, MAX_BRUSH_SIZE, MAX_SCATTER, MORE_INPUTS};
 pub(crate) use brush::BrushPreset;
 pub use curve::ResponseCurve;
+pub use cursor::{CursorDab, CursorMask};
 pub use mixer::{MixerSettings, MixerState};
 pub(crate) use tile::GrayTile;
 pub use engine::{Forge, PenSample, Sampler};
