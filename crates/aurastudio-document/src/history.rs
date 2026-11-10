@@ -12,7 +12,7 @@ use aurastudio_layers::{LayerStack, Node, TreeState};
 use aurastudio_raster::Patch;
 use aurastudio_selection::Selection;
 
-use crate::region::Done;
+use crate::region::{Done, Region};
 
 /// Default memory budget for one document's history (bytes).
 pub const DEFAULT_BUDGET: usize = 512 * 1024 * 1024;
@@ -23,7 +23,10 @@ pub(crate) enum Step {
     /// `fill`: the layer's fill to go back to, when it changed too (a
     /// filter on the Paper).
     Pixels { layer: u64, patch: Patch<Rgba8>, fill: Option<Rgba8> },
-    Tree { state: TreeState, kept: Vec<Node> },
+    /// `region`: where the merged image changed when it was done (the
+    /// footprints of the nodes it touched, before and after): the same
+    /// both ways, since the steps after it are undone first.
+    Tree { state: TreeState, kept: Vec<Node>, region: Region },
     /// The selection to go back to.
     Select(Option<Selection>),
     /// The document's profile to go back to.
@@ -85,12 +88,12 @@ impl Step {
                 }
                 Some(d)
             }
-            Step::Tree { state, kept } => {
+            Step::Tree { state, kept, region } => {
                 let now = t.stack.tree_state();
                 let made = t.stack.restore_tree(state, std::mem::take(kept));
                 *state = now;
                 *kept = made;
-                Some(Done { region: crate::Region::Whole, tree: true, ..Done::default() })
+                Some(Done { region: region.clone(), tree: true, ..Done::default() })
             }
             Step::Select(s) => {
                 std::mem::swap(s, t.selection);
@@ -103,22 +106,27 @@ impl Step {
             Step::Sheet { id, place, node, active } => {
                 // (Before: taking the sheet out moves what is active.)
                 let now = t.stack.active_id();
+                // (What it shows: its own pixels; what the time shows
+                // instead is added when the time settles.)
+                let region;
                 match node.take() {
                     None => {
                         *place = t.stack.place_of(*id)?;
+                        region = Region::of_footprint(t.stack.footprint(*id));
                         *node = Some(t.stack.take_node(*id)?);
                     }
                     Some(n) => {
                         let folder = place.0 == 0 || matches!(t.stack.node(place.0), Some(Node::Folder(_)));
                         if !folder || t.stack.node(*id).is_some() { *node = Some(n); return None; }
                         t.stack.add_node(n, place.0, place.1);
+                        region = Region::of_footprint(t.stack.footprint(*id));
                         // (Saved in another order: stacked as they come.)
                         aurastudio_animation::SheetEdit::stack_sheets(&mut *t.stack);
                     }
                 }
                 t.stack.set_active(*active);
                 *active = now;
-                Some(Done { region: crate::Region::Whole, tree: true, ..Done::default() })
+                Some(Done { region, tree: true, ..Done::default() })
             }
             Step::Frame { stack, selection } => {
                 std::mem::swap(&mut **stack, t.stack);
@@ -213,16 +221,18 @@ impl History {
 
     /// A tree step that joins the last one when it changed the same setting
     /// of the same node (`key`).
-    pub(crate) fn push_tree(&mut self, label: &str, key: Option<u64>, state: TreeState, kept: Vec<Node>) {
+    /// `region`: where it changed the merged image.
+    pub(crate) fn push_tree(&mut self, label: &str, key: Option<u64>, state: TreeState, kept: Vec<Node>, region: &Region) {
         let k = key.map(|k| (label.to_owned(), k));
         if k.is_some() && self.joinable == k && self.redo.is_empty() {
-            if let Some((_, Step::Tree { kept: old, .. })) = self.undo.back_mut() {
+            if let Some((_, Step::Tree { kept: old, region: r, .. })) = self.undo.back_mut() {
                 old.extend(kept);
+                r.add(region.clone());
                 self.serial += 1;
                 return;
             }
         }
-        self.push(label, Step::Tree { state, kept });
+        self.push(label, Step::Tree { state, kept, region: region.clone() });
         self.joinable = k;
     }
 

@@ -226,9 +226,12 @@ impl Document {
                 let key = e.joins();
                 let (changed, made) = apply_tree(e, &mut self.stack);
                 if !changed { return Done::default(); }
-                for id in ids.iter().copied().chain(made) { region.add(Region::of_footprint(self.stack.footprint(id))); }
+                // (A node gone shows nothing now: its footprint before counts.)
+                for id in ids.iter().copied().chain(made) {
+                    if self.stack.node(id).is_some() { region.add(Region::of_footprint(self.stack.footprint(id))); }
+                }
                 self.settle_into(&mut region);
-                let tree = self.record_tree_as(label, key);
+                let tree = self.record_tree_as(label, key, &region);
                 Done { region, made, tree, ..Done::default() }
             }
         };
@@ -280,23 +283,21 @@ impl Document {
     /// After the tree changed: settle the time, record the step.
     pub(crate) fn after_tree(&mut self, label: &str, mut done: Done) -> Done {
         self.settle_into(&mut done.region);
-        done.tree |= self.record_tree(label);
+        done.tree |= self.record_tree_as(label, None, &done.region);
         done
     }
 
-    /// Record what was done to the tree since the last time as one step.
-    /// False if nothing changed (the active node, visibility and folding
-    /// don't count).
-    pub(crate) fn record_tree(&mut self, label: &str) -> bool { self.record_tree_as(label, None) }
-
-    /// The same; `key`: a setting of that node, joined with the last step
-    /// when it changed the same one.
-    fn record_tree_as(&mut self, label: &str, key: Option<u64>) -> bool {
+    /// Record what was done to the tree since the last time as one step,
+    /// with where it changed the merged image (`region`, for its undo and
+    /// redo). False if nothing changed (the active node, visibility and
+    /// folding don't count). `key`: a setting of that node, joined with
+    /// the last step when it changed the same one.
+    fn record_tree_as(&mut self, label: &str, key: Option<u64>, region: &Region) -> bool {
         let now = self.stack.tree_state();
         let removed = self.stack.take_removed();
         if now == self.tree { return !removed.is_empty(); }
         let before = std::mem::replace(&mut self.tree, now);
-        self.history.push_tree(label, key, before, removed);
+        self.history.push_tree(label, key, before, removed, region);
         true
     }
 

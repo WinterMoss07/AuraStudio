@@ -806,3 +806,57 @@ fn an_alpha_locked_layer_keeps_its_alpha() {
     d.apply(Edit::Undo);
     assert!(!d.stack().node(id).unwrap().props().alpha_lock);
 }
+
+/// Undo and redo of tree steps (opacity, blend, a move, a group, a
+/// removal, a clip) report only where they change the merged image, not
+/// the whole canvas: merging just that area of the image before gives the
+/// whole merge after, exactly.
+#[test]
+fn tree_undo_redo_merge_only_their_area() {
+    use aurastudio_compose::{merge, Opts};
+    let (w, h) = (1200, 800);
+    let mut d = doc(w as u32, h as u32);
+    let a = add_layer(&mut d);
+    paint(&mut d, Rect::new(10, 10, 60, 60), [200, 30, 30, 255]);
+    let b = add_layer(&mut d);
+    paint(&mut d, Rect::new(40, 40, 120, 90), [30, 30, 200, 180]);
+    let c = add_layer(&mut d);
+    paint(&mut d, Rect::new(900, 600, 960, 660), [30, 200, 30, 255]);
+    let edits = [
+        Edit::SetOpacity(b, 0.4),
+        Edit::SetBlend(a, aurastudio_core::BlendMode::Multiply),
+        Edit::Move { ids: vec![a], dragged: a, target: c, place: aurastudio_layers::Place::Above },
+        Edit::SetClip(b, true),
+        Edit::Group { ids: vec![b, c], name: "g".into() },
+    ];
+    let whole = |d: &Document| merge(d.stack(), d.stack().frame(), Opts { ghosts: true, ..Default::default() });
+    let check = |d: &mut Document, e: Edit| {
+        let before = whole(d);
+        let done = d.apply(e);
+        let after = whole(d);
+        let Region::Rects(rects) = &done.region else { panic!("{:?}: {:?}", done.tree, done.region) };
+        let mut patched = before;
+        for r in rects {
+            let r = r.intersect(&d.stack().frame());
+            let px = merge(d.stack(), r, Opts { ghosts: true, ..Default::default() });
+            for y in r.y0..r.y1 { for x in r.x0..r.x1 { patched[(y * w + x) as usize] = px[((y - r.y0) * r.w() as i32 + (x - r.x0)) as usize]; } }
+        }
+        assert!(patched == after, "the area reported misses a change");
+        let mut seen = vec![false; (w * h) as usize];
+        for r in rects { let r = r.intersect(&d.stack().frame()); for y in r.y0..r.y1 { for x in r.x0..r.x1 { seen[(y * w + x) as usize] = true; } } }
+        seen.iter().filter(|s| **s).count()
+    };
+    // (A one-node step: about its own tiles; a group: the box of what it
+    // holds.)
+    let small = (w * h) as usize / 4;
+    let areas: Vec<usize> = edits.into_iter().map(|e| check(&mut d, e)).collect();
+    assert!(areas[..4].iter().all(|a| *a < small), "{areas:?}");
+    let undone: Vec<usize> = (0..5).map(|_| check(&mut d, Edit::Undo)).collect();
+    assert!(undone[1..].iter().all(|a| *a < small), "{undone:?}");
+    for _ in 0..5 { check(&mut d, Edit::Redo); }
+    d.apply(Edit::SetActive(a));
+    assert_eq!(d.stack().active_id(), a);
+    assert!(check(&mut d, Edit::RemoveActive) < small);
+    assert!(check(&mut d, Edit::Undo) < small);
+    assert!(check(&mut d, Edit::Redo) < small);
+}
