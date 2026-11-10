@@ -3,6 +3,48 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.23.5 — 2026-11-10
+
+The path from the pen to the screen, rebuilt from the architecture review:
+painting, merging and showing no longer wait for each other.
+
+**Faster, lighter**
+- The screen's merge has its own thread. The paint thread takes a
+  snapshot of the layer stack (its tile tables are shared by chunk: a
+  snapshot costs one count per chunk) and goes on painting while the
+  last frame's areas are merged. The document is locked only for the
+  snapshot, not for the merge.
+- The interface and the paint thread no longer spin while waiting for
+  the document: the interface sleeps until the paint thread, between two
+  commands, says it is free.
+- A freehand stroke's samples go from the pen's thread (WinTab) straight
+  to the paint thread, as each packet comes: an egui frame or a present
+  no longer holds the pen back. The interface sends the press, then only
+  follows the cursor.
+- The merged image is cut along the GPU pages and sorted (one color, two
+  colors, full) on the merge thread; the interface thread only writes
+  it. A page sent whole is no longer copied twice.
+- One grid along the way: merge pieces of 128 px, stroke cells of 64,
+  GPU pages of 256.
+- A stroke says where it painted as tile rects joined along rows, not
+  their box: a diagonal stroke merges and uploads only what it touched.
+- One cache for what is under and over the painted layer: the Mixer
+  Brush's "Sample all layers" reads the stroke cache's cells.
+- Merge blocks are reused per thread instead of allocated per piece.
+- One rayon setup: every core for painting, merging, opening and
+  exporting; a background pool (a quarter of the cores, below normal
+  priority on Windows) for stroke previews, filter previews, saves,
+  brush imports and thumbnails. No thread is made per job.
+- Undo and redo of layer changes (opacity, blend mode, move, group,
+  clip, delete) merge only where they change the image, not the whole
+  canvas. Deleting a layer no longer redraws everything.
+
+**Measured here** (2 cores, Linux): merge timings unchanged within the
+noise; merge allocations down about 10 %. The integer merge path for
+simple stacks was not added: the merge now runs beside the painting, off
+the pen's path, and a second rounding would make the screen differ from
+exports.
+
 ## 0.23.4 — 2026-11-10
 
 Dependencies brought up to date (the Dependabot pull requests).
