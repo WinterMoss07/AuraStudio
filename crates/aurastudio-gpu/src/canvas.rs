@@ -24,13 +24,14 @@ use aurastudio_core::{Rect, Rgba8};
 use wgpu::*;
 
 use crate::mip::MipGen;
+use crate::piece::{mix_of, pad_page, sort, Form, Piece, Sorted};
 use crate::upload::Uploads;
 
 /// Side of a page, px.
 pub const PAGE: u32 = 256;
 /// Mip levels of a page: 256 down to 1.
 pub const PAGE_LEVELS: u32 = 9;
-const N: usize = (PAGE * PAGE) as usize;
+pub(crate) const N: usize = (PAGE * PAGE) as usize;
 
 /// Kinds in the page table (its texel's x).
 const UNIFORM: u32 = 0;
@@ -43,59 +44,6 @@ enum Page {
     /// pixel = mix(a, b, t): `t` one byte a pixel, in the R8 atlas only.
     Mono { a: Rgba8, b: Rgba8, slot: u32 },
     Full { slot: u32 },
-}
-
-/// A page's pixels sorted: the smallest kind that gives them back.
-pub(crate) enum Sorted {
-    Uniform(Rgba8),
-    Mono { a: Rgba8, b: Rgba8, t: Vec<u8> },
-    Full,
-}
-
-/// Largest difference per channel a two-color page may make.
-const MONO_TOLERANCE: i32 = 1;
-
-/// The kind that holds `px` (a whole page) exactly (two-color: within one
-/// step per channel).
-pub(crate) fn sort(px: &[Rgba8]) -> Sorted {
-    let Some(&a) = px.first() else { return Sorted::Uniform([0; 4]) };
-    let dist = |p: &Rgba8| (0..4).map(|c| { let d = p[c] as i32 - a[c] as i32; d * d }).sum::<i32>();
-    let Some(b) = px.iter().max_by_key(|p| dist(p)).copied() else { return Sorted::Uniform(a) };
-    if b == a { return Sorted::Uniform(a); }
-    let d: [i32; 4] = std::array::from_fn(|c| b[c] as i32 - a[c] as i32);
-    let dd: i64 = d.iter().map(|v| (*v as i64) * (*v as i64)).sum();
-    let mut t = Vec::with_capacity(px.len());
-    for p in px {
-        let dot: i64 = (0..4).map(|c| (p[c] as i64 - a[c] as i64) * d[c] as i64).sum();
-        let k = ((dot * 255 + dd / 2) / dd).clamp(0, 255) as i32;
-        // Given back as the shader does: a + (b − a)·k/255, rounded.
-        for c in 0..4 {
-            let back = a[c] as i32 + (d[c] * k + if d[c] >= 0 { 127 } else { -127 }) / 255;
-            if (back - p[c] as i32).abs() > MONO_TOLERANCE { return Sorted::Full; }
-        }
-        t.push(k as u8);
-    }
-    Sorted::Mono { a, b, t }
-}
-
-/// `p` as a mix of `a` and `b` (within the tolerance), if it is one.
-fn mix_of(a: Rgba8, b: Rgba8, p: Rgba8) -> Option<u8> {
-    let d: [i32; 4] = std::array::from_fn(|c| b[c] as i32 - a[c] as i32);
-    let dd: i64 = d.iter().map(|v| (*v as i64) * (*v as i64)).sum();
-    if dd == 0 { return (p == a).then_some(0); }
-    let dot: i64 = (0..4).map(|c| (p[c] as i64 - a[c] as i64) * d[c] as i64).sum();
-    let k = ((dot * 255 + dd / 2) / dd).clamp(0, 255) as i32;
-    (0..4).all(|c| (a[c] as i32 + (d[c] * k + if d[c] >= 0 { 127 } else { -127 }) / 255 - p[c] as i32).abs() <= MONO_TOLERANCE).then_some(k as u8)
-}
-
-/// The pixels of a two-color page (as `EXPAND` draws them).
-#[cfg(test)]
-fn expand(a: Rgba8, b: Rgba8, t: &[u8]) -> Vec<Rgba8> {
-    let lut: Vec<Rgba8> = (0..256).map(|k| std::array::from_fn(|c| {
-        let d = b[c] as i32 - a[c] as i32;
-        (a[c] as i32 + (d * k + if d >= 0 { 127 } else { -127 }) / 255) as u8
-    })).collect();
-    t.iter().map(|k| lut[*k as usize]).collect()
 }
 
 fn pack(c: Rgba8) -> u32 { u32::from_le_bytes(c) }
@@ -385,13 +333,7 @@ impl Canvas {
     }
 
     /// Repeat the canvas's last column and row over the rest of page `i`.
-    fn pad(&self, i: usize, px: &mut [Rgba8]) {
-        let r = self.page_rect(i);
-        let (iw, ih) = ((self.width as i32 - r.x0).clamp(1, PAGE as i32) as usize, (self.height as i32 - r.y0).clamp(1, PAGE as i32) as usize);
-        let p = PAGE as usize;
-        if iw < p { for y in 0..ih { let v = px[y * p + iw - 1]; px[y * p + iw..(y + 1) * p].fill(v); } }
-        if ih < p { for y in ih..p { px.copy_within((ih - 1) * p..ih * p, y * p); } }
-    }
+    fn pad(&self, i: usize, px: &mut [Rgba8]) { pad_page((self.width, self.height), self.page_rect(i), px); }
 
     /// Page `i` is now `px` (all of it, padded): sorted, its slots and the
     /// GPU's pixels changed as needed.
@@ -423,121 +365,92 @@ impl Canvas {
         self.set_entry(i);
     }
 
-    /// Page `i`, which `rect` covers whole inside the canvas: its pixels
-    /// from `src` (the rows of `rect`), padded.
-    fn whole_page(&self, i: usize, rect: Rect, src: &[Rgba8]) -> Vec<Rgba8> {
-        let pr = self.page_rect(i);
-        let part = pr.intersect(&self.frame());
-        let rw = rect.w() as usize;
-        let mut page = vec![[0; 4]; N];
-        for y in part.y0..part.y1 {
-            let o = (y - rect.y0) as usize * rw + (part.x0 - rect.x0) as usize;
-            let d = (y - pr.y0) as usize * PAGE as usize;
-            page[d..d + part.w() as usize].copy_from_slice(&src[o..o + part.w() as usize]);
-        }
-        self.pad(i, &mut page);
-        page
+    /// Copy merged pixels (the rows of `rect`, straight RGBA, inside the
+    /// canvas) to the pages (tests: the app sends prepared pieces).
+    #[cfg(test)]
+    pub(crate) fn upload(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, rect: Rect, src: &[Rgba8]) {
+        let pieces = crate::piece::prepare_slice((self.width, self.height), rect, src);
+        self.upload_pieces(device, queue, up, pieces);
     }
 
-    /// Copy merged pixels (the rows of `rect`, straight RGBA, inside the
-    /// canvas) to the pages.
-    pub(crate) fn upload(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, rect: Rect, src: &[Rgba8]) {
+    /// Write pieces prepared off this thread (`piece::prepare`): pages
+    /// sent whole come sorted, parts are written as they are; only a part
+    /// of a two-color or one-color page is looked at here. Pieces of
+    /// another canvas size are dropped.
+    pub(crate) fn upload_pieces(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, pieces: Vec<Piece>) {
         aurastudio_core::zone!("gpu pages upload");
-        let rect = rect.intersect(&self.frame());
-        if rect.is_empty() { return; }
-        let rw = rect.w() as usize;
-        let p = PAGE as i32;
         // The writes in one submission (released at the end, unless the
         // caller holds them for the whole frame).
         let outer = up.is_held();
         up.hold();
-        let ids: Vec<usize> = (rect.y0.div_euclid(p)..(rect.y1 - 1).div_euclid(p) + 1)
-            .flat_map(|py| (rect.x0.div_euclid(p)..(rect.x1 - 1).div_euclid(p) + 1).map(move |px| (py, px)))
-            .map(|(py, px)| (py as u32 * self.cols + px as u32) as usize).collect();
-        // Pages covered whole are sorted first: the atlases then grow once
+        let pieces: Vec<(usize, Form)> = pieces.into_iter().filter_map(|p| {
+            let (canvas, (col, row), form) = p.into_parts();
+            (canvas == (self.width, self.height) && col < self.cols && row < self.rows).then(|| ((row * self.cols + col) as usize, form))
+        }).collect();
+        // Pages sent whole first make room: the atlases then grow once
         // to what they need (a picture opened: one copy, not one per page).
-        let mut sorted: HashMap<usize, Sorted> = HashMap::new();
-        if ids.len() > 1 {
+        if pieces.len() > 1 {
             let (mut full, mut mono) = (0u32, 0u32);
-            for &i in &ids {
-                let inside = self.page_rect(i).intersect(&self.frame());
-                if inside.intersect(&rect) != inside { continue; }
-                let page = self.whole_page(i, rect, src);
-                let k = sort(&page);
-                match (&k, &self.pages[i]) {
-                    (Sorted::Full, Page::Full { .. }) | (Sorted::Mono { .. }, Page::Mono { .. }) => {}
-                    (Sorted::Full, _) => full += 1,
-                    (Sorted::Mono { .. }, _) => mono += 1,
+            for (i, f) in &pieces {
+                match (f, &self.pages[*i]) {
+                    (Form::Whole(Sorted::Full, _), Page::Full { .. }) | (Form::Whole(Sorted::Mono { .. }, _), Page::Mono { .. }) => {}
+                    (Form::Whole(Sorted::Full, _), _) => full += 1,
+                    (Form::Whole(Sorted::Mono { .. }, _), _) => mono += 1,
                     _ => {}
                 }
-                sorted.insert(i, k);
             }
             self.rgba.reserve(device, queue, up, full);
             self.mono.reserve(device, queue, up, mono);
         }
-        for i in ids {
-            {
-                let pr = self.page_rect(i);
-                let inside = pr.intersect(&self.frame());
-                let part = pr.intersect(&rect);
-                // Local rect of the part, and how far it reaches with the
-                // padding (the canvas edge repeated to the page's end).
-                let (lx0, ly0) = ((part.x0 - pr.x0) as usize, (part.y0 - pr.y0) as usize);
-                let lx1 = if part.x1 == inside.x1 { PAGE as usize } else { (part.x1 - pr.x0) as usize };
-                let ly1 = if part.y1 == inside.y1 { PAGE as usize } else { (part.y1 - pr.y0) as usize };
-                // The source pixel for local (x, y) (clamped to the part).
-                let at = |x: usize, y: usize| -> Rgba8 {
-                    let cx = (pr.x0 + x as i32).min(part.x1 - 1);
-                    let cy = (pr.y0 + y as i32).min(part.y1 - 1);
-                    src[(cy - rect.y0) as usize * rw + (cx - rect.x0) as usize]
-                };
-                let whole = part == inside;
-                if let Some(k) = sorted.remove(&i) {
-                    // (Sorted above; a full page's pixels taken again.)
-                    if let Page::Uniform(c) = self.pages[i] { if matches!(k, Sorted::Uniform(u) if u == c) { continue; } }
-                    let page = if matches!(k, Sorted::Full) { self.whole_page(i, rect, src) } else { Vec::new() };
+        for (i, form) in pieces {
+            match form {
+                Form::Whole(k, page) => {
+                    if let (Page::Uniform(c), Sorted::Uniform(u)) = (&self.pages[i], &k) { if c == u { continue; } }
                     self.set_page(device, queue, up, i, &page, k);
-                    continue;
                 }
-                // A two-color page painted with its two colors (ink on
-                // paper): its bytes there, nothing sorted again. Else it
-                // is made full, and the part written as for a full page.
-                if !whole {
-                    if let Page::Mono { a, b, slot } = self.pages[i] {
-                        let mut ks = Vec::with_capacity((lx1 - lx0) * (ly1 - ly0));
-                        let fits = (ly0..ly1).all(|y| (lx0..lx1).all(|x| mix_of(a, b, at(x, y)).map(|k| ks.push(k)).is_some()));
-                        if fits {
-                            let (ox, oy) = self.mono.origin(slot);
-                            up.write(device, queue, &self.mono.texture, (ox + lx0 as u32, oy + ly0 as u32), ((lx1 - lx0) as u32, (ly1 - ly0) as u32), &ks);
-                            self.mono.mark(slot, Rect::new(lx0 as i32, ly0 as i32, lx1 as i32, ly1 as i32));
-                            continue;
-                        }
-                        self.mono_to_full(device, queue, up, i);
-                    }
-                }
-                if let (false, Page::Full { slot }) = (whole, &self.pages[i]) {
-                    // A full page: the part written as it is.
-                    let slot = *slot;
-                    let mut block = Vec::with_capacity((lx1 - lx0) * (ly1 - ly0));
-                    for y in ly0..ly1 { for x in lx0..lx1 { block.push(at(x, y)); } }
-                    let (ox, oy) = self.rgba.origin(slot);
-                    up.write(device, queue, &self.rgba.texture, (ox + lx0 as u32, oy + ly0 as u32), ((lx1 - lx0) as u32, (ly1 - ly0) as u32), block.as_flattened());
-                    self.rgba.mark(slot, Rect::new(lx0 as i32, ly0 as i32, lx1 as i32, ly1 as i32));
-                    continue;
-                }
-                // All of the page known (sent whole, or one color): sorted
-                // again.
-                let fill = match self.pages[i] { Page::Uniform(c) if !whole => c, _ => [0; 4] };
-                let mut page = vec![fill; N];
-                for y in ly0..ly1 { for x in lx0..lx1 { page[y * PAGE as usize + x] = at(x, y); } }
-                self.pad(i, &mut page);
-                // (Unchanged: nothing to do.)
-                if let Page::Uniform(c) = self.pages[i] { if page.iter().all(|q| *q == c) { continue; } }
-                let sorted = sort(&page);
-                self.set_page(device, queue, up, i, &page, sorted);
+                Form::Part(l, block) => self.upload_part(device, queue, up, i, l, &block),
             }
         }
         if !outer { up.release(queue); }
+    }
+
+    /// Part `l` (page pixels) of page `i`, its pixels `block` (rows of `l`).
+    fn upload_part(&mut self, device: &Device, queue: &Queue, up: &mut Uploads, i: usize, l: Rect, block: &[Rgba8]) {
+        let (lw, lh) = (l.w(), l.h());
+        if block.len() as u64 != l.area() || l.is_empty() { return; }
+        // A two-color page painted with its two colors (ink on paper): its
+        // bytes there, nothing sorted again. Else it is made full, and the
+        // part written as for a full page.
+        if let Page::Mono { a, b, slot } = self.pages[i] {
+            let ks: Option<Vec<u8>> = block.iter().map(|p| mix_of(a, b, *p)).collect();
+            if let Some(ks) = ks {
+                let (ox, oy) = self.mono.origin(slot);
+                up.write(device, queue, &self.mono.texture, (ox + l.x0 as u32, oy + l.y0 as u32), (lw, lh), &ks);
+                self.mono.mark(slot, l);
+                return;
+            }
+            self.mono_to_full(device, queue, up, i);
+        }
+        if let Page::Full { slot } = self.pages[i] {
+            // A full page: the part written as it is.
+            let (ox, oy) = self.rgba.origin(slot);
+            up.write(device, queue, &self.rgba.texture, (ox + l.x0 as u32, oy + l.y0 as u32), (lw, lh), block.as_flattened());
+            self.rgba.mark(slot, l);
+            return;
+        }
+        // One color so far: the page is known whole, sorted again.
+        let Page::Uniform(c) = self.pages[i] else { return };
+        let mut page = vec![c; N];
+        let p = PAGE as usize;
+        for (k, row) in block.chunks_exact(lw as usize).enumerate() {
+            let o = (l.y0 as usize + k) * p + l.x0 as usize;
+            page[o..o + row.len()].copy_from_slice(row);
+        }
+        self.pad(i, &mut page);
+        // (Unchanged: nothing to do.)
+        if page.iter().all(|q| *q == c) { return; }
+        let sorted = sort(&page);
+        self.set_page(device, queue, up, i, &page, sorted);
     }
 
     /// Room made at once for about `full` RGBA and `mono` two-color pages
@@ -713,6 +626,7 @@ impl Expand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::piece::expand;
 
     #[test]
     fn pages_are_sorted_into_the_smallest_kind() {

@@ -1,9 +1,12 @@
 //! The changed pieces of the merged image, from the paint thread to the
-//! GPU (the whole image only exists there), behind their own lock.
+//! GPU (the whole image only exists there), behind their own lock: cut
+//! along the GPU pages and sorted before they come here (the interface
+//! thread only writes them).
 
 use std::sync::{Arc, Mutex};
 
-use aurastudio_core::{Rect, Rgba8};
+use aurastudio_core::Rect;
+use aurastudio_gpu::Piece;
 
 /// Above this many pending rectangles, they are joined per GPU page (one
 /// box per page touched): cheaper than hundreds of tiny merges and
@@ -13,28 +16,31 @@ const MAX_RECTS: usize = 128;
 pub struct Projection {
     pub width:  u32,
     pub height: u32,
-    /// Merged pieces waiting for the GPU, oldest first: (area, its rows).
-    patches:    Vec<(Rect, Vec<Rgba8>)>,
+    /// Pieces waiting for the GPU, oldest first.
+    pieces:     Vec<Piece>,
 }
 
 pub type SharedProjection = Arc<Mutex<Projection>>;
 
 impl Projection {
-    pub fn new(width: u32, height: u32) -> Self { Self { width, height, patches: Vec::new() } }
+    pub fn new(width: u32, height: u32) -> Self { Self { width, height, pieces: Vec::new() } }
 
-    /// Queue a merged piece (newer pieces are uploaded after, over older
-    /// ones). Older pieces it covers whole are dropped: they'd be uploaded
-    /// for nothing (a UI that waits piles them up).
-    pub fn push(&mut self, rect: Rect, px: Vec<Rgba8>) {
-        if rect.is_empty() || px.len() as u64 != rect.area() { return; }
-        self.patches.retain(|(r, _)| !rect.contains_rect(r));
-        self.patches.push((rect, px));
+    /// Queue pieces of this canvas size (newer pieces are written after,
+    /// over older ones). Older pieces they cover whole are dropped: they'd
+    /// be written for nothing (a UI that waits piles them up).
+    pub fn push(&mut self, pieces: Vec<Piece>) {
+        for p in pieces {
+            let r = p.rect();
+            if r.is_empty() { continue; }
+            self.pieces.retain(|q| !r.contains_rect(&q.rect()));
+            self.pieces.push(p);
+        }
     }
 
-    /// Bytes of the merged pieces waiting.
-    pub fn pending_bytes(&self) -> u64 { self.patches.iter().map(|p| p.1.len() as u64 * 4).sum() }
+    /// Bytes of the pieces waiting.
+    pub fn pending_bytes(&self) -> u64 { self.pieces.iter().map(|p| p.bytes() as u64).sum() }
 
-    pub fn take_patches(&mut self) -> Vec<(Rect, Vec<Rgba8>)> { std::mem::take(&mut self.patches) }
+    pub fn take_pieces(&mut self) -> Vec<Piece> { std::mem::take(&mut self.pieces) }
 }
 
 /// Add `r` to the changed areas, merged with one when that costs no more
@@ -95,24 +101,26 @@ mod tests {
         assert!(area * 4 < whole, "{area} of {whole}");
     }
 
+    fn pieces(r: Rect, c: u8) -> Vec<Piece> { aurastudio_gpu::prepare((1000, 1000), r, vec![[c; 4]; r.area() as usize]) }
+
     #[test]
-    fn a_covered_patch_is_dropped() {
-        let mut p = Projection::new(100, 100);
-        p.push(Rect::new(2, 2, 4, 4), vec![[1; 4]; 4]);
-        p.push(Rect::new(3, 3, 6, 6), vec![[2; 4]; 9]);
-        p.push(Rect::new(0, 0, 5, 5), vec![[3; 4]; 25]);
-        let rects: Vec<Rect> = p.take_patches().into_iter().map(|x| x.0).collect();
+    fn a_covered_piece_is_dropped() {
+        let mut p = Projection::new(1000, 1000);
+        p.push(pieces(Rect::new(2, 2, 4, 4), 1));
+        p.push(pieces(Rect::new(3, 3, 6, 6), 2));
+        p.push(pieces(Rect::new(0, 0, 5, 5), 3));
+        let rects: Vec<Rect> = p.take_pieces().into_iter().map(|x| x.rect()).collect();
         assert_eq!(rects, [Rect::new(3, 3, 6, 6), Rect::new(0, 0, 5, 5)]);
     }
 
     #[test]
-    fn patches_come_out_in_order_once() {
-        let mut p = Projection::new(100, 100);
-        p.push(Rect::new(0, 0, 1, 1), vec![[1; 4]]);
-        p.push(Rect::new(0, 0, 0, 1), vec![]);
-        p.push(Rect::new(5, 5, 6, 6), vec![[2; 4]]);
-        let got = p.take_patches();
-        assert_eq!(got.iter().map(|(r, _)| *r).collect::<Vec<_>>(), vec![Rect::new(0, 0, 1, 1), Rect::new(5, 5, 6, 6)]);
-        assert!(p.take_patches().is_empty());
+    fn pieces_come_out_in_order_once_cut_by_page() {
+        let mut p = Projection::new(1000, 1000);
+        p.push(pieces(Rect::new(0, 0, 1, 1), 1));
+        p.push(pieces(Rect::new(0, 0, 0, 1), 2));
+        p.push(pieces(Rect::new(250, 5, 260, 6), 3));
+        let got: Vec<Rect> = p.take_pieces().iter().map(Piece::rect).collect();
+        assert_eq!(got, vec![Rect::new(0, 0, 1, 1), Rect::new(250, 5, 256, 6), Rect::new(256, 5, 260, 6)]);
+        assert!(p.take_pieces().is_empty());
     }
 }

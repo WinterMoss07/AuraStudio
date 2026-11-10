@@ -232,6 +232,7 @@ dependencies = [
  "pollster",
  "profiling",
  "raw-window-handle",
+ "rayon",
  "rfd",
  "tiny-skia 0.12.0",
  "tracy-client",

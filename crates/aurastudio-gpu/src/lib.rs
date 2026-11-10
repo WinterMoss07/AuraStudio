@@ -13,17 +13,19 @@ mod cursor;
 mod display;
 mod lift;
 mod mip;
+mod piece;
 mod upload;
 mod view;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aurastudio_core::{DisplayLut, Rect, Rgba8};
+use aurastudio_core::DisplayLut;
 use wgpu::util::DeviceExt;
 use wgpu::*;
 
 pub use canvas::{Canvas, PageCount, PAGE};
+pub use piece::{prepare, prepare_slice, Piece};
 pub use cursor::{BrushCursor, CursorShape};
 pub use display::CanvasQuality;
 pub use lift::{Lift, Pieces, GRID as LIFT_GRID};
@@ -494,17 +496,14 @@ impl GpuState {
 
     // --- Pixels and frames ---------------------------------------------------
 
-    /// Copy merged pixels (the rows of `rect`, straight RGBA) to the canvas
-    /// pages. A rect past the canvas is cut to it.
-    /// Upload merged pieces, all in one submission (each would close a
-    /// staging chunk of its own).
-    pub fn upload_all(&mut self, pieces: &[(Rect, Vec<Rgba8>)]) {
+    /// Write merged pieces (made ready off this thread by `prepare`) to
+    /// the canvas pages, all in one submission (each would close a staging
+    /// chunk of its own). Pieces of another canvas size are dropped.
+    pub fn upload_all(&mut self, pieces: Vec<Piece>) {
+        if pieces.is_empty() { return; }
         self.uploads.hold();
-        for (rect, px) in pieces {
-            if rect.is_empty() || px.len() as u64 != rect.area() { continue; }
-            self.canvas.upload(&self.device, &self.queue, &mut self.uploads, *rect, px);
-            self.uploaded = true;
-        }
+        self.canvas.upload_pieces(&self.device, &self.queue, &mut self.uploads, pieces);
+        self.uploaded = true;
         self.uploads.release(&self.queue);
     }
 

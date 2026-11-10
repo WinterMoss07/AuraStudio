@@ -211,8 +211,8 @@ impl App {
         // (The samples it shows taken first: none is missing from it.)
         let shown = if std::mem::take(&mut self.painted) {
             let shown = crate::latency::frame_begins();
-            let patches = self.projection.locked().take_patches();
-            gpu.upload_all(&patches);
+            let pieces = self.projection.locked().take_pieces();
+            gpu.upload_all(pieces);
             shown
         } else { Vec::new() };
 

@@ -1,5 +1,6 @@
 mod app;
 mod memory;
+mod merge_thread;
 mod cursors;
 mod latency;
 mod paint_thread;

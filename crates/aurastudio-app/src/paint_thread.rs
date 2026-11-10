@@ -1,36 +1,80 @@
 //! The paint thread: pen samples queue up here and are painted in batches,
 //! on this one thread. Every other edit of the document's pixels or
 //! history (undo, clear, fill, filters, transform...) goes through the same
-//! queue, after what was sent before it. It also merges the changed areas
-//! for the screen (Krita): every sample is painted as it comes, but the
-//! screen's merge is made once per canvas frame (Preferences, "Canvas
-//! frame rate"), what changed since the last one together.
+//! queue, after what was sent before it. It gathers the changed areas for
+//! the screen (Krita): every sample is painted as it comes, and once per
+//! canvas frame (Preferences, "Canvas frame rate") what changed since the
+//! last one goes to the merge thread (merge_thread.rs) with a snapshot of
+//! the stack: the merge runs beside the painting, the document locked
+//! only for the snapshot.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use crate::Locked;
 
-use aurastudio_compose::{Opts, StrokeCache};
+use aurastudio_compose::StrokeCache;
 use aurastudio_core::Rect;
 use aurastudio_document::{DocId, Done, Edit, Region, SharedDoc};
 use aurastudio_file::SaveCaches;
 use aurastudio_forge::{Brush, Forge, MixerState, PenSample};
 use aurastudio_layers::FillParams;
 
+use crate::merge_thread::{Area, Job, Merger};
 use crate::projection::{add_rect, SharedProjection};
 
-/// Set by the interface while it waits for the document: between two
-/// samples the paint thread lets it in (a big brush otherwise kept the
-/// document locked nearly all the time and the interface froze).
-pub static UI_WANTS_DOC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Set by the interface while it waits for the document (read by the
+/// paint thread without a lock between two commands).
+static UI_WANTS_DOC: AtomicBool = AtomicBool::new(false);
 
 /// How long the paint thread holds back for the interface, at most.
 const MAX_YIELD: Duration = Duration::from_millis(4);
+
+/// The interface's turn with the document: it asks, the paint thread (not
+/// holding the document) says "free" and waits until the interface has
+/// it; neither side spins, both sleep on the condition.
+#[derive(Default)]
+struct Turn { wants: bool, free: bool }
+
+static TURN: LazyLock<(Mutex<Turn>, Condvar)> = LazyLock::new(Default::default);
+
+fn turn() -> std::sync::MutexGuard<'static, Turn> { TURN.0.lock().unwrap_or_else(PoisonError::into_inner) }
+
+/// (Interface) `take` (a `try_lock` of the document) until it gives,
+/// waiting at most `wait` for the paint thread to let it in.
+pub fn ui_wait<T>(mut take: impl FnMut() -> Option<T>, wait: Duration) -> Option<T> {
+    let deadline = Instant::now() + wait;
+    let mut t = turn();
+    t.wants = true;
+    UI_WANTS_DOC.store(true, Ordering::Release);
+    let got = loop {
+        if let Some(x) = take() { break Some(x); }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() { break None; }
+        t = TURN.1.wait_timeout_while(t, left, |s| !s.free).unwrap_or_else(PoisonError::into_inner).0;
+        t.free = false;
+    };
+    t.wants = false;
+    UI_WANTS_DOC.store(false, Ordering::Release);
+    drop(t);
+    TURN.1.notify_all();
+    got
+}
+
+/// (Paint thread, the document not held) the interface waiting for the
+/// document gets it now: told it is free, waited for (briefly).
+fn let_ui_in() {
+    if !UI_WANTS_DOC.load(Ordering::Acquire) { return; }
+    let mut t = turn();
+    if !t.wants { return; }
+    t.free = true;
+    TURN.1.notify_all();
+    let _ = TURN.1.wait_timeout_while(t, MAX_YIELD, |s| s.wants).unwrap_or_else(PoisonError::into_inner);
+}
 
 /// Most pen samples painted together (the screen still gets a frame
 /// between two batches of a stroke far behind).
@@ -57,13 +101,6 @@ pub fn current_work() -> Work {
     }
 }
 
-/// Wait (briefly) while the interface asks for the document.
-fn let_ui_in() {
-    if !UI_WANTS_DOC.load(Ordering::Acquire) { return; }
-    let t = Instant::now();
-    while UI_WANTS_DOC.load(Ordering::Acquire) && t.elapsed() < MAX_YIELD { std::thread::yield_now(); }
-}
-
 /// Time between two merges for the screen, in microseconds: one canvas
 /// frame (the app sets it from the preferences; 60 fps by default).
 static CANVAS_FRAME_US: AtomicU64 = AtomicU64::new(16_667);
@@ -75,11 +112,6 @@ pub fn set_canvas_frame(d: Duration) { CANVAS_FRAME_US.store((d.as_micros() as u
 pub fn canvas_frame() -> Duration { Duration::from_micros(CANVAS_FRAME_US.load(Ordering::Relaxed)) }
 
 fn is_filter(c: &Cmd) -> bool { matches!(c, Cmd::Edit { edit: Edit::FilterPreview(_) | Edit::FilterApply(_) | Edit::FilterCancel, .. }) }
-
-/// Rows merged at a time when the whole frame is merged again (the
-/// interface gets the document between two): a row of GPU pages, each
-/// sent whole (sorted into its smallest kind).
-const BAND: u32 = aurastudio_gpu::PAGE;
 
 pub enum Cmd {
     /// A stroke on the layer strokes go to now; `limit`: stay inside the
@@ -108,6 +140,10 @@ pub enum Cmd {
     /// The Mixer Brush's paint: loaded with `color`, or cleaned (`color`:
     /// the one in use).
     Mixer { load: bool, color: [f32; 4] },
+    /// (From the merge thread) the job sent is on the projection.
+    Merged,
+    /// Finish what was sent (merged for the screen too) and stop.
+    Quit,
 }
 
 /// What the worker reports to the main thread (through `notify`).
@@ -148,7 +184,7 @@ impl PaintThread {
     /// `projection` receives the merged result of everything painted.
     pub fn spawn(projection: SharedProjection, notify: impl Fn(Event) + Send + Sync + 'static) -> Self {
         let (tx, rx) = mpsc::channel();
-        let worker = Worker::new(projection, Arc::new(notify));
+        let worker = Worker::new(projection, Arc::new(notify), tx.clone());
         let filters_sent = Arc::clone(&worker.filters_sent);
         let handle = std::thread::Builder::new()
             .name("paint".into())
@@ -174,8 +210,8 @@ impl PaintThread {
 
 impl Drop for PaintThread {
     fn drop(&mut self) {
-        // Closing the channel ends the worker loop.
-        self.tx = None;
+        // (The merge thread holds a sender too: the worker is told to stop.)
+        if let Some(tx) = self.tx.take() { let _ = tx.send(Cmd::Quit); }
         if let Some(h) = self.handle.take() { let _ = h.join(); }
     }
 }
@@ -203,10 +239,18 @@ pub static HELD: Held = Held { stroke_cache: AtomicU64::new(0), stroke: AtomicU6
 struct Worker {
     /// Document being worked on.
     doc:        Option<SharedDoc>,
-    projection: SharedProjection,
-    /// Changed areas not merged into the projection yet.
+    /// Changed areas not sent to the merge thread yet.
     pending:    Vec<Rect>,
+    /// When the last merge job was sent.
     last_update: Instant,
+    merger:     Merger,
+    /// A job to send as soon as the merge thread is free: the whole frame
+    /// of this document, the pending areas at once (the end of a stroke,
+    /// an edit).
+    whole_wanted: Option<SharedDoc>,
+    flush_wanted: bool,
+    /// Told once what was sent before is on the projection.
+    after:      Vec<Event>,
     notify:     Arc<dyn Fn(Event) + Send + Sync>,
     stroke:     Option<Painting>,
     /// Merges of the layers under / over the stroke's layer (compose).
@@ -294,10 +338,12 @@ impl Worker {
         if saves > 0 || self.saves.is_empty() { HELD.saves.store(saves as u64, o); }
     }
 
-    fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>) -> Self {
+    fn new(projection: SharedProjection, notify: Arc<dyn Fn(Event) + Send + Sync>, wake: Sender<Cmd>) -> Self {
+        let stroke_cache = StrokeCache::default();
+        let merger = Merger::spawn(projection, stroke_cache.clone(), Arc::clone(&notify), wake);
         Self {
-            doc: None, projection, pending: Vec::new(), last_update: Instant::now(), notify, stroke: None,
-            stroke_cache: StrokeCache::default(), saves: HashMap::new(), autosaving: Arc::default(), filters_taken: 0, filters_sent: Arc::default(),
+            doc: None, pending: Vec::new(), last_update: Instant::now(), merger, whole_wanted: None, flush_wanted: false, after: Vec::new(),
+            notify, stroke: None, stroke_cache, saves: HashMap::new(), autosaving: Arc::default(), filters_taken: 0, filters_sent: Arc::default(),
             mixer: MixerState::default(), painted_upto: None,
         }
     }
@@ -308,8 +354,11 @@ impl Worker {
             // Sleep until there is work, then take everything queued.
             if queue.is_empty() {
                 work(Work::Idle);
-                // Painted, not merged yet: wake for the next canvas frame.
-                let merge_at = (!self.pending.is_empty()).then(|| self.last_update + canvas_frame());
+                // (Done with the document: the interface waiting gets it.)
+                let_ui_in();
+                // Painted, not merged yet: wake for the next canvas frame
+                // (a merge under way: its end wakes this thread).
+                let merge_at = (!self.pending.is_empty() && !self.merger.busy()).then(|| self.last_update + canvas_frame());
                 let cmd = match merge_at {
                     Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                         Ok(cmd) => Some(cmd),
@@ -321,11 +370,7 @@ impl Worker {
                 match cmd {
                     Some(cmd) => queue.push_back(cmd),
                     // Its frame: show what was painted.
-                    None => {
-                        self.update_projection();
-                        (self.notify)(Event::Painted);
-                        continue;
-                    }
+                    None => { self.send_merge(false); continue; }
                 }
             }
             queue.extend(rx.try_iter());
@@ -336,6 +381,9 @@ impl Worker {
             while let Some(cmd) = queue.pop_front() {
                 if is_filter(&cmd) { self.filters_taken += 1; }
                 if superseded(&cmd, &queue) { continue; }
+                // (The document is not held here: the interface asking for
+                // it gets it between two commands.)
+                let_ui_in();
                 match cmd {
                     Cmd::Begin { doc, brush, limit, zoom } => {
                         // A stroke still open (its End never came, e.g. the
@@ -394,23 +442,66 @@ impl Worker {
                         self.saves.remove(&id);
                         if self.doc.as_ref().is_some_and(|d| d.lock().map_or(true, |d| d.id() == id)) {
                             self.doc = None;
+                            self.whole_wanted = None;
                             self.stroke_cache.clear();
                         }
                         self.publish_held();
                     }
+                    Cmd::Merged => {
+                        if let Some(doc) = self.whole_wanted.take() { self.merge_whole(doc); }
+                        else if self.flush_wanted || self.last_update.elapsed() >= canvas_frame() { self.send_merge(self.flush_wanted); }
+                    }
+                    Cmd::Quit => {
+                        if self.stroke.is_some() { self.finish_stroke(&mut events); }
+                        for e in events.drain(..) { (self.notify)(e); }
+                        // (The merger, dropped, merges what it was sent.)
+                        if let Some(doc) = self.whole_wanted.take() { self.whole_job(doc); }
+                        self.send_job();
+                        return;
+                    }
                 }
                 if flush || t0.elapsed() >= canvas_frame() { break; }
             }
-            // Update the projection once per canvas frame (when behind the
+            // Merge for the screen once per canvas frame (when behind the
             // pen too), or at once when asked to (the end of a stroke...).
             queue.extend(rx.try_iter());
             let due = flush || self.last_update.elapsed() >= canvas_frame();
-            if due && !self.pending.is_empty() {
-                self.update_projection();
-                (self.notify)(Event::Painted);
-            }
+            if due { self.send_merge(flush); }
             for e in events { (self.notify)(e); }
         }
+    }
+
+    /// Send what changed to the merge thread, now if it is free, else as
+    /// soon as it is (`flush`: then, whatever the frame's time).
+    fn send_merge(&mut self, flush: bool) {
+        if self.pending.is_empty() && self.after.is_empty() { return; }
+        if self.merger.busy() || self.whole_wanted.is_some() {
+            self.flush_wanted |= flush;
+            return;
+        }
+        self.send_job();
+    }
+
+    /// The pending areas and what waits for them, as one job, with a
+    /// snapshot of the stack (the document locked only for it).
+    fn send_job(&mut self) {
+        self.flush_wanted = false;
+        self.last_update = Instant::now();
+        let rects = std::mem::take(&mut self.pending);
+        let after = std::mem::take(&mut self.after);
+        let painted_upto = self.painted_upto.take();
+        let stack = match (&self.doc, rects.is_empty()) {
+            (Some(doc), false) => { work(Work::Merge); Some(doc.locked().stack().clone()) }
+            _ => None,
+        };
+        let layer = self.stroke.as_ref().filter(|p| p.begun).map(|p| p.layer);
+        if let Some(st) = &mut self.stroke { st.pace.slowest_merge = st.pace.slowest_merge.max(self.merger.take_slowest()); }
+        match stack {
+            Some(stack) => self.merger.send(Job { stack: Some(stack), area: Area::Rects(rects), layer, after, painted_upto }),
+            None if !after.is_empty() => self.merger.send(Job { stack: None, area: Area::Rects(Vec::new()), layer, after, painted_upto }),
+            None => {}
+        }
+        self.publish_held();
     }
 
     /// `region` of `doc`'s frame to merge again.
@@ -478,7 +569,8 @@ impl Worker {
         // (A whole merge after a tree step: the caches no longer match.)
         if done.tree || done.region == Region::Whole { self.stroke_cache.clear(); }
         self.report(frame, &done, events);
-        if let Some(n) = seq { events.push(Event::TransformShown(n)); }
+        // (Told once the preview is on the projection.)
+        if let Some(n) = seq { self.after.push(Event::TransformShown(n)); }
         self.doc = Some(doc);
         self.publish_held();
     }
@@ -487,7 +579,6 @@ impl Worker {
         let Some(&p) = ps.first() else { return };
         let Some(doc) = self.doc.clone() else { return };
         let Some(mut st) = self.stroke.take() else { return };
-        let_ui_in();
         let mut d = doc.locked();
         let frame = d.stack().frame();
         if !st.begun {
@@ -546,71 +637,23 @@ impl Worker {
         self.publish_held();
     }
 
-    /// Merge the whole frame again by bands, the document locked for one at
-    /// a time (the interface runs between two), each band shown as it comes.
+    /// Merge the whole frame again, band by band on the merge thread
+    /// (each band shown as it comes), from one snapshot: the document is
+    /// not held meanwhile. What was pending is part of it.
     fn merge_whole(&mut self, doc: SharedDoc) {
-        profiling::scope!("merge whole");
-        self.stroke_cache.clear();
-        let (w, h) = {
-            let d = doc.locked();
-            (d.stack().width, d.stack().height)
-        };
-        // (What was waiting is part of it.)
         self.pending.clear();
-        // Only asked for a canvas just made (a document shown, a resize):
-        // each band goes to the screen at once, nothing is held.
-        for y0 in (0..h).step_by(BAND as usize) {
-            let r = Rect::from_xywh(0, y0 as i32, w, BAND.min(h - y0));
-            let px = {
-                let d = doc.locked();
-                // (Resized meanwhile: a new whole merge comes.)
-                if (d.stack().width, d.stack().height) != (w, h) { break; }
-                aurastudio_compose::merge(d.stack(), r, Opts { ghosts: true, ..Default::default() })
-            };
-            {
-                let mut p = self.projection.locked();
-                if (p.width, p.height) != (w, h) { break; }
-                p.push(r, px);
-            }
-            (self.notify)(Event::Painted);
-            let_ui_in();
-        }
-        self.doc = Some(doc);
+        self.flush_wanted = false;
+        if self.merger.busy() { self.whole_wanted = Some(doc); return; }
+        self.whole_job(doc);
     }
 
-    /// Merge the layers of the changed areas into the projection.
-    fn update_projection(&mut self) {
-        profiling::scope!("merge for the screen");
-        work(Work::Merge);
+    fn whole_job(&mut self, doc: SharedDoc) {
+        self.stroke_cache.clear();
+        let stack = doc.locked().stack().clone();
         self.last_update = Instant::now();
-        let rects = std::mem::take(&mut self.pending);
-        let Some(doc) = self.doc.clone() else { return };
-        let d = doc.locked();
-        let s = d.stack();
-        let frame = s.frame();
-        // A filter layer reading far around (a big blur): one piece over
-        // them all reads its margin once.
-        let rects = if rects.len() > 1 && aurastudio_compose::margin(&s.root, aurastudio_layers::Pick::ALL) > 16 { vec![rects.iter().fold(rects[0], |a, b| a.union(b))] } else { rects };
-        let t = Instant::now();
-        let layer = self.stroke.as_ref().filter(|p| p.begun).map(|p| p.layer);
-        let patches: Vec<_> = rects.into_iter().map(|r| r.intersect(&frame)).filter(|r| !r.is_empty()).map(|r| {
-            let px = match layer {
-                // Mid-stroke: the layers under and over it from the cache.
-                Some(l) => self.stroke_cache.merge(s, l, r),
-                None => aurastudio_compose::merge(s, r, Opts { ghosts: true, ..Default::default() }),
-            };
-            (r, px)
-        }).collect();
-        if let Some(st) = &mut self.stroke { st.pace.slowest_merge = st.pace.slowest_merge.max(t.elapsed()); }
-        self.publish_held();
-        let (w, h) = (s.width, s.height);
-        drop(d);
-        let mut p = self.projection.locked();
-        if (p.width, p.height) != (w, h) { return; }
-        for (r, px) in patches { p.push(r, px); }
-        drop(p);
-        // (After the push: a frame that takes these samples has them.)
-        if let Some(t) = self.painted_upto.take() { crate::latency::merged(t); }
+        let after = std::mem::take(&mut self.after);
+        self.merger.send(Job { stack: Some(stack), area: Area::Whole, layer: None, after, painted_upto: None });
+        self.doc = Some(doc);
     }
 
     /// Locked only to take the parts (shared tiles and patches); the
@@ -647,7 +690,12 @@ impl Worker {
     }
 }
 
-/// Upload helper for tests: paste merged patches into a frame-sized image.
+/// Upload helper for tests: paste merged pieces into a frame-sized image.
+#[cfg(test)]
+fn blit_pieces(screen: &mut [aurastudio_core::Rgba8], w: u32, pieces: &[aurastudio_gpu::Piece]) {
+    for p in pieces { blit(screen, w, p.rect(), &p.pixels()); }
+}
+
 #[cfg(test)]
 fn blit(screen: &mut [aurastudio_core::Rgba8], w: u32, r: Rect, px: &[aurastudio_core::Rgba8]) {
     for y in r.y0..r.y1 {
@@ -700,9 +748,9 @@ mod tests {
         assert_eq!(ev_rx.recv_timeout(Duration::from_secs(5)), Ok(id));
         assert_eq!(pixel(&doc, id, 30, 32), [0, 0, 0, 255]);
         drop(pt);
-        let patches = projection.locked().take_patches();
+        let pieces = projection.locked().take_pieces();
         let mut screen = vec![[0u8; 4]; 64 * 64];
-        for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
+        blit_pieces(&mut screen, 64, &pieces);
         assert_eq!(screen[32 * 64 + 30], [0, 0, 0, 255]);
     }
 
@@ -722,9 +770,9 @@ mod tests {
         }
         pt.send(Cmd::End);
         drop(pt);
-        let patches = projection.locked().take_patches();
+        let pieces = projection.locked().take_pieces();
         let mut screen = vec![[0u8; 4]; 64 * 64];
-        for (r, px) in &patches { blit(&mut screen, 64, *r, px); }
+        blit_pieces(&mut screen, 64, &pieces);
         let d = doc.locked();
         let merged = d.merged(Rect::new(0, 0, 64, 64), aurastudio_layers::Pick::ALL);
         assert_eq!(screen, merged);
@@ -823,7 +871,7 @@ mod tests {
         edit(&pt, &doc, Edit::SetOnion(o));
         drop(pt);
         let mut screen = vec![[0u8; 4]; 64 * 64];
-        for (r, px) in &projection.locked().take_patches() { blit(&mut screen, 64, *r, px); }
+        blit_pieces(&mut screen, 64, &projection.locked().take_pieces());
         let g = screen[8 * 64 + 8];
         assert!(g[0] > 200 && g[1] < 60, "the sheet before, red: {g:?}");
     }
@@ -846,12 +894,34 @@ mod tests {
         }
         pt.send(Cmd::End);
         drop(pt);
-        let patches = projection.locked().take_patches();
-        assert!(!patches.is_empty());
-        for (r, px) in &patches {
+        let pieces = projection.locked().take_pieces();
+        assert!(!pieces.is_empty());
+        for p in &pieces {
+            let (r, px) = (p.rect(), p.pixels());
             let holes = px.iter().filter(|p| p[3] < 255).count();
             assert_eq!(holes, 0, "piece {r:?}: {holes} pixels not opaque");
         }
+    }
+
+    /// The interface waiting for the document gets it between two of the
+    /// paint thread's commands while a long stroke is painted, and at once
+    /// when the paint thread is idle.
+    #[test]
+    fn the_interface_gets_the_document_during_a_stroke() {
+        let (doc, _) = doc_with_layer();
+        let pt = PaintThread::spawn(proj(64, 64), |_| {});
+        pt.send(Cmd::Begin { doc: Arc::clone(&doc), brush: Box::new(brush(30.0)), limit: None, zoom: 1.0 });
+        for i in 0..400 { pt.send(Cmd::Sample(PenSample::new((i % 60) as f32, (i / 7 % 60) as f32, 1.0, i as f64 * 0.001))); }
+        let mut got = 0;
+        for _ in 0..20 {
+            if ui_wait(|| doc.try_lock().ok().map(|_| ()), Duration::from_millis(200)).is_some() { got += 1; }
+        }
+        assert_eq!(got, 20);
+        pt.send(Cmd::End);
+        drop(pt);
+        let t = Instant::now();
+        assert!(ui_wait(|| doc.try_lock().ok().map(|_| ()), Duration::from_millis(200)).is_some());
+        assert!(t.elapsed() < Duration::from_millis(50));
     }
 
     /// A big dab (many tiles, painted on all cores): whole, no seams.
