@@ -47,8 +47,40 @@ pub(crate) struct Block {
     pub px:   Vec<Premul>,
 }
 
+/// Blocks given back on each thread, for the next merge to reuse (a merge
+/// makes one per piece and per folder, clipping group or ghost in it):
+/// at most `SPARE_MAX` of at most `SPARE_BYTES` each.
+const SPARE_MAX: usize = 3;
+const SPARE_BYTES: usize = 1 << 20;
+
+thread_local! {
+    static SPARE: std::cell::RefCell<Vec<Vec<Premul>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl Block {
-    pub fn new(rect: Rect, start: Premul) -> Block { Block { rect, w: rect.w() as usize, px: vec![start; rect.area() as usize] } }
+    /// A block of `rect` filled with `start` (its memory reused when this
+    /// thread has a spare one).
+    pub fn new(rect: Rect, start: Premul) -> Block {
+        let n = rect.area() as usize;
+        let mut px = SPARE.with(|s| {
+            let mut s = s.borrow_mut();
+            // (The largest: the least likely to grow.)
+            let k = (0..s.len()).max_by_key(|&i| s[i].capacity())?;
+            Some(s.swap_remove(k))
+        }).unwrap_or_default();
+        px.clear();
+        px.resize(n, start);
+        Block { rect, w: rect.w() as usize, px }
+    }
+
+}
+
+impl Drop for Block {
+    fn drop(&mut self) {
+        let px = std::mem::take(&mut self.px);
+        if px.capacity() == 0 || px.capacity() * std::mem::size_of::<Premul>() > SPARE_BYTES { return; }
+        let _ = SPARE.try_with(|s| { let mut s = s.borrow_mut(); if s.len() < SPARE_MAX { s.push(px); } });
+    }
 }
 
 /// How much each pixel of a block lets through (clipping), 0..1.
@@ -330,11 +362,11 @@ fn draw_layer(l: &aurastudio_layers::Layer, b: &mut Block, op: f32, blend: Blend
 
 /// An isolated folder's content merged on its own over `rect` (from the
 /// folder cache when its content is unchanged).
-fn folder_alone(f: &Folder, rect: Rect, ctx: Ctx, is_ref: bool, stop: &mut bool) -> Vec<Premul> {
+fn folder_alone(f: &Folder, rect: Rect, ctx: Ctx, is_ref: bool, stop: &mut bool) -> Block {
     let mut t = Block::new(rect, [0.0; 4]);
     if let Some(gh) = ctx.ghosts_of(f.id) { ghost_block(f, gh, &mut t, 1.0, ctx); }
     compose(&f.children, &mut t, 1.0, ctx, is_ref, None, stop, false);
-    t.px
+    t
 }
 
 /// Draw `n` onto `b`, through `mask` if clipped; `alone`: as the base of
@@ -358,9 +390,9 @@ fn draw(n: &Node, b: &mut Block, scale: f32, ctx: Ctx, in_reference: bool, mask:
             // Clipped, isolated, or a group's base: merged on its own first.
             (blend, _, _) => {
                 let mode = match blend { FolderBlend::Isolated(m) if !alone => m, _ => BlendMode::Normal };
-                let px = folder_alone(f, b.rect, ctx, is_ref, stop);
+                let t = folder_alone(f, b.rect, ctx, is_ref, stop);
                 let op = if alone { 1.0 } else { f.opacity * scale };
-                blend_block(b, &px, op, mode, mask);
+                blend_block(b, &t.px, op, mode, mask);
             }
         },
         Node::Filter(fl) => {

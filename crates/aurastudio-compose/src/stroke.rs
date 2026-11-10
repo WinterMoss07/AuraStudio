@@ -164,7 +164,6 @@ enum Plan<'a> {
     General,
 }
 
-const CN: usize = (CELL * CELL) as usize;
 
 fn cell_rect((x, y): (i32, i32)) -> Rect { Rect::new(x, y, x + CELL, y + CELL) }
 
@@ -227,9 +226,9 @@ impl<'a> Plan<'a> {
                 let above = (!above_items.is_empty()).then(|| {
                     let mut a = Block::new(r, [0.0; 4]);
                     draw_items(above_items, &mut a, ctx);
-                    a.px
-                }).filter(|px| px.iter().any(|p| p[3] > 0.0));
-                Some(Cell { key, below: Pixels::of(&below.px), above: above.map(|a| Pixels::of(&a)) })
+                    a
+                }).filter(|a| a.px.iter().any(|p| p[3] > 0.0));
+                Some(Cell { key, below: Pixels::of(&below.px), above: above.map(|a| Pixels::of(&a.px)) })
             }
             Plan::General => {
                 let (below, above) = crate::merge_around(stack, layer, r)?;
@@ -301,7 +300,11 @@ impl StrokeCache {
         let parts: Vec<_> = outs.iter_mut().zip(rects).flat_map(|(out, r)| grid_parts(out, *r, CELL)).collect();
         parts.into_par_iter().for_each(|(cr, part, mut rows)| {
             let Some(e) = cells.get(&(cr.x0, cr.y0)) else { return };
-            let mut b = Block { rect: cr, w: CELL as usize, px: (0..CN).map(|i| unpack(e.below.get(i))).collect() };
+            let mut b = Block::new(cr, [0.0; 4]);
+            match &e.below {
+                Pixels::Uniform(c) => b.px.fill(unpack(*c)),
+                Pixels::Each(v) => for (d, q) in b.px.iter_mut().zip(v.iter()) { *d = unpack(*q); },
+            }
             let mut stop = false;
             draw_scaled(painted, &mut b, scale, ctx, &mut stop);
             if let Some(a) = &e.above {
