@@ -450,7 +450,7 @@ impl App {
             self.refresh_home();
         }
         if let Some(path) = actions.forget_recent {
-            self.recent.retain(|p| *p != path);
+            self.recent.retain(|r| r.path != path);
             save_recent(&self.recent);
             self.refresh_home();
         }

@@ -19,6 +19,8 @@ profile = ["profiling/profile-with-tracy", "dep:tracy-client"]
 diag = ["aurastudio-core/diag", "dep:aurastudio-diag"]
 
 [dependencies]
+# Local time of the recent files (the system's time zone).
+jiff = "0.2"
 profiling = "1"
 # Same version as the one profiling uses (one Tracy client).
 tracy-client = { version = "0.18", optional = true }

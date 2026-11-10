@@ -15,6 +15,8 @@ pub struct RecentFile {
     pub name:   String,
     /// "PNG · 2 hours ago"...
     pub detail: String,
+    /// Shown on hover: the path, when it was last opened.
+    tooltip:    String,
     thumb:      Option<crate::atlas::Pic>,
     /// Thumbnail decoded but not uploaded yet (textures need the context).
     pending:    Option<egui::ColorImage>,
@@ -22,8 +24,12 @@ pub struct RecentFile {
 
 impl RecentFile {
     pub fn new(path: PathBuf, name: String, detail: String) -> Self {
-        Self { path, name, detail, thumb: None, pending: None }
+        let tooltip = path.display().to_string();
+        Self { path, name, detail, tooltip, thumb: None, pending: None }
     }
+
+    /// The hover text (the path by default).
+    pub fn with_tooltip(self, tooltip: String) -> Self { Self { tooltip, ..self } }
 }
 
 /// What the New dialog asks the app to create.
@@ -426,7 +432,7 @@ fn recent_grid(ui: &mut Ui, recent: &[RecentFile], a: &mut Actions) {
 
 fn recent_card(ui: &mut Ui, r: &RecentFile, card: f32, a: &mut Actions) {
     let (rect, resp) = ui.allocate_exact_size(vec2(card, card + 38.0), Sense::click());
-    let resp = resp.on_hover_text(r.path.display().to_string());
+    let resp = resp.on_hover_text(&r.tooltip);
     let p = ui.painter_at(rect);
     if resp.hovered() { p.rect_filled(rect, 3.0, theme::WIDGET); }
     let img = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(card - 12.0, card - 12.0));

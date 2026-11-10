@@ -11,7 +11,7 @@ use aurastudio_document::{Document, Edit};
 use aurastudio_file::{EXTENSION, IMAGE_EXTENSIONS};
 use aurastudio_ui::{Dialog, DialogChoice, EditCmd, FileCmd};
 
-use super::{ago, autosave_after, has_extension, recovery_path, save_recent, App, AppEvent, Opening, Pending, Read, APP_TITLE, MAX_RECENT, PLACEHOLDER};
+use super::{ago, ago_secs, autosave_after, local_time, now_secs, Recent, has_extension, recovery_path, save_recent, App, AppEvent, Opening, Pending, Read, APP_TITLE, MAX_RECENT, PLACEHOLDER};
 use crate::paint_thread::Cmd;
 use crate::projection::Projection;
 
@@ -440,8 +440,8 @@ impl App {
     /// Put `path` first in the recent files.
     pub(super) fn add_recent(&mut self, path: &Path) {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.recent.retain(|p| *p != path);
-        self.recent.insert(0, path);
+        self.recent.retain(|r| r.path != path);
+        self.recent.insert(0, Recent { path, at: Some(now_secs()) });
         self.recent.truncate(MAX_RECENT);
         save_recent(&self.recent);
     }
@@ -449,14 +449,23 @@ impl App {
     /// Recent files on the start screen; their thumbnails are decoded on a
     /// thread and arrive one by one.
     pub(super) fn refresh_home(&mut self) {
-        self.recent.retain(|p| p.is_file());
-        let list = self.recent.iter().map(|p| {
+        self.recent.retain(|r| r.path.is_file());
+        let now = now_secs();
+        let list = self.recent.iter().map(|r| {
+            let p = &r.path;
             let ext = p.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
-            let when = std::fs::metadata(p).and_then(|m| m.modified()).map_or_else(|_| String::new(), ago);
-            aurastudio_ui::RecentFile::new(p.clone(), aurastudio_file::doc_name(p), format!("{ext} · {when}"))
+            // When AuraStudio last had it (not the file's own date: a
+            // reference picture read years after it was made).
+            let detail = match r.at {
+                Some(t) => format!("{ext} · {}", ago_secs(now.saturating_sub(t).max(0) as u64)),
+                None => ext,
+            };
+            let mut tip = p.display().to_string();
+            if let Some(when) = r.at.and_then(local_time) { tip.push_str(&format!("\nLast opened in AuraStudio: {when}")); }
+            aurastudio_ui::RecentFile::new(p.clone(), aurastudio_file::doc_name(p), detail).with_tooltip(tip)
         }).collect();
         self.ui.set_recent(list);
-        let (paths, proxy) = (self.recent.clone(), self.proxy.clone());
+        let (paths, proxy): (Vec<PathBuf>, _) = (self.recent.iter().map(|r| r.path.clone()).collect(), self.proxy.clone());
         // (Kept on disk: a big picture isn't decoded whole at each start.)
         let dir = dirs::cache_dir().map(|d| d.join("AuraStudio").join("thumbnails"));
         std::thread::spawn(move || {

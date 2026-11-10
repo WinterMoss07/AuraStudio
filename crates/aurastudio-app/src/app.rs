@@ -75,22 +75,49 @@ fn brush_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("AuraStudio").join("brushes"))
 }
 
-/// The list of recently used files, one path per line.
+/// A recently used file, and when AuraStudio last opened or saved it
+/// (Unix seconds; None: listed before that was kept).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Recent {
+    pub path: PathBuf,
+    pub at:   Option<i64>,
+}
+
+/// The list of recently used files: "seconds<TAB>path" per line (a line
+/// of a path alone: from before the time was kept).
 fn recent_list_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("AuraStudio").join("recent.txt"))
 }
 
-fn load_recent() -> Vec<PathBuf> {
-    recent_list_path().and_then(|p| std::fs::read_to_string(p).ok()).map_or_else(Vec::new, |s| {
-        s.lines().filter(|l| !l.trim().is_empty()).map(PathBuf::from).take(MAX_RECENT).collect()
-    })
+fn load_recent() -> Vec<Recent> {
+    recent_list_path().and_then(|p| std::fs::read_to_string(p).ok()).map_or_else(Vec::new, |s| parse_recent(&s))
 }
 
-fn save_recent(list: &[PathBuf]) {
+fn parse_recent(text: &str) -> Vec<Recent> {
+    text.lines().filter(|l| !l.trim().is_empty()).map(|l| match l.split_once('\t') {
+        // (A tab can't be in a Windows path.)
+        Some((t, p)) if t.parse::<i64>().is_ok() => Recent { path: PathBuf::from(p), at: t.parse().ok() },
+        _ => Recent { path: PathBuf::from(l), at: None },
+    }).take(MAX_RECENT).collect()
+}
+
+fn recent_text(list: &[Recent]) -> String {
+    list.iter().map(|r| match r.at {
+        Some(t) => format!("{t}\t{}\n", r.path.display()),
+        None => format!("{}\n", r.path.display()),
+    }).collect()
+}
+
+fn save_recent(list: &[Recent]) {
     let Some(path) = recent_list_path() else { return };
     if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
-    let text: String = list.iter().map(|p| format!("{}\n", p.display())).collect();
-    if let Err(e) = std::fs::write(&path, text) { log::warn!("recent files: {e}"); }
+    if let Err(e) = std::fs::write(&path, recent_text(list)) { log::warn!("recent files: {e}"); }
+}
+
+/// "10 Nov 2026, 14:32": Unix seconds in the system's time zone.
+pub(crate) fn local_time(secs: i64) -> Option<String> {
+    let t = jiff::Timestamp::from_second(secs).ok()?;
+    Some(t.to_zoned(jiff::tz::TimeZone::system()).strftime("%-d %b %Y, %H:%M").to_string())
 }
 
 /// Settings kept between sessions (key=value lines).
@@ -112,17 +139,24 @@ fn has_extension(path: &Path, ext: &str) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
-/// "5 minutes ago"...
-fn ago(t: std::time::SystemTime) -> String {
-    let s = t.elapsed().map_or(0, |d| d.as_secs());
+/// "5 minutes ago"... (a hint: the exact time is in the tooltip).
+fn ago(t: std::time::SystemTime) -> String { ago_secs(t.elapsed().map_or(0, |d| d.as_secs())) }
+
+fn ago_secs(s: u64) -> String {
+    const DAY: u64 = 86_400;
     let (n, unit) = match s {
         0..=89 => return "a moment ago".into(),
         90..=5399 => (s / 60, "minute"),
         5400..=129_599 => (s / 3600, "hour"),
-        _ => (s / 86_400, "day"),
+        _ if s < 30 * DAY => (s / DAY, "day"),
+        _ if s < 365 * DAY => (s / (30 * DAY), "month"),
+        _ => (s / (365 * DAY), "year"),
     };
     format!("{n} {unit}{} ago", if n > 1 { "s" } else { "" })
 }
+
+/// Now, Unix seconds.
+fn now_secs() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) }
 
 /// A drag of a tool other than the brush, in progress.
 enum Gesture {
@@ -297,7 +331,7 @@ pub struct App {
     /// stand-in).
     home: bool,
     /// Recently opened / saved files, newest first.
-    recent: Vec<PathBuf>,
+    recent: Vec<Recent>,
     /// A file named on the command line ("Open with" in the file
     /// manager), opened once the window is up.
     open_arg: Option<PathBuf>,
@@ -1038,4 +1072,33 @@ fn gpu_quality(q: aurastudio_ui::CanvasQuality) -> aurastudio_gpu::CanvasQuality
 /// The canvas pixel under `p`, if inside a `size` canvas.
 fn pixel_in(p: Point, (w, h): (u32, u32)) -> Option<(i32, i32)> {
     (p.x >= 0.0 && p.y >= 0.0 && p.x < w as f64 && p.y < h as f64).then_some((p.x as i32, p.y as i32))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The list keeps when each file was last had; an old line (a path
+    /// alone) still reads, without a time.
+    #[test]
+    fn the_recent_list_keeps_when_a_file_was_opened() {
+        let list = parse_recent("1762780320\tC:\\art\\a.aura\nC:\\refs\\old.jpg\n\n");
+        assert_eq!(list, vec![
+            Recent { path: PathBuf::from("C:\\art\\a.aura"), at: Some(1_762_780_320) },
+            Recent { path: PathBuf::from("C:\\refs\\old.jpg"), at: None },
+        ]);
+        assert_eq!(parse_recent(&recent_text(&list)), list);
+    }
+
+    #[test]
+    fn ago_reads_in_the_right_unit() {
+        assert_eq!(ago_secs(30), "a moment ago");
+        assert_eq!(ago_secs(6 * 86_400 + 5), "6 days ago");
+        assert_eq!(ago_secs(95 * 86_400), "3 months ago");
+        assert_eq!(ago_secs(974 * 86_400), "2 years ago");
+        assert_eq!(ago_secs(400 * 86_400), "1 year ago");
+        // The exact time, day and month never confused.
+        let t = local_time(1_762_780_320).unwrap();
+        assert!(t.contains("Nov 2025"), "{t}");
+    }
 }

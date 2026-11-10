@@ -504,6 +504,9 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
     advanced::windows(ctx, &mut state.advanced, model, actions);
 
     bars::notice_overlay(ctx, root.available_rect_before_wrap(), &mut state.notice);
+    // The start screen gone, its thumbnails go too (RAM and GPU): read
+    // again from their disk cache when it comes back.
+    if !model.home && !state.recent.is_empty() { state.recent.clear(); }
     if let Some(card) = canvas_card(ctx, root.available_rect_before_wrap(), model) {
         if model.home {
             home::start_screen(ctx, card, &mut state.recent, actions);
