@@ -370,7 +370,7 @@ impl Scenario for Compose {
             aurastudio_core::zone!("merge A4 frame");
             std::hint::black_box(merge(&s, s.frame(), Opts::default()));
         }
-        let mut sc = StrokeCache::default();
+        let sc = StrokeCache::default();
         for k in 0..120 {
             let (x, y) = (300 + k * 12, 600 + k * 9);
             aurastudio_core::zone!("merge stroke rect (64 px)");

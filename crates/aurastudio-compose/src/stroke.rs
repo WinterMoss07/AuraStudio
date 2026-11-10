@@ -3,14 +3,18 @@
 //! of every layer. Over it, only normal blending can be pre-merged. Cells
 //! are keyed by the content of every other node there: an edit elsewhere
 //! (visibility, another layer) invalidates exactly the cells it touches.
-//! With fewer than `MIN_OTHERS` layers around the painted one the merge is
-//! direct: it costs about the same (measured: 0.45 against 0.3 ms for
-//! 128 × 128 with two layers under) and keeps no cells.
+//! With fewer than `MIN_OTHERS` layers around the painted one the screen's
+//! merge is direct: it costs about the same (measured: 0.45 against 0.3 ms
+//! for 128 × 128 with two layers under) and keeps no cells.
+//!
+//! The same cells serve a Mixer Brush that samples all layers (`around`):
+//! one cache for the screen and the brush, shared between the threads
+//! that merge and paint (a clone is the same cache).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use aurastudio_core::blend::Premul;
+use aurastudio_core::blend::{to_premul, to_straight_u8, Premul};
 use aurastudio_core::{BlendMode, Fnv, Rect, Rgba8};
 use aurastudio_layers::{ghosts_in, Folder, FolderBlend, Ghost, LayerStack, Node, Pick};
 use rayon::prelude::*;
@@ -82,6 +86,10 @@ impl Pixels {
         if px.iter().all(|p| pack(*p) == first) { return Pixels::Uniform(first); }
         Pixels::Each(Arc::new(px.iter().map(|p| pack(*p)).collect()))
     }
+    fn of_u8(px: &[Rgba8]) -> Self {
+        let p: Vec<Premul> = px.iter().map(|q| to_premul(*q)).collect();
+        Pixels::of(&p)
+    }
     fn bytes(&self) -> usize { match self { Pixels::Uniform(_) => 8, Pixels::Each(v) => v.len() * 8 } }
     fn get(&self, i: usize) -> Px16 { match self { Pixels::Uniform(c) => *c, Pixels::Each(v) => v[i] } }
 }
@@ -91,21 +99,41 @@ struct Cell {
     below: Pixels,
     /// `None`: nothing covers the cell from above.
     above: Option<Pixels>,
-    /// The merge that last used it (the budget drops the oldest).
-    used:  u64,
 }
 
 impl Cell {
     fn bytes(&self) -> usize { self.below.bytes() + self.above.as_ref().map_or(0, Pixels::bytes) }
 }
 
-/// The under / over merges of the layer being painted, by cell.
 #[derive(Default)]
-pub struct StrokeCache {
+struct Cells {
     layer: u64,
-    cells: HashMap<(i32, i32), Cell>,
+    /// Each cell, and the merge that last used it (the budget drops the
+    /// oldest).
+    map:   HashMap<(i32, i32), (Arc<Cell>, u64)>,
     bytes: usize,
     tick:  u64,
+}
+
+impl Cells {
+    /// Drop the cells used longest ago until they hold at most `max`
+    /// bytes (those of the last merge stay).
+    fn trim(&mut self, max: usize) {
+        if self.bytes <= max { return; }
+        let mut by_age: Vec<((i32, i32), u64)> = self.map.iter().filter(|(_, e)| e.1 < self.tick).map(|(c, e)| (*c, e.1)).collect();
+        by_age.sort_unstable_by_key(|x| x.1);
+        for (c, _) in by_age {
+            if self.bytes <= max { break; }
+            if let Some((e, _)) = self.map.remove(&c) { self.bytes -= e.bytes(); }
+        }
+    }
+}
+
+/// The under / over merges of the layer being painted, by cell. Cloned,
+/// the same cache.
+#[derive(Clone, Default)]
+pub struct StrokeCache {
+    cells: Arc<Mutex<Cells>>,
 }
 
 fn draw_items(items: &[Item], b: &mut Block, ctx: Ctx) {
@@ -124,76 +152,156 @@ fn draw_scaled(n: &Node, b: &mut Block, scale: f32, ctx: Ctx, stop: &mut bool) {
     compose(std::slice::from_ref(n), b, scale, ctx, false, None, stop, false);
 }
 
-impl StrokeCache {
-    /// The merge of `rect` while layer `layer` is painted: the full merge's
-    /// pixels (to rounding), from the cells when the tree allows it.
-    pub fn merge(&mut self, stack: &LayerStack, layer: u64, rect: Rect) -> Vec<Rgba8> {
-        let opts = crate::Opts { ghosts: true, ..Default::default() };
-        if rect.is_empty() { return Vec::new(); }
-        aurastudio_core::zone!("merge stroke");
-        if layer != self.layer { self.clear(); self.layer = layer; }
-        self.tick += 1;
-        let ghosts = stack.ghosts();
+/// How the cells of a stroke on `layer` are made.
+enum Plan<'a> {
+    /// The tree flattened: under the painted layer, it, over it (normal
+    /// blending only), with the pass-through scale of the painted one.
+    Items { items: Vec<Item<'a>>, k: usize, others: usize, ghosts: &'a [(u64, Vec<Ghost>)] },
+    /// Anything else (the painted layer in an isolated folder, a filter,
+    /// clipping, blending over it): each cell is the general merge of what
+    /// is under it and over it (Mixer sampling only; the screen merges
+    /// directly).
+    General,
+}
+
+const CN: usize = (CELL * CELL) as usize;
+
+fn cell_rect((x, y): (i32, i32)) -> Rect { Rect::new(x, y, x + CELL, y + CELL) }
+
+/// The cells of the grid `rect` touches, row by row.
+fn cells_of(rect: Rect) -> Vec<(i32, i32)> {
+    let g = rect.snapped_out(CELL as u32);
+    (g.y0..g.y1).step_by(CELL as usize).flat_map(|y| (g.x0..g.x1).step_by(CELL as usize).map(move |x| (x, y))).collect()
+}
+
+impl<'a> Plan<'a> {
+    fn of(stack: &'a LayerStack, layer: u64, ghosts: &'a [(u64, Vec<Ghost>)]) -> Plan<'a> {
         let mut items = Vec::new();
         flatten(&stack.root, 1.0, ghosts, &mut items);
-        let Some(k) = items.iter().position(|it| matches!(it, Item::Node(n, _) if n.id() == layer)) else { return crate::merge(stack, rect, opts) };
+        let Some(k) = items.iter().position(|it| matches!(it, Item::Node(n, _) if n.id() == layer)) else { return Plan::General };
         let usable = !needs_general(stack) && items[k + 1..].iter().all(|it| match it { Item::Node(n, _) => normal(n), Item::Ghosts(..) => true });
+        if !usable { return Plan::General; }
         let others: usize = items.iter().enumerate().filter(|(i, _)| *i != k).map(|(_, it)| match it { Item::Node(..) => 1, Item::Ghosts(_, _, gh) => gh.len() }).sum();
-        if !usable || others < MIN_OTHERS { self.clear(); return crate::merge(stack, rect, opts); }
-        let (Item::Node(painted, scale), below_items, above_items) = (items[k], &items[..k], &items[k + 1..]) else { return Vec::new() };
-        let ctx = Ctx { pick: Pick::ALL, ghosts, hidden: &[] };
-        // The settings of everything but the painted layer's pixels.
-        let mut sh = Fnv::default();
-        for it in &items {
-            match *it {
-                Item::Node(n, s) => { sh.u64(n.id()).f32(s); if n.id() == layer { sh.u32(1); } }
-                Item::Ghosts(f, s, gh) => { sh.u64(f.id).f32(s); for g in gh { sh.u64(g.sheet).f32(g.opacity); for t in g.tint { sh.f32(t); } } }
-            }
-        }
-        let settings = sh.finish();
-        let key = |c: Rect| {
-            let mut h = Fnv::default();
-            h.u64(settings);
-            for it in &items {
-                match *it {
-                    Item::Node(n, _) if n.id() == layer => {}
-                    Item::Node(n, _) => crate::key::node_key(&mut h, n, c),
-                    Item::Ghosts(f, _, gh) => for g in gh { if let Some(s) = f.children.iter().find(|x| x.id() == g.sheet) { crate::key::node_key(&mut h, s, c); } },
+        Plan::Items { items, k, others, ghosts }
+    }
+
+    /// The content key of cell `c`: everything but the painted layer's
+    /// pixels (and how the cell is made).
+    fn key(&self, stack: &LayerStack, layer: u64, c: Rect) -> u64 {
+        let mut h = Fnv::default();
+        match self {
+            Plan::Items { items, .. } => {
+                h.u32(1);
+                for it in items {
+                    match *it {
+                        Item::Node(n, s) => { h.u64(n.id()).f32(s); if n.id() == layer { h.u32(1); } }
+                        Item::Ghosts(f, s, gh) => { h.u64(f.id).f32(s); for g in gh { h.u64(g.sheet).f32(g.opacity); for t in g.tint { h.f32(t); } } }
+                    }
+                }
+                for it in items {
+                    match *it {
+                        Item::Node(n, _) if n.id() == layer => {}
+                        Item::Node(n, _) => crate::key::node_key(&mut h, n, c),
+                        Item::Ghosts(f, _, gh) => for g in gh { if let Some(s) = f.children.iter().find(|x| x.id() == g.sheet) { crate::key::node_key(&mut h, s, c); } },
+                    }
                 }
             }
-            h.finish()
-        };
-        let g = rect.snapped_out(CELL as u32);
-        let cells: Vec<(i32, i32)> = (g.y0..g.y1).step_by(CELL as usize).flat_map(|y| (g.x0..g.x1).step_by(CELL as usize).map(move |x| (x, y))).collect();
-        // Cells to (re)build: none yet, or their content changed.
-        let todo: Vec<((i32, i32), u64)> = cells.iter().map(|&c| (c, key(Rect::new(c.0, c.1, c.0 + CELL, c.1 + CELL))))
-            .filter(|(c, k)| self.cells.get(c).is_none_or(|e| e.key != *k)).collect();
-        aurastudio_core::count!("stroke cache cells built", todo.len());
-        let built: Vec<((i32, i32), Cell)> = todo.par_iter().map(|&((x, y), k)| {
-            let r = Rect::new(x, y, x + CELL, y + CELL);
-            let mut below = Block::new(r, [1.0; 4]);
-            draw_items(below_items, &mut below, ctx);
-            let above = (!above_items.is_empty()).then(|| {
-                let mut a = Block::new(r, [0.0; 4]);
-                draw_items(above_items, &mut a, ctx);
-                a.px
-            }).filter(|px| px.iter().any(|p| p[3] > 0.0));
-            ((x, y), Cell { key: k, below: Pixels::of(&below.px), above: above.map(|a| Pixels::of(&a)), used: 0 })
-        }).collect();
-        for (c, e) in built {
-            self.bytes += e.bytes();
-            if let Some(old) = self.cells.insert(c, e) { self.bytes -= old.bytes(); }
+            Plan::General => {
+                h.u32(2).u64(layer);
+                for n in &stack.root { crate::key::node_key_except(&mut h, n, c, layer); }
+            }
         }
-        for c in &cells { if let Some(e) = self.cells.get_mut(c) { e.used = self.tick; } }
-        self.trim(BUDGET);
+        h.finish()
+    }
+
+    /// Cell `c` made (`stack`: with the painted layer empty for the
+    /// general plan).
+    fn build(&self, stack: &LayerStack, layer: u64, c: (i32, i32), key: u64) -> Option<Cell> {
+        let r = cell_rect(c);
+        match self {
+            Plan::Items { items, k, ghosts, .. } => {
+                let ctx = Ctx { pick: Pick::ALL, ghosts, hidden: &[] };
+                let (below_items, above_items) = (&items[..*k], &items[k + 1..]);
+                let mut below = Block::new(r, [1.0; 4]);
+                draw_items(below_items, &mut below, ctx);
+                let above = (!above_items.is_empty()).then(|| {
+                    let mut a = Block::new(r, [0.0; 4]);
+                    draw_items(above_items, &mut a, ctx);
+                    a.px
+                }).filter(|px| px.iter().any(|p| p[3] > 0.0));
+                Some(Cell { key, below: Pixels::of(&below.px), above: above.map(|a| Pixels::of(&a)) })
+            }
+            Plan::General => {
+                let (below, above) = crate::merge_around(stack, layer, r)?;
+                let above = above.iter().any(|p| p[3] > 0).then(|| Pixels::of_u8(&above));
+                Some(Cell { key, below: Pixels::of_u8(&below), above })
+            }
+        }
+    }
+}
+
+impl StrokeCache {
+    /// The cells for `rects` (made where missing or stale, on all cores),
+    /// each looked up once.
+    fn cells_for(&self, plan: &Plan, stack: &LayerStack, layer: u64, rects: &[Rect]) -> HashMap<(i32, i32), Arc<Cell>> {
+        let mut want: Vec<(i32, i32)> = rects.iter().flat_map(|r| cells_of(*r)).collect();
+        want.sort_unstable();
+        want.dedup();
+        let keys: Vec<((i32, i32), u64)> = want.par_iter().map(|&c| (c, plan.key(stack, layer, cell_rect(c)))).collect();
+        let mut got: HashMap<(i32, i32), Arc<Cell>> = HashMap::with_capacity(keys.len());
+        let todo: Vec<((i32, i32), u64)> = {
+            let mut g = self.lock();
+            if layer != g.layer { *g = Cells { layer, ..Cells::default() }; }
+            g.tick += 1;
+            let tick = g.tick;
+            keys.iter().copied().filter(|(c, k)| match g.map.get_mut(c) {
+                Some(e) if e.0.key == *k => { e.1 = tick; got.insert(*c, Arc::clone(&e.0)); false }
+                _ => true,
+            }).collect()
+        };
+        aurastudio_core::count!("stroke cache cells built", todo.len());
+        let built: Vec<((i32, i32), Arc<Cell>)> = todo.par_iter().filter_map(|&(c, k)| plan.build(stack, layer, c, k).map(|e| (c, Arc::new(e)))).collect();
+        let mut g = self.lock();
+        if g.layer == layer {
+            let tick = g.tick;
+            for (c, e) in &built {
+                g.bytes += e.bytes();
+                if let Some((old, _)) = g.map.insert(*c, (Arc::clone(e), tick)) { g.bytes -= old.bytes(); }
+            }
+            g.trim(BUDGET);
+        }
+        got.extend(built);
+        got
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cells> { self.cells.lock().unwrap_or_else(PoisonError::into_inner) }
+
+    /// The merge of `rect` while layer `layer` is painted: the full merge's
+    /// pixels (to rounding), from the cells when the tree allows it.
+    pub fn merge(&self, stack: &LayerStack, layer: u64, rect: Rect) -> Vec<Rgba8> {
+        self.merge_rects(stack, layer, &[rect]).pop().unwrap_or_default()
+    }
+
+    /// `merge` of each of `rects` (all their cells on all cores at once).
+    pub fn merge_rects(&self, stack: &LayerStack, layer: u64, rects: &[Rect]) -> Vec<Vec<Rgba8>> {
+        let opts = crate::Opts { ghosts: true, ..Default::default() };
+        aurastudio_core::zone!("merge stroke");
+        let plan = Plan::of(stack, layer, stack.ghosts());
+        let (items, k) = match &plan {
+            Plan::Items { items, k, others, .. } if *others >= MIN_OTHERS => (items, *k),
+            // (Nothing built: cells a Mixer Brush made stay.)
+            _ => return crate::merge::merge_rects(stack, rects, opts),
+        };
+        let Item::Node(painted, scale) = items[k] else { return rects.iter().map(|r| vec![[0; 4]; r.area() as usize]).collect() };
+        let ctx = Ctx { pick: Pick::ALL, ghosts: stack.ghosts(), hidden: &[] };
+        let cells = self.cells_for(&plan, stack, layer, rects);
         // Below, then the painted layer, then what is over it, straight
-        // into each cell's rows of the output.
-        let cells_ref = &self.cells;
-        let mut out = vec![[0u8; 4]; rect.area() as usize];
-        grid_parts(&mut out, rect, CELL).into_par_iter().for_each(|(cr, part, mut rows)| {
-            let Some(e) = cells_ref.get(&(cr.x0, cr.y0)) else { return };
-            let n = (CELL * CELL) as usize;
-            let mut b = Block { rect: cr, w: CELL as usize, px: (0..n).map(|i| unpack(e.below.get(i))).collect() };
+        // into each cell's rows of the outputs.
+        let mut outs: Vec<Vec<Rgba8>> = rects.iter().map(|r| vec![[0u8; 4]; r.area() as usize]).collect();
+        let parts: Vec<_> = outs.iter_mut().zip(rects).flat_map(|(out, r)| grid_parts(out, *r, CELL)).collect();
+        parts.into_par_iter().for_each(|(cr, part, mut rows)| {
+            let Some(e) = cells.get(&(cr.x0, cr.y0)) else { return };
+            let mut b = Block { rect: cr, w: CELL as usize, px: (0..CN).map(|i| unpack(e.below.get(i))).collect() };
             let mut stop = false;
             draw_scaled(painted, &mut b, scale, ctx, &mut stop);
             if let Some(a) = &e.above {
@@ -207,25 +315,44 @@ impl StrokeCache {
             }
             write_rows(&b, part, &mut rows);
         });
-        out
+        outs
+    }
+
+    /// What a Mixer Brush that samples all layers sees around `layer` over
+    /// `rect`: the merge under it (on white) and over it (on
+    /// transparency), straight RGBA rows. `stack`: the stack as the stroke
+    /// began, the painted layer empty in it. From the same cells as the
+    /// screen's merge (no onion ghosts: they are not paint).
+    pub fn around(&self, stack: &LayerStack, layer: u64, rect: Rect) -> (Vec<Rgba8>, Vec<Rgba8>) {
+        let n = rect.area() as usize;
+        let (mut under, mut over) = (vec![[0u8; 4]; n], vec![[0u8; 4]; n]);
+        let inside = rect.intersect(&stack.frame());
+        if inside.is_empty() { return (under, over); }
+        let plan = Plan::of(stack, layer, &[]);
+        let cells = self.cells_for(&plan, stack, layer, &[inside]);
+        let w = rect.w() as usize;
+        for (&(cx, cy), e) in &cells {
+            let part = cell_rect((cx, cy)).intersect(&inside);
+            for y in part.y0..part.y1 {
+                for x in part.x0..part.x1 {
+                    let i = ((y - cy) * CELL + (x - cx)) as usize;
+                    let o = (y - rect.y0) as usize * w + (x - rect.x0) as usize;
+                    under[o] = to_straight_u8(unpack(e.below.get(i)));
+                    if let Some(a) = &e.above { over[o] = to_straight_u8(unpack(a.get(i))); }
+                }
+            }
+        }
+        (under, over)
     }
 
     /// Drop the cells used longest ago until they hold at most `max`
     /// bytes (those of the last merge stay).
-    pub fn trim(&mut self, max: usize) {
-        if self.bytes <= max { return; }
-        let mut by_age: Vec<((i32, i32), u64)> = self.cells.iter().filter(|(_, e)| e.used < self.tick).map(|(c, e)| (*c, e.used)).collect();
-        by_age.sort_unstable_by_key(|x| x.1);
-        for (c, _) in by_age {
-            if self.bytes <= max { break; }
-            if let Some(e) = self.cells.remove(&c) { self.bytes -= e.bytes(); }
-        }
-    }
+    pub fn trim(&self, max: usize) { self.lock().trim(max); }
 
     /// Cells held, and their bytes (the memory report).
-    pub fn len(&self) -> usize { self.cells.len() }
-    pub fn bytes(&self) -> usize { self.bytes }
-    pub fn is_empty(&self) -> bool { self.cells.is_empty() }
-    /// Everything dropped (as new).
-    pub fn clear(&mut self) { *self = Self::default(); }
+    pub fn len(&self) -> usize { self.lock().map.len() }
+    pub fn bytes(&self) -> usize { self.lock().bytes }
+    pub fn is_empty(&self) -> bool { self.lock().map.is_empty() }
+    /// Everything dropped (as new), for every clone.
+    pub fn clear(&self) { *self.lock() = Cells::default(); }
 }

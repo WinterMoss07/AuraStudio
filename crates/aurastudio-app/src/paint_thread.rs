@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crate::Locked;
 
 use aurastudio_compose::{Opts, StrokeCache};
-use aurastudio_core::{Rect, Rgba8};
+use aurastudio_core::Rect;
 use aurastudio_document::{DocId, Done, Edit, Region, SharedDoc};
 use aurastudio_file::SaveCaches;
 use aurastudio_forge::{Brush, Forge, MixerState, PenSample};
@@ -263,45 +263,13 @@ impl StrokePace {
 /// The layers around `layer` as a "Sample all layers" Mixer Brush sees
 /// them, for one stroke: a copy of the stack as the stroke begins (its
 /// tiles shared, the painted layer's own left out so painting it copies
-/// none), merged by cells as the dabs ask (each cell once).
-fn all_layers(stack: &aurastudio_layers::LayerStack, layer: u64) -> aurastudio_forge::Sampler {
-    const CELL: i32 = 128;
+/// none), merged by the stroke cache's cells as the dabs ask (the same
+/// cells the screen's merge uses).
+fn all_layers(stack: &aurastudio_layers::LayerStack, layer: u64, cache: &StrokeCache) -> aurastudio_forge::Sampler {
     let mut snap = stack.clone();
     if let Some(aurastudio_layers::Node::Layer(l)) = snap.node_mut(layer) { l.surface.clear(); }
-    type Cell = Arc<(Vec<Rgba8>, Vec<Rgba8>)>;
-    let cells: Mutex<HashMap<(i32, i32), Cell>> = Mutex::default();
-    let frame = snap.frame();
-    Arc::new(move |r: Rect| {
-        let w = r.w() as usize;
-        let mut under = vec![[0u8; 4]; r.area() as usize];
-        let mut over = vec![[0u8; 4]; r.area() as usize];
-        let inside = r.intersect(&frame);
-        if inside.is_empty() { return (under, over); }
-        for cy in inside.y0.div_euclid(CELL)..=(inside.y1 - 1).div_euclid(CELL) {
-            for cx in inside.x0.div_euclid(CELL)..=(inside.x1 - 1).div_euclid(CELL) {
-                let cr = Rect::new(cx * CELL, cy * CELL, cx * CELL + CELL, cy * CELL + CELL).intersect(&frame);
-                let got = cells.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&(cx, cy)).cloned();
-                let cell = match got {
-                    Some(c) => c,
-                    None => {
-                        let Some(m) = aurastudio_compose::merge_around(&snap, layer, cr) else { continue };
-                        let c = Arc::new(m);
-                        cells.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((cx, cy), Arc::clone(&c));
-                        c
-                    }
-                };
-                let part = cr.intersect(&r);
-                let cw = cr.w() as usize;
-                for y in part.y0..part.y1 {
-                    let (from, to) = ((y - cr.y0) as usize * cw + (part.x0 - cr.x0) as usize, (y - r.y0) as usize * w + (part.x0 - r.x0) as usize);
-                    let n = part.w() as usize;
-                    under[to..to + n].copy_from_slice(&cell.0[from..from + n]);
-                    over[to..to + n].copy_from_slice(&cell.1[from..from + n]);
-                }
-            }
-        }
-        (under, over)
-    })
+    let cache = cache.clone();
+    Arc::new(move |r: Rect| cache.around(&snap, layer, r))
 }
 
 /// A preview another one waiting makes useless.
@@ -534,7 +502,7 @@ impl Worker {
             st.layer = d.stroke_layer().unwrap_or(0);
             let m = &st.engine.brush().mixer;
             if m.enabled && m.sample_all_layers && !st.engine.brush().erase {
-                st.engine.set_sampler(Some(all_layers(d.stack(), st.layer)));
+                st.engine.set_sampler(Some(all_layers(d.stack(), st.layer, &self.stroke_cache)));
             }
             // (A sheet made for it: the time shows another drawing.)
             self.stroke_cache.clear();

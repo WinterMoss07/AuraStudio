@@ -141,13 +141,34 @@ pub fn merge(stack: &LayerStack, rect: Rect, opts: Opts) -> Vec<Rgba8> {
 /// The merge of `rect` into `out` (rows of `rect`).
 pub fn merge_into(stack: &LayerStack, rect: Rect, opts: Opts, out: &mut [Rgba8]) {
     if rect.is_empty() || out.len() != rect.area() as usize { return; }
+    merge_parts(stack, grid_parts(out, rect, part_side(stack, opts)), opts);
+}
+
+/// The merge of each of `rects` (all their pieces on all cores at once:
+/// many small rects keep every core busy).
+pub fn merge_rects(stack: &LayerStack, rects: &[Rect], opts: Opts) -> Vec<Vec<Rgba8>> {
+    let mut outs: Vec<Vec<Rgba8>> = rects.iter().map(|r| vec![[0u8; 4]; r.area() as usize]).collect();
+    let side = part_side(stack, opts);
+    let parts: Vec<Part> = outs.iter_mut().zip(rects).filter(|(_, r)| !r.is_empty()).flat_map(|(out, r)| grid_parts(out, *r, side)).collect();
+    merge_parts(stack, parts, opts);
+    outs
+}
+
+/// Side of the pieces merged: 128 px (half a GPU page: the pieces of a
+/// page are the page's), larger when filter layers read far around (each
+/// piece reads its margin once).
+fn part_side(stack: &LayerStack, opts: Opts) -> i32 {
+    let m = margin(&stack.root, opts.pick);
+    (m * 4).clamp(128, 2048).next_power_of_two() as i32
+}
+
+fn merge_parts(stack: &LayerStack, parts: Vec<Part>, opts: Opts) {
     aurastudio_core::zone!("merge");
     let m = margin(&stack.root, opts.pick) as i32;
-    let side = (m as u32 * 4).clamp(128, 2048) as i32;
     let ghosts: &[(u64, Vec<Ghost>)] = if opts.ghosts { stack.ghosts() } else { &[] };
     let ctx = Ctx { pick: opts.pick, ghosts, hidden: opts.hidden };
     let start = match opts.backdrop { Backdrop::White => [1.0; 4], Backdrop::Transparent => [0.0; 4] };
-    grid_parts(out, rect, side).into_par_iter().for_each(|(_, p, mut rows)| {
+    parts.into_par_iter().for_each(|(_, p, mut rows)| {
         let mut b = Block::new(p.grown(m), start);
         let mut stop = false;
         compose(&stack.root, &mut b, 1.0, ctx, false, None, &mut stop, true);

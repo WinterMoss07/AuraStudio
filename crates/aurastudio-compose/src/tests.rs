@@ -211,7 +211,7 @@ fn the_stroke_cache_matches_the_full_merge() {
         s.set_active(f);
         let top = mk(&mut s, 6, if multiply_above { BlendMode::Multiply } else { BlendMode::Normal }, 0.4);
         let _ = top;
-        let mut cache = StrokeCache::default();
+        let cache = StrokeCache::default();
         for rect in [r(0, 0, w, h), r(10, 5, 140, 80), r(63, 63, 70, 70)] {
             let full = merge(&s, rect, Opts { ghosts: true, ..Default::default() });
             let cached = cache.merge(&s, painted, rect);
@@ -237,7 +237,7 @@ fn few_layers_keep_no_cells() {
     let mut s = stack();
     paint(&mut s, "under", r(0, 0, 40, 40), [10, 200, 10, 255]);
     let painted = paint(&mut s, "ink", r(20, 20, 60, 60), [0, 0, 0, 255]);
-    let mut cache = StrokeCache::default();
+    let cache = StrokeCache::default();
     let all = r(0, 0, W, H);
     assert_eq!(cache.merge(&s, painted, all), merge(&s, all, Opts { ghosts: true, ..Default::default() }));
     assert_eq!(cache.len(), 0);
@@ -254,7 +254,7 @@ fn ghosts_show_on_screen_only() {
     let screen = merge(&s, r(15, 15, 16, 16), Opts { ghosts: true, ..Default::default() })[0];
     assert!(close(screen, [255, 120, 120, 255]), "{screen:?}");
     assert_eq!(px(&s, 15, 15), [255; 4], "an export has none");
-    let mut cache = StrokeCache::default();
+    let cache = StrokeCache::default();
     let bg = s.layer_ids()[0];
     let cached = cache.merge(&s, bg, r(0, 0, W, H));
     assert_eq!(cached, merge(&s, r(0, 0, W, H), Opts { ghosts: true, ..Default::default() }));
@@ -295,7 +295,7 @@ fn the_stroke_cache_keeps_plain_cells_small() {
     assert!(s.set_layer_rect(under, r(0, 0, 64, 64), &(0..64 * 64).map(|i| [(i % 251) as u8, 9, 9, 255]).collect::<Vec<_>>()));
     s.add_layer("empty");
     let painted = s.add_layer("ink");
-    let mut cache = StrokeCache::default();
+    let cache = StrokeCache::default();
     let all = r(0, 0, w as i32, h as i32);
     let cached = cache.merge(&s, painted, all);
     assert_eq!(cached, merge(&s, all, Opts { ghosts: true, ..Default::default() }));
@@ -328,3 +328,40 @@ fn grid_parts_cover_the_rect_once_in_place() {
     }
 }
 
+
+/// A Mixer Brush sampling all layers reads the stroke cache's cells: the
+/// same as the general merge around the layer (to rounding), with normal
+/// blending over it (cells shared with the screen) or not (cells of their
+/// own), and the screen's merge after it builds nothing again.
+#[test]
+fn mixer_sampling_reads_the_stroke_cache() {
+    let (w, h) = (150, 90);
+    for multiply_above in [false, true] {
+        let mut s = LayerStack::new(w as u32, h as u32, 16, Start::Background);
+        let mk = |s: &mut LayerStack, seed, blend, op: f32| {
+            let id = s.add_layer("l");
+            if let Some(Node::Layer(l)) = s.node_mut(id) { l.surface = noisy(w, h, seed); l.blend = blend; l.opacity = op; }
+            id
+        };
+        mk(&mut s, 1, BlendMode::Normal, 0.8);
+        mk(&mut s, 2, BlendMode::Screen, 1.0);
+        let painted = mk(&mut s, 3, BlendMode::Normal, 0.9);
+        mk(&mut s, 4, if multiply_above { BlendMode::Multiply } else { BlendMode::Normal }, 0.5);
+        mk(&mut s, 5, BlendMode::Normal, 0.4);
+        let mut empty = s.clone();
+        if let Some(Node::Layer(l)) = empty.node_mut(painted) { l.surface.clear(); }
+        let cache = StrokeCache::default();
+        for rect in [r(0, 0, w, h), r(10, 5, 140, 80), r(63, 63, 70, 70), r(-20, -20, 10, 10)] {
+            let (under, over) = cache.around(&empty, painted, rect);
+            let inside = rect.intersect(&s.frame());
+            let (u, o) = merge_around(&empty, painted, inside).unwrap();
+            let pick = |v: &[Rgba8]| -> Vec<Rgba8> { (inside.y0..inside.y1).flat_map(|y| (inside.x0..inside.x1).map(move |x| (x, y))).map(|(x, y)| v[((y - rect.y0) * rect.w() as i32 + (x - rect.x0)) as usize]).collect() };
+            assert!(worst(&pick(&under), &u) <= 2, "under {rect:?}: off by {}", worst(&pick(&under), &u));
+            assert!(worst(&pick(&over), &o) <= 2, "over {rect:?}: off by {}", worst(&pick(&over), &o));
+        }
+        let n = cache.len();
+        assert!(n > 0);
+        let _ = cache.merge(&s, painted, r(0, 0, w, h));
+        if !multiply_above { assert_eq!(cache.len(), n, "the screen reuses the brush's cells"); }
+    }
+}
