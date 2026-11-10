@@ -561,9 +561,8 @@ impl TipReader {
         let Some(root) = &self.root else { return };
         let load = |t: &mut StoredTile| {
             if t.full.is_some() { return; }
-            if let Ok(g) = read_tip(&root.join("tips").join(format!("{}.tip", t.key))) {
-                if g.width == t.width && g.height == t.height { t.full = Some(Arc::new(g)); }
-            }
+            if let Ok(g) = read_tip(&root.join("tips").join(format!("{}.tip", t.key)))
+                && g.width == t.width && g.height == t.height { t.full = Some(Arc::new(g)); }
         };
         if let TipShape::Stored(t) = &mut b.tip { load(t); }
         if let TipShape::Stored(t) = &mut b.dual_brush.tip { load(t); }

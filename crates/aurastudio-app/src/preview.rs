@@ -271,7 +271,7 @@ impl Drop for Previews {
 enum Next {
     Current(Slot, Box<BrushSettings>, Shape),
     Row(usize, Box<BrushSettings>),
-    Missing(BrushSettings),
+    Missing(Box<BrushSettings>),
     Sweep(HashSet<PathBuf>),
 }
 
@@ -287,7 +287,7 @@ fn work(shared: &(Mutex<Queue>, Condvar), tips: &TipReader, dir: Option<&Path>, 
                     break Next::Current(slot, b, s);
                 }
                 if let Some((i, b)) = q.rows.pop_front() { break Next::Row(i, b); }
-                if let Some(b) = q.missing.pop_front() { break Next::Missing(b); }
+                if let Some(b) = q.missing.pop_front() { break Next::Missing(Box::new(b)); }
                 if let Some(keep) = q.full.take() { break Next::Sweep(keep); }
                 q = wake.wait(q).unwrap_or_else(PoisonError::into_inner);
             }

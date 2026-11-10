@@ -184,7 +184,7 @@ mod tests {
         let d = b.cursor_dab(pen(0.3, (0.0, 0.0), 0.0), 0.0, true);
         assert!(!d.sampled);
         // Hovering: full pressure, whatever the pen last said.
-        for (x, y) in [(d.radius, 0.0), (0.0, d.radius), (-d.radius * 0.7071, d.radius * 0.7071)] {
+        for (x, y) in [(d.radius, 0.0), (0.0, d.radius), (-d.radius * std::f32::consts::FRAC_1_SQRT_2, d.radius * std::f32::consts::FRAC_1_SQRT_2)] {
             let (u, v) = at(d.to_tip, x, y);
             assert!((u.hypot(v) - 1.0).abs() < 1e-3, "{x} {y}: {u} {v}");
         }

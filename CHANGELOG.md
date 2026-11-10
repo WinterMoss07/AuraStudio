@@ -3,6 +3,50 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.23.3 — 2026-11-10
+
+The interface we built lately, made consistent and lighter: one slider,
+a cursor shaped like the dab, stroke previews as in 0.19.4 without their
+lag, less GPU memory for the interface.
+
+**New**
+- The brush cursor is the outline of the dab the brush would lay: its
+  tip (round, elliptic or sampled), size, angle, roundness and flips,
+  following the pen's tilt, turn and direction. Hovering: at full
+  pressure; while drawing: the real dab. No jitter. Opacity, flow,
+  color or texture don't change it.
+- The brush list (Tools docker, Brushes window F6) shows each brush's
+  stroke again, painted once and kept on disk
+  (`%LOCALAPPDATA%\AuraStudio\stroke-previews`, one small file a brush);
+  an import paints its brushes at once.
+- Memory report: how full each page of the interface's texture cache is,
+  and the GPU allocator's memory blocks (what each holds, which are
+  empty and kept).
+- Recent files: hovering one shows when AuraStudio last opened or saved
+  it, date and local time.
+
+**Changed**
+- One slider everywhere, the 0.22 one (a bar filled to the value, its
+  name and value inside): Tool options, Advanced tool options, the
+  dynamics popup, the preferences, the onion skin. On a row of settings
+  everything is one height on one axis, the dynamics buttons in a column.
+- Stroke previews look as in 0.19.4: light ink, gray paper on the left
+  half (erasers cut it, smudges drag it), the name in a corner, sizes
+  shown up to 100 px (the same past it), nothing cut by the edges.
+  Painted on one thread, only when the picture changes (not for a
+  color, at most ten times a second while a slider moves, not for a
+  panel resized), not while nothing shows them.
+- The interface's texture cache grows by pages of 1 MB (a 4 MB page was
+  made for a few icons).
+- "… ago" of a recent file is when AuraStudio last had it, not the
+  file's own date; months and years past 30 days.
+- The start screen's thumbnails are let go once a document is open.
+
+**Fixed**
+- The stroke preview ended with a blob (the last pressure read as full).
+- Empty previews for erasers and smudge brushes.
+- Feather and other sliders with a middle value from 0.
+
 ## 0.23.2 — 2026-11-09
 
 Bugs fixed across the app, the Mixer brush completed, a latency report
