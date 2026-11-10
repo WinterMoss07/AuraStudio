@@ -131,6 +131,9 @@ pub struct GpuMemory {
     pub reserved:    Option<u64>,
     /// The allocations it lists, biggest first.
     pub allocations: Vec<(String, u64)>,
+    /// The memory blocks it reserved, in its order: each one's size and
+    /// the allocations in it (name, bytes). An empty one is kept for reuse.
+    pub blocks:      Vec<(u64, Vec<(String, u64)>)>,
     /// How frames are presented, and the canvas display quality.
     pub present:     String,
     pub quality:     String,
@@ -370,6 +373,7 @@ impl GpuState {
         if let Some(r) = self.device.generate_allocator_report() {
             m.allocated = Some(r.total_allocated_bytes);
             m.reserved = Some(r.total_reserved_bytes);
+            m.blocks = r.blocks.iter().map(|b| (b.size, r.allocations.get(b.allocations.clone()).unwrap_or_default().iter().map(|a| (a.name.clone(), a.size)).collect())).collect();
             m.allocations = r.allocations.into_iter().map(|a| (a.name, a.size)).collect();
             m.allocations.sort_by_key(|x| std::cmp::Reverse(x.1));
         }

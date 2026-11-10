@@ -1,9 +1,8 @@
 //! The interface's one texture cache (`ui`): icons, layer thumbnails,
 //! recent files' thumbnails, stroke previews. One egui texture per picture
 //! means one GPU object, one memory block and one draw call each; here
-//! pictures share pages, made when needed (the first 512 × 512, 1 MB; the
-//! next 1024 × 1024, 4 MB; two at most: 5 MB), packed in rows
-//! ("shelves").
+//! pictures share pages of 512 × 512 (1 MB), made one at a time when needed
+//! (a bigger page cost 4 MB for a few icons), packed in rows ("shelves").
 //!
 //! - A freed place is given out again to a picture that fits it (the
 //!   smallest such place, not much bigger than the picture).
@@ -20,12 +19,11 @@ use std::time::{Duration, Instant};
 
 use egui::{pos2, Color32, ColorImage, Context, Rect, TextureFilter, TextureHandle, TextureId, TextureOptions};
 
-/// Side of the first page when it can be small, and of the others, pixels.
-const FIRST_PAGE: usize = 512;
-pub const PAGE: usize = 1024;
+/// Side of a page, pixels (1 MB).
+pub const PAGE: usize = 512;
 
-/// Pages the interface's cache may hold (1 + 4 MB).
-const UI_PAGES: usize = 2;
+/// Pages the interface's cache may hold (8 MB at most).
+const UI_PAGES: usize = 8;
 
 thread_local! {
     static UI: std::cell::RefCell<Atlas> = std::cell::RefCell::new(Atlas::new("ui", TextureOptions::LINEAR, UI_PAGES));
@@ -69,16 +67,31 @@ pub struct Region {
     cap_h: u16,
 }
 
+impl Region {
+    /// Pixels its place takes in the page (ring included).
+    fn footprint(&self) -> usize { (self.cap_w as usize + 2 * RING) * (self.cap_h as usize + 2 * RING) }
+}
+
+/// One page of the cache, as the Memory report shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PageUse {
+    pub bytes:    usize,
+    /// Share of the page its pictures take, 0..1.
+    pub filled:   f32,
+    pub pictures: usize,
+}
+
 struct Shelf { y: usize, h: usize, x: usize }
 
 struct Page {
-    side:        usize,
     tex:         TextureHandle,
     shelves:     Vec<Shelf>,
     /// Freed places, to give out again.
     free:        Vec<Region>,
     /// Pictures in the page.
     live:        usize,
+    /// Pixels their places take (rings included).
+    area:        usize,
     empty_since: Option<Instant>,
 }
 
@@ -111,12 +124,8 @@ impl Atlas {
             if let Some(r) = p.take(i, w, h) { return Some(r); }
         }
         if self.pages.iter().flatten().count() >= self.max_pages { return None; }
-        // The first page is small; a picture that does not fit it, or a
-        // later page, is a full one.
-        let first = self.pages.iter().flatten().count() == 0;
-        let side = if first && w + 2 * RING <= FIRST_PAGE && h + 2 * RING <= FIRST_PAGE { FIRST_PAGE } else { PAGE };
-        let tex = ctx.load_texture(self.name, ColorImage::filled([side, side], Color32::TRANSPARENT), self.options);
-        let page = Page { side, tex, shelves: Vec::new(), free: Vec::new(), live: 0, empty_since: None };
+        let tex = ctx.load_texture(self.name, ColorImage::filled([PAGE, PAGE], Color32::TRANSPARENT), self.options);
+        let page = Page { tex, shelves: Vec::new(), free: Vec::new(), live: 0, area: 0, empty_since: None };
         let i = match self.pages.iter().position(Option::is_none) {
             Some(i) => { self.pages[i] = Some(page); i }
             None => { self.pages.push(Some(page)); self.pages.len() - 1 }
@@ -156,6 +165,7 @@ impl Atlas {
     fn free_at(&mut self, r: Region, now: Instant) {
         let Some(p) = self.page_mut(r) else { return };
         p.live = p.live.saturating_sub(1);
+        p.area = p.area.saturating_sub(r.footprint());
         if p.live == 0 {
             // Nothing left: the page starts over (all of it is free).
             p.shelves.clear();
@@ -170,7 +180,7 @@ impl Atlas {
     /// None for a region of a released page.
     pub fn image_of(&self, r: Region) -> Option<(TextureId, Rect)> {
         let page = self.pages.get(r.page as usize)?.as_ref()?;
-        let s = page.side as f32;
+        let s = PAGE as f32;
         let uv = Rect::from_min_max(pos2(r.x as f32 / s, r.y as f32 / s), pos2((r.x + r.w) as f32 / s, (r.y + r.h) as f32 / s));
         Some((page.tex.id(), uv))
     }
@@ -193,7 +203,13 @@ impl Atlas {
 
     /// Bytes the pages hold on the GPU.
     #[cfg(test)]
-    pub fn bytes(&self) -> usize { self.pages.iter().flatten().map(|p| p.side * p.side * 4).sum() }
+    pub fn bytes(&self) -> usize { self.pages.iter().flatten().count() * PAGE * PAGE * 4 }
+
+    /// Each page held: its bytes, the share its pictures take, how many
+    /// (the Memory report).
+    pub fn usage(&self) -> Vec<PageUse> {
+        self.pages.iter().flatten().map(|p| PageUse { bytes: PAGE * PAGE * 4, filled: p.area as f32 / (PAGE * PAGE) as f32, pictures: p.live }).collect()
+    }
 
     fn page_mut(&mut self, r: Region) -> Option<&mut Page> { self.pages.get_mut(r.page as usize)?.as_mut() }
 }
@@ -216,7 +232,7 @@ fn with_ring(image: &ColorImage, [l, t, r, b]: [usize; 4]) -> ColorImage {
 
 impl Page {
     fn take(&mut self, page: usize, w: usize, h: usize) -> Option<Region> {
-        let side = self.side;
+        let side = PAGE;
         let (bw, bh) = (w + 2 * RING, h + 2 * RING);
         // A freed place that fits: the smallest, if the picture fills enough of it.
         let best = self.free.iter().enumerate()
@@ -248,6 +264,7 @@ impl Page {
 
     fn taken(&mut self, r: Region) -> Region {
         self.live += 1;
+        self.area += r.footprint();
         self.empty_since = None;
         r
     }
@@ -301,20 +318,28 @@ mod tests {
         assert!(at.alloc(&ctx, 100, 50).is_none());
     }
 
+    /// Pages of 1 MB, one more only when the others are full; the report
+    /// tells how full each is.
     #[test]
-    fn a_small_use_costs_a_small_page_and_uvs_follow_the_page_size() {
+    fn pages_are_1_mb_each_made_when_needed() {
         let ctx = Context::default();
         let mut at = Atlas::new("test", TextureOptions::LINEAR, 4);
         let a = at.alloc(&ctx, 20, 20).unwrap();
-        assert_eq!(at.bytes(), FIRST_PAGE * FIRST_PAGE * 4);
+        assert_eq!(at.bytes(), 1 << 20);
         let (_, uv) = at.image_of(a).unwrap();
-        assert!((uv.max.x - (a.x as f32 + 20.0) / FIRST_PAGE as f32).abs() < 1e-6);
-        // A picture that needs the big page gets one (the small one stays).
-        let b = at.alloc(&ctx, 600, 40).unwrap();
-        assert_eq!(at.bytes(), FIRST_PAGE * FIRST_PAGE * 4 + PAGE * PAGE * 4);
-        let (_, uvb) = at.image_of(b).unwrap();
-        assert!((uvb.max.x - (b.x as f32 + 600.0) / PAGE as f32).abs() < 1e-6);
-        // Too wide for any page: the caller's own texture.
+        assert!((uv.max.x - (a.x as f32 + 20.0) / PAGE as f32).abs() < 1e-6);
+        let u = at.usage();
+        assert_eq!((u.len(), u[0].pictures), (1, 1));
+        assert!((u[0].filled - (22.0 * 22.0) / (PAGE * PAGE) as f32).abs() < 1e-6);
+        // Room left in the first page: no second one.
+        let b = at.alloc(&ctx, 400, 300).unwrap();
+        assert_eq!((at.pages(), b.page), (1, 0));
+        // No room left: a second page of the same size.
+        let c = at.alloc(&ctx, 400, 300).unwrap();
+        assert_eq!((at.pages(), c.page, at.bytes()), (2, 1, 2 << 20));
+        at.free(a);
+        assert_eq!(at.usage()[0].pictures, 1);
+        // Too wide for a page: the caller's own texture.
         assert!(!Atlas::fits(PAGE - 1, 10) && Atlas::fits(PAGE - 2, 10));
         assert!(at.alloc(&ctx, PAGE + 10, 10).is_none());
     }
@@ -368,7 +393,7 @@ mod tests {
         let mut at = Atlas::new("test", TextureOptions::NEAREST, 3);
         let a = at.alloc(&ctx, 400, 400).unwrap();
         let b = at.alloc(&ctx, 400, 400).unwrap();
-        assert_eq!(at.pages(), 2, "first page 512, the 400-wide pair needs two");
+        assert_eq!(at.pages(), 2, "a 400-wide pair needs two pages");
         let t0 = Instant::now();
         at.free_at(a, t0);
         at.free_at(b, t0);

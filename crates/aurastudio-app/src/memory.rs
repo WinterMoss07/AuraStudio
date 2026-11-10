@@ -219,7 +219,40 @@ pub fn gpu_sections(r: &GpuReport) -> Vec<MemorySection> {
         // (Lines below the first two are the detail of the first.)
         out.push(alloc);
     }
+    if !g.blocks.is_empty() { out.push(blocks_section(&g.blocks)); }
     out
+}
+
+/// The interface's texture cache: each page, how full.
+fn cache_section(pages: &[aurastudio_ui::PageUse]) -> MemorySection {
+    let mut s = MemorySection::new("GPU: interface texture cache (icons, thumbnails, stroke previews)", false);
+    for (i, p) in pages.iter().enumerate() {
+        s.add(format!("page {}: {:.0} % filled, {} picture{}", i + 1, p.filled * 100.0, p.pictures, if p.pictures == 1 { "" } else { "s" }), p.bytes as u64);
+    }
+    s
+}
+
+/// The driver allocator's blocks: what each holds, the empty ones kept
+/// (the reserve the system counts in the process's memory on a GPU that
+/// shares it).
+fn blocks_section(blocks: &[(u64, Vec<(String, u64)>)]) -> MemorySection {
+    let empty = blocks.iter().filter(|b| b.1.is_empty()).count();
+    let mut s = MemorySection::new(format!("GPU: the driver's memory blocks ({} blocks, {empty} empty)", blocks.len()), false);
+    for (i, (size, held)) in blocks.iter().enumerate() {
+        let used: u64 = held.iter().map(|a| a.1).sum();
+        let what = if held.is_empty() {
+            "empty, kept for reuse".to_string()
+        } else {
+            // The biggest names it holds.
+            let mut names: Vec<&(String, u64)> = held.iter().collect();
+            names.sort_by_key(|a| std::cmp::Reverse(a.1));
+            let shown: Vec<String> = names.iter().take(3).map(|a| if a.0.is_empty() { "(unnamed)".into() } else { a.0.clone() }).collect();
+            let more = if held.len() > 3 { format!(" and {} more", held.len() - 3) } else { String::new() };
+            format!("{:.0} % used by {} resource{}: {}{more}", used as f64 * 100.0 / (*size).max(1) as f64, held.len(), if held.len() > 1 { "s" } else { "" }, shown.join(", "))
+        };
+        s.add(format!("block {}: {what}", i + 1), *size);
+    }
+    s
 }
 
 /// The paint thread's caches (as it last told) and the pixel pool.
@@ -243,6 +276,8 @@ pub fn build(doc: Option<&Document>, patches_bytes: u64, gpu: Option<&GpuReport>
     sections.push(buffers);
     sections.push(paint_thread_section());
     if let Some(g) = gpu { sections.extend(gpu_sections(g)); }
+    let pages = aurastudio_ui::ui_cache_usage();
+    if !pages.is_empty() { sections.push(cache_section(&pages)); }
     sections.push(boot_section());
     sections.push(events_section());
     let mut header = vec![format!("AuraStudio {}, allocator {ALLOCATOR}{}", env!("CARGO_PKG_VERSION"),
@@ -298,5 +333,14 @@ mod tests {
         assert!(ev.timeline && ev.lines.iter().any(|l| l.0.contains("test event two")), "{:?}", ev.lines);
         #[cfg(target_os = "linux")]
         assert!(r.working_set.unwrap() > 1 << 20, "{r:?}");
+    }
+
+    /// Each block says what it holds; an empty one says it is kept.
+    #[test]
+    fn the_blocks_show_what_they_hold() {
+        let s = blocks_section(&[(32 << 20, vec![("canvas pages (full)".into(), 28 << 20)]), (64 << 20, vec![])]);
+        assert!(s.title.contains("2 blocks, 1 empty"), "{}", s.title);
+        assert!(s.lines[0].0.contains("88 % used by 1 resource: canvas pages (full)"), "{:?}", s.lines);
+        assert!(s.lines[1].0.contains("empty, kept for reuse") && s.lines[1].1 == 64 << 20);
     }
 }

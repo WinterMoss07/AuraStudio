@@ -5,6 +5,10 @@ pub mod theme;
 mod advanced;
 mod animation;
 mod atlas;
+pub use atlas::PageUse;
+
+/// The interface's texture cache, page by page (UI thread).
+pub fn ui_cache_usage() -> Vec<PageUse> { atlas::ui(|a| a.usage()) }
 mod memory;
 mod bars;
 mod brush_settings;
