@@ -384,6 +384,9 @@ impl Library {
         true
     }
 
+    /// What reads tips on another thread (no cache: the stroke previews).
+    pub fn tip_reader(&self) -> TipReader { TipReader { root: self.root.clone() } }
+
     /// The full bitmaps of `b`'s stored tip, Dual Brush tip and texture,
     /// read when not in memory yet. A tip that can't be read leaves its
     /// preview in use (the stroke is coarser, nothing fails).
@@ -542,6 +545,30 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, data).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// Reads a brush's stored tips from the library's folder, without its
+/// cache: for a thread of its own (the stroke previews).
+#[derive(Clone, Debug, Default)]
+pub struct TipReader {
+    root: Option<PathBuf>,
+}
+
+impl TipReader {
+    /// `b`'s stored tip, Dual Brush tip and texture, full (each left as is
+    /// when it can't be read).
+    pub fn load(&self, b: &mut BrushSettings) {
+        let Some(root) = &self.root else { return };
+        let load = |t: &mut StoredTile| {
+            if t.full.is_some() { return; }
+            if let Ok(g) = read_tip(&root.join("tips").join(format!("{}.tip", t.key))) {
+                if g.width == t.width && g.height == t.height { t.full = Some(Arc::new(g)); }
+            }
+        };
+        if let TipShape::Stored(t) = &mut b.tip { load(t); }
+        if let TipShape::Stored(t) = &mut b.dual_brush.tip { load(t); }
+        if let Pattern::Stored(t) = &mut b.texture.pattern { load(t); }
+    }
 }
 
 #[cfg(test)]

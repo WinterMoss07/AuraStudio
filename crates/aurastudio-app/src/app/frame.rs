@@ -428,7 +428,7 @@ impl App {
         self.follow_transform_targets();
         if let Some(cmd) = actions.edit { self.edit_cmd(cmd); }
         if actions.import_brushes { self.import_brushes(); }
-        if let Some(b) = actions.preview { self.stroke_preview(b); }
+        for ask in std::mem::take(&mut actions.previews) { self.previews.ask(ask); }
         if let Some(d) = actions.brush_default { self.brush_default(d); }
         if let Some(c) = actions.mixer {
             let load = c == aurastudio_ui::MixerCmd::Load;

@@ -41,7 +41,7 @@ pub use curve::ResponseCurve;
 pub use mixer::{MixerSettings, MixerState};
 pub(crate) use tile::GrayTile;
 pub use engine::{Forge, PenSample, Sampler};
-pub use library::{Importer, Kind, Library, Preset, ReadFile};
+pub use library::{Importer, Kind, Library, Preset, ReadFile, TipReader};
 pub use mode::PaintMode;
 pub use rng::stroke_seed;
 

@@ -9,7 +9,7 @@
 //! its minimum, maximum and curve.
 
 use aurastudio_forge::{Brush, Control, Dynamic, Link, ResponseCurve, TipShape, INPUTS};
-use egui::{pos2, vec2, Color32, FontId, Painter, Pos2, Rect, Sense, Shape, Stroke, Ui};
+use egui::{pos2, vec2, Color32, Painter, Pos2, Rect, Sense, Shape, Stroke, Ui};
 
 use crate::curve_edit::curve_editor;
 use crate::widgets::{fill_slider_with, Fill, Icon, ROW};
@@ -598,26 +598,6 @@ fn dynamics_popup(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
             });
         }
     });
-}
-
-/// The stroke preview as the editor shows it: grey then white (how the
-/// stroke looks on dark and light), the brush's name in its corner.
-pub fn paint_preview(ui: &Ui, rect: Rect, name: &str, pic: Option<crate::atlas::Region>) {
-    let p = ui.painter_at(rect);
-    let (l, r) = rect.split_left_right_at_fraction(0.5);
-    p.rect_filled(l, 0.0, Color32::from_gray(0xcf));
-    p.rect_filled(r, 0.0, Color32::from_gray(0xfa));
-    if let Some(reg) = pic {
-        let s = vec2(reg.w as f32, reg.h as f32);
-        let k = (rect.width() / s.x).min(rect.height() / s.y);
-        crate::atlas::paint(&p, reg, Rect::from_center_size(rect.center(), s * k), Color32::WHITE);
-    }
-    let font = FontId::proportional(11.0);
-    let g = p.layout_no_wrap(name.to_owned(), font, theme::TEXT);
-    let tag = Rect::from_min_size(rect.min, g.size() + vec2(10.0, 2.0));
-    p.rect_filled(tag, 0.0, Color32::from_gray(0x3c));
-    p.galley(tag.min + vec2(5.0, 1.0), g, theme::TEXT);
-    p.rect_stroke(rect, 0.0, Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
 }
 
 #[cfg(test)]

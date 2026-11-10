@@ -3,6 +3,7 @@
 
 pub mod theme;
 mod advanced;
+mod stroke_preview;
 mod animation;
 mod atlas;
 pub use atlas::PageUse;
@@ -33,7 +34,8 @@ use egui_dock::{DockArea, DockState};
 
 pub use dockers::layers::LayerCmd;
 use dockers::Tab;
-pub use advanced::{BrushDefault, MixerCmd, PREVIEW as PREVIEW_SIZE};
+pub use advanced::{BrushDefault, MixerCmd};
+pub use stroke_preview::{PreviewAsk, PreviewShape, Slot as PreviewSlot, BIGGEST as PREVIEW_BIGGEST, INK as PREVIEW_INK, LIST as PREVIEW_LIST, PAPER as PREVIEW_PAPER};
 pub use filters::FilterAction;
 pub use memory::{mb, MemoryReport, Section as MemorySection};
 pub use prefs::Prefs;
@@ -179,8 +181,9 @@ pub struct Actions {
     pub window:      Option<WindowCmd>,
     /// Open the Advanced tool options window.
     pub advanced:    bool,
-    /// Draw this brush's stroke preview (`UiState::set_preview` with it).
-    pub preview:     Option<Brush>,
+    /// Stroke previews to paint (`UiState::set_stroke_preview`,
+    /// `set_list_preview` with them).
+    pub previews:    Vec<PreviewAsk>,
     /// Advanced tool options: back to the brush's default, or save it.
     pub brush_default: Option<BrushDefault>,
     /// The Mixer Brush's paint loaded or cleaned.
@@ -369,8 +372,12 @@ impl UiState {
         *w = !*w;
     }
 
-    /// The stroke preview asked with `Actions::preview` (straight RGBA).
-    pub fn set_preview(&mut self, w: u32, h: u32, rgba: &[u8]) { self.advanced.preview.set(w, h, rgba); }
+    /// The brush in use's stroke preview for `slot` (straight RGBA).
+    pub fn set_stroke_preview(&mut self, slot: PreviewSlot, w: u32, h: u32, rgba: &[u8]) { stroke_preview::set_current(slot, w, h, rgba); }
+
+    /// The brush list's row `index` preview (its alpha; `settings`: the
+    /// brush it shows).
+    pub fn set_list_preview(&mut self, index: usize, settings: &Brush, w: u32, h: u32, alpha: &[u8]) { stroke_preview::set_row(index, settings, w, h, alpha); }
 
     pub fn memory_wanted(&self) -> bool { self.memory_open }
 
@@ -476,7 +483,6 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
                 m:      model,
                 a:      actions,
                 content: &mut state.dock_layout.content,
-                preview: state.advanced.preview.region(),
             };
             let (bar, sep) = (style.tab_bar.height, style.separator.width);
             DockArea::new(&mut state.dock)
@@ -502,6 +508,7 @@ pub fn show(root: &mut egui::Ui, state: &mut UiState, model: &mut Model, actions
 
     memory::window(ctx, &mut state.memory_open, state.memory.as_ref());
     advanced::windows(ctx, &mut state.advanced, model, actions);
+    stroke_preview::tidy();
 
     bars::notice_overlay(ctx, root.available_rect_before_wrap(), &mut state.notice);
     // The start screen gone, its thumbnails go too (RAM and GPU): read

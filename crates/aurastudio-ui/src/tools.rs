@@ -96,6 +96,12 @@ impl Tool {
 
     pub fn is_shape(self) -> bool { Tool::SHAPES.contains(&self) }
 
+    /// What its stroke preview draws.
+    pub fn preview_shape(self) -> crate::PreviewShape {
+        use crate::PreviewShape as P;
+        match self { Tool::Line => P::Line, Tool::Rectangle => P::Rectangle, Tool::Ellipse => P::Ellipse, Tool::Arc => P::Arc, _ => P::S }
+    }
+
     /// Makes a selection.
     pub fn selects(self) -> bool { matches!(self, Tool::Lasso | Tool::RectSelect | Tool::EllipseSelect | Tool::PolySelect | Tool::MagicWand) }
 }

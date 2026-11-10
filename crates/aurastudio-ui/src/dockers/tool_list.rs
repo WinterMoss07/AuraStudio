@@ -3,7 +3,7 @@
 //! the import of Photoshop / Procreate brushes.
 
 use aurastudio_forge::Preset;
-use egui::{vec2, RichText, Sense, Stroke, Ui};
+use egui::{vec2, Color32, RichText, Sense, Stroke, Ui};
 
 use crate::tools::{Group, Tool};
 use crate::{theme, Model};
@@ -45,7 +45,7 @@ fn brushes(ui: &mut Ui, st: &mut ToolListState, group: Group, m: &mut Model, a: 
                 ui.add_space(if i == 0 { 0.0 } else { 4.0 });
                 ui.label(RichText::new(&p.group).small().color(theme::TEXT_WEAK));
             }
-            if brush_row(ui, p, i == *m.preset).clicked() {
+            if brush_row(ui, p, i, i == *m.preset, a).clicked() {
                 // A brush of another group (search): go there.
                 let g = Group::of_kind(p.kind);
                 *m.tool = if g == Group::Eraser { Tool::Eraser } else { Tool::Brush };
@@ -74,18 +74,13 @@ fn tools(ui: &mut Ui, group: Group, m: &mut Model) {
     }
 }
 
-fn brush_row(ui: &mut Ui, p: &Preset, selected: bool) -> egui::Response {
+/// A brush: its stroke preview (kept on disk by the app), its name in
+/// the corner. Only rows on screen ask for theirs.
+fn brush_row(ui: &mut Ui, p: &Preset, index: usize, selected: bool, a: &mut crate::Actions) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
     if !ui.is_rect_visible(rect) { return resp; }
-    let bg = if selected || resp.hovered() { theme::ROW_HOVER } else { theme::ROW };
-    ui.painter().rect_filled(rect, 2.0, bg);
-    // A dot of the brush's size and softness, then its name.
-    let c = rect.left_center() + vec2(ROW / 2.0, 0.0);
-    let r = (p.settings.size / 8.0).clamp(2.0, ROW / 2.0 - 4.0);
-    let col = if p.settings.erase { theme::TEXT_WEAK } else { theme::TEXT };
-    ui.painter().circle_filled(c, r, col.gamma_multiply(p.settings.opacity.max(0.3)));
-    if p.settings.hardness < 0.5 { ui.painter().circle_filled(c, r * 1.4, col.gamma_multiply(0.25)); }
-    ui.painter().text(rect.left_center() + vec2(ROW + 4.0, 0.0), egui::Align2::LEFT_CENTER, &p.name, egui::FontId::proportional(13.0), theme::TEXT);
+    crate::stroke_preview::row(ui.painter(), rect.shrink(1.0), index, &p.settings, &p.name, a);
+    if resp.hovered() { ui.painter().rect_filled(rect, 2.0, Color32::from_white_alpha(10)); }
     if selected { ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.5_f32, theme::ACCENT), egui::StrokeKind::Middle); }
     resp
 }

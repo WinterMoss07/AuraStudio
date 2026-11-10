@@ -90,8 +90,6 @@ pub struct Viewer<'s, 'a> {
     pub a:      &'s mut Actions,
     /// Content height of each tab, for the docks' minimum heights.
     pub content: &'s mut std::collections::HashMap<Tab, f32>,
-    /// The brush's stroke preview (Tool options' banner).
-    pub preview: Option<crate::atlas::Region>,
 }
 
 impl TabViewer for Viewer<'_, '_> {
@@ -112,7 +110,7 @@ impl TabViewer for Viewer<'_, '_> {
         // is at least as tall as the dock).
         let content = ui.scope(|ui| match tab {
             Tab::Color       => color::show(ui, self.color, self.m),
-            Tab::ToolOptions => tool_options::show(ui, self.m, self.a, self.preview),
+            Tab::ToolOptions => tool_options::show(ui, self.m, self.a),
             Tab::Tools       => tool_list::show(ui, self.tool_list, self.m, self.a),
             Tab::Layers | Tab::Canvas | Tab::CelTemplate if self.m.home => {
                 ui.label(egui::RichText::new("No document").color(crate::theme::TEXT_WEAK));

@@ -5,14 +5,10 @@
 //! It floats over the canvas (F5, the toolbar, Tool options, Window).
 //! Also the Brushes window (F6): the brush list, out of the dockers.
 
-use aurastudio_forge::Brush;
 use egui::{vec2, Color32, RichText, ScrollArea, Sense, Ui};
 
-use crate::brush_settings::{by_id, of, paint_preview, row, set_shown, shown, Category};
+use crate::brush_settings::{by_id, of, row, set_shown, shown, Category};
 use crate::{theme, Actions, Model};
-
-/// The preview's picture, in pixels (it fits the cache's first page).
-pub const PREVIEW: (u32, u32) = (480, 96);
 
 /// What the app is asked to do with the brush's default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,46 +28,6 @@ pub enum MixerCmd {
     Clean,
 }
 
-/// The stroke preview: the brush it shows, being made or not, its picture.
-#[derive(Default)]
-pub struct Preview {
-    /// The brush last asked for.
-    of:      Option<Brush>,
-    busy:    bool,
-    pic:     Option<crate::atlas::Pic>,
-    pending: Option<egui::ColorImage>,
-}
-
-impl Preview {
-    /// Ask for a new picture when the brush changed (one at a time).
-    pub fn ask(&mut self, brush: &Brush, a: &mut Actions) {
-        if self.busy || self.of.as_ref() == Some(brush) { return; }
-        self.of = Some(brush.clone());
-        self.busy = true;
-        a.preview = Some(brush.clone());
-    }
-
-    /// The picture made (straight RGBA).
-    pub fn set(&mut self, w: u32, h: u32, rgba: &[u8]) {
-        self.busy = false;
-        if rgba.len() == (w * h * 4) as usize {
-            self.pending = Some(egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba));
-        }
-    }
-
-    /// Into the cache (retried while it has no room).
-    fn upload(&mut self, ctx: &egui::Context) {
-        let Some(img) = self.pending.take() else { return };
-        let [w, h] = img.size;
-        match crate::atlas::ui(|a| a.alloc(ctx, w, h)) {
-            Some(at) => { crate::atlas::ui(|a| a.write(at, img)); self.pic = Some(crate::atlas::Pic(at)); }
-            None => self.pending = Some(img),
-        }
-    }
-
-    pub fn region(&self) -> Option<crate::atlas::Region> { self.pic.as_ref().map(|p| p.0) }
-}
-
 pub struct AdvancedState {
     pub open:   bool,
     cat:        Category,
@@ -80,12 +36,11 @@ pub struct AdvancedState {
     /// The Brushes window (F6).
     pub brushes_open: bool,
     brushes:    crate::dockers::tool_list::ToolListState,
-    pub preview: Preview,
 }
 
 impl Default for AdvancedState {
     fn default() -> Self {
-        Self { open: false, cat: Category::BrushSize, hovered: None, brushes_open: false, brushes: Default::default(), preview: Default::default() }
+        Self { open: false, cat: Category::BrushSize, hovered: None, brushes_open: false, brushes: Default::default() }
     }
 }
 
@@ -96,9 +51,7 @@ fn set_show_category(ctx: &egui::Context, on: bool) { ctx.data_mut(|d| d.insert_
 
 /// Both windows (F5 and F6 are the app's keys).
 pub fn windows(ctx: &egui::Context, st: &mut AdvancedState, m: &mut Model, a: &mut Actions) {
-    st.preview.upload(ctx);
     if m.home { return; }
-    if st.open || m.tool.paints() { st.preview.ask(m.brush, a); }
     if st.open { advanced(ctx, st, m, a); }
     if st.brushes_open {
         let mut open = true;
@@ -115,8 +68,9 @@ fn advanced(ctx: &egui::Context, st: &mut AdvancedState, m: &mut Model, a: &mut 
     egui::Window::new("Advanced tool options").id(egui::Id::unique("advanced_tool_options")).open(&mut open)
         .default_size(vec2(640.0, 560.0)).min_width(480.0).min_height(320.0).resizable(true).show(ctx, |ui| {
         // The stroke preview.
-        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 84.0), Sense::hover());
-        paint_preview(ui, r, &name, st.preview.region());
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), crate::stroke_preview::ADVANCED.1 as f32), Sense::hover());
+        let b = crate::dockers::tool_options::previewed(m);
+        crate::stroke_preview::current(ui.painter(), r, crate::stroke_preview::Slot::Advanced, &b, m.tool.preview_shape(), &name, a);
         ui.add_space(6.0);
         // The buttons at the bottom, the rest above them.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
@@ -219,27 +173,4 @@ fn settings(ui: &mut Ui, st: &mut AdvancedState, m: &mut Model, w: f32, h: f32) 
             None => { ui.label(RichText::new("Point at a setting to read what it does.").small().color(Color32::from_gray(0x90))); }
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A brush is drawn once until it changes; the answer frees the next.
-    #[test]
-    fn the_preview_is_asked_once_per_brush() {
-        let mut p = Preview::default();
-        let mut a = Actions::default();
-        let b = Brush::default();
-        p.ask(&b, &mut a);
-        assert!(a.preview.take().is_some());
-        p.ask(&b, &mut a);
-        assert!(a.preview.is_none());
-        p.set(2, 1, &[0; 8]);
-        p.ask(&b, &mut a);
-        assert!(a.preview.is_none(), "same brush");
-        let other = Brush { size: 99.0, ..Brush::default() };
-        p.ask(&other, &mut a);
-        assert!(a.preview.is_some());
-    }
 }

@@ -763,6 +763,17 @@ impl BrushSettings {
     /// 0.2 px dual tip and grows back to exactly 20 px. A sub-pixel floor here would lose the
     /// proportion on the way back up; rendering bounds the diameter itself
     /// ([`Self::bounded_for_render`]).
+    /// A number for what the brush is (as saved: its settings, its tips by
+    /// name), the same from one run to the next: the stroke previews kept
+    /// on disk are named by it. The color, the seed and the Tool options
+    /// list don't change a stroke's shape and are left out.
+    pub fn shape_hash(&self) -> u64 {
+        let b = BrushSettings { color: [0.0, 0.0, 0.0, 1.0], seed: 0, tool_options: Vec::new(), ..self.clone() };
+        let bytes = serde_json::to_vec(&b).unwrap_or_default();
+        // FNV-1a: stable across builds (std's hasher is not).
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
     pub fn resize_with_dual_brush(&mut self, new_size: f32) {
         if self.dual_brush.enabled && self.size.is_finite() && self.size > 0.0 && new_size.is_finite() && new_size > 0.0 {
             let scaled = self.dual_brush.size * (new_size / self.size);

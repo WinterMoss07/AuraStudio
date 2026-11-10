@@ -212,7 +212,7 @@ pub enum AppEvent {
     /// A start screen thumbnail was decoded.
     Thumbnail { path: PathBuf, w: u32, h: u32, rgba: Vec<u8> },
     /// The brush's stroke preview was drawn.
-    Preview { w: u32, h: u32, rgba: Vec<u8> },
+    Preview(crate::preview::Done),
     /// A save finished (see paint_thread::Event::Saved).
     Saved { doc: aurastudio_document::DocId, path: PathBuf, revision: u64, auto: bool, result: Result<(), String> },
     /// The selection changed.
@@ -302,6 +302,8 @@ pub struct App {
 
     /// The brushes: built-ins and imported files (kept on disk).
     library:      Library,
+    /// The stroke previews' thread.
+    previews:     crate::preview::Previews,
     /// Strokes begun: each one's jitter seed.
     strokes:      u64,
     /// Selected preset.
@@ -509,6 +511,12 @@ impl App {
             }
             None => Library::builtin(),
         };
+        // Stroke previews: the list's kept on disk, all of them made once.
+        let preview_proxy = proxy.clone();
+        let previews = crate::preview::Previews::start(library.tip_reader(), dirs::cache_dir().map(|d| d.join("AuraStudio").join("stroke-previews")), move |done| {
+            let _ = preview_proxy.send_event(AppEvent::Preview(done));
+        });
+        previews.keep_all(library.presets.iter().map(|p| p.settings.clone()));
         let mut workspace = Workspace::new();
         let doc = workspace.new_document("", PLACEHOLDER.0, PLACEHOLDER.1, DocType::Illustration);
         let projection = Arc::new(std::sync::Mutex::new(Projection::new(PLACEHOLDER.0, PLACEHOLDER.1)));
@@ -537,6 +545,7 @@ impl App {
 
             brush:       library.presets[first].settings.clone(),
             library,
+            previews,
             strokes:     0,
             preset:      first,
 
@@ -753,8 +762,11 @@ impl ApplicationHandler<AppEvent> for App {
                 self.ui.set_recent_thumbnail(&path, w, h, &rgba);
                 self.request_redraw();
             }
-            AppEvent::Preview { w, h, rgba } => {
-                self.ui.set_preview(w, h, &rgba);
+            AppEvent::Preview(done) => {
+                match done {
+                    crate::preview::Done::Current { slot, w, h, rgba } => self.ui.set_stroke_preview(slot, w, h, &rgba),
+                    crate::preview::Done::List { index, settings, w, h, alpha } => self.ui.set_list_preview(index, &settings, w, h, &alpha),
+                }
                 self.request_redraw();
             }
         }

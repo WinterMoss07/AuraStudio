@@ -21,6 +21,8 @@ diag = ["aurastudio-core/diag", "dep:aurastudio-diag"]
 [dependencies]
 # Local time of the recent files (the system's time zone).
 jiff = "0.2"
+# The brush list's stroke previews, kept on disk.
+lz4_flex = "0.14"
 profiling = "1"
 # Same version as the one profiling uses (one Tracy client).
 tracy-client = { version = "0.18", optional = true }

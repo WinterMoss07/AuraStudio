@@ -443,18 +443,6 @@ impl App {
 
     /// Brushes > Import: Photoshop .abr, Procreate .brush / .brushset, each
     /// file a new group of the library (kept on disk).
-    /// The brush's stroke preview, made on a thread of its own.
-    pub(super) fn stroke_preview(&mut self, brush: aurastudio_forge::BrushSettings) {
-        let proxy = self.proxy.clone();
-        let (w, h) = aurastudio_ui::PREVIEW_SIZE;
-        let spawned = std::thread::Builder::new().name("stroke preview".into()).spawn(move || {
-            let rgba = crate::preview::stroke_preview(&brush, w, h);
-            let _ = proxy.send_event(AppEvent::Preview { w, h, rgba });
-        });
-        // (No thread: no preview, the interface may ask again.)
-        if spawned.is_err() { self.ui.set_preview(0, 0, &[]); }
-    }
-
     /// Advanced tool options: the brush back to its default, or these
     /// settings as its default.
     pub(super) fn brush_default(&mut self, d: aurastudio_ui::BrushDefault) {
@@ -512,6 +500,8 @@ impl App {
             (n, None) => format!("{n} brush(es) imported"),
             (n, Some(e)) => format!("{n} brush(es) imported; {e}"),
         };
+        // The new brushes' previews made now, once: then only shown.
+        if added > 0 { self.previews.keep_all(self.library.presets.iter().map(|p| p.settings.clone())); }
         self.ui.notify(&msg);
         self.request_redraw();
     }
