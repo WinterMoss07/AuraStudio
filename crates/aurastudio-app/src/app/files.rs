@@ -194,18 +194,13 @@ impl App {
             return;
         }
         let proxy = self.proxy.clone();
-        let spawned = std::thread::Builder::new().name("open".into()).spawn(move || {
-            profiling::register_thread!("open");
+        // (On the work pool: the painter waits for it.)
+        crate::pools::spawn_work(move || {
             let result = read().map(|d| Read(Box::new(d)));
             let _ = proxy.send_event(AppEvent::Opened { what, result });
         });
-        match spawned {
-            Ok(_) => {
-                self.opening = true;
-                self.ui.notify("Opening…");
-            }
-            Err(e) => self.ui.notify(&format!("Can't open: {e}")),
-        }
+        self.opening = true;
+        self.ui.notify("Opening…");
         self.request_redraw();
     }
 
@@ -367,7 +362,7 @@ impl App {
         // export thread (the screen shows it from the GPU).
         let (doc, proxy) = (Arc::clone(&self.doc), self.proxy.clone());
         self.ui.notify("Exporting…");
-        std::thread::spawn(move || {
+        crate::pools::spawn_work(move || {
             // Locked only to copy the tree (shared tiles); merged after.
             let stack = doc.locked().stack_for_file();
             let (w, h) = (stack.width, stack.height);
@@ -468,7 +463,7 @@ impl App {
         let (paths, proxy): (Vec<PathBuf>, _) = (self.recent.iter().map(|r| r.path.clone()).collect(), self.proxy.clone());
         // (Kept on disk: a big picture isn't decoded whole at each start.)
         let dir = dirs::cache_dir().map(|d| d.join("AuraStudio").join("thumbnails"));
-        std::thread::spawn(move || {
+        crate::pools::spawn_background(move || {
             for path in &paths {
                 let got = match &dir { Some(d) => aurastudio_file::thumbnail_cached(path, 280, d), None => aurastudio_file::thumbnail(path, 280) };
                 if let Some((w, h, rgba)) = got {

@@ -451,6 +451,7 @@ dependencies = [
  "egui_dock",
  "egui_extras",
  "log",
+ "rayon",
 ]
 
 [[package]]

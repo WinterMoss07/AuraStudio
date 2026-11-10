@@ -471,11 +471,11 @@ impl App {
         if picked.is_empty() { return; }
         // Read on a thread (a .brushset can be 2 GB); added when back.
         let (importer, proxy) = (self.library.importer(), self.proxy.clone());
-        let spawned = std::thread::Builder::new().name("brush import".into()).spawn(move || {
+        crate::pools::spawn_background(move || {
             let files = picked.into_iter().map(|p| { let r = importer.read(&p); (p, r) }).collect();
             let _ = proxy.send_event(AppEvent::BrushesRead(BrushFiles(files)));
         });
-        self.ui.notify(if spawned.is_ok() { "Importing brushes…" } else { "Import failed: no thread" });
+        self.ui.notify("Importing brushes…");
         self.request_redraw();
     }
 

@@ -292,19 +292,22 @@ fn work(shared: &(Mutex<Queue>, Condvar), tips: &TipReader, dir: Option<&Path>, 
                 q = wake.wait(q).unwrap_or_else(PoisonError::into_inner);
             }
         };
+        // (Painted on the background pool: a stroke keeps its cores.)
+        let bg = crate::pools::background();
         match next {
             Next::Current(slot, b, shape) => {
                 let (w, h) = slot.size();
-                send(Done::Current { slot, w, h, rgba: render(&b, shape, true, w, h) });
+                let rgba = bg.install(|| render(&b, shape, true, w, h));
+                send(Done::Current { slot, w, h, rgba });
             }
             Next::Row(index, settings) => {
-                let (w, h, alpha) = list_preview(&settings, tips, dir);
+                let (w, h, alpha) = bg.install(|| list_preview(&settings, tips, dir));
                 send(Done::List { index, settings, w, h, alpha });
             }
             Next::Missing(settings) => {
                 let Some(d) = dir else { continue };
                 let path = file_of(d, &settings);
-                if !path.is_file() { let _ = list_preview(&settings, tips, dir); }
+                if !path.is_file() { let _ = bg.install(|| list_preview(&settings, tips, dir)); }
                 let mut q = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(keep) = &mut q.full { keep.insert(path); }
             }

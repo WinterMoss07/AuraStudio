@@ -2,6 +2,14 @@
 //! what to do in `Actions`.
 
 pub mod theme;
+
+static BACKGROUND: std::sync::OnceLock<&'static rayon::ThreadPool> = std::sync::OnceLock::new();
+
+/// The app's pool for work that can wait (filter previews run there).
+pub fn set_background_pool(pool: &'static rayon::ThreadPool) { let _ = BACKGROUND.set(pool); }
+
+pub(crate) fn background_pool() -> Option<&'static rayon::ThreadPool> { BACKGROUND.get().copied() }
+
 mod advanced;
 mod stroke_preview;
 mod animation;

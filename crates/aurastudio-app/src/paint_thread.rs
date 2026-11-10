@@ -671,8 +671,8 @@ impl Worker {
         let caches = Arc::clone(self.saves.entry(id).or_default());
         let notify = Arc::clone(&self.notify);
         let autosaving = Arc::clone(&self.autosaving);
-        let spawned = std::thread::Builder::new().name("save".into()).spawn(move || {
-            profiling::register_thread!("save");
+        // (On the background pool: painting keeps its cores.)
+        crate::pools::spawn_background(move || {
             let snap = parts.finish();
             // (An autosave has its own file: the caches are the document's.)
             let result = if auto {
@@ -689,7 +689,6 @@ impl Worker {
             log::info!("{} {}: {:?}", if auto { "autosave" } else { "save" }, path.display(), result);
             notify(Event::Saved { doc: id, path, revision: snap.revision, auto, result });
         });
-        if let Err(e) = spawned { log::error!("save thread: {e}"); }
         self.doc = Some(doc);
     }
 }

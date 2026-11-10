@@ -14,5 +14,6 @@ aurastudio-filters   = { path = "../aurastudio-filters" }
 # (egui 0.37 no longer brings its fonts by default.)
 egui        = { version = "0.37", features = ["default_fonts"] }
 log         = "0.4"
+rayon       = "1"
 egui_dock   = "0.21"
 egui_extras = { version = "0.37", default-features = false, features = ["svg"] }

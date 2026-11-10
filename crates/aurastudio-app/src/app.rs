@@ -517,6 +517,8 @@ impl App {
         previews.keep_all(library.presets.iter().map(|p| p.settings.clone()));
         let mut workspace = Workspace::new();
         let doc = workspace.new_document("", PLACEHOLDER.0, PLACEHOLDER.1, DocType::Illustration);
+        // Work that can wait (filter previews too) on the background pool.
+        aurastudio_ui::set_background_pool(crate::pools::background());
         let projection = Arc::new(std::sync::Mutex::new(Projection::new(PLACEHOLDER.0, PLACEHOLDER.1)));
         let worker_proxy = proxy.clone();
         let paint = PaintThread::spawn(Arc::clone(&projection), move |e| {

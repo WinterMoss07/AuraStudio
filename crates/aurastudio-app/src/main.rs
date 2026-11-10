@@ -4,6 +4,7 @@ mod merge_thread;
 mod cursors;
 mod latency;
 mod paint_thread;
+mod pools;
 mod preview;
 mod projection;
 mod rescue;

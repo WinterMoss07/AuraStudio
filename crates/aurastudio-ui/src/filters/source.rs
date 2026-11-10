@@ -231,7 +231,12 @@ impl Worker {
                 }
             };
             let level = job.source.level(job.crop.k);
-            let px = filter_crop(&job.filter, level, &job.crop);
+            // (On the app's background pool, when it gave one: a stroke
+            // keeps its cores.)
+            let px = match crate::background_pool() {
+                Some(pool) => pool.install(|| filter_crop(&job.filter, level, &job.crop)),
+                None => filter_crop(&job.filter, level, &job.crop),
+            };
             if send.send((job.key, job.crop, px)).is_err() { return; }
             ctx.request_repaint();
         });
