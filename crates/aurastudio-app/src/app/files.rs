@@ -360,11 +360,13 @@ impl App {
         }
         // The whole merged image is only made now, for the file, on the
         // export thread (the screen shows it from the GPU).
-        let (doc, proxy) = (Arc::clone(&self.doc), self.proxy.clone());
+        // Locked only to copy the tree (its tables shared): here, not on
+        // the work pool (a worker waiting for the document could hold up
+        // the paint thread's own parallel loops).
+        let stack = self.doc.locked().stack_for_file();
+        let proxy = self.proxy.clone();
         self.ui.notify("Exporting…");
         crate::pools::spawn_work(move || {
-            // Locked only to copy the tree (shared tiles); merged after.
-            let stack = doc.locked().stack_for_file();
             let (w, h) = (stack.width, stack.height);
             // Without the draft layers (CSP). A PNG keeps what is
             // transparent; a JPEG (no alpha) is over white.
