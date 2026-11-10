@@ -25,7 +25,7 @@ jiff = "0.2"
 lz4_flex = "0.14"
 profiling = "1"
 # Same version as the one profiling uses (one Tracy client).
-tracy-client = { version = "0.18", optional = true }
+tracy-client = { version = "0.19", optional = true }
 aurastudio-core      = { path = "../aurastudio-core" }
 aurastudio-diag      = { path = "../aurastudio-diag", optional = true }
 aurastudio-input     = { path = "../aurastudio-input" }
