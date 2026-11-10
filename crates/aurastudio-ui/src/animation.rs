@@ -905,10 +905,10 @@ fn onion_menu(ui: &mut Ui, m: &mut Model, mark: OnionMark) {
     let distance = match mark { OnionMark::Mobile(off) => off.unsigned_abs(), OnionMark::Fixed(_) => 1 };
     let mut auto = slot.is_none();
     let mut pct = (slot.unwrap_or_else(|| look.fade(distance)) * 100.0).round();
-    ui.horizontal(|ui| {
-        ui.label("Opacity");
-        if ui.add_enabled(!auto, egui::Slider::new(&mut pct, 0.0..=100.0).suffix(" %").integer()).changed() { *slot = Some(pct / 100.0); }
-    });
+    if let Some(v) = crate::widgets::fill_slider_with(ui, "onion_mark_opacity", crate::widgets::percent("Opacity"), pct, 220.0, !auto) {
+        pct = v;
+        *slot = Some(pct / 100.0);
+    }
     if ui.checkbox(&mut auto, "Automatic (fades with distance)").changed() {
         *slot = if auto { None } else { Some(pct / 100.0) };
     }

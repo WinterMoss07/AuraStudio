@@ -286,17 +286,39 @@ pub struct Fill<'a> {
     pub format: &'a dyn Fn(f32) -> String,
 }
 
-/// Krita-style slider: a bar filled up to the value, label and value
-/// inside. Click or drag sets it, right-click types one in. Returns the
-/// new value when changed.
+/// Height of a slider, and of everything on a row of settings (its
+/// buttons, boxes and lists line up with it).
+pub const ROW: f32 = 18.0;
+
+/// Krita-style slider, the app's one slider: a bar filled up to the value,
+/// label and value inside. Click or drag sets it, right-click types one
+/// in. Returns the new value when changed.
 pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f32) -> Option<f32> {
+    fill_slider_with(ui, id_salt, spec, value, width, true)
+}
+
+/// A fill slider, grayed and still when not `enabled` (its setting is
+/// off for now).
+pub fn fill_slider_with(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f32, enabled: bool) -> Option<f32> {
     let Fill { label, range, mid, format } = spec;
     let (lo, hi) = (*range.start(), *range.end());
-    let to_t = |v: f32| match mid { Some(m) => size_curve::to_t(v, lo, m, hi), None => (v - lo) / (hi - lo) };
-    let from_t = |t: f32| match mid { Some(m) => size_curve::from_t(t, lo, m, hi), None => lo + t * (hi - lo) };
+    // `mid` at the middle: a smooth curve from a positive start, else two
+    // straight halves.
+    let to_t = |v: f32| match mid {
+        Some(m) if lo > 0.0 => size_curve::to_t(v, lo, m, hi),
+        Some(m) if v <= m => 0.5 * (v - lo) / (m - lo).max(1e-6),
+        Some(m) => 0.5 + 0.5 * (v - m) / (hi - m).max(1e-6),
+        None => (v - lo) / (hi - lo),
+    };
+    let from_t = |t: f32| match mid {
+        Some(m) if lo > 0.0 => size_curve::from_t(t, lo, m, hi),
+        Some(m) if t <= 0.5 => lo + (m - lo) * t * 2.0,
+        Some(m) => m + (hi - m) * (t - 0.5) * 2.0,
+        None => lo + t * (hi - lo),
+    };
 
     let id = ui.scope_id().with(("fill_slider", id_salt));
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 18.0), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW), if enabled { Sense::click_and_drag() } else { Sense::hover() });
     let editing_id = id.with("editing");
     // (text typed so far, focus already given)
     let editing: Option<(String, bool)> = ui.data(|d| d.get_temp(editing_id));
@@ -320,6 +342,21 @@ pub fn fill_slider(ui: &mut Ui, id_salt: &str, spec: Fill, value: f32, width: f3
             return parse_number(&text).map(|v| (v as f32).clamp(lo, hi));
         }
         ui.data_mut(|d| d.insert_temp(editing_id, (text, true)));
+        return None;
+    }
+
+    if !enabled {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 2.5, theme::WIDGET.gamma_multiply(0.7));
+        let t = to_t(value).clamp(0.0, 1.0);
+        if t > 0.0 { painter.rect_filled(Rect::from_min_max(rect.min, pos2(rect.left() + (rect.width() * t).max(5.0), rect.bottom())), 2.5, Color32::from_gray(0x50)); }
+        let font = egui::FontId::proportional(11.5);
+        let weak = theme::TEXT_WEAK.gamma_multiply(0.6);
+        let name = painter.layout_no_wrap(label.to_owned(), font.clone(), weak);
+        let v = painter.layout_no_wrap(format(value), font, weak);
+        let y = rect.center().y;
+        if name.size().x + v.size().x + 22.0 <= rect.width() { painter.galley(pos2(rect.left() + 7.0, y - name.size().y / 2.0), name, weak); }
+        painter.galley(pos2(rect.right() - 7.0 - v.size().x, y - v.size().y / 2.0), v, weak);
         return None;
     }
 
@@ -393,20 +430,6 @@ mod size_curve {
     pub fn to_t(v: f32, lo: f32, mid: f32, hi: f32) -> f32 {
         ((v.clamp(lo, hi) / lo).ln() / (hi / lo).ln()).powf(1.0 / k(lo, mid, hi))
     }
-}
-
-/// The brush's blend modes (Photoshop's, then paint.net's).
-pub fn paint_mode_combo(ui: &mut Ui, id: &str, mode: &mut aurastudio_forge::PaintMode, width: f32) -> bool {
-    let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(mode.label())
-        .width(width)
-        .show_ui(ui, |ui| {
-            for m in aurastudio_forge::PaintMode::all() {
-                changed |= ui.selectable_value(mode, m, m.label()).changed();
-            }
-        });
-    changed
 }
 
 // --- Menus -----------------------------------------------------------------

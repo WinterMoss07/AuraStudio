@@ -12,7 +12,7 @@ use aurastudio_forge::{Brush, Control, Dynamic, Link, ResponseCurve, TipShape, I
 use egui::{pos2, vec2, Color32, FontId, Painter, Pos2, Rect, Sense, Shape, Stroke, Ui};
 
 use crate::curve_edit::curve_editor;
-use crate::widgets::{paint_mode_combo, Icon};
+use crate::widgets::{fill_slider_with, Fill, Icon, ROW};
 use crate::theme;
 
 /// CSP's categories (the indented ones are under Brush shape).
@@ -119,8 +119,15 @@ impl Gate {
 pub enum Unit { Percent, Pixels, Degrees, Count, PerSecond }
 
 impl Unit {
-    fn suffix(self) -> &'static str {
-        match self { Unit::Percent => " %", Unit::Pixels => " px", Unit::Degrees => "°", Unit::Count => "", Unit::PerSecond => " /s" }
+    /// How a value is written in its slider.
+    fn format(self) -> &'static dyn Fn(f32) -> String {
+        match self {
+            Unit::Percent => &|v| format!("{v:.0} %"),
+            Unit::Pixels => &|v| format!("{v:.0} px"),
+            Unit::Degrees => &|v| format!("{v:.0}°"),
+            Unit::Count => &|v| format!("{v:.0}"),
+            Unit::PerSecond => &|v| format!("{v:.0} /s"),
+        }
     }
 }
 
@@ -420,65 +427,9 @@ fn paint_driven(p: &Painter, r: Rect, d: Driven, color: Color32) {
 
 /// A value: its bar (dragged), the number (typed or dragged), its
 /// arrows. `w`: the whole width. The new value when it changed.
-/// A value's range: its ends, the value at the bar's middle, its unit.
-#[derive(Clone, Copy)]
-struct Range { lo: f32, hi: f32, mid: Option<f32>, unit: Unit }
-
-const PERCENT: Range = Range { lo: 0.0, hi: 100.0, mid: None, unit: Unit::Percent };
-
-fn value_row(ui: &mut Ui, id: &str, v: f32, range: Range, w: f32, enabled: bool) -> Option<f32> {
-    let Range { lo, hi, mid, unit } = range;
-    // Bar position 0..1 of a value, and back (the middle at `mid`).
-    let to_t = |v: f32| match mid {
-        Some(m) if v <= m => 0.5 * (v - lo) / (m - lo).max(1e-6),
-        Some(m) => 0.5 + 0.5 * (v - m) / (hi - m).max(1e-6),
-        None => (v - lo) / (hi - lo).max(1e-6),
-    };
-    let of_t = |t: f32| match mid {
-        Some(m) if t <= 0.5 => lo + (m - lo) * t * 2.0,
-        Some(m) => m + (hi - m) * (t - 0.5) * 2.0,
-        None => lo + (hi - lo) * t,
-    };
-    let mut out = None;
-    ui.push_id(id, |ui| ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 3.0;
-        let bw = (w - 66.0).max(40.0);
-        let (r, resp) = ui.allocate_exact_size(vec2(bw, 14.0), if enabled { Sense::click_and_drag() } else { Sense::hover() });
-        let bar = Rect::from_min_size(pos2(r.left(), r.center().y - 4.0), vec2(bw, 8.0));
-        let p = ui.painter();
-        p.rect_filled(bar, 1.0, Color32::from_gray(0x24));
-        let t = to_t(v).clamp(0.0, 1.0);
-        p.rect_filled(Rect::from_min_size(bar.min, vec2(bw * t, 8.0)), 1.0, if enabled { theme::ACCENT_DIM } else { Color32::from_gray(0x50) });
-        if (resp.dragged() || resp.clicked()) && enabled {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                let nv = of_t(((pos.x - bar.left()) / bw).clamp(0.0, 1.0));
-                let nv = nv.round();
-                if (nv - v).abs() > 1e-6 { out = Some(nv); }
-            }
-        }
-        let mut val = v;
-        let dv = crate::widgets::drag(&mut val).range(lo..=hi).speed(((hi - lo) / 300.0).max(0.1)).max_decimals(0).suffix(unit.suffix());
-        if ui.add_enabled_ui(enabled, |ui| ui.add_sized(vec2(48.0, 16.0), dv)).inner.changed() { out = Some(val); }
-        // The arrows: one unit up or down.
-        let (ar, aresp) = ui.allocate_exact_size(vec2(9.0, 16.0), if enabled { Sense::click() } else { Sense::hover() });
-        let up = ar.top() + 4.0;
-        let dn = ar.bottom() - 4.0;
-        let col = if enabled { theme::TEXT_WEAK } else { theme::TEXT_WEAK.gamma_multiply(0.4) };
-        ui.painter().add(Shape::convex_polygon(vec![pos2(ar.center().x, up - 3.0), pos2(ar.left() + 1.0, up + 1.0), pos2(ar.right() - 1.0, up + 1.0)], col, Stroke::NONE));
-        ui.painter().add(Shape::convex_polygon(vec![pos2(ar.center().x, dn + 3.0), pos2(ar.left() + 1.0, dn - 1.0), pos2(ar.right() - 1.0, dn - 1.0)], col, Stroke::NONE));
-        if aresp.clicked() {
-            if let Some(pos) = aresp.interact_pointer_pos() {
-                let step = if pos.y < ar.center().y { 1.0 } else { -1.0 };
-                out = Some((v + step).clamp(lo, hi));
-            }
-        }
-    }));
-    out
-}
-
 /// The eye of a row in the editor: lit, shown in Tool options.
 fn eye_box(ui: &mut Ui, on: &mut bool) {
-    let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(ROW, ROW), Sense::click());
     let resp = resp.on_hover_text("Show in Tool options");
     let p = ui.painter();
     p.rect_filled(r, 2.0, Color32::from_gray(0x2b));
@@ -490,7 +441,7 @@ fn eye_box(ui: &mut Ui, on: &mut bool) {
 /// The inputs button of `st`; its popup.
 fn inputs_button(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
     let d = driven_by(st, b);
-    let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(ROW, ROW), Sense::click());
     let resp = resp.on_hover_text(format!("{} dynamics: what changes it as you draw", st.label));
     let lit = d != Driven::Nothing;
     let p = ui.painter();
@@ -507,41 +458,52 @@ pub fn row(ui: &mut Ui, st: &Setting, b: &mut Brush, width: f32, eye: Option<&mu
     if st.when.is_some_and(|w| !w(b)) { return None; }
     let enabled = st.under.and_then(by_id).is_none_or(|p| match p.kind { Kind::Switch { get, .. } => get(b), Kind::Slider { get, .. } => get(b) > 0.0, Kind::Blend => true });
     let indent = if st.under.is_some() { 16.0 } else { 0.0 };
+    // One line, everything ROW high on one axis: the eye, the slider (or
+    // box, or list), the dynamics button in a column on the right.
     let r = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().interact_size.y = ROW;
         let mut w = width;
-        if let Some(on) = eye { eye_box(ui, on); w -= 22.0; }
+        if let Some(on) = eye { eye_box(ui, on); w -= ROW + 4.0; }
         if indent > 0.0 {
-            let (r, _) = ui.allocate_exact_size(vec2(indent, 30.0), Sense::hover());
-            ui.painter().line_segment([pos2(r.left() + 5.0, r.top()), pos2(r.left() + 5.0, r.bottom())], Stroke::new(1.0, Color32::from_gray(0x77)));
+            let (r, _) = ui.allocate_exact_size(vec2(indent, ROW), Sense::hover());
+            ui.painter().line_segment([pos2(r.left() + 5.0, r.top() - 2.0), pos2(r.left() + 5.0, r.bottom() + 2.0)], Stroke::new(1.0, Color32::from_gray(0x77)));
             w -= indent + 4.0;
         }
-        let w = w - 24.0;
-        ui.vertical(|ui| {
-            ui.set_width(w);
-            ui.spacing_mut().item_spacing.y = 1.0;
-            let label = |ui: &mut Ui| { ui.label(egui::RichText::new(st.label).color(if enabled { theme::TEXT } else { theme::TEXT_WEAK.gamma_multiply(0.6) })); };
-            match &st.kind {
-                Kind::Slider { lo, hi, mid, unit, get, set } => {
-                    label(ui);
-                    if let Some(v) = value_row(ui, st.id, get(b), Range { lo: *lo, hi: *hi, mid: *mid, unit: *unit }, w, enabled) { set(b, v); }
-                }
-                Kind::Switch { get, set } => {
-                    let mut v = get(b);
-                    if ui.add_enabled(enabled, egui::Checkbox::new(&mut v, st.label)).changed() { set(b, v); }
-                }
-                Kind::Blend => {
-                    label(ui);
-                    paint_mode_combo(ui, st.id, &mut b.mode, w - 4.0);
-                }
+        // (Every row keeps the button's place: the sliders end together.)
+        let w = (w - ROW - 4.0).max(40.0);
+        match &st.kind {
+            Kind::Slider { lo, hi, mid, unit, get, set } => {
+                let spec = Fill { label: st.label, range: *lo..=*hi, mid: *mid, format: unit.format() };
+                if let Some(v) = fill_slider_with(ui, st.id, spec, get(b), w, enabled) { set(b, v); }
             }
-        });
+            Kind::Switch { get, set } => {
+                let mut v = get(b);
+                let changed = ui.allocate_ui_with_layout(vec2(w, ROW), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_width(w);
+                    ui.add_enabled(enabled, egui::Checkbox::new(&mut v, st.label)).changed()
+                }).inner;
+                if changed { set(b, v); }
+            }
+            Kind::Blend => { mode_list(ui, st, &mut b.mode, w); }
+        }
         match &st.inputs {
             Some(i) => inputs_button(ui, st, i, b),
-            None => { ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover()); }
+            None => { ui.allocate_exact_size(vec2(ROW, ROW), Sense::hover()); }
         }
     });
     Some(r.response)
+}
+
+/// The blend mode list, its name inside as a slider has it.
+fn mode_list(ui: &mut Ui, st: &Setting, mode: &mut aurastudio_forge::PaintMode, w: f32) {
+    egui::ComboBox::from_id_salt(st.id)
+        .selected_text(format!("{}: {}", st.label, mode.label()))
+        .width(w)
+        .height(400.0)
+        .show_ui(ui, |ui| {
+            for m in aurastudio_forge::PaintMode::all() { ui.selectable_value(mode, m, m.label()); }
+        });
 }
 
 /// CSP's "… Dynamics": each input on or off, with its minimum and
@@ -563,8 +525,7 @@ fn dynamics_popup(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
             let mut out = None;
             ui.horizontal(|ui| {
                 ui.add_space(150.0);
-                ui.add_sized(vec2(96.0, 16.0), egui::Label::new(egui::RichText::new(label).color(if on { theme::TEXT_WEAK } else { theme::TEXT_WEAK.gamma_multiply(0.45) })));
-                out = value_row(ui, &id, (v * 100.0).round(), PERCENT, 210.0, on);
+                out = fill_slider_with(ui, &id, crate::widgets::percent(label), (v * 100.0).round(), 310.0, on);
             });
             out.map(|v| v / 100.0)
         };
@@ -593,8 +554,8 @@ fn dynamics_popup(ui: &mut Ui, st: &Setting, i: &Inputs, b: &mut Brush) {
                 if *c == Control::Fade {
                     ui.horizontal(|ui| {
                         ui.add_space(150.0);
-                        ui.add_sized(vec2(96.0, 16.0), egui::Label::new(egui::RichText::new("Fade length").color(theme::TEXT_WEAK)));
-                        if let Some(v) = value_row(ui, &format!("{}_fade", st.id), d.fade_steps as f32, Range { lo: 1.0, hi: 1000.0, mid: Some(25.0), unit: Unit::Count }, 210.0, true) { d.fade_steps = v.round().max(1.0) as u32; }
+                        let spec = Fill { label: "Fade length", range: 1.0..=1000.0, mid: Some(25.0), format: Unit::Count.format() };
+                        if let Some(v) = fill_slider_with(ui, &format!("{}_fade", st.id), spec, d.fade_steps as f32, 310.0, true) { d.fade_steps = v.round().max(1.0) as u32; }
                     });
                 }
             }

@@ -307,7 +307,8 @@ fn display(ui: &mut Ui, p: &mut Prefs, profile: Option<&str>, in_use: &str) {
     ui.checkbox(&mut p.vsync, "Show frames in step with the screen (V-Sync)");
     note(ui, "Off: lowest pen latency, a tear may show while panning.");
     title(ui, "Canvas frame rate");
-    ui.add(egui::Slider::new(&mut p.canvas_fps, CANVAS_FPS.0..=CANVAS_FPS.1).suffix(" fps"));
+    let spec = crate::widgets::Fill { label: "While painting", range: CANVAS_FPS.0 as f32..=CANVAS_FPS.1 as f32, mid: None, format: &|v| format!("{v:.0} fps") };
+    if let Some(v) = crate::widgets::fill_slider(ui, "canvas_fps", spec, p.canvas_fps as f32, 260.0) { p.canvas_fps = v as _; }
     note(ui, "While painting. Your screen's refresh rate is enough; higher: a little less latency, more work.");
     title(ui, "Color management");
     note(ui, &format!("Monitor profile: {}", profile.unwrap_or("none found (sRGB)")));
@@ -357,10 +358,8 @@ fn animation(ui: &mut Ui, p: &mut Prefs) {
         ui.label("after");
         ui.color_edit_button_srgb(&mut p.onion_after);
     });
-    ui.horizontal(|ui| {
-        ui.label("Paper thickness");
-        ui.add(egui::Slider::new(&mut p.onion_thickness, 0..=100));
-    });
+    let spec = crate::widgets::Fill { label: "Paper thickness", range: 0.0..=100.0, mid: None, format: &|v| format!("{v:.0}") };
+    if let Some(v) = crate::widgets::fill_slider(ui, "onion_thickness", spec, p.onion_thickness as f32, 260.0) { p.onion_thickness = v as _; }
     note(ui, "How fast the sheets fade the farther they are (OpenToonz's paper thickness).");
     ui.checkbox(&mut p.onion_playback, "Show the onion skin during playback");
     note(ui, "Off: playback shows the animation alone (and plays from the GPU).");
