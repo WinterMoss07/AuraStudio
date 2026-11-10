@@ -3,6 +3,12 @@
 Versions follow [Semantic Versioning](https://semver.org): MAJOR.MINOR.PATCH
 (see README, Versioning).
 
+## 0.23.6 — 2026-11-10
+
+- Built for x86-64-v2 (SSE4.2, SSSE3, POPCNT): every x86 processor since
+  about 2009, what Windows 11 24H2 needs anyway. Measured: up to 6 %
+  faster on big soft brushes, the rest unchanged. AVX2 is not assumed.
+
 ## 0.23.5 — 2026-11-10
 
 The path from the pen to the screen, rebuilt from the architecture review:

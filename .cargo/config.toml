@@ -1,0 +1,14 @@
+# x86-64-v2 (SSE4.2, SSSE3, POPCNT): every x86 processor since about 2009,
+# and what Windows 11 24H2 needs to start. The compiler uses them where it
+# can (measured: up to 6 % on big soft brushes). AVX2 is not assumed: it is
+# missing on Pentium / Celeron sold until about 2020.
+# (CI sets CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS for the .pdb,
+# which replaces the Windows line here: it repeats the flag.)
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=x86-64-v2"]
